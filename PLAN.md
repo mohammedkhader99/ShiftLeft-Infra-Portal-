@@ -38,7 +38,8 @@ The goal here is not features — it's a running, empty shell you can build ever
 
 **0.1 — Project skeleton**
 Create the repo structure (portal, api, agents, db, orchestrator folders), a Python 3.12 environment, and a FastAPI app with a single `/health` endpoint. Add the `USE_MOCK` master switch (ARCHITECTURE.md §10 NFR).
-*You'll know it works when:* you open `http://localhost:8080/health` and see `{"ok": true, "mock": true}`.
+*You'll know it works when:* you open `http://localhost:8081/health` and see `{"ok": true, "mock": true}`.
+*Note:* port 8080 is already in use on the reviewer's machine by Docker Desktop's WSL2 backend (unrelated to this project), so this app uses 8081 instead. Not a stack change — just an available port.
 
 **0.2 — Postgres + one-command run**
 Add Docker Compose that starts the API and a PostgreSQL 16 container together, creating the database automatically.
