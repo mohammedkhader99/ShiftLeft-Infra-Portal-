@@ -29,6 +29,11 @@
     .component-row .size { flex: 1 1 7rem; }
     .btn-remove { background: #fff; color: #b00020; border: 1px solid #e2b6b6; border-radius: 6px; padding: 0.5rem 0.7rem; cursor: pointer; }
     .btn-add { margin-top: 0.75rem; background: #eaf3f5; color: #0B5563; border: 1px solid #b8d6dc; border-radius: 6px; padding: 0.45rem 0.9rem; cursor: pointer; font-family: inherit; }
+    table.sizing { width: 100%; border-collapse: collapse; margin-top: 0.5rem; font-size: 0.9rem; }
+    table.sizing th, table.sizing td { border: 1px solid #e0e6e8; padding: 0.4rem 0.6rem; text-align: left; }
+    table.sizing th { background: #f0f5f6; color: #0B5563; font-weight: bold; }
+    table.sizing tr.totals td { background: #eaf3f5; }
+    .muted { color: #7a8a90; font-style: italic; }
     .actions { display: flex; gap: 0.75rem; margin-top: 0.5rem; }
     button { font-family: inherit; font-size: 0.95rem; }
     .actions button { border: none; border-radius: 6px; padding: 0.6rem 1.2rem; cursor: pointer; }
@@ -138,7 +143,11 @@
         <p class="note" style="margin-top:0;">One or more technologies, each with its own size. Add as many as the environment needs.</p>
         {% if errors.get('components') %}<p class="field-error">{{ errors.get('components') }}</p>{% endif %}
 
-        <div id="components">
+        <div id="components"
+             hx-post="/request/sizing"
+             hx-trigger="change, load"
+             hx-include="closest form"
+             hx-target="#sizing-panel">
           {% for comp in comps %}
           <div class="component-row">
             <select class="tech" name="component_technology">
@@ -161,6 +170,13 @@
         </div>
 
         <button type="button" class="btn-add" onclick="addComponent()">+ Add another component</button>
+      </fieldset>
+
+      <fieldset>
+        <legend>Resolved sizing</legend>
+        <div id="sizing-panel">
+          <p class="muted">Add a component with a technology and size to see resolved CPU / RAM / storage.</p>
+        </div>
       </fieldset>
 
       <div class="actions">
@@ -190,6 +206,8 @@
       const container = document.getElementById('components');
       if (container.querySelectorAll('.component-row').length > 1) {
         btn.closest('.component-row').remove();
+        // Refresh the sizing panel to reflect the removed component.
+        container.dispatchEvent(new Event('change', { bubbles: true }));
       }
     }
   </script>

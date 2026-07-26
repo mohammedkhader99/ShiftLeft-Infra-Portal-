@@ -159,3 +159,31 @@ def test_request_submit_success_banner(monkeypatch):
     response = client.post("/request/submit", data={"request_type": "create"})
     assert response.status_code == 200
     assert "submitted" in response.text.lower()
+
+
+# --- Increment 1.4: live sizing panel ----------------------------------------
+
+FAKE_SIZING = {
+    "components": [
+        {"technology_name": "PostgreSQL 16", "size": "medium", "vcpu": 4,
+         "memory_gb": 16, "storage_gb": 200, "resolved": True},
+    ],
+    "totals": {"vcpu": 4, "memory_gb": 16, "storage_gb": 200},
+}
+
+
+def test_sizing_panel_renders_resolved_numbers(monkeypatch):
+    monkeypatch.setattr(
+        "portal.main.httpx.post", lambda *a, **k: _FakeResp(FAKE_SIZING)
+    )
+    response = client.post(
+        "/request/sizing",
+        data={"component_technology": "postgres16", "component_size": "medium"},
+    )
+    assert response.status_code == 200
+    body = response.text
+    assert "PostgreSQL 16" in body
+    assert "Environment total" in body
+    # Resolved numbers appear.
+    for value in ("4", "16", "200"):
+        assert value in body

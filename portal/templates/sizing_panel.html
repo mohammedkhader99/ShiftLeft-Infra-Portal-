@@ -1,0 +1,33 @@
+{# Live sizing panel (increment 1.4), swapped in by HTMX on component changes. #}
+{% if error %}
+  <p class="field-error">Sizing unavailable: {{ error }}</p>
+{% elif sizing.components %}
+  <table class="sizing">
+    <thead>
+      <tr><th>Component</th><th>Size</th><th>vCPU</th><th>RAM (GB)</th><th>Storage (GB)</th></tr>
+    </thead>
+    <tbody>
+      {% for r in sizing.components %}
+      <tr>
+        <td>{{ r.technology_name or '—' }}</td>
+        <td>{{ r.size or '—' }}</td>
+        {% if r.resolved %}
+          <td>{{ r.vcpu }}</td>
+          <td>{{ r.memory_gb }}</td>
+          <td>{{ r.storage_gb }}</td>
+        {% else %}
+          <td colspan="3" class="muted">not resolved yet</td>
+        {% endif %}
+      </tr>
+      {% endfor %}
+      <tr class="totals">
+        <td colspan="2"><strong>Environment total</strong></td>
+        <td><strong>{{ sizing.totals.vcpu }}</strong></td>
+        <td><strong>{{ sizing.totals.memory_gb }}</strong></td>
+        <td><strong>{{ sizing.totals.storage_gb }}</strong></td>
+      </tr>
+    </tbody>
+  </table>
+{% else %}
+  <p class="muted">Add a component with a technology and size to see resolved CPU / RAM / storage.</p>
+{% endif %}

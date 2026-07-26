@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from api.sizing import resolve_components
 from api.validation import validate_submission
 from db.models import (
     CostCentre,
@@ -16,6 +17,7 @@ from db.models import (
     Project,
     Request,
     RequestComponent,
+    SizingAnchor,
     Technology,
 )
 from db.session import SessionLocal
@@ -204,3 +206,19 @@ def submit_request(reference: str, session: Session = Depends(get_session)):
     req.status = "submitted"
     session.commit()
     return RequestOut.model_validate(req)
+
+
+# --- Automatic sizing (increment 1.4) ----------------------------------------
+
+
+class SizingIn(BaseModel):
+    components: list[ComponentIn] = []
+
+
+@app.post("/api/sizing")
+def sizing(body: SizingIn, session: Session = Depends(get_session)) -> dict:
+    """Resolve CPU/RAM/storage per component and the environment totals."""
+    components = [
+        {"technology_code": c.technology_code, "size": c.size} for c in body.components
+    ]
+    return resolve_components(components, session)

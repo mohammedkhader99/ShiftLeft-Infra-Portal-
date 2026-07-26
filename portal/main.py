@@ -217,6 +217,35 @@ def request_submit(
     return _render_form(request, form=submit.json(), reference=ref, submitted=True)
 
 
+@app.post("/request/sizing", response_class=HTMLResponse)
+def request_sizing(
+    request: Request,
+    component_technology: list[str] = Form(default=[]),
+    component_size: list[str] = Form(default=[]),
+) -> HTMLResponse:
+    """Resolve sizing for the current components and render the live panel.
+
+    Called by HTMX whenever a component changes. The numbers come from the API
+    (server-side, per P2) — the browser only displays them.
+    """
+    components = _components_from_lists(component_technology, component_size)
+    empty = {"components": [], "totals": {"vcpu": 0, "memory_gb": 0, "storage_gb": 0}}
+    try:
+        response = httpx.post(
+            f"{API_BASE_URL}/api/sizing", json={"components": components}, timeout=5.0
+        )
+        response.raise_for_status()
+        sizing = response.json()
+        error = None
+    except Exception as exc:  # noqa: BLE001
+        sizing = empty
+        error = str(exc)
+
+    return templates.TemplateResponse(
+        request, "sizing_panel.html", {"sizing": sizing, "error": error}
+    )
+
+
 @app.get("/panel", response_class=HTMLResponse)
 def panel(request: Request) -> HTMLResponse:
     """Fetch a live value from the API and render it as an HTML fragment.
