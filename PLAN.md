@@ -1,0 +1,141 @@
+# PLAN.md
+## Shift-Left Infrastructure Provisioning Portal — Build Plan
+
+**Owner:** Infrastructure Management Department (IMD)
+**Status:** Draft v1 (July 2026)
+**Governed by:** ARCHITECTURE.md (the architect's authority). This plan sequences *how* it gets built; it must not contradict it.
+**Assumed stack:** FastAPI + Jinja + HTMX portal, FastAPI API, PostgreSQL, OPA, Jira, durable orchestrator (per ARCHITECTURE.md §9). See §5 for the one place the plan changes if the portal is React instead.
+
+---
+
+## 0. How Claude Code must use this plan
+
+1. Build **one increment at a time, in order.** Do not start the next increment until the reviewer has run the current one and approved it.
+2. Before each increment: show a short plan for *just that increment* and wait for "go".
+3. After each increment: (a) tell the reviewer in plain steps how to run it and exactly what a working result looks like, (b) run the increment's tests, (c) commit to git with a clear message, then **stop**.
+4. Every increment lists the ARCHITECTURE.md feature IDs it implements — reference them in the commit message so code, plan, and backlog stay linked.
+5. If an increment turns out to need something not in ARCHITECTURE.md, stop and flag it before coding.
+
+---
+
+## 1. How to read this plan (for the reviewer)
+
+Each increment is **one small thing you can run and see**. That is deliberate: you never have to judge a giant pile of code at once. For every increment there is a plain-language "**You'll know it works when…**" — that line is your approval test. If you can see that result, approve and move on. If you can't, say so and we fix it before going further.
+
+Phase 0 and Phase 1 (the baseline spine) are planned in fine detail because you build them first. The enterprise increments E1–E4 are listed at increment-batch level; each will be decomposed into small steps like these *when we reach it*, so we don't over-plan work that's months away.
+
+**Definition of done — applies to every increment:**
+- It runs locally with one command and shows the expected result.
+- Server-side validation is authoritative; the browser holds no credentials or pricing logic (ARCHITECTURE.md P2).
+- It has automated tests for its main behaviour and the obvious ways it could break.
+- It's committed to git with a message naming the increment and its feature IDs.
+
+---
+
+## 2. Phase 0 — Walking skeleton (before any features)
+
+The goal here is not features — it's a running, empty shell you can build everything else onto.
+
+**0.1 — Project skeleton**
+Create the repo structure (portal, api, agents, db, orchestrator folders), a Python 3.12 environment, and a FastAPI app with a single `/health` endpoint. Add the `USE_MOCK` master switch (ARCHITECTURE.md §10 NFR).
+*You'll know it works when:* you open `http://localhost:8080/health` and see `{"ok": true, "mock": true}`.
+
+**0.2 — Postgres + one-command run**
+Add Docker Compose that starts the API and a PostgreSQL 16 container together, creating the database automatically.
+*You'll know it works when:* `docker compose up` starts everything, and `/health` still responds.
+
+**0.3 — First HTMX page**
+Serve one Jinja page with HTMX wired in, showing a "Portal is running" panel that fetches a live value from the API.
+*You'll know it works when:* you open `http://localhost:5173`, see the page, and the panel shows live data from the API (not hard-coded).
+
+---
+
+## 3. Phase 1 — Baseline request-to-approval spine
+
+This is the core product from ARCHITECTURE.md §1 and §6: collect → validate → cost → approve → hand off. Build it end to end in mock mode first (no real Jira/cloud accounts needed), then wire real integrations later, one adapter at a time.
+
+**1.1 — Database schema + seed**
+Create the tables from ARCHITECTURE.md §5 and seed lookups, sizing anchors, and rate cards.
+*Implements:* reference-data foundation.
+*You'll know it works when:* a seed query returns the projects, cost centres, technologies, and rate cards.
+
+**1.2 — Lookups API + form scaffolding**
+Expose `/api/lookups` and render the guided-request page with real dropdowns (projects, cost centres, technologies, environments).
+*Implements:* guided intake foundation.
+*You'll know it works when:* the request form loads and its dropdowns are populated from the database, not placeholder text.
+
+**1.3 — Guided request + saved drafts + server-side validation**
+Build the multi-step request form for the four request types, with save-and-resume and authoritative server-side validation that returns readable, field-level errors.
+*Implements:* F-UX-01 (saved drafts), F-UX-10 (guided error remediation), four request types.
+*You'll know it works when:* you can start a request, save it half-finished, come back to it, and a bad entry is rejected with a message that tells you the rule.
+
+**1.4 — Automatic sizing**
+Resolve CPU / memory / storage from the per-technology, per-size anchors.
+*Implements:* automatic sizing; F-CAT-07 (versioned anchors) foundation.
+*You'll know it works when:* choosing a technology and size shows the resolved CPU/RAM/storage on screen.
+
+**1.5 — Cost estimation + live cost panel**
+Compute one-time, monthly, and annual cost (incl. licence lines) server-side, and show a live cost panel that updates as selections change. Mock pricing first, behind the pricing service.
+*Implements:* cost estimation, multi-source pricing, cost-before-approval.
+*You'll know it works when:* changing the size or stack updates the cost panel live, and the numbers come from the server, not the browser.
+
+**1.6 — Persist request + estimate**
+Save the submitted request and its server-computed estimate; show a confirmation with a reference.
+*Implements:* request + estimate persistence.
+*You'll know it works when:* after submitting, the request and its cost are stored and you can see it saved.
+
+**1.7 — Policy gate (OPA)**
+Add the OPA policy gate that runs at request time — allowed regions, SKUs, naming, tagging, residency — returning human-readable pass/fail reasons.
+*Implements:* F-GOV-03 (policy-as-code), F-CAT-04/05/06 foundations.
+*You'll know it works when:* a request that breaks a policy (e.g. a disallowed region) is blocked with a plain-language reason, and a compliant one passes.
+
+**1.8 — Jira ticket with config + cost + plan preview**
+Raise a Jira ticket carrying configuration, cost, and a (mock) plan preview, under the requester. Mock Jira adapter first.
+*Implements:* Jira workflow, cost-before-approval, F-ORC-02 (plan preview).
+*You'll know it works when:* submitting an approved-shape request returns a (mock) ticket key, and the ticket body shows config + cost together.
+
+**1.9 — Approval webhook + signed orchestrator handoff**
+On approval, verify the HMAC-signed webhook, re-verify approval and re-check OPA, then call a mock orchestrator. Nothing real is provisioned yet.
+*Implements:* governed execution trigger; ARCHITECTURE.md §4 authority separation.
+*You'll know it works when:* approving a request fires the handoff, the orchestrator re-verifies approval before acting, and you see the mock "provisioned" result plus an audit entry.
+
+**End of Phase 1:** you have a working, demonstrable request-to-approval spine in mock mode. This is the point to demo to stakeholders before adding enterprise depth.
+
+---
+
+## 4. Phase 2 — Real integrations (turn off the mocks, one at a time)
+
+With the spine proven, switch `USE_MOCK=false` and enable each adapter individually so a failure is easy to isolate: Active Directory / OIDC, Azure pricing, OCI pricing, Jira, then the real orchestrator contract. Each is its own small increment with its own "you'll know it works when" check. Keep on-prem pricing in the database (no code change).
+
+---
+
+## 5. Phase 3+ — Enterprise increments (E1–E4)
+
+Sequenced per ARCHITECTURE.md §12 — **build what's hard to retrofit first.** Listed here at batch level; each will be decomposed into Phase-1-style small increments when we reach it.
+
+- **E1 — Enterprise foundations:** F-IAM-01/03 (RBAC + segregation of duties), F-IAM-09 (group ownership), F-OPS-09 (admin console), F-SEC-01 (tamper-evident audit), F-INT-01 (public API), F-OPS-04 (tracing), F-OPS-01 (HA), F-SEC-09 (hardening). **Plus, per ARCHITECTURE.md §12 notes:** make the orchestrator handoff idempotent/resumable (F-ORC-01/03/04) and add IaC scanning (F-SEC-03/04) here — both are foundational.
+- **E2 — Governance depth:** F-GOV-03/01/02/06/05/08/10 (policy-as-code, SLA/escalation, quorum, change windows, waivers, four-eyes, evidence pack), F-ORC-02 (plan preview, if not already in 1.8).
+- **E3 — FinOps & lifecycle:** F-FIN-07 (TTL & renewal), F-FIN-06 (auto-shutdown), F-FIN-01/02/03 (variance, budget guardrails, showback), F-FIN-08 (quotas), F-LCM-08/09/10 (health, drift, ownership), F-LCM-03/06 (refresh, restore), F-IAM-07 + F-INT-05 (JIT access + vault delivery).
+- **E4 — Intelligence & ecosystem:** F-RPT-06/07/08 (AI drafting, explanation, failure triage — inside approved templates/runbooks only, ARCHITECTURE.md §7), F-INT-02/08/09 (event stream, chat bot, CLI), F-FIN-12/09/13, F-RPT-05/10.
+
+**Priority within all of this:** land the fifteen highest-impact features (ARCHITECTURE.md §11) ahead of the wider catalogue, then sequence the rest by measured evidence.
+
+---
+
+## 6. The one open decision that affects this plan now
+
+**HTMX vs React for the portal (ARCHITECTURE.md §14.1).** This plan assumes HTMX. If you choose React instead, only the *portal* increments change shape — 0.3, 1.2, 1.3, and 1.5 would build a React app calling the same API — while the API, database, policy, Jira, orchestrator, and every enterprise increment stay identical. So the decision is real but low-blast-radius; it doesn't block starting Phase 0, which is stack-neutral either way.
+
+Everything else in ARCHITECTURE.md §14 (control frameworks, sovereign mode, Arabic-at-launch, budget source, CMDB sync, etc.) can be settled before its own increment and does not block Phase 0 or Phase 1.
+
+---
+
+## 7. Your first three prompts to Claude Code
+
+To start, point Claude Code at the folder containing `CLAUDE.md`, `ARCHITECTURE.md`, and this `PLAN.md`, then:
+
+1. *"Read CLAUDE.md, ARCHITECTURE.md and PLAN.md. Confirm you understand the phased approach and do not write code yet. Then show me your plan for Phase 0, increment 0.1 only, and wait for my go."*
+2. After you approve and it builds 0.1: *"Good. Show me how to run it and what I should see. Then commit, and stop."*
+3. Then: *"Plan increment 0.2 only, and wait for my go."*
+
+Repeat that rhythm — plan one increment, approve, build, run, commit, stop — all the way through. That loop is what keeps you in control of a build you can verify at every step.
