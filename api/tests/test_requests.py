@@ -40,10 +40,9 @@ VALID_CREATE = {
     "request_type": "create",
     "project_code": "EGATE",
     "cost_centre_code": "IMD-1001",
-    "technology_code": "postgres16",
-    "size": "medium",
     "environment_name": "egate-uat",
     "data_classification": "internal",
+    "components": [{"technology_code": "postgres16", "size": "medium"}],
 }
 
 
@@ -65,17 +64,54 @@ def test_draft_roundtrip_preserves_partial_data(client):
     reloaded = client.get(f"/api/requests/{ref}").json()
     assert reloaded["request_type"] == "create"
     assert reloaded["project_code"] == "EGATE"
-    # Half-finished is fine for a draft.
-    assert reloaded["technology_code"] is None
+    # Half-finished is fine for a draft — no components added yet.
+    assert reloaded["components"] == []
 
 
 def test_updating_a_draft_keeps_same_reference(client):
     ref = client.post("/api/requests/draft", json={"request_type": "create"}).json()["reference"]
     updated = client.post(
-        "/api/requests/draft", json={"reference": ref, "size": "large"}
+        "/api/requests/draft", json={"reference": ref, "project_code": "VISA"}
     ).json()
     assert updated["reference"] == ref
-    assert updated["size"] == "large"
+    assert updated["project_code"] == "VISA"
+    # Not sending components leaves the earlier ones untouched.
+    assert updated["request_type"] == "create"
+
+
+def test_multiple_components_are_saved_and_submit(client):
+    payload = {
+        **VALID_CREATE,
+        "components": [
+            {"technology_code": "postgres16", "size": "small"},
+            {"technology_code": "nginx", "size": "small"},
+            {"technology_code": "redis7", "size": "medium"},
+        ],
+    }
+    ref = client.post("/api/requests/draft", json=payload).json()["reference"]
+    reloaded = client.get(f"/api/requests/{ref}").json()
+    assert len(reloaded["components"]) == 3
+    assert {c["technology_code"] for c in reloaded["components"]} == {
+        "postgres16", "nginx", "redis7"
+    }
+    assert client.post(f"/api/requests/{ref}/submit").status_code == 200
+
+
+def test_create_with_no_components_is_rejected(client):
+    payload = {**VALID_CREATE, "components": []}
+    ref = client.post("/api/requests/draft", json=payload).json()["reference"]
+    errors = client.post(f"/api/requests/{ref}/submit").json()["errors"]
+    assert "components" in errors
+
+
+def test_component_with_bad_size_is_rejected(client):
+    payload = {
+        **VALID_CREATE,
+        "components": [{"technology_code": "postgres16", "size": "huge"}],
+    }
+    ref = client.post("/api/requests/draft", json=payload).json()["reference"]
+    errors = client.post(f"/api/requests/{ref}/submit").json()["errors"]
+    assert "component_0_size" in errors
 
 
 def test_missing_reference_returns_404(client):
@@ -103,8 +139,8 @@ def test_submit_rejects_bad_environment_name_with_rule(client):
 def test_submit_rejects_missing_required_fields(client):
     ref = client.post("/api/requests/draft", json={"request_type": "create"}).json()["reference"]
     errors = client.post(f"/api/requests/{ref}/submit").json()["errors"]
-    for field in ("project_code", "technology_code", "size", "environment_name",
-                  "data_classification", "cost_centre_code"):
+    for field in ("project_code", "environment_name", "data_classification",
+                  "cost_centre_code", "components"):
         assert field in errors
 
 
@@ -118,7 +154,11 @@ def test_submit_unknown_project_is_rejected(client):
 def test_submit_add_requires_existing_target(client):
     ref = client.post(
         "/api/requests/draft",
-        json={"request_type": "add", "cost_centre_code": "IMD-1001"},
+        json={
+            "request_type": "add",
+            "cost_centre_code": "IMD-1001",
+            "components": [{"technology_code": "redis7", "size": "small"}],
+        },
     ).json()["reference"]
     errors = client.post(f"/api/requests/{ref}/submit").json()["errors"]
     assert "target_environment" in errors

@@ -87,6 +87,7 @@ If any increment would let the browser, the API, or an agent shortcut this chain
 - `sizing_anchor` — effective-dated, versioned anchors (F-CAT-07)
 - `rate_card` — `onprem_rate`, `licence_rate`, `cloud_price_cache` (Azure/OCI); discount-aware rates (F-FIN-04)
 - `request` — typed (create/add/resize/decommission), requester, project, cost centre, data classification (F-SEC-02)
+- `request_component` — one or more technology+size components per request; an environment is composed of components (recorded at increment 1.3a)
 - `estimate` — server-computed cost tied to a request
 - `budget` / `quota` — per cost-centre/project ceilings and remaining budget (F-FIN-02, F-FIN-08)
 - `approval` — Jira key, status, approver chain, SLA timers (F-GOV-01)

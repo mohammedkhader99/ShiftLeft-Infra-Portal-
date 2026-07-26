@@ -10,6 +10,7 @@ API. No request forms or database reads yet — those come in Phase 1.
 
 import os
 from datetime import datetime, timezone
+from itertools import zip_longest
 from pathlib import Path
 
 import httpx
@@ -42,12 +43,24 @@ FORM_FIELDS = (
     "request_type",
     "project_code",
     "cost_centre_code",
-    "technology_code",
-    "size",
     "environment_name",
     "target_environment",
     "data_classification",
 )
+
+
+def _components_from_lists(techs: list[str], sizes: list[str]) -> list[dict]:
+    """Turn the repeated component_technology/component_size form values into rows.
+
+    Fully-blank rows are dropped so a stray empty row doesn't get saved.
+    """
+    rows: list[dict] = []
+    for tech, size in zip_longest(techs or [], sizes or [], fillvalue=""):
+        tech = (tech or "").strip()
+        size = (size or "").strip()
+        if tech or size:
+            rows.append({"technology_code": tech or None, "size": size or None})
+    return rows
 
 
 def _fetch_lookups() -> tuple[dict, str | None]:
@@ -86,8 +99,9 @@ def _render_form(
     )
 
 
-def _form_payload(reference: str, values: dict) -> dict:
+def _form_payload(reference: str, values: dict, components: list[dict]) -> dict:
     payload = {field: (values.get(field) or None) for field in FORM_FIELDS}
+    payload["components"] = components
     if reference:
         payload["reference"] = reference
     return payload
@@ -121,9 +135,9 @@ def request_resume(request: Request, reference: str) -> HTMLResponse:
     )
 
 
-def _collect(**kwargs) -> dict:
-    """Turn the submitted Form(...) values into a plain dict."""
-    return {field: kwargs.get(field, "") for field in FORM_FIELDS}
+def _values(scalars: dict, components: list[dict]) -> dict:
+    """A form dict for re-rendering after an error, mirroring the API shape."""
+    return {**{field: scalars.get(field, "") for field in FORM_FIELDS}, "components": components}
 
 
 @app.post("/request/save", response_class=HTMLResponse)
@@ -133,24 +147,28 @@ def request_save(
     request_type: str = Form(""),
     project_code: str = Form(""),
     cost_centre_code: str = Form(""),
-    technology_code: str = Form(""),
-    size: str = Form(""),
     environment_name: str = Form(""),
     target_environment: str = Form(""),
     data_classification: str = Form(""),
+    component_technology: list[str] = Form(default=[]),
+    component_size: list[str] = Form(default=[]),
 ) -> HTMLResponse:
     """Save the current form as a draft (partial data allowed)."""
-    values = _collect(**locals())
+    scalars = {field: locals()[field] for field in FORM_FIELDS}
+    components = _components_from_lists(component_technology, component_size)
     try:
         response = httpx.post(
             f"{API_BASE_URL}/api/requests/draft",
-            json=_form_payload(reference, values),
+            json=_form_payload(reference, scalars, components),
             timeout=5.0,
         )
         response.raise_for_status()
         saved_request = response.json()
     except Exception as exc:  # noqa: BLE001
-        return _render_form(request, form=values, reference=reference or None, banner_error=str(exc))
+        return _render_form(
+            request, form=_values(scalars, components), reference=reference or None,
+            banner_error=str(exc),
+        )
 
     return _render_form(
         request, form=saved_request, reference=saved_request["reference"], saved=True
@@ -164,19 +182,20 @@ def request_submit(
     request_type: str = Form(""),
     project_code: str = Form(""),
     cost_centre_code: str = Form(""),
-    technology_code: str = Form(""),
-    size: str = Form(""),
     environment_name: str = Form(""),
     target_environment: str = Form(""),
     data_classification: str = Form(""),
+    component_technology: list[str] = Form(default=[]),
+    component_size: list[str] = Form(default=[]),
 ) -> HTMLResponse:
     """Persist the current form, then run authoritative validation on submit."""
-    values = _collect(**locals())
+    scalars = {field: locals()[field] for field in FORM_FIELDS}
+    components = _components_from_lists(component_technology, component_size)
     try:
         # Save the current form first so submission validates exactly what's shown.
         draft = httpx.post(
             f"{API_BASE_URL}/api/requests/draft",
-            json=_form_payload(reference, values),
+            json=_form_payload(reference, scalars, components),
             timeout=5.0,
         )
         draft.raise_for_status()
@@ -185,7 +204,10 @@ def request_submit(
 
         submit = httpx.post(f"{API_BASE_URL}/api/requests/{ref}/submit", timeout=5.0)
     except Exception as exc:  # noqa: BLE001
-        return _render_form(request, form=values, reference=reference or None, banner_error=str(exc))
+        return _render_form(
+            request, form=_values(scalars, components), reference=reference or None,
+            banner_error=str(exc),
+        )
 
     if submit.status_code == 422:
         errors = submit.json().get("errors", {})

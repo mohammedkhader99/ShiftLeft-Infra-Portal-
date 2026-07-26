@@ -126,8 +126,6 @@ class Request(Base):
     request_type: Mapped[str | None] = mapped_column(String(16), nullable=True)
     project_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
     cost_centre_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    technology_code: Mapped[str | None] = mapped_column(String(48), nullable=True)
-    size: Mapped[str | None] = mapped_column(String(16), nullable=True)
     # New environment name (for 'create'); target existing environment (others).
     environment_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
     target_environment: Mapped[str | None] = mapped_column(String(120), nullable=True)
@@ -137,3 +135,27 @@ class Request(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
     )
+
+    # An environment is made of one or more components, each a technology with
+    # its own size (ARCHITECTURE.md §5 — the 'component' model, 1.3a).
+    components: Mapped[list["RequestComponent"]] = relationship(
+        back_populates="request",
+        cascade="all, delete-orphan",
+        order_by="RequestComponent.id",
+    )
+
+
+class RequestComponent(Base):
+    """One technology + its size within a request (1.3a).
+
+    Sizing (1.4) and cost (1.5) are resolved per component, then summed.
+    """
+
+    __tablename__ = "request_component"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    request_id: Mapped[int] = mapped_column(ForeignKey("request.id"))
+    technology_code: Mapped[str | None] = mapped_column(String(48), nullable=True)
+    size: Mapped[str | None] = mapped_column(String(16), nullable=True)
+
+    request: Mapped["Request"] = relationship(back_populates="components")

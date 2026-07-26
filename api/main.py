@@ -10,7 +10,14 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from api.validation import validate_submission
-from db.models import CostCentre, Environment, Project, Request, Technology
+from db.models import (
+    CostCentre,
+    Environment,
+    Project,
+    Request,
+    RequestComponent,
+    Technology,
+)
 from db.session import SessionLocal
 
 load_dotenv()
@@ -85,17 +92,27 @@ def lookups(session: Session = Depends(get_session)) -> LookupsResponse:
 
 # --- Requests: drafts + submission (increment 1.3) ---------------------------
 
-# The editable fields a draft carries (reference/status/requester are managed).
+# The editable scalar fields a draft carries (components handled separately;
+# reference/status/requester are managed).
 REQUEST_FIELDS = (
     "request_type",
     "project_code",
     "cost_centre_code",
-    "technology_code",
-    "size",
     "environment_name",
     "target_environment",
     "data_classification",
 )
+
+
+class ComponentIn(BaseModel):
+    technology_code: str | None = None
+    size: str | None = None
+
+
+class ComponentOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    technology_code: str | None = None
+    size: str | None = None
 
 
 class DraftIn(BaseModel):
@@ -105,11 +122,10 @@ class DraftIn(BaseModel):
     request_type: str | None = None
     project_code: str | None = None
     cost_centre_code: str | None = None
-    technology_code: str | None = None
-    size: str | None = None
     environment_name: str | None = None
     target_environment: str | None = None
     data_classification: str | None = None
+    components: list[ComponentIn] | None = None
 
 
 class RequestOut(BaseModel):
@@ -120,11 +136,10 @@ class RequestOut(BaseModel):
     request_type: str | None = None
     project_code: str | None = None
     cost_centre_code: str | None = None
-    technology_code: str | None = None
-    size: str | None = None
     environment_name: str | None = None
     target_environment: str | None = None
     data_classification: str | None = None
+    components: list[ComponentOut] = []
 
 
 def _load_request(reference: str, session: Session) -> Request:
@@ -156,6 +171,14 @@ def save_draft(body: DraftIn, session: Session = Depends(get_session)) -> Reques
     for field in REQUEST_FIELDS:
         if field in provided:
             setattr(req, field, provided[field])
+
+    # If components were sent, replace the request's component list with them.
+    if body.components is not None:
+        req.components = [
+            RequestComponent(technology_code=c.technology_code, size=c.size)
+            for c in body.components
+        ]
+
     req.status = "draft"
     session.commit()
     return RequestOut.model_validate(req)
@@ -172,6 +195,9 @@ def submit_request(reference: str, session: Session = Depends(get_session)):
     """Run authoritative validation; on pass, mark the request submitted."""
     req = _load_request(reference, session)
     data = {field: getattr(req, field) for field in REQUEST_FIELDS}
+    data["components"] = [
+        {"technology_code": c.technology_code, "size": c.size} for c in req.components
+    ]
     errors = validate_submission(data, session)
     if errors:
         return JSONResponse(status_code=422, content={"errors": errors})

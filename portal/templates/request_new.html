@@ -8,7 +8,7 @@
   <style>
     /* Brand colours from ARCHITECTURE.md §9: petrol teal, amber, Calibri. */
     body { font-family: Calibri, "Segoe UI", sans-serif; background: #f4f6f7; color: #14303a; margin: 0; padding: 2.5rem; }
-    .card { max-width: 40rem; margin: 0 auto; background: #fff; border: 1px solid #d7dee1; border-top: 4px solid #0B5563; border-radius: 8px; padding: 1.75rem 2rem; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
+    .card { max-width: 42rem; margin: 0 auto; background: #fff; border: 1px solid #d7dee1; border-top: 4px solid #0B5563; border-radius: 8px; padding: 1.75rem 2rem; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
     a.back { color: #0B5563; font-size: 0.85rem; text-decoration: none; }
     h1 { color: #0B5563; margin: 0.25rem 0 0.25rem; font-size: 1.4rem; }
     .subtitle { color: #5b6b72; margin: 0 0 1.5rem; font-size: 0.9rem; }
@@ -24,8 +24,14 @@
     .banner-error { background: #fde7e7; border: 1px solid #f3b4b4; color: #b00020; }
     .banner-saved { background: #eaf3f5; border: 1px solid #b8d6dc; color: #0B5563; }
     .banner-submitted { background: #e7f6ec; border: 1px solid #a9dcbb; color: #1c7a3f; }
+    .component-row { display: flex; gap: 0.5rem; align-items: flex-start; margin-top: 0.6rem; flex-wrap: wrap; }
+    .component-row .tech { flex: 3 1 14rem; }
+    .component-row .size { flex: 1 1 7rem; }
+    .btn-remove { background: #fff; color: #b00020; border: 1px solid #e2b6b6; border-radius: 6px; padding: 0.5rem 0.7rem; cursor: pointer; }
+    .btn-add { margin-top: 0.75rem; background: #eaf3f5; color: #0B5563; border: 1px solid #b8d6dc; border-radius: 6px; padding: 0.45rem 0.9rem; cursor: pointer; font-family: inherit; }
     .actions { display: flex; gap: 0.75rem; margin-top: 0.5rem; }
-    button { font-family: inherit; font-size: 0.95rem; border: none; border-radius: 6px; padding: 0.6rem 1.2rem; cursor: pointer; }
+    button { font-family: inherit; font-size: 0.95rem; }
+    .actions button { border: none; border-radius: 6px; padding: 0.6rem 1.2rem; cursor: pointer; }
     .btn-save { background: #fff; color: #0B5563; border: 1px solid #0B5563; }
     .btn-submit { background: #D97706; color: #fff; }
     .btn-submit:hover { background: #b8630a; }
@@ -35,6 +41,7 @@
 <body>
   {% set f = form or {} %}
   {% set rtype = f.get('request_type') or 'create' %}
+  {% set comps = f.get('components') or [{}] %}
   <main class="card">
     <a class="back" href="/">← Back to portal</a>
     <h1>New infrastructure request</h1>
@@ -97,28 +104,6 @@
           {% if errors.get('cost_centre_code') %}<p class="field-error">{{ errors.get('cost_centre_code') }}</p>{% endif %}
         </div>
 
-        <div class="{% if errors.get('technology_code') %}has-error{% endif %}">
-          <label for="technology_code">Technology (for create / add)</label>
-          <select id="technology_code" name="technology_code">
-            <option value="">— select —</option>
-            {% for t in lookups.technologies %}
-              <option value="{{ t.code }}" {% if f.get('technology_code')==t.code %}selected{% endif %}>{{ t.name }} ({{ t.lifecycle_state }})</option>
-            {% endfor %}
-          </select>
-          {% if errors.get('technology_code') %}<p class="field-error">{{ errors.get('technology_code') }}</p>{% endif %}
-        </div>
-
-        <div class="{% if errors.get('size') %}has-error{% endif %}">
-          <label for="size">Size (for create / resize)</label>
-          <select id="size" name="size">
-            <option value="">— select —</option>
-            {% for s in ['small', 'medium', 'large'] %}
-              <option value="{{ s }}" {% if f.get('size')==s %}selected{% endif %}>{{ s }}</option>
-            {% endfor %}
-          </select>
-          {% if errors.get('size') %}<p class="field-error">{{ errors.get('size') }}</p>{% endif %}
-        </div>
-
         <div class="{% if errors.get('environment_name') %}has-error{% endif %}">
           <label for="environment_name">New environment name (for create)</label>
           <input type="text" id="environment_name" name="environment_name" placeholder="e.g. egate-uat" value="{{ f.get('environment_name') or '' }}">
@@ -148,6 +133,36 @@
         </div>
       </fieldset>
 
+      <fieldset>
+        <legend>Components (for create / add / resize)</legend>
+        <p class="note" style="margin-top:0;">One or more technologies, each with its own size. Add as many as the environment needs.</p>
+        {% if errors.get('components') %}<p class="field-error">{{ errors.get('components') }}</p>{% endif %}
+
+        <div id="components">
+          {% for comp in comps %}
+          <div class="component-row">
+            <select class="tech" name="component_technology">
+              <option value="">— technology —</option>
+              {% for t in lookups.technologies %}
+                <option value="{{ t.code }}" {% if comp.get('technology_code')==t.code %}selected{% endif %}>{{ t.name }} ({{ t.lifecycle_state }})</option>
+              {% endfor %}
+            </select>
+            <select class="size" name="component_size">
+              <option value="">— size —</option>
+              {% for s in ['small', 'medium', 'large'] %}
+                <option value="{{ s }}" {% if comp.get('size')==s %}selected{% endif %}>{{ s }}</option>
+              {% endfor %}
+            </select>
+            <button type="button" class="btn-remove" onclick="removeComponent(this)" title="Remove">✕</button>
+            {% if errors.get('component_' ~ loop.index0 ~ '_technology') %}<p class="field-error" style="flex-basis:100%;">{{ errors.get('component_' ~ loop.index0 ~ '_technology') }}</p>{% endif %}
+            {% if errors.get('component_' ~ loop.index0 ~ '_size') %}<p class="field-error" style="flex-basis:100%;">{{ errors.get('component_' ~ loop.index0 ~ '_size') }}</p>{% endif %}
+          </div>
+          {% endfor %}
+        </div>
+
+        <button type="button" class="btn-add" onclick="addComponent()">+ Add another component</button>
+      </fieldset>
+
       <div class="actions">
         <button class="btn-save" type="submit" formaction="/request/save">Save draft</button>
         <button class="btn-submit" type="submit" formaction="/request/submit">Submit</button>
@@ -160,5 +175,23 @@
       </p>
     </form>
   </main>
+
+  <script>
+    // Convenience only — the server re-validates everything (P2).
+    function addComponent() {
+      const container = document.getElementById('components');
+      const rows = container.querySelectorAll('.component-row');
+      const clone = rows[rows.length - 1].cloneNode(true);
+      clone.querySelectorAll('select').forEach(s => { s.selectedIndex = 0; });
+      clone.querySelectorAll('.field-error').forEach(e => e.remove());
+      container.appendChild(clone);
+    }
+    function removeComponent(btn) {
+      const container = document.getElementById('components');
+      if (container.querySelectorAll('.component-row').length > 1) {
+        btn.closest('.component-row').remove();
+      }
+    }
+  </script>
 </body>
 </html>

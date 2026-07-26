@@ -23,10 +23,15 @@ NAME_PATTERN = re.compile(r"^[a-z0-9-]{3,40}$")
 
 # Request types that act on an existing environment rather than creating one.
 TARGET_TYPES = {"add", "resize", "decommission"}
+# Request types that must carry at least one technology component.
+COMPONENT_TYPES = {"create", "add", "resize"}
 
 
 def validate_submission(data: dict, session: Session) -> dict[str, str]:
-    """Return {field: message} for every broken rule. Empty dict means valid."""
+    """Return {field: message} for every broken rule. Empty dict means valid.
+
+    `data['components']` is a list of {technology_code, size} dicts.
+    """
     errors: dict[str, str] = {}
 
     request_type = (data.get("request_type") or "").strip()
@@ -43,7 +48,7 @@ def validate_submission(data: dict, session: Session) -> dict[str, str]:
         errors["cost_centre_code"] = f"Unknown cost centre '{cost_centre}'."
 
     if request_type == "create":
-        _validate_create(data, session, errors)
+        _validate_create_fields(data, session, errors)
     else:  # add | resize | decommission
         target = (data.get("target_environment") or "").strip()
         if not target:
@@ -55,31 +60,18 @@ def validate_submission(data: dict, session: Session) -> dict[str, str]:
         ) is None:
             errors["target_environment"] = f"Unknown environment '{target}'."
 
+    if request_type in COMPONENT_TYPES:
+        _validate_components(data, session, errors)
+
     return errors
 
 
-def _validate_create(data: dict, session: Session, errors: dict[str, str]) -> None:
+def _validate_create_fields(data: dict, session: Session, errors: dict[str, str]) -> None:
     project = (data.get("project_code") or "").strip()
     if not project:
         errors["project_code"] = "Select the project this environment belongs to."
     elif session.scalar(select(Project).where(Project.code == project)) is None:
         errors["project_code"] = f"Unknown project '{project}'."
-
-    technology = (data.get("technology_code") or "").strip()
-    if not technology:
-        errors["technology_code"] = "Select a technology."
-    else:
-        tech = session.scalar(select(Technology).where(Technology.code == technology))
-        if tech is None:
-            errors["technology_code"] = f"Unknown technology '{technology}'."
-        elif tech.lifecycle_state == "eol":
-            errors["technology_code"] = (
-                f"{tech.name} is end-of-life and can no longer be requested."
-            )
-
-    size = (data.get("size") or "").strip()
-    if size not in SIZES:
-        errors["size"] = "Choose a size: small, medium or large."
 
     name = (data.get("environment_name") or "").strip()
     if not name:
@@ -95,3 +87,34 @@ def _validate_create(data: dict, session: Session, errors: dict[str, str]) -> No
         errors["data_classification"] = (
             "Select a data classification (public, internal, confidential or restricted)."
         )
+
+
+def _validate_components(data: dict, session: Session, errors: dict[str, str]) -> None:
+    """Require at least one component, each a valid technology + size."""
+    components = data.get("components") or []
+    # Ignore fully-blank rows (a stray empty row shouldn't count).
+    filled = [
+        c for c in components
+        if (c.get("technology_code") or "").strip() or (c.get("size") or "").strip()
+    ]
+    if not filled:
+        errors["components"] = "Add at least one component (a technology and its size)."
+        return
+
+    for index, component in enumerate(filled):
+        technology = (component.get("technology_code") or "").strip()
+        size = (component.get("size") or "").strip()
+        if not technology:
+            errors[f"component_{index}_technology"] = "Select a technology for this component."
+        else:
+            tech = session.scalar(
+                select(Technology).where(Technology.code == technology)
+            )
+            if tech is None:
+                errors[f"component_{index}_technology"] = f"Unknown technology '{technology}'."
+            elif tech.lifecycle_state == "eol":
+                errors[f"component_{index}_technology"] = (
+                    f"{tech.name} is end-of-life and can no longer be requested."
+                )
+        if size not in SIZES:
+            errors[f"component_{index}_size"] = "Choose a size: small, medium or large."
