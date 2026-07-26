@@ -1,0 +1,7 @@
+# Keep the image small and clean: never copy local-only or generated files in.
+.git
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+.env
