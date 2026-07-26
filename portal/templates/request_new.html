@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>New request · Infra Portal</title>
+  <script src="/static/htmx.min.js"></script>
+  <style>
+    /* Brand colours from ARCHITECTURE.md §9: petrol teal, amber, Calibri. */
+    body {
+      font-family: Calibri, "Segoe UI", sans-serif;
+      background: #f4f6f7;
+      color: #14303a;
+      margin: 0;
+      padding: 2.5rem;
+    }
+    .card {
+      max-width: 40rem;
+      margin: 0 auto;
+      background: #fff;
+      border: 1px solid #d7dee1;
+      border-top: 4px solid #0B5563;
+      border-radius: 8px;
+      padding: 1.75rem 2rem;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+    }
+    a.back { color: #0B5563; font-size: 0.85rem; text-decoration: none; }
+    h1 { color: #0B5563; margin: 0.25rem 0 0.25rem; font-size: 1.4rem; }
+    .subtitle { color: #5b6b72; margin: 0 0 1.5rem; font-size: 0.9rem; }
+    fieldset {
+      border: 1px solid #d7dee1; border-radius: 6px;
+      padding: 0.75rem 1rem 1rem; margin: 0 0 1.25rem;
+    }
+    legend { color: #0B5563; font-weight: bold; padding: 0 0.4rem; font-size: 0.9rem; }
+    label { display: block; margin: 0.75rem 0 0.25rem; font-size: 0.9rem; font-weight: bold; }
+    select, .types {
+      width: 100%; font-family: inherit; font-size: 0.95rem;
+      padding: 0.5rem; border: 1px solid #cfd8dc; border-radius: 6px; background: #fff;
+    }
+    .types { display: flex; gap: 0.5rem; flex-wrap: wrap; border: none; padding: 0; }
+    .types label {
+      flex: 1 1 8rem; margin: 0; font-weight: normal; text-align: center;
+      border: 1px solid #cfd8dc; border-radius: 6px; padding: 0.5rem; cursor: pointer;
+    }
+    .banner {
+      background: #fde7e7; border: 1px solid #f3b4b4; color: #b00020;
+      border-radius: 6px; padding: 0.75rem 1rem; margin-bottom: 1rem; font-size: 0.9rem;
+    }
+    .note { color: #5b6b72; font-size: 0.8rem; margin-top: 1rem; }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <a class="back" href="/">← Back to portal</a>
+    <h1>New infrastructure request</h1>
+    <p class="subtitle">Guided request — step 1 of the request-to-approval spine</p>
+
+    {% if error %}
+      <div class="banner">
+        <strong>Could not load lookups from the API.</strong><br>
+        <span style="font-size:0.85rem;">{{ error }}</span>
+      </div>
+    {% endif %}
+
+    <form>
+      <fieldset>
+        <legend>Request type</legend>
+        <div class="types">
+          <label><input type="radio" name="request_type" value="create" checked> Create environment</label>
+          <label><input type="radio" name="request_type" value="add"> Add component</label>
+          <label><input type="radio" name="request_type" value="resize"> Resize component</label>
+          <label><input type="radio" name="request_type" value="decommission"> Decommission</label>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Details</legend>
+
+        <label for="project">Project</label>
+        <select id="project" name="project">
+          {% for p in lookups.projects %}
+            <option value="{{ p.code }}">{{ p.name }}</option>
+          {% endfor %}
+        </select>
+
+        <label for="cost_centre">Cost centre</label>
+        <select id="cost_centre" name="cost_centre">
+          {% for c in lookups.cost_centres %}
+            <option value="{{ c.code }}">{{ c.code }} — {{ c.name }}</option>
+          {% endfor %}
+        </select>
+
+        <label for="technology">Technology</label>
+        <select id="technology" name="technology">
+          {% for t in lookups.technologies %}
+            <option value="{{ t.code }}">{{ t.name }} ({{ t.lifecycle_state }})</option>
+          {% endfor %}
+        </select>
+
+        <label for="environment">Existing environment (for add / resize / decommission)</label>
+        <select id="environment" name="environment">
+          <option value="">— none —</option>
+          {% for e in lookups.environments %}
+            <option value="{{ e.name }}">{{ e.name }} ({{ e.environment_class }})</option>
+          {% endfor %}
+        </select>
+      </fieldset>
+
+      <p class="note">
+        Scaffolding only (increment 1.2): the dropdowns are live from the database,
+        but submission, validation, sizing, and cost come in later increments.
+      </p>
+    </form>
+  </main>
+</body>
+</html>

@@ -35,6 +35,31 @@ def index(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request, "index.html")
 
 
+@app.get("/request/new", response_class=HTMLResponse)
+def request_new(request: Request) -> HTMLResponse:
+    """Guided-request form scaffolding, dropdowns filled live from the API.
+
+    The portal fetches lookups server-side (the browser never calls the API
+    directly, per P2). Increment 1.2: dropdowns only — no submission, no
+    validation, no sizing/cost yet.
+    """
+    empty = {"projects": [], "cost_centres": [], "technologies": [], "environments": []}
+    try:
+        response = httpx.get(f"{API_BASE_URL}/api/lookups", timeout=5.0)
+        response.raise_for_status()
+        lookups = response.json()
+        error = None
+    except Exception as exc:  # noqa: BLE001 — show any failure plainly on the page
+        lookups = empty
+        error = str(exc)
+
+    return templates.TemplateResponse(
+        request,
+        "request_new.html",
+        {"lookups": lookups, "error": error},
+    )
+
+
 @app.get("/panel", response_class=HTMLResponse)
 def panel(request: Request) -> HTMLResponse:
     """Fetch a live value from the API and render it as an HTML fragment.

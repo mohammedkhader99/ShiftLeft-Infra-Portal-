@@ -56,3 +56,51 @@ def test_panel_reports_api_failure_plainly(monkeypatch):
     assert response.status_code == 200
     assert "Could not reach the API" in response.text
     assert "connection refused" in response.text
+
+
+# --- Increment 1.2: guided-request form scaffolding --------------------------
+
+FAKE_LOOKUPS = {
+    "projects": [{"code": "EGATE", "name": "eGate Modernisation"}],
+    "cost_centres": [{"code": "IMD-1001", "name": "Infrastructure Management"}],
+    "technologies": [
+        {"code": "postgres16", "name": "PostgreSQL 16", "lifecycle_state": "certified"}
+    ],
+    "environments": [{"name": "egate-prod", "environment_class": "prod"}],
+}
+
+
+def _fake_lookups_response(*args, **kwargs):
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return FAKE_LOOKUPS
+
+    return FakeResponse()
+
+
+def test_request_new_populates_dropdowns(monkeypatch):
+    monkeypatch.setattr("portal.main.httpx.get", _fake_lookups_response)
+    response = client.get("/request/new")
+    assert response.status_code == 200
+    body = response.text
+    # Dropdown values come from the (simulated) API lookups, not placeholders.
+    assert "eGate Modernisation" in body
+    assert "Infrastructure Management" in body
+    assert "PostgreSQL 16 (certified)" in body
+    assert "egate-prod (prod)" in body
+    # The four request types are present.
+    for value in ("create", "add", "resize", "decommission"):
+        assert f'value="{value}"' in body
+
+
+def test_request_new_reports_api_failure(monkeypatch):
+    def boom(*args, **kwargs):
+        raise RuntimeError("connection refused")
+
+    monkeypatch.setattr("portal.main.httpx.get", boom)
+    response = client.get("/request/new")
+    assert response.status_code == 200
+    assert "Could not load lookups" in response.text
