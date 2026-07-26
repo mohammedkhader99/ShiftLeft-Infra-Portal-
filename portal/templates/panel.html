@@ -1,0 +1,18 @@
+{# Live fragment returned by the portal's /panel route and swapped in by HTMX. #}
+{% if error %}
+  <p style="color:#b00020; margin:0;">
+    <strong>Could not reach the API.</strong><br>
+    <span style="font-size:0.85rem;">{{ error }}</span>
+  </p>
+{% else %}
+  <p style="margin:0 0 0.4rem;">
+    <strong>API status:</strong>
+    {% if api_ok %}✅ ok{% else %}❌ not ok{% endif %}
+  </p>
+  <p style="margin:0 0 0.4rem;">
+    <strong>Mock mode:</strong> {{ "on" if api_mock else "off" }}
+  </p>
+{% endif %}
+<p style="margin:0; font-size:0.8rem; color:#5b6b72;">
+  Fetched live at {{ fetched_at }}
+</p>

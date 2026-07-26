@@ -38,5 +38,17 @@ services:
         # Don't start the API until the database reports healthy.
         condition: service_healthy
 
+  portal:
+    build:
+      context: .
+      dockerfile: portal/Dockerfile
+    environment:
+      # How the portal reaches the API over the compose network.
+      API_BASE_URL: http://api:8081
+    ports:
+      - "5173:5173"
+    depends_on:
+      - api
+
 volumes:
   db_data:

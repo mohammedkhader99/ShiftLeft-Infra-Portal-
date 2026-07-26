@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Infra Portal</title>
+  <!-- HTMX vendored locally (portal/static) so the portal works offline (F-SEC-11). -->
+  <script src="/static/htmx.min.js"></script>
+  <style>
+    /* Brand colours from ARCHITECTURE.md §9: petrol teal, amber, Calibri. */
+    body {
+      font-family: Calibri, "Segoe UI", sans-serif;
+      background: #f4f6f7;
+      color: #14303a;
+      margin: 0;
+      padding: 2.5rem;
+    }
+    .card {
+      max-width: 32rem;
+      margin: 0 auto;
+      background: #fff;
+      border: 1px solid #d7dee1;
+      border-top: 4px solid #0B5563;
+      border-radius: 8px;
+      padding: 1.75rem 2rem;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+    }
+    h1 { color: #0B5563; margin: 0 0 0.25rem; font-size: 1.4rem; }
+    .subtitle { color: #5b6b72; margin: 0 0 1.5rem; font-size: 0.9rem; }
+    .panel {
+      background: #f0f5f6;
+      border: 1px solid #cfe0e2;
+      border-radius: 6px;
+      padding: 1rem 1.25rem;
+      min-height: 3rem;
+    }
+    button {
+      margin-top: 1.25rem;
+      background: #D97706;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      padding: 0.55rem 1.1rem;
+      font-size: 0.9rem;
+      font-family: inherit;
+      cursor: pointer;
+    }
+    button:hover { background: #b8630a; }
+    .htmx-request button { opacity: 0.6; cursor: wait; }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <h1>Portal is running</h1>
+    <p class="subtitle">Shift-Left Infrastructure Provisioning Portal</p>
+
+    <!-- On page load, HTMX asks the portal's /panel route for live API data.
+         The Refresh button re-fetches it into the same spot. -->
+    <div
+      class="panel"
+      hx-get="/panel"
+      hx-trigger="load, click from:#refresh"
+      hx-swap="innerHTML">
+      Loading live status from the API…
+    </div>
+
+    <button id="refresh" type="button">Refresh</button>
+  </main>
+</body>
+</html>
