@@ -103,4 +103,59 @@ def test_request_new_reports_api_failure(monkeypatch):
     monkeypatch.setattr("portal.main.httpx.get", boom)
     response = client.get("/request/new")
     assert response.status_code == 200
-    assert "Could not load lookups" in response.text
+    assert "connection refused" in response.text
+
+
+class _FakeResp:
+    def __init__(self, payload, status=200):
+        self._payload = payload
+        self.status_code = status
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self._payload
+
+
+def test_request_save_shows_reference(monkeypatch):
+    monkeypatch.setattr("portal.main.httpx.get", _fake_lookups_response)  # lookups re-fetch
+
+    def fake_post(url, *args, **kwargs):
+        return _FakeResp({"reference": "REQ-2026-0001", "status": "draft", **FAKE_LOOKUPS})
+
+    monkeypatch.setattr("portal.main.httpx.post", fake_post)
+    response = client.post("/request/save", data={"request_type": "create"})
+    assert response.status_code == 200
+    assert "Draft saved as REQ-2026-0001" in response.text
+
+
+def test_request_submit_shows_field_errors(monkeypatch):
+    monkeypatch.setattr("portal.main.httpx.get", _fake_lookups_response)
+
+    def fake_post(url, *args, **kwargs):
+        if url.endswith("/submit"):
+            return _FakeResp(
+                {"errors": {"environment_name": "must be lowercase letters..."}}, status=422
+            )
+        return _FakeResp({"reference": "REQ-2026-0002", "status": "draft"})
+
+    monkeypatch.setattr("portal.main.httpx.post", fake_post)
+    response = client.post("/request/submit", data={"request_type": "create"})
+    assert response.status_code == 200
+    assert "Please fix the highlighted fields" in response.text
+    assert "must be lowercase letters" in response.text
+
+
+def test_request_submit_success_banner(monkeypatch):
+    monkeypatch.setattr("portal.main.httpx.get", _fake_lookups_response)
+
+    def fake_post(url, *args, **kwargs):
+        if url.endswith("/submit"):
+            return _FakeResp({"reference": "REQ-2026-0003", "status": "submitted"})
+        return _FakeResp({"reference": "REQ-2026-0003", "status": "draft"})
+
+    monkeypatch.setattr("portal.main.httpx.post", fake_post)
+    response = client.post("/request/submit", data={"request_type": "create"})
+    assert response.status_code == 200
+    assert "submitted" in response.text.lower()

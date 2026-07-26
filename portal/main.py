@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -35,29 +35,164 @@ def index(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request, "index.html")
 
 
-@app.get("/request/new", response_class=HTMLResponse)
-def request_new(request: Request) -> HTMLResponse:
-    """Guided-request form scaffolding, dropdowns filled live from the API.
+# --- Guided request: dropdowns, drafts, validation (increments 1.2 + 1.3) ----
 
-    The portal fetches lookups server-side (the browser never calls the API
-    directly, per P2). Increment 1.2: dropdowns only — no submission, no
-    validation, no sizing/cost yet.
-    """
-    empty = {"projects": [], "cost_centres": [], "technologies": [], "environments": []}
+EMPTY_LOOKUPS = {"projects": [], "cost_centres": [], "technologies": [], "environments": []}
+FORM_FIELDS = (
+    "request_type",
+    "project_code",
+    "cost_centre_code",
+    "technology_code",
+    "size",
+    "environment_name",
+    "target_environment",
+    "data_classification",
+)
+
+
+def _fetch_lookups() -> tuple[dict, str | None]:
+    """Get the dropdown reference data from the API (server-side, per P2)."""
     try:
         response = httpx.get(f"{API_BASE_URL}/api/lookups", timeout=5.0)
         response.raise_for_status()
-        lookups = response.json()
-        error = None
-    except Exception as exc:  # noqa: BLE001 — show any failure plainly on the page
-        lookups = empty
-        error = str(exc)
+        return response.json(), None
+    except Exception as exc:  # noqa: BLE001 — surface the failure on the page
+        return EMPTY_LOOKUPS, str(exc)
 
+
+def _render_form(
+    request: Request,
+    form: dict,
+    *,
+    reference: str | None = None,
+    errors: dict | None = None,
+    saved: bool = False,
+    submitted: bool = False,
+    banner_error: str | None = None,
+) -> HTMLResponse:
+    lookups, lookup_error = _fetch_lookups()
     return templates.TemplateResponse(
         request,
         "request_new.html",
-        {"lookups": lookups, "error": error},
+        {
+            "lookups": lookups,
+            "error": banner_error or lookup_error,
+            "form": form,
+            "reference": reference,
+            "errors": errors or {},
+            "saved": saved,
+            "submitted": submitted,
+        },
     )
+
+
+def _form_payload(reference: str, values: dict) -> dict:
+    payload = {field: (values.get(field) or None) for field in FORM_FIELDS}
+    if reference:
+        payload["reference"] = reference
+    return payload
+
+
+@app.get("/request/new", response_class=HTMLResponse)
+def request_new(request: Request) -> HTMLResponse:
+    """Blank guided-request form with dropdowns filled live from the API."""
+    return _render_form(request, form={})
+
+
+@app.get("/request/{reference}", response_class=HTMLResponse)
+def request_resume(request: Request, reference: str) -> HTMLResponse:
+    """Resume a saved draft, pre-filled from the API (F-UX-01)."""
+    try:
+        response = httpx.get(f"{API_BASE_URL}/api/requests/{reference}", timeout=5.0)
+        if response.status_code == 404:
+            return _render_form(
+                request, form={}, banner_error=f"No request found with reference {reference}."
+            )
+        response.raise_for_status()
+        saved_request = response.json()
+    except Exception as exc:  # noqa: BLE001
+        return _render_form(request, form={}, banner_error=str(exc))
+
+    return _render_form(
+        request,
+        form=saved_request,
+        reference=saved_request.get("reference"),
+        submitted=(saved_request.get("status") == "submitted"),
+    )
+
+
+def _collect(**kwargs) -> dict:
+    """Turn the submitted Form(...) values into a plain dict."""
+    return {field: kwargs.get(field, "") for field in FORM_FIELDS}
+
+
+@app.post("/request/save", response_class=HTMLResponse)
+def request_save(
+    request: Request,
+    reference: str = Form(""),
+    request_type: str = Form(""),
+    project_code: str = Form(""),
+    cost_centre_code: str = Form(""),
+    technology_code: str = Form(""),
+    size: str = Form(""),
+    environment_name: str = Form(""),
+    target_environment: str = Form(""),
+    data_classification: str = Form(""),
+) -> HTMLResponse:
+    """Save the current form as a draft (partial data allowed)."""
+    values = _collect(**locals())
+    try:
+        response = httpx.post(
+            f"{API_BASE_URL}/api/requests/draft",
+            json=_form_payload(reference, values),
+            timeout=5.0,
+        )
+        response.raise_for_status()
+        saved_request = response.json()
+    except Exception as exc:  # noqa: BLE001
+        return _render_form(request, form=values, reference=reference or None, banner_error=str(exc))
+
+    return _render_form(
+        request, form=saved_request, reference=saved_request["reference"], saved=True
+    )
+
+
+@app.post("/request/submit", response_class=HTMLResponse)
+def request_submit(
+    request: Request,
+    reference: str = Form(""),
+    request_type: str = Form(""),
+    project_code: str = Form(""),
+    cost_centre_code: str = Form(""),
+    technology_code: str = Form(""),
+    size: str = Form(""),
+    environment_name: str = Form(""),
+    target_environment: str = Form(""),
+    data_classification: str = Form(""),
+) -> HTMLResponse:
+    """Persist the current form, then run authoritative validation on submit."""
+    values = _collect(**locals())
+    try:
+        # Save the current form first so submission validates exactly what's shown.
+        draft = httpx.post(
+            f"{API_BASE_URL}/api/requests/draft",
+            json=_form_payload(reference, values),
+            timeout=5.0,
+        )
+        draft.raise_for_status()
+        saved_request = draft.json()
+        ref = saved_request["reference"]
+
+        submit = httpx.post(f"{API_BASE_URL}/api/requests/{ref}/submit", timeout=5.0)
+    except Exception as exc:  # noqa: BLE001
+        return _render_form(request, form=values, reference=reference or None, banner_error=str(exc))
+
+    if submit.status_code == 422:
+        errors = submit.json().get("errors", {})
+        return _render_form(request, form=saved_request, reference=ref, errors=errors)
+
+    submit.raise_for_status()
+    return _render_form(request, form=submit.json(), reference=ref, submitted=True)
 
 
 @app.get("/panel", response_class=HTMLResponse)

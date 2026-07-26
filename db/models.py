@@ -10,9 +10,9 @@ Column types are kept portable (no Postgres-only types) so the same models run
 against an in-memory database in the tests.
 """
 
-from datetime import date
+from datetime import date, datetime
 
-from sqlalchemy import Boolean, Date, ForeignKey, Numeric, String
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from db.session import Base
@@ -104,3 +104,36 @@ class RateCard(Base):
     currency: Mapped[str] = mapped_column(String(3), default="AED")
     discount_pct: Mapped[float] = mapped_column(Numeric(5, 2), default=0)
     effective_from: Mapped[date] = mapped_column(Date, default=date(2026, 1, 1))
+
+
+class Request(Base):
+    """A provisioning request (increment 1.3): the first transactional table.
+
+    Drafts may be incomplete (fields nullable). Submission runs authoritative
+    server-side validation before status moves from 'draft' to 'submitted'.
+    Data classification is captured here (F-SEC-02). Sizing, cost, policy and
+    Jira are added by later increments.
+    """
+
+    __tablename__ = "request"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    reference: Mapped[str] = mapped_column(String(20), unique=True, index=True)
+    status: Mapped[str] = mapped_column(String(16), default="draft")  # draft | submitted
+    requester: Mapped[str] = mapped_column(String(120))
+
+    # create | add | resize | decommission
+    request_type: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    project_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    cost_centre_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    technology_code: Mapped[str | None] = mapped_column(String(48), nullable=True)
+    size: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # New environment name (for 'create'); target existing environment (others).
+    environment_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    target_environment: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    data_classification: Mapped[str | None] = mapped_column(String(16), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
