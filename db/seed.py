@@ -1,0 +1,153 @@
+"""Create the reference-data tables and fill them with starter data.
+
+Run it inside the API container:
+    docker compose exec api python -m db.seed
+
+Safe to re-run: it only inserts rows that aren't already there, then prints a
+summary so you can see what's in the database.
+
+All data here is mock/demo reference data — no real systems are touched.
+"""
+
+from datetime import date
+
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+
+from db.models import (
+    CostCentre,
+    Environment,
+    Project,
+    RateCard,
+    SizingAnchor,
+    Technology,
+)
+from db.session import Base, SessionLocal, engine
+
+PROJECTS = [
+    {"code": "EGATE", "name": "eGate Modernisation"},
+    {"code": "VISA", "name": "Visa Platform"},
+    {"code": "BIO", "name": "Biometric Services"},
+]
+
+COST_CENTRES = [
+    {"code": "IMD-1001", "name": "Infrastructure Management"},
+    {"code": "IMD-2002", "name": "Border Systems"},
+    {"code": "IMD-3003", "name": "Identity & Biometrics"},
+]
+
+TECHNOLOGIES = [
+    {"code": "postgres16", "name": "PostgreSQL 16", "lifecycle_state": "certified"},
+    {"code": "redis7", "name": "Redis 7", "lifecycle_state": "certified"},
+    {"code": "nginx", "name": "NGINX", "lifecycle_state": "certified"},
+    {"code": "k8s", "name": "Kubernetes", "lifecycle_state": "preview"},
+    {"code": "rhel9", "name": "RHEL 9 VM", "lifecycle_state": "certified"},
+    {"code": "win2019", "name": "Windows Server 2019", "lifecycle_state": "deprecated"},
+]
+
+# size -> (vcpu, memory_gb, storage_gb), applied to every technology.
+SIZES = {
+    "small": (2, 4, 50),
+    "medium": (4, 16, 200),
+    "large": (8, 64, 500),
+}
+
+RATE_CARDS = [
+    {"kind": "onprem", "item": "vcpu", "unit": "per vCPU/month", "rate": 45.0},
+    {"kind": "onprem", "item": "memory-gb", "unit": "per GB/month", "rate": 12.0},
+    {"kind": "onprem", "item": "storage-gb", "unit": "per GB/month", "rate": 1.5},
+    {"kind": "licence", "item": "postgres-licence", "unit": "per month", "rate": 0.0},
+    {"kind": "licence", "item": "windows-licence", "unit": "per month", "rate": 320.0},
+    {"kind": "cloud_azure", "item": "vcpu-hour", "unit": "per vCPU/hour", "rate": 0.14,
+     "discount_pct": 20.0},
+    {"kind": "cloud_oci", "item": "vcpu-hour", "unit": "per vCPU/hour", "rate": 0.11,
+     "discount_pct": 15.0},
+]
+
+
+def _upsert_by(session: Session, model, match_field: str, rows: list[dict]) -> None:
+    """Insert each row only if a row with the same match_field isn't present."""
+    for row in rows:
+        exists = session.scalar(
+            select(model).where(getattr(model, match_field) == row[match_field])
+        )
+        if exists is None:
+            session.add(model(**row))
+
+
+def seed(session: Session) -> None:
+    """Insert all reference data (idempotent)."""
+    _upsert_by(session, Project, "code", PROJECTS)
+    _upsert_by(session, CostCentre, "code", COST_CENTRES)
+    _upsert_by(session, Technology, "code", TECHNOLOGIES)
+    session.flush()  # projects & technologies now have ids
+
+    # Existing environments (need a project id).
+    egate = session.scalar(select(Project).where(Project.code == "EGATE"))
+    visa = session.scalar(select(Project).where(Project.code == "VISA"))
+    environments = [
+        {"name": "egate-prod", "environment_class": "prod", "project_id": egate.id},
+        {"name": "visa-uat", "environment_class": "non-prod", "project_id": visa.id},
+    ]
+    _upsert_by(session, Environment, "name", environments)
+
+    # Sizing anchors: one per technology per size (F-CAT-07).
+    technologies = session.scalars(select(Technology)).all()
+    for tech in technologies:
+        for size, (vcpu, mem, storage) in SIZES.items():
+            exists = session.scalar(
+                select(SizingAnchor).where(
+                    SizingAnchor.technology_id == tech.id,
+                    SizingAnchor.size == size,
+                )
+            )
+            if exists is None:
+                session.add(
+                    SizingAnchor(
+                        technology_id=tech.id,
+                        size=size,
+                        vcpu=vcpu,
+                        memory_gb=mem,
+                        storage_gb=storage,
+                        effective_from=date(2026, 1, 1),
+                        version=1,
+                    )
+                )
+
+    # Rate cards (F-FIN-04): match on item+kind so re-runs don't duplicate.
+    for row in RATE_CARDS:
+        exists = session.scalar(
+            select(RateCard).where(
+                RateCard.kind == row["kind"], RateCard.item == row["item"]
+            )
+        )
+        if exists is None:
+            session.add(RateCard(**row))
+
+    session.commit()
+
+
+def _print_summary(session: Session) -> None:
+    counts = {
+        "projects": session.scalar(select(func.count()).select_from(Project)),
+        "cost_centres": session.scalar(select(func.count()).select_from(CostCentre)),
+        "technologies": session.scalar(select(func.count()).select_from(Technology)),
+        "environments": session.scalar(select(func.count()).select_from(Environment)),
+        "sizing_anchors": session.scalar(select(func.count()).select_from(SizingAnchor)),
+        "rate_cards": session.scalar(select(func.count()).select_from(RateCard)),
+    }
+    print("Seed complete. Row counts:")
+    for name, n in counts.items():
+        print(f"  {name:>14}: {n}")
+
+
+def main() -> None:
+    # Create the reference-data tables if they don't exist yet.
+    Base.metadata.create_all(engine)
+    with SessionLocal() as session:
+        seed(session)
+        _print_summary(session)
+
+
+if __name__ == "__main__":
+    main()

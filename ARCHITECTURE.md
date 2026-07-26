@@ -127,6 +127,7 @@ OIDC bearer validation against the IdP's JWKS (no mock auth in production) · se
 | Backend/API | FastAPI (Python 3.12) + Pydantic | Same language as the agents; strong typed validation; async |
 | Agents | Python + Anthropic SDK + agent framework | The agentic ecosystem is Python-first |
 | Database | PostgreSQL 16 | Mature relational store for rate cards, registry, audit |
+| DB access layer | SQLAlchemy 2.0 + psycopg | Mainstream, well-documented Python ORM; typed models shared across the app (P6). *(Recorded at increment 1.1.)* |
 | Approvals | Jira Service Management | Approval authority lives where IMD's workflow already is |
 | Policy | OPA / Rego | Deterministic, testable policy gate independent of app code |
 | Orchestration | Durable workflow engine + Terraform/Ansible/GitOps | Retry/rollback/state for provisioning that can fail midway |
