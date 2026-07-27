@@ -13,8 +13,9 @@ breakdown, in AED.
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from api.adapters import azure_pricing
+from api.adapters import azure_pricing, oci_pricing
 from api.adapters.azure_pricing import AzureUnavailable
+from api.adapters.oci_pricing import OCIUnavailable
 from api.sizing import resolve_components
 from db.models import RateCard
 
@@ -88,6 +89,19 @@ def estimate_cost(components: list[dict], deployment_target: str, session: Sessi
     azure_live = target == "azure" and azure_pricing.is_live()
     azure_discount = _discount(session, "cloud_azure") if target == "azure" else 0.0
     pricing_source = "azure-live" if azure_live else "mock"
+
+    # OCI live pricing (2.2): decomposed rates map straight onto the cloud
+    # formula, so swap in the live (discounted) rate dict for `resource`.
+    if target == "oci" and oci_pricing.is_live():
+        try:
+            oci_discount = _discount(session, "cloud_oci")
+            resource = {
+                item: rate * (1 - oci_discount)
+                for item, rate in oci_pricing.rates().items()
+            }
+            pricing_source = "oci-live"
+        except OCIUnavailable:
+            pricing_source = "oci-cached"  # keep the cached rate cards
 
     lines: list[dict] = []
     one_time_total = 0.0

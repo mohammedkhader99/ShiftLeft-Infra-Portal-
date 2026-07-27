@@ -129,3 +129,39 @@ def test_azure_live_falls_back_to_cached_when_unavailable(client, monkeypatch):
     # Falls back to the cached decomposed rate and flags it.
     assert body["pricing_source"] == "azure-cached"
     assert body["totals"]["monthly"] == pytest.approx(195.55, abs=0.05)
+
+
+def test_oci_live_uses_adapter_rates(client, monkeypatch):
+    from api.adapters import oci_pricing
+
+    monkeypatch.setattr(oci_pricing, "is_live", lambda: True)
+    # Raw rates; pricing applies the seeded OCI discount (15%).
+    monkeypatch.setattr(
+        oci_pricing, "rates",
+        lambda: {"vcpu-hour": 0.10, "memory-gb-hour": 0.01, "storage-gb-month": 0.05},
+    )
+    # small = 2 vCPU / 4 GB / 50 GB.
+    # compute = (2*0.10 + 4*0.01)*730 = (0.24)*730 = 175.2 ; storage = 50*0.05 = 2.5
+    # -> 177.7 ; * (1 - 0.15) = 151.045 -> 151.05 (rates discounted before formula)
+    body = _cost(client, "oci", [{"technology_code": "postgres16", "size": "small"}])
+    assert body["pricing_source"] == "oci-live"
+    assert body["totals"]["monthly"] == pytest.approx(151.05, abs=0.05)
+
+
+def test_oci_live_falls_back_when_unavailable(client, monkeypatch):
+    from api.adapters import oci_pricing
+    from api.adapters.oci_pricing import OCIUnavailable
+
+    monkeypatch.setattr(oci_pricing, "is_live", lambda: True)
+
+    def boom():
+        raise OCIUnavailable("down")
+
+    monkeypatch.setattr(oci_pricing, "rates", boom)
+    body = _cost(client, "oci", [{"technology_code": "postgres16", "size": "small"}])
+    assert body["pricing_source"] == "oci-cached"
+
+
+def test_oci_mock_is_default(client):
+    body = _cost(client, "oci", [{"technology_code": "postgres16", "size": "small"}])
+    assert body["pricing_source"] == "mock"
