@@ -30,8 +30,6 @@ API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8081")
 SESSION_SECRET = os.getenv("SESSION_SECRET", "dev-insecure-session-secret")
 
 app = FastAPI(title="Infra Portal")
-# Secure signed session cookie holds who is logged in (2.3a).
-app.add_middleware(SessionMiddleware, secret_key=SESSION_SECRET, same_site="lax")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=BASE_DIR / "templates")
 
@@ -48,6 +46,12 @@ async def require_login(request: Request, call_next):
         if not auth.session_user(request):
             return RedirectResponse("/login")
     return await call_next(request)
+
+
+# Session middleware is added AFTER the guard so it is the OUTER middleware —
+# request.session must be set up before the guard reads it. (Order matters:
+# the last-added middleware runs first.)
+app.add_middleware(SessionMiddleware, secret_key=SESSION_SECRET, same_site="lax")
 
 
 def _requester_headers(request: Request) -> dict:

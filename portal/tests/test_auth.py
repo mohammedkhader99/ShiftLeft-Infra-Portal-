@@ -17,6 +17,15 @@ def test_login_page_renders_in_mock():
     assert "Sign in" in resp.text
 
 
+def test_live_mode_guard_redirects_not_errors(monkeypatch):
+    # Regression: the guard must be able to read the session in live mode
+    # (session middleware ordering). Anonymous -> redirect to /login, not 500.
+    monkeypatch.setattr("portal.main.auth.is_live", lambda: True)
+    resp = client.get("/", follow_redirects=False)
+    assert resp.status_code in (302, 307)
+    assert resp.headers["location"].endswith("/login")
+
+
 def test_mock_login_sets_session_and_home_shows_user():
     c = TestClient(app)
     c.post("/login", data={"email": "alice@example.com", "name": "Alice"},
