@@ -1,0 +1,38 @@
+{# Live cost panel (increment 1.5), swapped in by HTMX on component/target change. #}
+{% if error %}
+  <p class="field-error">Cost unavailable: {{ error }}</p>
+{% elif not cost.known_target %}
+  <p class="muted">Choose a deployment target to see the cost estimate.</p>
+{% elif cost.lines %}
+  <table class="sizing">
+    <thead>
+      <tr>
+        <th>Component</th><th>Size</th>
+        <th>Resource /mo</th><th>Licence /mo</th><th>One-time</th><th>Monthly</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for l in cost.lines %}
+      <tr>
+        <td>{{ l.technology_name or '—' }}</td>
+        <td>{{ l.size or '—' }}</td>
+        {% if l.resolved %}
+          <td>{{ '%.2f'|format(l.resource_monthly) }}</td>
+          <td>{{ '%.2f'|format(l.licence_monthly) }}</td>
+          <td>{{ '%.2f'|format(l.one_time) }}</td>
+          <td>{{ '%.2f'|format(l.monthly) }}</td>
+        {% else %}
+          <td colspan="4" class="muted">not resolved yet</td>
+        {% endif %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <div class="cost-totals">
+    <span>One-time: <strong>{{ cost.currency }} {{ '%.2f'|format(cost.totals.one_time) }}</strong></span>
+    <span>Monthly: <strong>{{ cost.currency }} {{ '%.2f'|format(cost.totals.monthly) }}</strong></span>
+    <span>Annual: <strong>{{ cost.currency }} {{ '%.2f'|format(cost.totals.annual) }}</strong></span>
+  </div>
+{% else %}
+  <p class="muted">Add a component to see the cost estimate.</p>
+{% endif %}

@@ -30,7 +30,7 @@ def test_seed_populates_reference_data(session):
     assert session.scalar(select(func.count()).select_from(Technology)) == 6
     # 6 technologies * 3 sizes = 18 sizing anchors.
     assert session.scalar(select(func.count()).select_from(SizingAnchor)) == 18
-    assert session.scalar(select(func.count()).select_from(RateCard)) == 7
+    assert session.scalar(select(func.count()).select_from(RateCard)) == 12
 
 
 def test_seed_query_returns_named_rows(session):

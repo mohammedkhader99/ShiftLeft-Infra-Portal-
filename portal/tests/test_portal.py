@@ -187,3 +187,43 @@ def test_sizing_panel_renders_resolved_numbers(monkeypatch):
     # Resolved numbers appear.
     for value in ("4", "16", "200"):
         assert value in body
+
+
+# --- Increment 1.5: live cost panel ------------------------------------------
+
+FAKE_COST = {
+    "currency": "AED",
+    "deployment_target": "onprem",
+    "known_target": True,
+    "lines": [
+        {"technology_name": "PostgreSQL 16", "size": "medium", "resolved": True,
+         "resource_monthly": 672.0, "licence_monthly": 0.0, "one_time": 500.0,
+         "monthly": 672.0},
+    ],
+    "totals": {"one_time": 500.0, "monthly": 672.0, "annual": 8064.0},
+}
+
+
+def test_cost_panel_renders_totals(monkeypatch):
+    monkeypatch.setattr("portal.main.httpx.post", lambda *a, **k: _FakeResp(FAKE_COST))
+    response = client.post(
+        "/request/cost",
+        data={
+            "deployment_target": "onprem",
+            "component_technology": "postgres16",
+            "component_size": "medium",
+        },
+    )
+    assert response.status_code == 200
+    body = response.text
+    assert "Monthly:" in body and "Annual:" in body and "One-time:" in body
+    assert "672.00" in body
+    assert "8064.00" in body
+
+
+def test_cost_panel_prompts_without_target(monkeypatch):
+    no_target = {**FAKE_COST, "known_target": False,
+                 "totals": {"one_time": 0, "monthly": 0, "annual": 0}}
+    monkeypatch.setattr("portal.main.httpx.post", lambda *a, **k: _FakeResp(no_target))
+    response = client.post("/request/cost", data={"deployment_target": ""})
+    assert "Choose a deployment target" in response.text

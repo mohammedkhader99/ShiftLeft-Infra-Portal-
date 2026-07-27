@@ -43,6 +43,7 @@ FORM_FIELDS = (
     "request_type",
     "project_code",
     "cost_centre_code",
+    "deployment_target",
     "environment_name",
     "target_environment",
     "data_classification",
@@ -147,6 +148,7 @@ def request_save(
     request_type: str = Form(""),
     project_code: str = Form(""),
     cost_centre_code: str = Form(""),
+    deployment_target: str = Form(""),
     environment_name: str = Form(""),
     target_environment: str = Form(""),
     data_classification: str = Form(""),
@@ -182,6 +184,7 @@ def request_submit(
     request_type: str = Form(""),
     project_code: str = Form(""),
     cost_centre_code: str = Form(""),
+    deployment_target: str = Form(""),
     environment_name: str = Form(""),
     target_environment: str = Form(""),
     data_classification: str = Form(""),
@@ -243,6 +246,43 @@ def request_sizing(
 
     return templates.TemplateResponse(
         request, "sizing_panel.html", {"sizing": sizing, "error": error}
+    )
+
+
+@app.post("/request/cost", response_class=HTMLResponse)
+def request_cost(
+    request: Request,
+    deployment_target: str = Form(""),
+    component_technology: list[str] = Form(default=[]),
+    component_size: list[str] = Form(default=[]),
+) -> HTMLResponse:
+    """Estimate cost for the current components + target and render the panel.
+
+    Called by HTMX when a component or the target changes. Numbers come from the
+    API (server-side, per P2).
+    """
+    components = _components_from_lists(component_technology, component_size)
+    empty = {
+        "currency": "AED",
+        "lines": [],
+        "known_target": False,
+        "totals": {"one_time": 0, "monthly": 0, "annual": 0},
+    }
+    try:
+        response = httpx.post(
+            f"{API_BASE_URL}/api/cost",
+            json={"deployment_target": deployment_target, "components": components},
+            timeout=5.0,
+        )
+        response.raise_for_status()
+        cost = response.json()
+        error = None
+    except Exception as exc:  # noqa: BLE001
+        cost = empty
+        error = str(exc)
+
+    return templates.TemplateResponse(
+        request, "cost_panel.html", {"cost": cost, "error": error}
     )
 
 

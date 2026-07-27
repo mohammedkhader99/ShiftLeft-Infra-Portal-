@@ -40,6 +40,7 @@ VALID_CREATE = {
     "request_type": "create",
     "project_code": "EGATE",
     "cost_centre_code": "IMD-1001",
+    "deployment_target": "onprem",
     "environment_name": "egate-uat",
     "data_classification": "internal",
     "components": [{"technology_code": "postgres16", "size": "medium"}],
@@ -157,6 +158,7 @@ def test_submit_add_requires_existing_target(client):
         json={
             "request_type": "add",
             "cost_centre_code": "IMD-1001",
+            "deployment_target": "onprem",
             "components": [{"technology_code": "redis7", "size": "small"}],
         },
     ).json()["reference"]

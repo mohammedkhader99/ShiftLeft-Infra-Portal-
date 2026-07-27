@@ -18,6 +18,7 @@ from db.models import CostCentre, Environment, Project, Technology
 REQUEST_TYPES = {"create", "add", "resize", "decommission"}
 SIZES = {"small", "medium", "large"}
 CLASSIFICATIONS = {"public", "internal", "confidential", "restricted"}
+DEPLOYMENT_TARGETS = {"onprem", "azure", "oci"}
 # Simple naming standard for now (F-CAT-04 full engine comes later).
 NAME_PATTERN = re.compile(r"^[a-z0-9-]{3,40}$")
 
@@ -61,6 +62,11 @@ def validate_submission(data: dict, session: Session) -> dict[str, str]:
             errors["target_environment"] = f"Unknown environment '{target}'."
 
     if request_type in COMPONENT_TYPES:
+        target = (data.get("deployment_target") or "").strip()
+        if target not in DEPLOYMENT_TARGETS:
+            errors["deployment_target"] = (
+                "Choose where it runs: on-prem, Azure or OCI."
+            )
         _validate_components(data, session, errors)
 
     return errors

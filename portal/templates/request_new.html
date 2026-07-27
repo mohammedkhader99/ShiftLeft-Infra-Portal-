@@ -34,6 +34,8 @@
     table.sizing th { background: #f0f5f6; color: #0B5563; font-weight: bold; }
     table.sizing tr.totals td { background: #eaf3f5; }
     .muted { color: #7a8a90; font-style: italic; }
+    .cost-totals { display: flex; gap: 1.5rem; flex-wrap: wrap; margin-top: 0.75rem; padding: 0.6rem 0.8rem; background: #fff7ee; border: 1px solid #f0d9be; border-radius: 6px; font-size: 0.95rem; }
+    .cost-totals strong { color: #b8630a; }
     .actions { display: flex; gap: 0.75rem; margin-top: 0.5rem; }
     button { font-family: inherit; font-size: 0.95rem; }
     .actions button { border: none; border-radius: 6px; padding: 0.6rem 1.2rem; cursor: pointer; }
@@ -109,6 +111,17 @@
           {% if errors.get('cost_centre_code') %}<p class="field-error">{{ errors.get('cost_centre_code') }}</p>{% endif %}
         </div>
 
+        <div class="{% if errors.get('deployment_target') %}has-error{% endif %}">
+          <label for="deployment_target">Deployment target</label>
+          <select id="deployment_target" name="deployment_target">
+            <option value="">— select —</option>
+            {% for dt, dtlabel in [('onprem','On-premises'), ('azure','Microsoft Azure'), ('oci','Oracle Cloud (OCI)')] %}
+              <option value="{{ dt }}" {% if f.get('deployment_target')==dt %}selected{% endif %}>{{ dtlabel }}</option>
+            {% endfor %}
+          </select>
+          {% if errors.get('deployment_target') %}<p class="field-error">{{ errors.get('deployment_target') }}</p>{% endif %}
+        </div>
+
         <div class="{% if errors.get('environment_name') %}has-error{% endif %}">
           <label for="environment_name">New environment name (for create)</label>
           <input type="text" id="environment_name" name="environment_name" placeholder="e.g. egate-uat" value="{{ f.get('environment_name') or '' }}">
@@ -176,6 +189,17 @@
         <legend>Resolved sizing</legend>
         <div id="sizing-panel">
           <p class="muted">Add a component with a technology and size to see resolved CPU / RAM / storage.</p>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Estimated cost</legend>
+        <div id="cost-panel"
+             hx-post="/request/cost"
+             hx-trigger="load, change from:#components, change from:#deployment_target"
+             hx-include="closest form"
+             hx-target="#cost-panel">
+          <p class="muted">Choose a deployment target and add components to see the cost estimate.</p>
         </div>
       </fieldset>
 

@@ -126,6 +126,8 @@ class Request(Base):
     request_type: Mapped[str | None] = mapped_column(String(16), nullable=True)
     project_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
     cost_centre_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # Where it runs: onprem | azure | oci (drives pricing).
+    deployment_target: Mapped[str | None] = mapped_column(String(16), nullable=True)
     # New environment name (for 'create'); target existing environment (others).
     environment_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
     target_environment: Mapped[str | None] = mapped_column(String(120), nullable=True)

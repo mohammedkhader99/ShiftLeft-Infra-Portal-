@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from api.pricing import estimate_cost
 from api.sizing import resolve_components
 from api.validation import validate_submission
 from db.models import (
@@ -100,6 +101,7 @@ REQUEST_FIELDS = (
     "request_type",
     "project_code",
     "cost_centre_code",
+    "deployment_target",
     "environment_name",
     "target_environment",
     "data_classification",
@@ -124,6 +126,7 @@ class DraftIn(BaseModel):
     request_type: str | None = None
     project_code: str | None = None
     cost_centre_code: str | None = None
+    deployment_target: str | None = None
     environment_name: str | None = None
     target_environment: str | None = None
     data_classification: str | None = None
@@ -138,6 +141,7 @@ class RequestOut(BaseModel):
     request_type: str | None = None
     project_code: str | None = None
     cost_centre_code: str | None = None
+    deployment_target: str | None = None
     environment_name: str | None = None
     target_environment: str | None = None
     data_classification: str | None = None
@@ -222,3 +226,20 @@ def sizing(body: SizingIn, session: Session = Depends(get_session)) -> dict:
         {"technology_code": c.technology_code, "size": c.size} for c in body.components
     ]
     return resolve_components(components, session)
+
+
+# --- Cost estimation (increment 1.5) -----------------------------------------
+
+
+class CostIn(BaseModel):
+    deployment_target: str | None = None
+    components: list[ComponentIn] = []
+
+
+@app.post("/api/cost")
+def cost(body: CostIn, session: Session = Depends(get_session)) -> dict:
+    """Estimate one-time/monthly/annual cost for the components on a target."""
+    components = [
+        {"technology_code": c.technology_code, "size": c.size} for c in body.components
+    ]
+    return estimate_cost(components, body.deployment_target, session)

@@ -53,14 +53,27 @@ SIZES = {
 }
 
 RATE_CARDS = [
+    # On-prem: monthly resource rates + a one-time setup fee per component.
     {"kind": "onprem", "item": "vcpu", "unit": "per vCPU/month", "rate": 45.0},
     {"kind": "onprem", "item": "memory-gb", "unit": "per GB/month", "rate": 12.0},
     {"kind": "onprem", "item": "storage-gb", "unit": "per GB/month", "rate": 1.5},
+    {"kind": "onprem", "item": "setup", "unit": "one-time per component", "rate": 500.0},
+    # Software licences (independent of deployment target), charged monthly.
     {"kind": "licence", "item": "postgres-licence", "unit": "per month", "rate": 0.0},
     {"kind": "licence", "item": "windows-licence", "unit": "per month", "rate": 320.0},
+    # Azure: compute per hour, storage per GB/month; 20% negotiated discount.
     {"kind": "cloud_azure", "item": "vcpu-hour", "unit": "per vCPU/hour", "rate": 0.14,
      "discount_pct": 20.0},
+    {"kind": "cloud_azure", "item": "memory-gb-hour", "unit": "per GB/hour", "rate": 0.012,
+     "discount_pct": 20.0},
+    {"kind": "cloud_azure", "item": "storage-gb-month", "unit": "per GB/month", "rate": 0.10,
+     "discount_pct": 20.0},
+    # OCI: compute per hour, storage per GB/month; 15% negotiated discount.
     {"kind": "cloud_oci", "item": "vcpu-hour", "unit": "per vCPU/hour", "rate": 0.11,
+     "discount_pct": 15.0},
+    {"kind": "cloud_oci", "item": "memory-gb-hour", "unit": "per GB/hour", "rate": 0.009,
+     "discount_pct": 15.0},
+    {"kind": "cloud_oci", "item": "storage-gb-month", "unit": "per GB/month", "rate": 0.08,
      "discount_pct": 15.0},
 ]
 
