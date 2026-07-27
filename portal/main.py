@@ -15,25 +15,86 @@ from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, Form, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.middleware.sessions import SessionMiddleware
+
+from portal import auth
 
 BASE_DIR = Path(__file__).resolve().parent
 
 # Where the portal reaches the API. Inside docker-compose this is the service
 # name "api"; when running the portal by hand it defaults to localhost.
 API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8081")
+SESSION_SECRET = os.getenv("SESSION_SECRET", "dev-insecure-session-secret")
 
 app = FastAPI(title="Infra Portal")
+# Secure signed session cookie holds who is logged in (2.3a).
+app.add_middleware(SessionMiddleware, secret_key=SESSION_SECRET, same_site="lax")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=BASE_DIR / "templates")
+
+# Paths reachable without being signed in.
+_PUBLIC_PREFIXES = ("/login", "/auth", "/logout", "/static", "/health")
+
+
+@app.middleware("http")
+async def require_login(request: Request, call_next):
+    """In live mode, redirect anonymous users to sign in (mock mode is open)."""
+    if auth.is_live() and not any(
+        request.url.path.startswith(p) for p in _PUBLIC_PREFIXES
+    ):
+        if not auth.session_user(request):
+            return RedirectResponse("/login")
+    return await call_next(request)
+
+
+def _requester_headers(request: Request) -> dict:
+    """Header carrying the signed-in user's identity to the API (2.3a)."""
+    return {"X-Requester": auth.requester_email(request)}
+
+
+@app.get("/login", response_class=HTMLResponse)
+async def login(request: Request):
+    """Live: redirect to Microsoft. Mock: show a simple dev login form."""
+    if auth.is_live():
+        redirect_uri = os.getenv("OIDC_REDIRECT_URI", str(request.url_for("auth_callback")))
+        return await auth.get_oauth().entra.authorize_redirect(request, redirect_uri)
+    return templates.TemplateResponse(
+        request, "login.html", {"default_email": auth.DEFAULT_DEV_USER["email"]}
+    )
+
+
+@app.post("/login")
+def login_mock(request: Request, email: str = Form(...), name: str = Form("")):
+    """Mock-mode dev login: trust the entered identity (local only)."""
+    request.session["user"] = {"email": email.strip(), "name": name.strip() or email.strip()}
+    return RedirectResponse("/", status_code=303)
+
+
+@app.get("/auth/callback", name="auth_callback")
+async def auth_callback(request: Request):
+    """Handle Microsoft's redirect back: read identity, start the session."""
+    token = await auth.get_oauth().entra.authorize_access_token(request)
+    info = token.get("userinfo") or {}
+    email = info.get("email") or info.get("preferred_username") or ""
+    request.session["user"] = {"email": email, "name": info.get("name") or email}
+    return RedirectResponse("/", status_code=303)
+
+
+@app.get("/logout")
+def logout(request: Request):
+    request.session.pop("user", None)
+    return RedirectResponse("/login" if auth.is_live() else "/", status_code=303)
 
 
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request) -> HTMLResponse:
     """Serve the portal page."""
-    return templates.TemplateResponse(request, "index.html")
+    return templates.TemplateResponse(
+        request, "index.html", {"user": auth.session_user(request) or auth.DEFAULT_DEV_USER}
+    )
 
 
 # --- Guided request: dropdowns, drafts, validation (increments 1.2 + 1.3) ----
@@ -102,6 +163,7 @@ def _render_form(
             "submitted": submitted,
             "provisioned": provisioned,
             "audit": audit or [],
+            "user": auth.session_user(request) or auth.DEFAULT_DEV_USER,
         },
     )
 
@@ -168,6 +230,7 @@ def request_save(
         response = httpx.post(
             f"{API_BASE_URL}/api/requests/draft",
             json=_form_payload(reference, scalars, components),
+            headers=_requester_headers(request),
             timeout=5.0,
         )
         response.raise_for_status()
@@ -205,6 +268,7 @@ def request_submit(
         draft = httpx.post(
             f"{API_BASE_URL}/api/requests/draft",
             json=_form_payload(reference, scalars, components),
+            headers=_requester_headers(request),
             timeout=5.0,
         )
         draft.raise_for_status()

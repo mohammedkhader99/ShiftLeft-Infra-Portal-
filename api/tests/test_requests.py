@@ -88,6 +88,16 @@ def test_save_draft_returns_reference(client):
     assert body["requester"]  # stamped with the mock requester
 
 
+def test_draft_requester_from_header(client):
+    # The portal passes the signed-in user via X-Requester (2.3a).
+    resp = client.post(
+        "/api/requests/draft",
+        json={"request_type": "create"},
+        headers={"X-Requester": "alice@example.com"},
+    )
+    assert resp.json()["requester"] == "alice@example.com"
+
+
 def test_draft_roundtrip_preserves_partial_data(client):
     ref = client.post(
         "/api/requests/draft",

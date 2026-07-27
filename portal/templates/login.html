@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in · Infra Portal</title>
+  <style>
+    body { font-family: Calibri, "Segoe UI", sans-serif; background: #f4f6f7; color: #14303a; margin: 0; padding: 4rem 1.5rem; }
+    .card { max-width: 24rem; margin: 0 auto; background: #fff; border: 1px solid #d7dee1; border-top: 4px solid #0B5563; border-radius: 8px; padding: 1.75rem 2rem; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
+    h1 { color: #0B5563; margin: 0 0 0.25rem; font-size: 1.3rem; }
+    p.sub { color: #5b6b72; margin: 0 0 1.25rem; font-size: 0.9rem; }
+    label { display: block; margin: 0.75rem 0 0.25rem; font-size: 0.9rem; font-weight: bold; }
+    input { width: 100%; box-sizing: border-box; font-family: inherit; font-size: 0.95rem; padding: 0.5rem; border: 1px solid #cfd8dc; border-radius: 6px; }
+    button { margin-top: 1.25rem; width: 100%; background: #D97706; color: #fff; border: none; border-radius: 6px; padding: 0.6rem 1.1rem; font-size: 0.95rem; font-family: inherit; cursor: pointer; }
+    button:hover { background: #b8630a; }
+    .note { color: #7a8a90; font-size: 0.8rem; margin-top: 1rem; }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <h1>Sign in</h1>
+    <p class="sub">Mock mode — dev login. In live mode this page redirects to Microsoft sign-in with your 2FA.</p>
+    <form method="post" action="/login">
+      <label for="email">Email</label>
+      <input type="email" id="email" name="email" value="{{ default_email }}" required>
+      <label for="name">Name (optional)</label>
+      <input type="text" id="name" name="name" placeholder="e.g. Alice Requester">
+      <button type="submit">Sign in</button>
+    </form>
+    <p class="note">This dev login exists only for local work and testing.</p>
+  </main>
+</body>
+</html>

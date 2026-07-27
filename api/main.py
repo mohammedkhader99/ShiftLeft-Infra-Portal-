@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import func, select
@@ -186,8 +186,17 @@ def _load_request(reference: str, session: Session) -> Request:
 
 
 @app.post("/api/requests/draft", response_model=RequestOut)
-def save_draft(body: DraftIn, session: Session = Depends(get_session)) -> RequestOut:
-    """Create or update a draft. Lenient: partial data is allowed."""
+def save_draft(
+    body: DraftIn,
+    session: Session = Depends(get_session),
+    x_requester: str | None = Header(default=None),
+) -> RequestOut:
+    """Create or update a draft. Lenient: partial data is allowed.
+
+    The requester is taken from the X-Requester header the portal sets from the
+    signed-in user (2.3a); it falls back to the mock user when absent. Step B
+    replaces this trusted header with a validated token (§8).
+    """
     if body.reference:
         req = _load_request(body.reference, session)
     else:
@@ -196,7 +205,7 @@ def save_draft(body: DraftIn, session: Session = Depends(get_session)) -> Reques
         next_seq = (session.scalar(select(func.max(Request.id))) or 0) + 1
         req = Request(
             status="draft",
-            requester=MOCK_REQUESTER,
+            requester=x_requester or MOCK_REQUESTER,
             reference=f"REQ-{datetime.now(timezone.utc).year}-{next_seq:04d}",
         )
         session.add(req)

@@ -50,7 +50,10 @@
   {% set rtype = f.get('request_type') or 'create' %}
   {% set comps = f.get('components') or [{}] %}
   <main class="card">
-    <a class="back" href="/">← Back to portal</a>
+    <div style="display:flex; justify-content:space-between; align-items:center; font-size:0.82rem; color:#5b6b72;">
+      <a class="back" href="/">← Back to portal</a>
+      <span>Signed in as <strong>{{ (user.name or user.email) if user else '—' }}</strong> · <a href="/logout" style="color:#0B5563;">Log out</a></span>
+    </div>
     <h1>New infrastructure request</h1>
     <p class="subtitle">Guided request — collect &amp; validate (ARCHITECTURE.md §4)</p>
 

@@ -47,9 +47,15 @@
     }
     button:hover { background: #b8630a; }
     .htmx-request button { opacity: 0.6; cursor: wait; }
+    .whoami { max-width: 32rem; margin: 0 auto 1rem; display: flex; justify-content: flex-end; gap: 0.6rem; font-size: 0.82rem; color: #5b6b72; }
+    .whoami a { color: #0B5563; }
   </style>
 </head>
 <body>
+  <div class="whoami">
+    <span>Signed in as <strong>{{ (user.name or user.email) if user else '—' }}</strong></span>
+    <a href="/logout">Log out</a>
+  </div>
   <main class="card">
     <h1>Portal is running</h1>
     <p class="subtitle">Shift-Left Infrastructure Provisioning Portal</p>

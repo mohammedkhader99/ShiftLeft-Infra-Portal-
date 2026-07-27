@@ -79,6 +79,13 @@ services:
     environment:
       # How the portal reaches the API over the compose network.
       API_BASE_URL: http://api:8081
+      # Sign-in (2.3a). mock = local dev login; live = Microsoft Entra ID.
+      AUTH_MODE: ${AUTH_MODE:-mock}
+      SESSION_SECRET: ${SESSION_SECRET:-dev-insecure-session-secret}
+      OIDC_TENANT_ID: ${OIDC_TENANT_ID:-}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
+      OIDC_REDIRECT_URI: ${OIDC_REDIRECT_URI:-}
     ports:
       - "5173:5173"
     depends_on:
