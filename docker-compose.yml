@@ -49,6 +49,11 @@ services:
       # public price API. Each defaults to mock.
       AZURE_PRICING_MODE: ${AZURE_PRICING_MODE:-mock}  # 2.1
       OCI_PRICING_MODE: ${OCI_PRICING_MODE:-mock}      # 2.2
+      # Identity validation (2.3b): live validates the Microsoft ID token the
+      # portal forwards, against this tenant/client (JWKS, §8).
+      AUTH_MODE: ${AUTH_MODE:-mock}
+      OIDC_TENANT_ID: ${OIDC_TENANT_ID:-}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
     ports:
       - "8081:8081"
     depends_on:

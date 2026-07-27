@@ -55,8 +55,16 @@ app.add_middleware(SessionMiddleware, secret_key=SESSION_SECRET, same_site="lax"
 
 
 def _requester_headers(request: Request) -> dict:
-    """Header carrying the signed-in user's identity to the API (2.3a)."""
-    return {"X-Requester": auth.requester_email(request)}
+    """Headers identifying the signed-in user to the API.
+
+    X-Requester is used in mock mode (2.3a); in live mode we also forward the
+    Microsoft ID token as a Bearer, which the API validates itself (2.3b).
+    """
+    headers = {"X-Requester": auth.requester_email(request)}
+    id_token = request.session.get("id_token")
+    if id_token:
+        headers["Authorization"] = f"Bearer {id_token}"
+    return headers
 
 
 @app.get("/login", response_class=HTMLResponse)
@@ -84,6 +92,9 @@ async def auth_callback(request: Request):
     info = token.get("userinfo") or {}
     email = info.get("email") or info.get("preferred_username") or ""
     request.session["user"] = {"email": email, "name": info.get("name") or email}
+    # Keep the raw ID token so we can forward it to the API, which validates it
+    # independently (step B, §8).
+    request.session["id_token"] = token.get("id_token")
     return RedirectResponse("/", status_code=303)
 
 

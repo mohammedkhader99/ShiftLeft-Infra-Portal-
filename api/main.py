@@ -5,13 +5,14 @@ from datetime import datetime, timezone
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from api.audit import append_audit
+from api.auth import get_requester
 from api.jira import build_ticket_body, create_issue
 from api.plan_preview import build_plan_preview
 from api.policy import PolicyUnavailable, get_policy_evaluator
@@ -189,13 +190,12 @@ def _load_request(reference: str, session: Session) -> Request:
 def save_draft(
     body: DraftIn,
     session: Session = Depends(get_session),
-    x_requester: str | None = Header(default=None),
+    requester: str = Depends(get_requester),
 ) -> RequestOut:
     """Create or update a draft. Lenient: partial data is allowed.
 
-    The requester is taken from the X-Requester header the portal sets from the
-    signed-in user (2.3a); it falls back to the mock user when absent. Step B
-    replaces this trusted header with a validated token (§8).
+    The requester identity comes from get_requester: a validated Microsoft token
+    in live mode (2.3b, §8), or the X-Requester header / default in mock mode.
     """
     if body.reference:
         req = _load_request(body.reference, session)
@@ -205,7 +205,7 @@ def save_draft(
         next_seq = (session.scalar(select(func.max(Request.id))) or 0) + 1
         req = Request(
             status="draft",
-            requester=x_requester or MOCK_REQUESTER,
+            requester=requester,
             reference=f"REQ-{datetime.now(timezone.utc).year}-{next_seq:04d}",
         )
         session.add(req)

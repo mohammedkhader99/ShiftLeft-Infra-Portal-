@@ -4,6 +4,7 @@ jinja2
 python-multipart
 authlib
 itsdangerous
+pyjwt[crypto]
 sqlalchemy
 psycopg[binary]
 pytest
