@@ -12,9 +12,10 @@ WORKDIR /app
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the application code (the API and the shared db package).
+# Copy the application code (the API, the shared db package, and common utils).
 COPY api ./api
 COPY db ./db
+COPY common ./common
 
 # The API listens on 8081 (8080 is taken by Docker Desktop on the reviewer's machine).
 EXPOSE 8081

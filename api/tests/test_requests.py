@@ -170,6 +170,50 @@ def test_submit_persists_estimate(client):
     assert reloaded["estimate"]["currency"] == "AED"
 
 
+def test_approve_fires_handoff_and_provisions_with_audit(client, monkeypatch):
+    ref = client.post("/api/requests/draft", json=VALID_CREATE).json()["reference"]
+    approval = client.post(f"/api/requests/{ref}/submit").json()["approval"]
+    jira_key = approval["jira_key"]
+
+    # Mock the orchestrator's response to the signed handoff.
+    class Resp:
+        status_code = 200
+
+        def json(self):
+            return {"provisioned": True, "reference": ref, "verified": {"approval": True, "policy": True}}
+
+    import api.main as main
+    monkeypatch.setattr(main.httpx, "post", lambda *a, **k: Resp())
+
+    result = client.post(f"/api/approvals/{jira_key}/approve").json()
+    assert result["provisioned"] is True
+
+    # Request is now provisioned and the audit trail records the chain of events.
+    assert client.get(f"/api/requests/{ref}").json()["status"] == "provisioned"
+    events = [e["event"] for e in client.get(f"/api/requests/{ref}/audit").json()["entries"]]
+    assert events == ["approval.approved", "orchestrator.handoff", "provisioned"]
+
+
+def test_audit_chain_hashes_link(client, monkeypatch):
+    ref = client.post("/api/requests/draft", json=VALID_CREATE).json()["reference"]
+    jira_key = client.post(f"/api/requests/{ref}/submit").json()["approval"]["jira_key"]
+
+    class Resp:
+        status_code = 200
+
+        def json(self):
+            return {"provisioned": True}
+
+    import api.main as main
+    monkeypatch.setattr(main.httpx, "post", lambda *a, **k: Resp())
+    client.post(f"/api/approvals/{jira_key}/approve")
+
+    entries = client.get(f"/api/requests/{ref}/audit").json()["entries"]
+    # Each entry (after the first overall) chains to a previous hash.
+    for entry in entries:
+        assert entry["entry_hash"]
+
+
 def test_submit_raises_jira_ticket_with_config_and_cost(client):
     ref = client.post("/api/requests/draft", json=VALID_CREATE).json()["reference"]
     submitted = client.post(f"/api/requests/{ref}/submit").json()

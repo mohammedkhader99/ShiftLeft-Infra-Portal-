@@ -74,7 +74,38 @@
             <pre style="white-space:pre-wrap; font-size:0.8rem; background:#f0f5f6; padding:0.6rem; border-radius:6px; margin-top:0.4rem;">{{ appr.ticket_body }}</pre>
           </details>
         {% endif %}
+        {% if appr and not provisioned %}
+          <form method="post" action="/request/{{ reference }}/approve" style="margin-top:0.75rem;">
+            <input type="hidden" name="jira_key" value="{{ appr.jira_key }}">
+            <button class="btn-submit" type="submit">Simulate Jira approval &amp; provision</button>
+            <span class="muted" style="margin-left:0.5rem;">(stands in for the approver acting in Jira)</span>
+          </form>
+        {% endif %}
       </div>
+      {% if provisioned %}
+        <div class="banner banner-submitted">
+          <strong>Provisioned (mock).</strong>
+          The signed handoff reached the orchestrator, which re-verified the approval and re-checked policy before acting. No real resources were created.
+        </div>
+      {% endif %}
+      {% if audit %}
+        <fieldset>
+          <legend>Audit trail (append-only, hash-chained)</legend>
+          <table class="sizing">
+            <thead><tr><th>Event</th><th>Actor</th><th>Jira</th><th>Entry hash</th></tr></thead>
+            <tbody>
+              {% for a in audit %}
+              <tr>
+                <td>{{ a.event }}</td>
+                <td>{{ a.actor or '—' }}</td>
+                <td>{{ a.jira_key or '—' }}</td>
+                <td style="font-family:monospace; font-size:0.75rem;">{{ a.entry_hash[:16] }}…</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </fieldset>
+      {% endif %}
     {% elif saved %}
       <div class="banner banner-saved">
         <strong>Draft saved as {{ reference }}.</strong>

@@ -42,6 +42,9 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
       # Where the API reaches the OPA policy engine (1.7).
       OPA_URL: http://opa:8181
+      # Signed handoff to the orchestrator (1.9). Secret comes from .env.
+      ORCHESTRATOR_URL: http://orchestrator:9091
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET}
     ports:
       - "8081:8081"
     depends_on:
@@ -50,6 +53,20 @@ services:
         condition: service_healthy
       opa:
         condition: service_started
+
+  orchestrator:
+    build:
+      context: .
+      dockerfile: orchestrator/Dockerfile
+    environment:
+      # Re-verifies approval via the API and re-checks policy via OPA (§4).
+      API_URL: http://api:8081
+      OPA_URL: http://opa:8181
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET}
+    ports:
+      - "9091:9091"
+    depends_on:
+      - opa
 
   portal:
     build:

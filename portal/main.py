@@ -83,6 +83,8 @@ def _render_form(
     policy_violations: list | None = None,
     saved: bool = False,
     submitted: bool = False,
+    provisioned: bool = False,
+    audit: list | None = None,
     banner_error: str | None = None,
 ) -> HTMLResponse:
     lookups, lookup_error = _fetch_lookups()
@@ -98,6 +100,8 @@ def _render_form(
             "policy_violations": policy_violations or [],
             "saved": saved,
             "submitted": submitted,
+            "provisioned": provisioned,
+            "audit": audit or [],
         },
     )
 
@@ -231,6 +235,37 @@ def request_submit(
 
     submit.raise_for_status()
     return _render_form(request, form=submit.json(), reference=ref, submitted=True)
+
+
+@app.post("/request/{reference}/approve", response_class=HTMLResponse)
+def request_approve(
+    request: Request, reference: str, jira_key: str = Form("")
+) -> HTMLResponse:
+    """Simulate the Jira approval and show the provisioning result + audit.
+
+    Clearly a mock/demo affordance: it stands in for the approver acting in
+    Jira. The portal never holds approval authority (P1) — it just calls the
+    API, which records the approval and fires the signed orchestrator handoff.
+    """
+    try:
+        approve_resp = httpx.post(
+            f"{API_BASE_URL}/api/approvals/{jira_key}/approve", timeout=15.0
+        )
+        saved_request = httpx.get(
+            f"{API_BASE_URL}/api/requests/{reference}", timeout=5.0
+        ).json()
+        audit = httpx.get(
+            f"{API_BASE_URL}/api/requests/{reference}/audit", timeout=5.0
+        ).json().get("entries", [])
+    except Exception as exc:  # noqa: BLE001
+        return _render_form(request, form={}, reference=reference, banner_error=str(exc))
+
+    provisioned = approve_resp.status_code == 200
+    error = None if provisioned else approve_resp.json().get("error", "Handoff failed.")
+    return _render_form(
+        request, form=saved_request, reference=reference, submitted=True,
+        provisioned=provisioned, audit=audit, banner_error=error,
+    )
 
 
 @app.post("/request/sizing", response_class=HTMLResponse)

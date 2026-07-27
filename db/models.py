@@ -213,3 +213,24 @@ class Approval(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     request: Mapped["Request"] = relationship(back_populates="approval")
+
+
+class AuditLog(Base):
+    """Append-only, hash-chained audit trail (1.9; F-SEC-01 foundation).
+
+    Every privileged step (approval, handoff, provisioning) is recorded. Each
+    row's hash chains to the previous one, so tampering is detectable. Full
+    tamper-evidence hardening (signing, verification tooling) comes in E1.
+    """
+
+    __tablename__ = "audit_log"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    event: Mapped[str] = mapped_column(String(64))
+    reference: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    jira_key: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    actor: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    detail: Mapped[dict] = mapped_column(JSON, default=dict)
+    prev_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    entry_hash: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
