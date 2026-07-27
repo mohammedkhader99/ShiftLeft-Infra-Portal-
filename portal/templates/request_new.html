@@ -81,6 +81,15 @@
       <div class="banner banner-error"><strong>Please fix the highlighted fields below.</strong></div>
     {% endif %}
 
+    {% if policy_violations %}
+      <div class="banner banner-error">
+        <strong>Blocked by policy:</strong>
+        <ul style="margin:0.4rem 0 0; padding-left:1.2rem;">
+          {% for v in policy_violations %}<li>{{ v }}</li>{% endfor %}
+        </ul>
+      </div>
+    {% endif %}
+
     <form method="post">
       {% if reference %}<input type="hidden" name="reference" value="{{ reference }}">{% endif %}
 

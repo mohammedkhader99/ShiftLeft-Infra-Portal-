@@ -23,6 +23,15 @@ services:
       timeout: 3s
       retries: 10
 
+  opa:
+    image: openpolicyagent/opa:latest
+    # Run OPA as a server, loading the Rego policies from the mounted folder.
+    command: ["run", "--server", "--addr=0.0.0.0:8181", "/policies"]
+    volumes:
+      - ./policy:/policies:ro
+    ports:
+      - "8181:8181"
+
   api:
     build:
       context: .
@@ -31,12 +40,16 @@ services:
       USE_MOCK: ${USE_MOCK}
       # Connection string for later increments (1.1 onwards). Unused in 0.2.
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      # Where the API reaches the OPA policy engine (1.7).
+      OPA_URL: http://opa:8181
     ports:
       - "8081:8081"
     depends_on:
       db:
         # Don't start the API until the database reports healthy.
         condition: service_healthy
+      opa:
+        condition: service_started
 
   portal:
     build:

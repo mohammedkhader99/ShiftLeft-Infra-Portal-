@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from api.policy import PolicyUnavailable, get_policy_evaluator
 from api.pricing import estimate_cost
 from api.sizing import resolve_components
 from api.validation import validate_submission
@@ -207,8 +208,12 @@ def get_request(reference: str, session: Session = Depends(get_session)) -> Requ
 
 
 @app.post("/api/requests/{reference}/submit")
-def submit_request(reference: str, session: Session = Depends(get_session)):
-    """Run authoritative validation; on pass, mark the request submitted."""
+def submit_request(
+    reference: str,
+    session: Session = Depends(get_session),
+    policy_eval=Depends(get_policy_evaluator),
+):
+    """Validate, run the OPA policy gate, then mark the request submitted."""
     req = _load_request(reference, session)
     components_data = [
         {"technology_code": c.technology_code, "size": c.size} for c in req.components
@@ -218,6 +223,19 @@ def submit_request(reference: str, session: Session = Depends(get_session)):
     errors = validate_submission(data, session)
     if errors:
         return JSONResponse(status_code=422, content={"errors": errors})
+
+    # Policy-as-code gate (F-GOV-03): OPA decides, we obey. Fail-safe on outage.
+    try:
+        verdict = policy_eval(data)
+    except PolicyUnavailable:
+        return JSONResponse(
+            status_code=503,
+            content={"policy_error": "Policy service unavailable — request not submitted."},
+        )
+    if not verdict["allow"]:
+        return JSONResponse(
+            status_code=422, content={"policy_violations": verdict["violations"]}
+        )
 
     req.status = "submitted"
     # Capture the server-computed estimate as a stored fact at submission (1.6).

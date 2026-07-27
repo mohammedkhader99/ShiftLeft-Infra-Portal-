@@ -10,6 +10,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from api.main import app, get_session
+from api.policy import PolicyUnavailable, get_policy_evaluator
 from db.seed import seed
 from db.session import Base
 
@@ -30,10 +31,41 @@ def client():
     def override_get_session():
         yield session
 
+    # Default: policy allows (real OPA is exercised in Rego tests + live checks).
+    def allow_everything():
+        return lambda data: {"allow": True, "violations": []}
+
     app.dependency_overrides[get_session] = override_get_session
+    app.dependency_overrides[get_policy_evaluator] = allow_everything
     yield TestClient(app)
     app.dependency_overrides.clear()
     session.close()
+
+
+def test_submit_blocked_by_policy_returns_reasons(client):
+    def deny():
+        return lambda data: {"allow": False, "violations": ["Restricted data must stay on-prem."]}
+
+    app.dependency_overrides[get_policy_evaluator] = deny
+    ref = client.post("/api/requests/draft", json=VALID_CREATE).json()["reference"]
+    resp = client.post(f"/api/requests/{ref}/submit")
+    assert resp.status_code == 422
+    assert resp.json()["policy_violations"] == ["Restricted data must stay on-prem."]
+    # Still a draft — a blocked request is not submitted.
+    assert client.get(f"/api/requests/{ref}").json()["status"] == "draft"
+
+
+def test_submit_policy_unavailable_returns_503(client):
+    def broken():
+        def _raise(data):
+            raise PolicyUnavailable("connection refused")
+        return _raise
+
+    app.dependency_overrides[get_policy_evaluator] = broken
+    ref = client.post("/api/requests/draft", json=VALID_CREATE).json()["reference"]
+    resp = client.post(f"/api/requests/{ref}/submit")
+    assert resp.status_code == 503
+    assert "unavailable" in resp.json()["policy_error"].lower()
 
 
 VALID_CREATE = {

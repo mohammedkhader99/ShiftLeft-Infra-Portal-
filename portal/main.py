@@ -80,6 +80,7 @@ def _render_form(
     *,
     reference: str | None = None,
     errors: dict | None = None,
+    policy_violations: list | None = None,
     saved: bool = False,
     submitted: bool = False,
     banner_error: str | None = None,
@@ -94,6 +95,7 @@ def _render_form(
             "form": form,
             "reference": reference,
             "errors": errors or {},
+            "policy_violations": policy_violations or [],
             "saved": saved,
             "submitted": submitted,
         },
@@ -213,8 +215,19 @@ def request_submit(
         )
 
     if submit.status_code == 422:
-        errors = submit.json().get("errors", {})
-        return _render_form(request, form=saved_request, reference=ref, errors=errors)
+        payload = submit.json()
+        return _render_form(
+            request,
+            form=saved_request,
+            reference=ref,
+            errors=payload.get("errors", {}),
+            policy_violations=payload.get("policy_violations", []),
+        )
+    if submit.status_code == 503:
+        return _render_form(
+            request, form=saved_request, reference=ref,
+            banner_error=submit.json().get("policy_error", "Policy service unavailable."),
+        )
 
     submit.raise_for_status()
     return _render_form(request, form=submit.json(), reference=ref, submitted=True)
