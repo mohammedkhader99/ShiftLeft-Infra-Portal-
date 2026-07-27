@@ -204,6 +204,36 @@ def test_approve_fires_handoff_and_provisions_with_audit(client, monkeypatch):
     assert events == ["approval.approved", "orchestrator.handoff", "provisioned"]
 
 
+def test_live_approve_blocks_until_jira_approves(client, monkeypatch):
+    import api.main as main
+
+    ref = client.post("/api/requests/draft", json=VALID_CREATE).json()["reference"]
+    key = client.post(f"/api/requests/{ref}/submit").json()["approval"]["jira_key"]
+
+    # Behave as live Jira; approval status comes from Jira, not our button.
+    monkeypatch.setattr(main, "jira_mode", lambda: "live")
+    monkeypatch.setattr(main, "get_status", lambda k: "pending")
+    pending = client.post(f"/api/approvals/{key}/approve").json()
+    assert pending["provisioned"] is False
+    assert "not approved" in pending["message"].lower()
+    assert client.get(f"/api/requests/{ref}").json()["status"] == "submitted"
+
+    # Once the manager approves in Jira, the handoff proceeds.
+    monkeypatch.setattr(main, "get_status", lambda k: "approved")
+
+    class Resp:
+        status_code = 200
+
+        def json(self):
+            return {"provisioned": True}
+
+    monkeypatch.setattr(main.httpx, "post", lambda *a, **k: Resp())
+    # get_approval must also reflect the real Jira status now.
+    assert client.get(f"/api/approvals/{key}").json()["status"] == "approved"
+    done = client.post(f"/api/approvals/{key}/approve").json()
+    assert done["provisioned"] is True
+
+
 def test_audit_chain_hashes_link(client, monkeypatch):
     ref = client.post("/api/requests/draft", json=VALID_CREATE).json()["reference"]
     jira_key = client.post(f"/api/requests/{ref}/submit").json()["approval"]["jira_key"]

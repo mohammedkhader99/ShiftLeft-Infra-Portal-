@@ -54,6 +54,16 @@ services:
       AUTH_MODE: ${AUTH_MODE:-mock}
       OIDC_TENANT_ID: ${OIDC_TENANT_ID:-}
       OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
+      # Jira (2.4). mock = fake tickets; live = real Jira Server/DC. Secret
+      # (PAT) comes from .env.
+      JIRA_MODE: ${JIRA_MODE:-mock}
+      JIRA_BASE_URL: ${JIRA_BASE_URL:-}
+      JIRA_PAT: ${JIRA_PAT:-}
+      JIRA_PROJECT_KEY: ${JIRA_PROJECT_KEY:-INFRA}
+      JIRA_ISSUE_TYPE: ${JIRA_ISSUE_TYPE:-Task}
+      JIRA_APPROVED_STATUSES: ${JIRA_APPROVED_STATUSES:-Approved,Done}
+      JIRA_REJECTED_STATUSES: ${JIRA_REJECTED_STATUSES:-Rejected,Cancelled}
+      JIRA_SET_REPORTER: ${JIRA_SET_REPORTER:-true}
     ports:
       - "8081:8081"
     depends_on:

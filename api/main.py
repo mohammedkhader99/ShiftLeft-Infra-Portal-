@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from api.audit import append_audit
 from api.auth import get_requester
-from api.jira import build_ticket_body, create_issue
+from api.jira import JiraError, build_ticket_body, create_issue, get_status, jira_mode
 from api.plan_preview import build_plan_preview
 from api.policy import PolicyUnavailable, get_policy_evaluator
 from api.pricing import estimate_cost
@@ -277,10 +277,19 @@ def submit_request(
         breakdown=breakdown,
     )
 
-    # Raise the Jira approval with config + cost + plan preview together (1.8).
+    # Raise the Jira approval with config + cost + plan preview together (1.8;
+    # real Jira in 2.4). If live Jira creation fails, refuse the submit rather
+    # than leaving a submitted request with no approval ticket.
     plan_preview = build_plan_preview(req, session)
     ticket_body = build_ticket_body(req, breakdown, plan_preview)
-    req.approval = create_issue(session, req, ticket_body)
+    try:
+        req.approval = create_issue(session, req, ticket_body)
+    except JiraError as exc:
+        session.rollback()
+        return JSONResponse(
+            status_code=502,
+            content={"error": f"Could not raise the Jira approval ticket: {exc}"},
+        )
 
     session.commit()
     return RequestOut.model_validate(req)
@@ -339,29 +348,54 @@ def _load_approval(jira_key: str, session: Session) -> Approval:
 
 @app.get("/api/approvals/{jira_key}")
 def get_approval(jira_key: str, session: Session = Depends(get_session)) -> dict:
-    """Approval status — used by the orchestrator to re-verify authority."""
+    """Approval status — used by the orchestrator to re-verify authority.
+
+    In live mode this reflects the REAL Jira status (independent re-verification,
+    §4); in mock mode it reflects our stored status.
+    """
     appr = _load_approval(jira_key, session)
-    return {
-        "jira_key": appr.jira_key,
-        "status": appr.status,
-        "reference": appr.request.reference,
-    }
+    status = appr.status
+    if jira_mode() == "live":
+        try:
+            status = get_status(jira_key)
+            appr.status = status
+            session.commit()
+        except JiraError:
+            pass  # fall back to the stored status if Jira is momentarily unreachable
+    return {"jira_key": appr.jira_key, "status": status, "reference": appr.request.reference}
 
 
 @app.post("/api/approvals/{jira_key}/approve")
-def approve(jira_key: str, session: Session = Depends(get_session)) -> dict:
-    """Mock Jira approval action, then fire the signed orchestrator handoff.
+def approve(jira_key: str, session: Session = Depends(get_session)):
+    """Proceed with the signed orchestrator handoff once the request is approved.
 
-    The portal/API never executes: approval lives in Jira, the orchestrator
-    executes after re-verifying (ARCHITECTURE.md §4). Here the approval is
-    recorded, then a signed webhook is sent to the orchestrator.
+    Approval authority lives in Jira (ARCHITECTURE.md §4). In live mode this
+    reads the REAL Jira status and only proceeds if the manager has approved;
+    the mock button stands in for that approval locally.
     """
     appr = _load_approval(jira_key, session)
     req = appr.request
 
+    if jira_mode() == "live":
+        # Do not decide approval — read it from Jira.
+        try:
+            status = get_status(jira_key)
+        except JiraError as exc:
+            return JSONResponse(status_code=502, content={"error": f"Could not read Jira: {exc}"})
+        appr.status = status
+        if status != "approved":
+            append_audit(session, "approval.checked", reference=req.reference,
+                         jira_key=jira_key, detail={"status": status})
+            session.commit()
+            return {
+                "approval": status,
+                "provisioned": False,
+                "message": f"Ticket {jira_key} is not approved in Jira (status: {status}).",
+            }
+
     appr.status = "approved"
     append_audit(session, "approval.approved", reference=req.reference, jira_key=jira_key,
-                 actor="approver@jira.mock")
+                 actor="jira")
     session.commit()
 
     # Signed handoff. The signature is authenticity; the orchestrator re-checks

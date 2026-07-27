@@ -162,6 +162,7 @@ def _render_form(
     provisioned: bool = False,
     audit: list | None = None,
     banner_error: str | None = None,
+    notice: str | None = None,
 ) -> HTMLResponse:
     lookups, lookup_error = _fetch_lookups()
     return templates.TemplateResponse(
@@ -170,6 +171,7 @@ def _render_form(
         {
             "lookups": lookups,
             "error": banner_error or lookup_error,
+            "notice": notice,
             "form": form,
             "reference": reference,
             "errors": errors or {},
@@ -311,6 +313,11 @@ def request_submit(
             request, form=saved_request, reference=ref,
             banner_error=submit.json().get("policy_error", "Policy service unavailable."),
         )
+    if submit.status_code == 502:
+        return _render_form(
+            request, form=saved_request, reference=ref,
+            banner_error=submit.json().get("error", "Could not raise the Jira ticket."),
+        )
 
     submit.raise_for_status()
     return _render_form(request, form=submit.json(), reference=ref, submitted=True)
@@ -339,11 +346,16 @@ def request_approve(
     except Exception as exc:  # noqa: BLE001
         return _render_form(request, form={}, reference=reference, banner_error=str(exc))
 
-    provisioned = approve_resp.status_code == 200
-    error = None if provisioned else approve_resp.json().get("error", "Handoff failed.")
+    data = approve_resp.json() if approve_resp.headers.get("content-type", "").startswith("application/json") else {}
+    provisioned = bool(data.get("provisioned"))
+    if approve_resp.status_code != 200:
+        banner_error, notice = data.get("error", "Approval failed."), None
+    else:
+        # 200 but not provisioned = not yet approved in Jira: an informational notice.
+        banner_error, notice = None, (None if provisioned else data.get("message"))
     return _render_form(
         request, form=saved_request, reference=reference, submitted=True,
-        provisioned=provisioned, audit=audit, banner_error=error,
+        provisioned=provisioned, audit=audit, banner_error=banner_error, notice=notice,
     )
 
 

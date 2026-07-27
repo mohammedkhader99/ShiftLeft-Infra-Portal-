@@ -122,6 +122,10 @@
       <div class="banner banner-error"><strong>Please fix the highlighted fields below.</strong></div>
     {% endif %}
 
+    {% if notice %}
+      <div class="banner banner-saved">{{ notice }}</div>
+    {% endif %}
+
     {% if policy_violations %}
       <div class="banner banner-error">
         <strong>Blocked by policy:</strong>
