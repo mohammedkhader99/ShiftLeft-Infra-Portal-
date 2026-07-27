@@ -1,5 +1,6 @@
 import json
 import os
+import time
 from collections.abc import Iterator
 from datetime import datetime, timezone
 
@@ -42,6 +43,35 @@ app = FastAPI(title="Infra Portal API")
 MOCK_REQUESTER = "mohammed.khader@emaratechg.ae"
 ORCHESTRATOR_URL = os.getenv("ORCHESTRATOR_URL", "http://localhost:9091")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "dev-mock-secret")
+# Versioned contract to the orchestrator (2.5).
+CONTRACT_VERSION = "1.0"
+ORCH_MAX_ATTEMPTS = 3
+
+
+def _post_to_orchestrator(body: bytes, signature: str):
+    """POST the signed handoff, retrying transient (network/5xx) failures.
+
+    Returns (response, error). error is None on success; otherwise a string.
+    Safe to retry because the handoff is idempotent (keyed on the request).
+    """
+    error = None
+    for attempt in range(ORCH_MAX_ATTEMPTS):
+        try:
+            response = httpx.post(
+                f"{ORCHESTRATOR_URL}/provision",
+                content=body,
+                headers={"X-Signature": signature, "Content-Type": "application/json"},
+                timeout=10.0,
+            )
+        except Exception as exc:  # noqa: BLE001 — transient network failure
+            error = f"unreachable: {exc}"
+        else:
+            if response.status_code < 500:
+                return response, None
+            error = f"orchestrator {response.status_code}"
+        if attempt < ORCH_MAX_ATTEMPTS - 1:
+            time.sleep(0.2 * (2 ** attempt))  # exponential backoff
+    return None, error
 
 
 def is_mock_mode() -> bool:
@@ -376,6 +406,15 @@ def approve(jira_key: str, session: Session = Depends(get_session)):
     appr = _load_approval(jira_key, session)
     req = appr.request
 
+    # Idempotency (F-ORC-01): never provision the same request twice.
+    if req.status == "provisioned":
+        return {
+            "approval": "approved",
+            "provisioned": True,
+            "idempotent": True,
+            "message": f"{req.reference} is already provisioned.",
+        }
+
     if jira_mode() == "live":
         # Do not decide approval — read it from Jira.
         try:
@@ -398,28 +437,32 @@ def approve(jira_key: str, session: Session = Depends(get_session)):
                  actor="jira")
     session.commit()
 
-    # Signed handoff. The signature is authenticity; the orchestrator re-checks
-    # authority (approval + policy) itself.
-    payload = {"jira_key": jira_key, "reference": req.reference, "policy_input": _policy_input(req)}
+    # Signed, versioned handoff. The signature is authenticity; the orchestrator
+    # re-checks authority (approval + policy) and re-validates cost itself.
+    approved_monthly = float(req.estimate.monthly) if req.estimate else None
+    payload = {
+        "contract_version": CONTRACT_VERSION,
+        "idempotency_key": jira_key,
+        "issued_at": datetime.now(timezone.utc).isoformat(),
+        "jira_key": jira_key,
+        "reference": req.reference,
+        "policy_input": _policy_input(req),
+        "approved_monthly": approved_monthly,
+    }
     body = json.dumps(payload, sort_keys=True).encode()
     signature = sign(WEBHOOK_SECRET, body)
     append_audit(session, "orchestrator.handoff", reference=req.reference, jira_key=jira_key,
-                 detail={"orchestrator": ORCHESTRATOR_URL})
+                 detail={"orchestrator": ORCHESTRATOR_URL, "contract": CONTRACT_VERSION})
     session.commit()
 
-    try:
-        response = httpx.post(
-            f"{ORCHESTRATOR_URL}/provision",
-            content=body,
-            headers={"X-Signature": signature, "Content-Type": "application/json"},
-            timeout=10.0,
-        )
-    except Exception as exc:  # noqa: BLE001
+    response, error = _post_to_orchestrator(body, signature)
+    if response is None:
         append_audit(session, "orchestrator.unreachable", reference=req.reference,
-                     jira_key=jira_key, detail={"error": str(exc)})
+                     jira_key=jira_key, detail={"error": error})
         session.commit()
         return JSONResponse(
-            status_code=503, content={"error": "Orchestrator unreachable — not provisioned."}
+            status_code=503,
+            content={"error": f"Orchestrator unreachable after retries — not provisioned ({error})."},
         )
 
     if response.status_code != 200:

@@ -204,6 +204,60 @@ def test_approve_fires_handoff_and_provisions_with_audit(client, monkeypatch):
     assert events == ["approval.approved", "orchestrator.handoff", "provisioned"]
 
 
+def test_approve_is_idempotent(client, monkeypatch):
+    import api.main as main
+
+    ref = client.post("/api/requests/draft", json=VALID_CREATE).json()["reference"]
+    key = client.post(f"/api/requests/{ref}/submit").json()["approval"]["jira_key"]
+
+    calls = {"n": 0}
+
+    class Resp:
+        status_code = 200
+
+        def json(self):
+            return {"provisioned": True}
+
+    def counting_post(*a, **k):
+        calls["n"] += 1
+        return Resp()
+
+    monkeypatch.setattr(main.httpx, "post", counting_post)
+    first = client.post(f"/api/approvals/{key}/approve").json()
+    assert first["provisioned"] is True
+    # Second approve must NOT hit the orchestrator again.
+    second = client.post(f"/api/approvals/{key}/approve").json()
+    assert second.get("idempotent") is True
+    assert calls["n"] == 1
+
+
+def test_handoff_retries_transient_failures(client, monkeypatch):
+    import api.main as main
+
+    ref = client.post("/api/requests/draft", json=VALID_CREATE).json()["reference"]
+    key = client.post(f"/api/requests/{ref}/submit").json()["approval"]["jira_key"]
+
+    calls = {"n": 0}
+
+    class Resp:
+        def __init__(self, code):
+            self.status_code = code
+            self.text = "err"
+
+        def json(self):
+            return {"provisioned": True}
+
+    def flaky(*a, **k):
+        calls["n"] += 1
+        return Resp(500) if calls["n"] < 3 else Resp(200)
+
+    monkeypatch.setattr(main.httpx, "post", flaky)
+    monkeypatch.setattr(main.time, "sleep", lambda s: None)  # no real backoff wait
+    result = client.post(f"/api/approvals/{key}/approve").json()
+    assert result["provisioned"] is True
+    assert calls["n"] == 3  # two 500s then success
+
+
 def test_live_approve_blocks_until_jira_approves(client, monkeypatch):
     import api.main as main
 

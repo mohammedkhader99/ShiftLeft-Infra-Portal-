@@ -382,6 +382,8 @@ Each shapes multiple features and should be settled before the relevant incremen
 - Billing integration beyond showback/chargeback reporting.
 - Any client-side authority (permanently out of scope by principle P2).
 
+**Scope change (recorded by reviewer):** real provisioning is now **in scope, limited to a non-production OCI sandbox**, using Terraform behind a hard `PROVISION_MODE` switch (default mock). Guardrails: the AI never holds cloud credentials or triggers a real apply (P3); credentials live in the orchestrator's vault, supplied by the reviewer; sandbox only until proven; `terraform plan` shown before any apply; idempotency + cost re-validation gate + rollback required first. Production provisioning remains out of scope pending its own hardening (change windows, four-eyes, IaC scanning).
+
 ---
 
 ## 16. Recommendation (build order)
