@@ -12,7 +12,7 @@ against an in-memory database in the tests.
 
 from datetime import date, datetime
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Numeric, String
+from sqlalchemy import JSON, Boolean, Date, DateTime, ForeignKey, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from db.session import Base
@@ -145,6 +145,10 @@ class Request(Base):
         cascade="all, delete-orphan",
         order_by="RequestComponent.id",
     )
+    # The server-computed cost estimate captured at submission (1.6).
+    estimate: Mapped["Estimate | None"] = relationship(
+        back_populates="request", uselist=False, cascade="all, delete-orphan"
+    )
 
 
 class RequestComponent(Base):
@@ -161,3 +165,26 @@ class RequestComponent(Base):
     size: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
     request: Mapped["Request"] = relationship(back_populates="components")
+
+
+class Estimate(Base):
+    """Server-computed cost estimate tied to a request (1.6, ARCHITECTURE.md §5).
+
+    Captured at submission so the approved cost is a stored fact, not something
+    recomputed differently later. `breakdown` keeps the full sizing + cost
+    snapshot for auditability.
+    """
+
+    __tablename__ = "estimate"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    request_id: Mapped[int] = mapped_column(ForeignKey("request.id"), unique=True)
+    deployment_target: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    currency: Mapped[str] = mapped_column(String(3), default="AED")
+    one_time: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
+    monthly: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
+    annual: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
+    breakdown: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    request: Mapped["Request"] = relationship(back_populates="estimate")

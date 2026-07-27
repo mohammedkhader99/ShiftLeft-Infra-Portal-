@@ -15,6 +15,7 @@ from api.validation import validate_submission
 from db.models import (
     CostCentre,
     Environment,
+    Estimate,
     Project,
     Request,
     RequestComponent,
@@ -133,6 +134,14 @@ class DraftIn(BaseModel):
     components: list[ComponentIn] | None = None
 
 
+class EstimateOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    currency: str
+    one_time: float
+    monthly: float
+    annual: float
+
+
 class RequestOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     reference: str
@@ -146,6 +155,7 @@ class RequestOut(BaseModel):
     target_environment: str | None = None
     data_classification: str | None = None
     components: list[ComponentOut] = []
+    estimate: EstimateOut | None = None
 
 
 def _load_request(reference: str, session: Session) -> Request:
@@ -200,14 +210,26 @@ def get_request(reference: str, session: Session = Depends(get_session)) -> Requ
 def submit_request(reference: str, session: Session = Depends(get_session)):
     """Run authoritative validation; on pass, mark the request submitted."""
     req = _load_request(reference, session)
-    data = {field: getattr(req, field) for field in REQUEST_FIELDS}
-    data["components"] = [
+    components_data = [
         {"technology_code": c.technology_code, "size": c.size} for c in req.components
     ]
+    data = {field: getattr(req, field) for field in REQUEST_FIELDS}
+    data["components"] = components_data
     errors = validate_submission(data, session)
     if errors:
         return JSONResponse(status_code=422, content={"errors": errors})
+
     req.status = "submitted"
+    # Capture the server-computed estimate as a stored fact at submission (1.6).
+    breakdown = estimate_cost(components_data, req.deployment_target, session)
+    req.estimate = Estimate(
+        deployment_target=breakdown["deployment_target"],
+        currency=breakdown["currency"],
+        one_time=breakdown["totals"]["one_time"],
+        monthly=breakdown["totals"]["monthly"],
+        annual=breakdown["totals"]["annual"],
+        breakdown=breakdown,
+    )
     session.commit()
     return RequestOut.model_validate(req)
 

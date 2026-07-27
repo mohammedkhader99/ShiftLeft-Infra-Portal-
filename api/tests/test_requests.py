@@ -126,6 +126,18 @@ def test_submit_valid_create_succeeds(client):
     assert resp.json()["status"] == "submitted"
 
 
+def test_submit_persists_estimate(client):
+    ref = client.post("/api/requests/draft", json=VALID_CREATE).json()["reference"]
+    submitted = client.post(f"/api/requests/{ref}/submit").json()
+    # The estimate is returned and, crucially, persisted on the request.
+    assert submitted["estimate"]["monthly"] == 672.0  # onprem postgres16 medium
+    reloaded = client.get(f"/api/requests/{ref}").json()
+    assert reloaded["estimate"] is not None
+    assert reloaded["estimate"]["one_time"] == 500.0
+    assert reloaded["estimate"]["annual"] == 672.0 * 12
+    assert reloaded["estimate"]["currency"] == "AED"
+
+
 def test_submit_rejects_bad_environment_name_with_rule(client):
     bad = {**VALID_CREATE, "environment_name": "Egate UAT!"}
     ref = client.post("/api/requests/draft", json=bad).json()["reference"]

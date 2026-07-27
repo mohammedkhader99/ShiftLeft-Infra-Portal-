@@ -58,6 +58,15 @@
       <div class="banner banner-submitted">
         <strong>Request {{ reference }} submitted.</strong>
         It passed validation and is ready for the approval step (added in a later increment).
+        {% set est = f.get('estimate') %}
+        {% if est %}
+          <div style="margin-top:0.5rem;">
+            Stored estimate ({{ est.currency }}):
+            one-time <strong>{{ '%.2f'|format(est.one_time) }}</strong> ·
+            monthly <strong>{{ '%.2f'|format(est.monthly) }}</strong> ·
+            annual <strong>{{ '%.2f'|format(est.annual) }}</strong>
+          </div>
+        {% endif %}
       </div>
     {% elif saved %}
       <div class="banner banner-saved">
