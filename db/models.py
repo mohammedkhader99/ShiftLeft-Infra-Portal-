@@ -10,12 +10,17 @@ Column types are kept portable (no Postgres-only types) so the same models run
 against an in-memory database in the tests.
 """
 
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 
 from sqlalchemy import JSON, Boolean, Date, DateTime, ForeignKey, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from db.session import Base
+
+
+def _utcnow() -> datetime:
+    """Timezone-aware UTC now (replaces the deprecated datetime.utcnow)."""
+    return datetime.now(timezone.utc)
 
 
 class Project(Base):
@@ -133,9 +138,9 @@ class Request(Base):
     target_environment: Mapped[str | None] = mapped_column(String(120), nullable=True)
     data_classification: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
     )
 
     # An environment is made of one or more components, each a technology with
@@ -189,7 +194,7 @@ class Estimate(Base):
     monthly: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
     annual: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
     breakdown: Mapped[dict] = mapped_column(JSON, default=dict)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
     request: Mapped["Request"] = relationship(back_populates="estimate")
 
@@ -210,7 +215,7 @@ class Approval(Base):
     status: Mapped[str] = mapped_column(String(16), default="pending")  # pending|approved|rejected
     ticket_url: Mapped[str | None] = mapped_column(String(255), nullable=True)
     ticket_body: Mapped[str | None] = mapped_column(String, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
     request: Mapped["Request"] = relationship(back_populates="approval")
 
@@ -233,4 +238,4 @@ class AuditLog(Base):
     detail: Mapped[dict] = mapped_column(JSON, default=dict)
     prev_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     entry_hash: Mapped[str] = mapped_column(String(64))
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)

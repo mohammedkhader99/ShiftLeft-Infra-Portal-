@@ -6,7 +6,7 @@ content, so any later edit or deletion breaks the chain and is detectable.
 
 import hashlib
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -26,7 +26,7 @@ def append_audit(
     """Add one audit entry, chained to the previous. Caller commits."""
     last = session.scalar(select(AuditLog).order_by(AuditLog.id.desc()))
     prev_hash = last.entry_hash if last else ""
-    created_at = datetime.utcnow()
+    created_at = datetime.now(timezone.utc)
     detail = detail or {}
 
     content = json.dumps(

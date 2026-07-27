@@ -1,7 +1,7 @@
 import json
 import os
 from collections.abc import Iterator
-from datetime import datetime
+from datetime import datetime, timezone
 
 import httpx
 from dotenv import load_dotenv
@@ -197,7 +197,7 @@ def save_draft(body: DraftIn, session: Session = Depends(get_session)) -> Reques
         req = Request(
             status="draft",
             requester=MOCK_REQUESTER,
-            reference=f"REQ-{datetime.utcnow().year}-{next_seq:04d}",
+            reference=f"REQ-{datetime.now(timezone.utc).year}-{next_seq:04d}",
         )
         session.add(req)
 
