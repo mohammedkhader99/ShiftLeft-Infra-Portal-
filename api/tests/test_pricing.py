@@ -90,3 +90,42 @@ def test_unresolved_component_contributes_zero(client):
     body = _cost(client, "onprem", [{"technology_code": "postgres16", "size": ""}])
     assert body["totals"]["monthly"] == 0
     assert body["lines"][0]["resolved"] is False
+
+
+# --- Increment 2.1: Azure live pricing adapter -------------------------------
+
+
+def test_mock_mode_is_default_and_uses_seeded_rates(client):
+    # No AZURE_PRICING_MODE set -> mock -> seeded decomposed rate (from 1.5 test).
+    body = _cost(client, "azure", [{"technology_code": "postgres16", "size": "small"}])
+    assert body["pricing_source"] == "mock"
+    assert body["totals"]["monthly"] == pytest.approx(195.55, abs=0.05)
+
+
+def test_azure_live_uses_adapter_price(client, monkeypatch):
+    from api.adapters import azure_pricing
+
+    monkeypatch.setattr(azure_pricing, "is_live", lambda: True)
+    # small -> storage 50 GB; cached azure storage rate = 0.10 * 0.8 = 0.08/GB -> 4.0
+    # live compute monthly (list) = 100.0; * (1 - 0.20 discount) = 80.0
+    monkeypatch.setattr(azure_pricing, "vm_monthly", lambda size, **k: 100.0)
+    body = _cost(client, "azure", [{"technology_code": "postgres16", "size": "small"}])
+    assert body["pricing_source"] == "azure-live"
+    # 80.0 compute + 4.0 storage = 84.0
+    assert body["totals"]["monthly"] == pytest.approx(84.0, abs=0.01)
+
+
+def test_azure_live_falls_back_to_cached_when_unavailable(client, monkeypatch):
+    from api.adapters import azure_pricing
+    from api.adapters.azure_pricing import AzureUnavailable
+
+    monkeypatch.setattr(azure_pricing, "is_live", lambda: True)
+
+    def boom(size, **k):
+        raise AzureUnavailable("down")
+
+    monkeypatch.setattr(azure_pricing, "vm_monthly", boom)
+    body = _cost(client, "azure", [{"technology_code": "postgres16", "size": "small"}])
+    # Falls back to the cached decomposed rate and flags it.
+    assert body["pricing_source"] == "azure-cached"
+    assert body["totals"]["monthly"] == pytest.approx(195.55, abs=0.05)

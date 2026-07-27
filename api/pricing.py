@@ -1,9 +1,10 @@
-"""Cost estimation (increment 1.5).
+"""Cost estimation (increment 1.5; Azure live pricing added in 2.1).
 
-Prices a request's components against the seeded rate cards, per deployment
-target (on-prem / Azure / OCI). Discount-aware (F-FIN-04). Mock pricing lives
-in the rate_card table — no external calls. All figures are authoritative
-server-side (P2); the browser only displays them.
+Prices a request's components per deployment target (on-prem / Azure / OCI).
+Discount-aware (F-FIN-04). On-prem and OCI price from the seeded rate cards;
+Azure compute prices live from the public Retail Prices API when
+AZURE_PRICING_MODE=live, falling back to the cached rate cards if Azure is
+unreachable (§13). All figures are authoritative server-side (P2).
 
 Returns one-time, monthly, and annual totals plus a per-component line-item
 breakdown, in AED.
@@ -12,6 +13,8 @@ breakdown, in AED.
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from api.adapters import azure_pricing
+from api.adapters.azure_pricing import AzureUnavailable
 from api.sizing import resolve_components
 from db.models import RateCard
 
@@ -36,6 +39,20 @@ def _rates(session: Session, kind: str) -> dict[str, float]:
     return {
         row.item: float(row.rate) * (1 - float(row.discount_pct) / 100) for row in rows
     }
+
+
+def _discount(session: Session, kind: str) -> float:
+    """Negotiated discount fraction (0-1) for a rate-card kind (F-FIN-04)."""
+    row = session.scalar(select(RateCard).where(RateCard.kind == kind))
+    return float(row.discount_pct) / 100 if row else 0.0
+
+
+def _cloud_compute_cached(resource: dict, vcpu: int, memory_gb: int) -> float:
+    """Decomposed cached cloud compute (per-hour rates x 730)."""
+    return (
+        vcpu * resource.get("vcpu-hour", 0)
+        + memory_gb * resource.get("memory-gb-hour", 0)
+    ) * HOURS_PER_MONTH
 
 
 def _component_monthly(target: str, resource: dict, vcpu: int, memory_gb: int, storage_gb: int) -> float:
@@ -67,6 +84,11 @@ def estimate_cost(components: list[dict], deployment_target: str, session: Sessi
     licences = _rates(session, "licence")
     setup_fee = resource.get("setup", 0.0) if target == "onprem" else 0.0
 
+    # Azure live pricing (2.1): compute from the real API, everything else cached.
+    azure_live = target == "azure" and azure_pricing.is_live()
+    azure_discount = _discount(session, "cloud_azure") if target == "azure" else 0.0
+    pricing_source = "azure-live" if azure_live else "mock"
+
     lines: list[dict] = []
     one_time_total = 0.0
     monthly_total = 0.0
@@ -76,9 +98,19 @@ def estimate_cost(components: list[dict], deployment_target: str, session: Sessi
         licence_monthly = 0.0
         one_time = 0.0
         if comp["resolved"] and known_target:
-            monthly = _component_monthly(
-                target, resource, comp["vcpu"], comp["memory_gb"], comp["storage_gb"]
-            )
+            if azure_live:
+                storage_monthly = comp["storage_gb"] * resource.get("storage-gb-month", 0)
+                try:
+                    compute = azure_pricing.vm_monthly(comp["size"]) * (1 - azure_discount)
+                except AzureUnavailable:
+                    # Fall back to the cached rate cards, and flag it (§13).
+                    compute = _cloud_compute_cached(resource, comp["vcpu"], comp["memory_gb"])
+                    pricing_source = "azure-cached"
+                monthly = compute + storage_monthly
+            else:
+                monthly = _component_monthly(
+                    target, resource, comp["vcpu"], comp["memory_gb"], comp["storage_gb"]
+                )
             licence_item = TECHNOLOGY_LICENCE.get(comp["technology_code"])
             if licence_item:
                 licence_monthly = licences.get(licence_item, 0.0)
@@ -103,6 +135,7 @@ def estimate_cost(components: list[dict], deployment_target: str, session: Sessi
         "currency": CURRENCY,
         "deployment_target": target or None,
         "known_target": known_target,
+        "pricing_source": pricing_source,
         "lines": lines,
         "totals": {
             "one_time": round(one_time_total, 2),

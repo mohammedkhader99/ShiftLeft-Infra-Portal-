@@ -33,6 +33,11 @@
     <span>Monthly: <strong>{{ cost.currency }} {{ '%.2f'|format(cost.totals.monthly) }}</strong></span>
     <span>Annual: <strong>{{ cost.currency }} {{ '%.2f'|format(cost.totals.annual) }}</strong></span>
   </div>
+  {% if cost.pricing_source == 'azure-live' %}
+    <p class="muted" style="margin:0.4rem 0 0;">Azure compute priced live from the Retail Prices API.</p>
+  {% elif cost.pricing_source == 'azure-cached' %}
+    <p class="muted" style="margin:0.4rem 0 0;">Azure API unavailable — showing cached rates.</p>
+  {% endif %}
 {% else %}
   <p class="muted">Add a component to see the cost estimate.</p>
 {% endif %}

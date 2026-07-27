@@ -45,6 +45,9 @@ services:
       # Signed handoff to the orchestrator (1.9). Secret comes from .env.
       ORCHESTRATOR_URL: http://orchestrator:9091
       WEBHOOK_SECRET: ${WEBHOOK_SECRET}
+      # Per-adapter switch (2.1): mock uses seeded rates; live hits Azure's
+      # public Retail Prices API. Defaults to mock.
+      AZURE_PRICING_MODE: ${AZURE_PRICING_MODE:-mock}
     ports:
       - "8081:8081"
     depends_on:
