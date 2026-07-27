@@ -55,9 +55,10 @@
     <p class="subtitle">Guided request — collect &amp; validate (ARCHITECTURE.md §4)</p>
 
     {% if submitted %}
+      {% set appr = f.get('approval') %}
       <div class="banner banner-submitted">
-        <strong>Request {{ reference }} submitted.</strong>
-        It passed validation and is ready for the approval step (added in a later increment).
+        <strong>Request {{ reference }} submitted{% if appr %} — Jira ticket {{ appr.jira_key }} ({{ appr.status }}){% endif %}.</strong>
+        It passed policy and is now awaiting approval in Jira.
         {% set est = f.get('estimate') %}
         {% if est %}
           <div style="margin-top:0.5rem;">
@@ -66,6 +67,12 @@
             monthly <strong>{{ '%.2f'|format(est.monthly) }}</strong> ·
             annual <strong>{{ '%.2f'|format(est.annual) }}</strong>
           </div>
+        {% endif %}
+        {% if appr and appr.ticket_body %}
+          <details style="margin-top:0.6rem;">
+            <summary style="cursor:pointer;">View ticket (config + cost + plan preview)</summary>
+            <pre style="white-space:pre-wrap; font-size:0.8rem; background:#f0f5f6; padding:0.6rem; border-radius:6px; margin-top:0.4rem;">{{ appr.ticket_body }}</pre>
+          </details>
         {% endif %}
       </div>
     {% elif saved %}

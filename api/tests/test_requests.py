@@ -170,6 +170,23 @@ def test_submit_persists_estimate(client):
     assert reloaded["estimate"]["currency"] == "AED"
 
 
+def test_submit_raises_jira_ticket_with_config_and_cost(client):
+    ref = client.post("/api/requests/draft", json=VALID_CREATE).json()["reference"]
+    submitted = client.post(f"/api/requests/{ref}/submit").json()
+    approval = submitted["approval"]
+    assert approval is not None
+    assert approval["jira_key"].startswith("INFRA-")
+    assert approval["status"] == "pending"
+    # The ticket body shows configuration AND cost together (cost-before-approval).
+    body = approval["ticket_body"]
+    assert ref in body
+    assert "postgres16" in body
+    assert "Estimated cost" in body
+    assert "Plan preview" in body
+    # It survives a reload (persisted).
+    assert client.get(f"/api/requests/{ref}").json()["approval"]["jira_key"] == approval["jira_key"]
+
+
 def test_submit_rejects_bad_environment_name_with_rule(client):
     bad = {**VALID_CREATE, "environment_name": "Egate UAT!"}
     ref = client.post("/api/requests/draft", json=bad).json()["reference"]

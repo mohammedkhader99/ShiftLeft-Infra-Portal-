@@ -9,6 +9,8 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from api.jira import build_ticket_body, create_issue
+from api.plan_preview import build_plan_preview
 from api.policy import PolicyUnavailable, get_policy_evaluator
 from api.pricing import estimate_cost
 from api.sizing import resolve_components
@@ -143,6 +145,14 @@ class EstimateOut(BaseModel):
     annual: float
 
 
+class ApprovalOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    jira_key: str
+    status: str
+    ticket_url: str | None = None
+    ticket_body: str | None = None
+
+
 class RequestOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     reference: str
@@ -157,6 +167,7 @@ class RequestOut(BaseModel):
     data_classification: str | None = None
     components: list[ComponentOut] = []
     estimate: EstimateOut | None = None
+    approval: ApprovalOut | None = None
 
 
 def _load_request(reference: str, session: Session) -> Request:
@@ -248,6 +259,12 @@ def submit_request(
         annual=breakdown["totals"]["annual"],
         breakdown=breakdown,
     )
+
+    # Raise the Jira approval with config + cost + plan preview together (1.8).
+    plan_preview = build_plan_preview(req, session)
+    ticket_body = build_ticket_body(req, breakdown, plan_preview)
+    req.approval = create_issue(session, req, ticket_body)
+
     session.commit()
     return RequestOut.model_validate(req)
 

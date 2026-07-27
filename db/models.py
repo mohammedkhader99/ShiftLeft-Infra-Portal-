@@ -149,6 +149,10 @@ class Request(Base):
     estimate: Mapped["Estimate | None"] = relationship(
         back_populates="request", uselist=False, cascade="all, delete-orphan"
     )
+    # The Jira approval raised at submission (1.8).
+    approval: Mapped["Approval | None"] = relationship(
+        back_populates="request", uselist=False, cascade="all, delete-orphan"
+    )
 
 
 class RequestComponent(Base):
@@ -188,3 +192,24 @@ class Estimate(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     request: Mapped["Request"] = relationship(back_populates="estimate")
+
+
+class Approval(Base):
+    """The Jira approval raised for a request (1.8, ARCHITECTURE.md §5).
+
+    Approval authority lives in Jira (P1); this row records the ticket key and
+    status. The ticket body carries config + cost + plan preview together.
+    SLA timers / approver chains (F-GOV-01) come in a later increment.
+    """
+
+    __tablename__ = "approval"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    request_id: Mapped[int] = mapped_column(ForeignKey("request.id"), unique=True)
+    jira_key: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending|approved|rejected
+    ticket_url: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    ticket_body: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    request: Mapped["Request"] = relationship(back_populates="approval")
