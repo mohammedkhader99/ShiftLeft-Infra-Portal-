@@ -1,0 +1,15 @@
+{% if not source_reference %}
+  <p class="muted">Choose a provisioned request above to list its technology stack.</p>
+{% elif not components %}
+  <p class="muted">That request has no technologies recorded.</p>
+{% else %}
+  <p class="note" style="margin-top:0;">Tick the technologies to decommission from <strong>{{ source_reference }}</strong>.</p>
+  {% for c in components %}
+    {% set value = (c.technology_code or '') ~ ':' ~ (c.size or '') %}
+    <label style="display:block; font-weight:normal; margin:0.35rem 0;">
+      <input type="checkbox" name="decommission_tech" value="{{ value }}"
+             {% if c.technology_code in selected %}checked{% endif %}>
+      {{ c.technology_code }} ({{ c.size or 'n/a' }})
+    </label>
+  {% endfor %}
+{% endif %}

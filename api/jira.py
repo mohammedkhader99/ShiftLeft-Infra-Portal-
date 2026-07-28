@@ -190,6 +190,7 @@ def normalize_status(name: str) -> str:
 
 def build_ticket_body(req: Request, estimate: dict, plan_preview: str) -> str:
     """Assemble the ticket text: configuration + cost + plan preview together."""
+    is_decommission = req.request_type == "decommission"
     lines = [
         f"Request {req.reference} ({req.request_type})",
         f"Requester: {req.requester}",
@@ -197,13 +198,16 @@ def build_ticket_body(req: Request, estimate: dict, plan_preview: str) -> str:
         f"Deployment target: {req.deployment_target}",
         f"Data classification: {req.data_classification}",
     ]
+    if is_decommission and getattr(req, "source_reference", None):
+        lines.append(f"Decommissioning provisioned request: {req.source_reference}")
     if req.environment_name:
-        lines.append(f"New environment: {req.environment_name}")
+        label = "Environment to remove" if is_decommission else "New environment"
+        lines.append(f"{label}: {req.environment_name}")
     if req.target_environment:
         lines.append(f"Target environment: {req.target_environment}")
 
     lines.append("")
-    lines.append("Components:")
+    lines.append("Technologies to decommission:" if is_decommission else "Components:")
     for comp in req.components:
         lines.append(f"  - {comp.technology_code} ({comp.size})")
 

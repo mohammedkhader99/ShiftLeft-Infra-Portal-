@@ -136,6 +136,9 @@ class Request(Base):
     # New environment name (for 'create'); target existing environment (others).
     environment_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
     target_environment: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    # For 'decommission': the reference of the previously provisioned request
+    # whose resources this request tears down (2.9).
+    source_reference: Mapped[str | None] = mapped_column(String(20), nullable=True)
     data_classification: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)

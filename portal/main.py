@@ -160,6 +160,7 @@ FORM_FIELDS = (
     "deployment_target",
     "environment_name",
     "target_environment",
+    "source_reference",
     "data_classification",
 )
 
@@ -188,6 +189,35 @@ def _fetch_lookups() -> tuple[dict, str | None]:
         return EMPTY_LOOKUPS, str(exc)
 
 
+def _fetch_provisioned(request: Request) -> list[dict]:
+    """The signed-in user's currently provisioned requests — the pick-list for a
+    decommission. Best-effort: an empty list if the API can't be reached."""
+    try:
+        response = httpx.get(
+            f"{API_BASE_URL}/api/requests",
+            params={"requester": auth.requester_email(request), "status": "provisioned"},
+            headers=_requester_headers(request),
+            timeout=5.0,
+        )
+        response.raise_for_status()
+        data = response.json()
+        return data if isinstance(data, list) else []
+    except Exception:  # noqa: BLE001 — the dropdown just shows empty if this fails
+        return []
+
+
+def _decommission_components(decommission_tech: list[str]) -> list[dict]:
+    """Turn the decommission checkboxes (value 'technology:size') into component
+    rows. Unchecked boxes simply aren't submitted."""
+    rows: list[dict] = []
+    for value in decommission_tech or []:
+        tech, _, size = (value or "").partition(":")
+        tech = tech.strip()
+        if tech:
+            rows.append({"technology_code": tech, "size": size.strip() or None})
+    return rows
+
+
 def _render_form(
     request: Request,
     form: dict,
@@ -207,11 +237,19 @@ def _render_form(
     notice: str | None = None,
 ) -> HTMLResponse:
     lookups, lookup_error = _fetch_lookups()
+    # The decommission source dropdown + which of its technologies are ticked.
+    provisioned_requests = _fetch_provisioned(request)
+    selected_techs = ",".join(
+        (c.get("technology_code") or "") for c in (form.get("components") or [])
+        if c.get("technology_code")
+    )
     return templates.TemplateResponse(
         request,
         "request_new.html",
         {
             "lookups": lookups,
+            "provisioned_requests": provisioned_requests,
+            "decommission_selected": selected_techs,
             "error": banner_error or lookup_error,
             "notice": notice,
             "form": form,
@@ -243,6 +281,31 @@ def _form_payload(reference: str, values: dict, components: list[dict]) -> dict:
 def request_new(request: Request) -> HTMLResponse:
     """Blank guided-request form with dropdowns filled live from the API."""
     return _render_form(request, form={})
+
+
+@app.get("/request/decommission-technologies", response_class=HTMLResponse)
+def decommission_technologies(
+    request: Request, source_reference: str = "", selected: str = ""
+) -> HTMLResponse:
+    """HTMX fragment: the technology stack of the chosen provisioned request,
+    rendered as checkboxes so the user picks what to decommission."""
+    components: list[dict] = []
+    if source_reference:
+        try:
+            resp = httpx.get(
+                f"{API_BASE_URL}/api/requests/{source_reference}", timeout=5.0
+            )
+            if resp.status_code == 200:
+                components = resp.json().get("components", [])
+        except Exception:  # noqa: BLE001 — show an empty list if the API is down
+            components = []
+    selected_set = {s for s in (selected or "").split(",") if s}
+    return templates.TemplateResponse(
+        request,
+        "decommission_techs.html",
+        {"components": components, "selected": selected_set,
+         "source_reference": source_reference},
+    )
 
 
 @app.get("/request/{reference}", response_class=HTMLResponse)
@@ -282,13 +345,19 @@ def request_save(
     deployment_target: str = Form(""),
     environment_name: str = Form(""),
     target_environment: str = Form(""),
+    source_reference: str = Form(""),
     data_classification: str = Form(""),
     component_technology: list[str] = Form(default=[]),
     component_size: list[str] = Form(default=[]),
+    decommission_tech: list[str] = Form(default=[]),
 ) -> HTMLResponse:
     """Save the current form as a draft (partial data allowed)."""
     scalars = {field: locals()[field] for field in FORM_FIELDS}
-    components = _components_from_lists(component_technology, component_size)
+    components = (
+        _decommission_components(decommission_tech)
+        if request_type == "decommission"
+        else _components_from_lists(component_technology, component_size)
+    )
     try:
         response = httpx.post(
             f"{API_BASE_URL}/api/requests/draft",
@@ -327,13 +396,19 @@ def request_submit(
     deployment_target: str = Form(""),
     environment_name: str = Form(""),
     target_environment: str = Form(""),
+    source_reference: str = Form(""),
     data_classification: str = Form(""),
     component_technology: list[str] = Form(default=[]),
     component_size: list[str] = Form(default=[]),
+    decommission_tech: list[str] = Form(default=[]),
 ) -> HTMLResponse:
     """Persist the current form, then run authoritative validation on submit."""
     scalars = {field: locals()[field] for field in FORM_FIELDS}
-    components = _components_from_lists(component_technology, component_size)
+    components = (
+        _decommission_components(decommission_tech)
+        if request_type == "decommission"
+        else _components_from_lists(component_technology, component_size)
+    )
     try:
         # Save the current form first so submission validates exactly what's shown.
         draft = httpx.post(
@@ -415,16 +490,19 @@ def request_approve(
     data = approve_resp.json() if approve_resp.headers.get("content-type", "").startswith("application/json") else {}
     provisioned = bool(data.get("provisioned"))
     planned = bool(data.get("planned"))
+    decommissioned = bool(data.get("decommissioned"))
     plan_summary = (data.get("result") or {}).get("plan_summary")
     if approve_resp.status_code != 200:
         banner_error, notice = data.get("error", "Approval failed."), None
+    elif decommissioned:
+        banner_error, notice = None, data.get("message")
     else:
-        # 200 but not provisioned = not yet approved in Jira: an informational notice.
+        # 200 but nothing done = not yet approved in Jira: an informational notice.
         banner_error, notice = None, (None if provisioned or planned else data.get("message"))
     return _render_form(
         request, form=saved_request, reference=reference, submitted=True,
         provisioned=provisioned, planned=planned, plan_summary=plan_summary,
-        audit=audit, banner_error=banner_error, notice=notice,
+        decommissioned=decommissioned, audit=audit, banner_error=banner_error, notice=notice,
     )
 
 

@@ -13,7 +13,7 @@ import re
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from db.models import CostCentre, Environment, Project, Technology
+from db.models import CostCentre, Environment, Project, Request, Technology
 
 REQUEST_TYPES = {"create", "add", "resize", "decommission"}
 SIZES = {"small", "medium", "large"}
@@ -22,8 +22,8 @@ DEPLOYMENT_TARGETS = {"onprem", "azure", "oci"}
 # Simple naming standard for now (F-CAT-04 full engine comes later).
 NAME_PATTERN = re.compile(r"^[a-z0-9-]{3,40}$")
 
-# Request types that act on an existing environment rather than creating one.
-TARGET_TYPES = {"add", "resize", "decommission"}
+# Request types that add to / resize an existing seeded environment.
+TARGET_TYPES = {"add", "resize"}
 # Request types that must carry at least one technology component.
 COMPONENT_TYPES = {"create", "add", "resize"}
 
@@ -41,16 +41,22 @@ def validate_submission(data: dict, session: Session) -> dict[str, str]:
         # Without a valid type we can't check type-specific rules.
         return errors
 
-    # Fields common to every request type.
-    cost_centre = (data.get("cost_centre_code") or "").strip()
-    if not cost_centre:
-        errors["cost_centre_code"] = "Select a cost centre so the request can be charged back."
-    elif session.scalar(select(CostCentre).where(CostCentre.code == cost_centre)) is None:
-        errors["cost_centre_code"] = f"Unknown cost centre '{cost_centre}'."
+    # Cost centre is required for every type except decommission, which inherits
+    # it from the provisioned request it tears down.
+    if request_type != "decommission":
+        cost_centre = (data.get("cost_centre_code") or "").strip()
+        if not cost_centre:
+            errors["cost_centre_code"] = (
+                "Select a cost centre so the request can be charged back."
+            )
+        elif session.scalar(select(CostCentre).where(CostCentre.code == cost_centre)) is None:
+            errors["cost_centre_code"] = f"Unknown cost centre '{cost_centre}'."
 
     if request_type == "create":
         _validate_create_fields(data, session, errors)
-    else:  # add | resize | decommission
+    elif request_type == "decommission":
+        _validate_decommission_fields(data, session, errors)
+    else:  # add | resize
         target = (data.get("target_environment") or "").strip()
         if not target:
             errors["target_environment"] = (
@@ -70,6 +76,42 @@ def validate_submission(data: dict, session: Session) -> dict[str, str]:
         _validate_components(data, session, errors)
 
     return errors
+
+
+def _validate_decommission_fields(data: dict, session: Session, errors: dict[str, str]) -> None:
+    """Decommission targets a previously provisioned request (by reference) and
+    tears down a chosen subset of its technology stack."""
+    source_ref = (data.get("source_reference") or "").strip()
+    if not source_ref:
+        errors["source_reference"] = "Select the provisioned request to decommission."
+        return
+    source = session.scalar(select(Request).where(Request.reference == source_ref))
+    if source is None:
+        errors["source_reference"] = f"Unknown request '{source_ref}'."
+        return
+    if source.status != "provisioned":
+        errors["source_reference"] = (
+            f"{source_ref} is not currently provisioned (status: {source.status}); "
+            "only provisioned requests can be decommissioned."
+        )
+        return
+
+    # At least one technology, each drawn from the source request's own stack.
+    source_techs = {c.technology_code for c in source.components if c.technology_code}
+    selected = [
+        c for c in (data.get("components") or [])
+        if (c.get("technology_code") or "").strip()
+    ]
+    if not selected:
+        errors["components"] = "Select at least one technology to decommission."
+        return
+    for component in selected:
+        tech = (component.get("technology_code") or "").strip()
+        if tech not in source_techs:
+            errors["components"] = (
+                f"'{tech}' is not part of {source_ref}; choose from its technology stack."
+            )
+            break
 
 
 def _validate_create_fields(data: dict, session: Session, errors: dict[str, str]) -> None:

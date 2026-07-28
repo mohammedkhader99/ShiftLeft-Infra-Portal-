@@ -181,6 +181,7 @@ REQUEST_FIELDS = (
     "deployment_target",
     "environment_name",
     "target_environment",
+    "source_reference",
     "data_classification",
 )
 
@@ -206,6 +207,7 @@ class DraftIn(BaseModel):
     deployment_target: str | None = None
     environment_name: str | None = None
     target_environment: str | None = None
+    source_reference: str | None = None
     data_classification: str | None = None
     components: list[ComponentIn] | None = None
 
@@ -237,6 +239,7 @@ class RequestOut(BaseModel):
     deployment_target: str | None = None
     environment_name: str | None = None
     target_environment: str | None = None
+    source_reference: str | None = None
     data_classification: str | None = None
     components: list[ComponentOut] = []
     estimate: EstimateOut | None = None
@@ -295,17 +298,20 @@ def save_draft(
 
 @app.get("/api/requests", response_model=list[RequestOut])
 def list_requests(
-    requester: str | None = None, session: Session = Depends(get_session)
+    requester: str | None = None,
+    status: str | None = None,
+    session: Session = Depends(get_session),
 ) -> list[RequestOut]:
-    """List requests newest-first, optionally filtered to one requester.
+    """List requests newest-first, optionally filtered to one requester/status.
 
-    Powers the portal's 'My requests' dashboard. Read-only; every lifecycle
-    state (draft through decommissioned) is included so a person can see all
-    of their work in one place.
+    Powers the portal's 'My requests' dashboard (no status filter) and the
+    decommission form's source dropdown (status='provisioned'). Read-only.
     """
     stmt = select(Request).order_by(Request.id.desc())
     if requester:
         stmt = stmt.where(Request.requester == requester)
+    if status:
+        stmt = stmt.where(Request.status == status)
     return [RequestOut.model_validate(r) for r in session.scalars(stmt)]
 
 
@@ -327,6 +333,19 @@ def submit_request(
     # timed out), return it rather than creating a duplicate.
     if req.approval is not None:
         return RequestOut.model_validate(req)
+
+    # Decommission inherits context (target, project, cost centre, environment)
+    # from the request it tears down, so pricing and the ticket have full context.
+    if req.request_type == "decommission" and req.source_reference:
+        source = session.scalar(
+            select(Request).where(Request.reference == req.source_reference)
+        )
+        if source is not None:
+            req.deployment_target = req.deployment_target or source.deployment_target
+            req.project_code = req.project_code or source.project_code
+            req.cost_centre_code = req.cost_centre_code or source.cost_centre_code
+            req.environment_name = req.environment_name or source.environment_name
+
     components_data = [
         {"technology_code": c.technology_code, "size": c.size} for c in req.components
     ]
@@ -498,6 +517,11 @@ def approve(jira_key: str, session: Session = Depends(get_session)):
     append_audit(session, "approval.approved", reference=req.reference, jira_key=jira_key,
                  actor="jira")
     session.commit()
+
+    # Decommission requests tear down the referenced resources instead of
+    # provisioning new ones (2.9).
+    if req.request_type == "decommission":
+        return _decommission(session, req, actor="approver")
 
     # Signed, versioned handoff. The signature is authenticity; the orchestrator
     # re-checks authority (approval + policy) and re-validates cost itself.
@@ -715,6 +739,63 @@ def destroy_request(reference: str, session: Session = Depends(get_session)):
     return {"destroyed": True, "message": response.json().get("summary")}
 
 
+def _decommission(session: Session, req: Request, actor: str) -> dict:
+    """Tear down the resources of the provisioned request this decommission
+    request targets, then mark both decommissioned.
+
+    Reused by the approve endpoint and the poller. The signed handoff is built
+    from the SOURCE request so the orchestrator destroys the right bucket (its
+    per-request state and name), and the source's ProvisionedResource rows and
+    status are updated to reflect the teardown.
+    """
+    source = session.scalar(
+        select(Request).where(Request.reference == req.source_reference)
+    )
+    if source is None:
+        req.status = "decommission-failed"
+        append_audit(session, "decommission.source_missing", reference=req.reference,
+                     jira_key=req.approval.jira_key, detail={"source": req.source_reference})
+        session.commit()
+        return {"approval": "approved", "decommissioned": False,
+                "error": f"Source request {req.source_reference} not found."}
+
+    body, signature = _handoff_payload(source)
+    append_audit(session, "destroy.handoff", reference=req.reference,
+                 jira_key=req.approval.jira_key, actor=actor,
+                 detail={"source": source.reference})
+    session.commit()
+
+    response, error = _post_to_orchestrator(body, signature, path="/destroy")
+    if response is None or response.status_code != 200:
+        req.status = "decommission-failed"
+        append_audit(session, "destroy.failed", reference=req.reference,
+                     jira_key=req.approval.jira_key,
+                     detail={"source": source.reference,
+                             "error": error or (response.text if response else "")})
+        session.commit()
+        return {"approval": "approved", "decommissioned": False,
+                "error": error or (response.text if response else "destroy failed")}
+
+    # Mark the source's live resources and the source request decommissioned.
+    for res in session.scalars(
+        select(ProvisionedResource).where(
+            ProvisionedResource.reference == source.reference,
+            ProvisionedResource.lifecycle_state == "active",
+        )
+    ):
+        res.lifecycle_state = "decommissioned"
+    source.status = "decommissioned"
+    req.status = "decommissioned"
+    _transition_jira(session, req, resolved_status(), "jira.resolved")
+    summary = response.json().get("summary")
+    append_audit(session, "decommissioned", reference=req.reference,
+                 jira_key=req.approval.jira_key,
+                 detail={"source": source.reference, "summary": summary})
+    session.commit()
+    return {"approval": "approved", "decommissioned": True, "source": source.reference,
+            "message": f"Decommissioned {source.reference}: {summary}"}
+
+
 # --- Automatic Jira-status poller (increment 2.7) ----------------------------
 # A background thread that pulls the live Jira status on a timer and advances
 # approved requests automatically — the same steps the portal's buttons run,
@@ -779,6 +860,10 @@ def _advance_request(session: Session, req: Request) -> str:
             append_audit(session, "approval.approved", reference=req.reference,
                          jira_key=jira_key, actor="poller")
             session.commit()
+        # Decommission tears down the referenced request instead of provisioning.
+        if req.request_type == "decommission":
+            _decommission(session, req, actor="poller")
+            return req.status
         body, signature = _handoff_payload(req)
         append_audit(session, "orchestrator.handoff", reference=req.reference,
                      jira_key=jira_key, detail={"contract": CONTRACT_VERSION})

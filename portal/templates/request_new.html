@@ -169,6 +169,38 @@
         {% if errors.get('request_type') %}<p class="field-error">{{ errors.get('request_type') }}</p>{% endif %}
       </fieldset>
 
+      <!-- Decommission: pick a provisioned request, then choose what to tear down (2.9). -->
+      <div id="mode-decommission" style="display:none;">
+        <fieldset>
+          <legend>Decommission</legend>
+          <div class="{% if errors.get('source_reference') %}has-error{% endif %}">
+            <label for="source_reference">Which provisioned request?</label>
+            <select id="source_reference" name="source_reference"
+                    hx-get="/request/decommission-technologies"
+                    hx-trigger="change"
+                    hx-target="#decom-techs"
+                    hx-include="this">
+              <option value="">— select a provisioned request —</option>
+              {% for pr in provisioned_requests %}
+                <option value="{{ pr.reference }}" {% if f.get('source_reference')==pr.reference %}selected{% endif %}>
+                  {{ pr.reference }} — {{ pr.environment_name or pr.target_environment or 'environment' }}
+                </option>
+              {% endfor %}
+            </select>
+            {% if errors.get('source_reference') %}<p class="field-error">{{ errors.get('source_reference') }}</p>{% endif %}
+            {% if not provisioned_requests %}<p class="muted" style="margin-top:0.4rem;">You have no provisioned requests to decommission yet.</p>{% endif %}
+          </div>
+
+          <label style="margin-top:1rem;">Technologies to decommission</label>
+          {% if errors.get('components') %}<p class="field-error">{{ errors.get('components') }}</p>{% endif %}
+          <div id="decom-techs"
+               {% if f.get('source_reference') %}hx-get="/request/decommission-technologies?source_reference={{ f.get('source_reference') }}&selected={{ decommission_selected }}" hx-trigger="load"{% endif %}>
+            <p class="muted">Choose a provisioned request above to list its technology stack.</p>
+          </div>
+        </fieldset>
+      </div>
+
+      <div id="mode-standard">
       <fieldset>
         <legend>Details</legend>
 
@@ -212,7 +244,7 @@
         </div>
 
         <div class="{% if errors.get('target_environment') %}has-error{% endif %}">
-          <label for="target_environment">Existing environment (for add / resize / decommission)</label>
+          <label for="target_environment">Existing environment (for add / resize)</label>
           <select id="target_environment" name="target_environment">
             <option value="">— none —</option>
             {% for e in lookups.environments %}
@@ -285,6 +317,7 @@
           <p class="muted">Choose a deployment target and add components to see the cost estimate.</p>
         </div>
       </fieldset>
+      </div><!-- /#mode-standard -->
 
       <div class="actions">
         <button class="btn-save" type="submit" formaction="/request/save">Save draft</button>
@@ -300,6 +333,25 @@
   </main>
 
   <script>
+    // Show the fields that match the chosen request type. Decommission uses a
+    // provisioned-request picker; every other type uses the standard fields.
+    // The hidden mode's controls are disabled so they neither submit nor fire
+    // HTMX. Convenience only — the server re-validates everything (P2).
+    function applyMode() {
+      const checked = document.querySelector('input[name="request_type"]:checked');
+      const decom = (checked ? checked.value : 'create') === 'decommission';
+      const std = document.getElementById('mode-standard');
+      const dec = document.getElementById('mode-decommission');
+      std.style.display = decom ? 'none' : '';
+      dec.style.display = decom ? '' : 'none';
+      std.querySelectorAll('input, select, textarea').forEach(el => { el.disabled = decom; });
+      dec.querySelectorAll('input, select, textarea').forEach(el => { el.disabled = !decom; });
+    }
+    document.querySelectorAll('input[name="request_type"]').forEach(
+      r => r.addEventListener('change', applyMode)
+    );
+    document.addEventListener('DOMContentLoaded', applyMode);
+
     // Convenience only — the server re-validates everything (P2).
     function addComponent() {
       const container = document.getElementById('components');

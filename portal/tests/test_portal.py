@@ -273,3 +273,53 @@ def test_my_requests_reports_api_failure(monkeypatch):
     assert response.status_code == 200
     assert "Couldn't load requests" in response.text
     assert "connection refused" in response.text
+
+
+# --- Increment 2.9: decommission by reference --------------------------------
+
+FAKE_PROVISIONED = [
+    {"reference": "REQ-2026-0031", "status": "provisioned",
+     "environment_name": "egate-uat", "target_environment": None,
+     "components": [{"technology_code": "postgres16", "size": "medium"}],
+     "estimate": None, "approval": None},
+]
+
+
+def test_request_new_shows_decommission_picker(monkeypatch):
+    def fake_get(url, *a, **k):
+        if "/api/lookups" in url:
+            return _FakeResp(FAKE_LOOKUPS)
+        if "/api/requests" in url:  # the provisioned pick-list
+            return _FakeResp(FAKE_PROVISIONED)
+        return _FakeResp({})
+
+    monkeypatch.setattr("portal.main.httpx.get", fake_get)
+    response = client.get("/request/new")
+    assert response.status_code == 200
+    body = response.text
+    assert 'id="mode-decommission"' in body          # the decommission section exists
+    assert 'name="source_reference"' in body          # source picker present
+    assert "REQ-2026-0031" in body                     # a provisioned request is listed
+
+
+def test_decommission_technologies_fragment(monkeypatch):
+    def fake_get(url, *a, **k):
+        if "/api/requests/REQ-2026-0031" in url:
+            return _FakeResp({
+                "reference": "REQ-2026-0031",
+                "components": [{"technology_code": "postgres16", "size": "medium"},
+                               {"technology_code": "redis7", "size": "small"}],
+            })
+        return _FakeResp({})
+
+    monkeypatch.setattr("portal.main.httpx.get", fake_get)
+    response = client.get(
+        "/request/decommission-technologies",
+        params={"source_reference": "REQ-2026-0031", "selected": "postgres16"},
+    )
+    assert response.status_code == 200
+    body = response.text
+    # Each technology is a checkbox carrying its size, and the pre-selected one is ticked.
+    assert 'value="postgres16:medium"' in body
+    assert 'value="redis7:small"' in body
+    assert "checked" in body

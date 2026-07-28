@@ -610,3 +610,106 @@ def test_list_requests_newest_first_and_filtered_by_requester(client):
 
 def test_list_requests_empty_when_none(client):
     assert client.get("/api/requests", params={"requester": "nobody@example.com"}).json() == []
+
+
+def test_list_requests_status_filter(client, monkeypatch):
+    _provision_a_request(client, monkeypatch)  # one provisioned
+    client.post("/api/requests/draft", json=VALID_CREATE)  # one draft
+    provisioned = client.get("/api/requests", params={"status": "provisioned"}).json()
+    assert len(provisioned) == 1
+    assert provisioned[0]["status"] == "provisioned"
+
+
+# --- Decommission by reference (increment 2.9) --------------------------------
+
+def _provision_a_request(client, monkeypatch):
+    """Create + submit + approve a request so it ends up provisioned. Returns ref."""
+    import api.main as main
+
+    ref = client.post("/api/requests/draft", json=VALID_CREATE).json()["reference"]
+    key = client.post(f"/api/requests/{ref}/submit").json()["approval"]["jira_key"]
+
+    class Resp:
+        status_code = 200
+
+        def json(self):
+            return {"provisioned": True, "reference": ref, "verified": {}}
+
+    monkeypatch.setattr(main.httpx, "post", lambda *a, **k: Resp())
+    client.post(f"/api/approvals/{key}/approve")
+    assert client.get(f"/api/requests/{ref}").json()["status"] == "provisioned"
+    return ref
+
+
+def test_decommission_requires_provisioned_source(client):
+    ref = client.post("/api/requests/draft", json={
+        "request_type": "decommission",
+        "source_reference": "REQ-9999-9999",
+        "components": [{"technology_code": "postgres16", "size": "medium"}],
+    }).json()["reference"]
+    errors = client.post(f"/api/requests/{ref}/submit").json()["errors"]
+    assert "source_reference" in errors
+
+
+def test_decommission_rejects_tech_not_in_source(client, monkeypatch):
+    source = _provision_a_request(client, monkeypatch)  # provisioned with postgres16
+    ref = client.post("/api/requests/draft", json={
+        "request_type": "decommission",
+        "source_reference": source,
+        "components": [{"technology_code": "redis7", "size": "small"}],  # not in source
+    }).json()["reference"]
+    errors = client.post(f"/api/requests/{ref}/submit").json()["errors"]
+    assert "components" in errors
+
+
+def test_decommission_needs_at_least_one_technology(client, monkeypatch):
+    source = _provision_a_request(client, monkeypatch)
+    ref = client.post("/api/requests/draft", json={
+        "request_type": "decommission", "source_reference": source, "components": [],
+    }).json()["reference"]
+    errors = client.post(f"/api/requests/{ref}/submit").json()["errors"]
+    assert "components" in errors
+
+
+def test_decommission_tears_down_source(client, monkeypatch):
+    import api.main as main
+
+    source = _provision_a_request(client, monkeypatch)  # provisioned, postgres16 medium
+    ref = client.post("/api/requests/draft", json={
+        "request_type": "decommission",
+        "source_reference": source,
+        "components": [{"technology_code": "postgres16", "size": "medium"}],
+    }).json()["reference"]
+    key = client.post(f"/api/requests/{ref}/submit").json()["approval"]["jira_key"]
+
+    class Resp:
+        status_code = 200
+
+        def json(self):
+            return {"destroyed": True, "reference": source,
+                    "summary": "Destroy complete! Resources: 1 destroyed."}
+
+    monkeypatch.setattr(main.httpx, "post", lambda *a, **k: Resp())
+
+    result = client.post(f"/api/approvals/{key}/approve").json()
+    assert result["decommissioned"] is True
+    assert result["source"] == source
+    # Both the decommission request and the source it targets are decommissioned.
+    assert client.get(f"/api/requests/{ref}").json()["status"] == "decommissioned"
+    assert client.get(f"/api/requests/{source}").json()["status"] == "decommissioned"
+    events = [e["event"] for e in client.get(f"/api/requests/{ref}/audit").json()["entries"]]
+    assert "destroy.handoff" in events and "decommissioned" in events
+
+
+def test_decommission_ticket_body_lists_technologies(client, monkeypatch):
+    source = _provision_a_request(client, monkeypatch)
+    ref = client.post("/api/requests/draft", json={
+        "request_type": "decommission",
+        "source_reference": source,
+        "components": [{"technology_code": "postgres16", "size": "medium"}],
+    }).json()["reference"]
+    submitted = client.post(f"/api/requests/{ref}/submit").json()
+    body = submitted["approval"]["ticket_body"]
+    assert "Decommissioning provisioned request" in body
+    assert source in body
+    assert "Technologies to decommission" in body
