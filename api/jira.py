@@ -294,11 +294,24 @@ def resolved_status() -> str:
     return os.getenv("JIRA_RESOLVED_STATUS", "Resolved")
 
 
-def transition_issue(jira_key: str, target_status: str) -> str:
+def resolve_fields() -> dict:
+    """Fields required by the Resolve transition (e.g. Solution, Closure Reason),
+    supplied as a JSON env value."""
+    raw = os.getenv("JIRA_RESOLVE_FIELDS", "").strip()
+    if not raw:
+        return {}
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise JiraError(f"JIRA_RESOLVE_FIELDS is not valid JSON: {exc}") from exc
+
+
+def transition_issue(jira_key: str, target_status: str, fields: dict | None = None) -> str:
     """Move a Jira issue to the workflow status matching `target_status`.
 
-    Finds the available transition whose destination (or name) matches, and
-    performs it. No-op in mock mode. Raises JiraError if unavailable/failed.
+    Finds the available transition whose destination (or name) matches, sets any
+    `fields` the transition requires, and performs it. No-op in mock mode.
+    Raises JiraError if unavailable/failed.
     """
     if jira_mode() != "live":
         return target_status
@@ -322,10 +335,13 @@ def transition_issue(jira_key: str, target_status: str) -> str:
         available = [t.get("to", {}).get("name") for t in transitions]
         raise JiraError(f"no transition to '{target_status}' from here; available: {available}")
 
+    payload: dict = {"transition": {"id": match["id"]}}
+    if fields:
+        payload["fields"] = fields
     try:
         r = httpx.post(
             f"{base}/rest/api/2/issue/{jira_key}/transitions",
-            json={"transition": {"id": match["id"]}}, headers=h, timeout=10.0,
+            json=payload, headers=h, timeout=10.0,
         )
         if r.status_code >= 300:
             raise JiraError(f"transition to '{target_status}' failed {r.status_code}: {r.text}")

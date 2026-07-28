@@ -22,6 +22,7 @@ from api.jira import (
     get_status,
     inprogress_status,
     jira_mode,
+    resolve_fields,
     resolved_status,
     transition_issue,
 )
@@ -571,7 +572,9 @@ def _transition_jira(session: Session, req: Request, target: str, event: str) ->
     """Best-effort Jira status transition + audit. Never blocks provisioning."""
     if jira_mode() == "live":
         try:
-            transition_issue(req.approval.jira_key, target)
+            # The Resolve transition needs required fields (Solution, Closure Reason).
+            fields = resolve_fields() if target == resolved_status() else None
+            transition_issue(req.approval.jira_key, target, fields=fields)
             append_audit(session, event, reference=req.reference, jira_key=req.approval.jira_key,
                          detail={"jira_status": target})
         except JiraError as exc:

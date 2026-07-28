@@ -66,6 +66,8 @@ services:
       # Jira statuses the portal transitions the ticket to during provisioning.
       JIRA_INPROGRESS_STATUS: ${JIRA_INPROGRESS_STATUS:-In Progress}
       JIRA_RESOLVED_STATUS: ${JIRA_RESOLVED_STATUS:-Resolved}
+      # JSON of fields the Resolve transition requires (e.g. Solution, Closure Reason).
+      JIRA_RESOLVE_FIELDS: ${JIRA_RESOLVE_FIELDS:-}
       JIRA_SET_REPORTER: ${JIRA_SET_REPORTER:-true}
       # A template ticket whose create-screen fields the portal replicates
       # automatically (incl. Insight/Assets object fields).

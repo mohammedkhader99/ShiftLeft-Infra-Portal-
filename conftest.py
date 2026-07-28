@@ -27,3 +27,4 @@ os.environ["JIRA_SET_REPORTER"] = "true"
 # already exists, but WILL set one that's absent — so popping wouldn't help.
 os.environ["JIRA_EXTRA_FIELDS"] = ""
 os.environ["JIRA_TEMPLATE_ISSUE"] = ""
+os.environ["JIRA_RESOLVE_FIELDS"] = ""
