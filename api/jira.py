@@ -167,9 +167,21 @@ def _status_set(env_var: str, default: str) -> set[str]:
 
 
 def normalize_status(name: str) -> str:
-    """Map a Jira status name to pending | approved | rejected."""
+    """Map a Jira status name to pending | approved | rejected.
+
+    The in-progress and resolved lifecycle statuses also count as "approved".
+    A ticket only reaches them *after* a genuine approval — the portal drives
+    those transitions once provisioning starts, and In Progress is unreachable
+    without first passing the approved (Assigned) state. So the orchestrator's
+    independent authority re-verification (§4) must still see authority as
+    granted while it is applying, even though the portal has already moved the
+    ticket past the approved state. What stays refused: Open (pending, not yet
+    approved) and Rejected/Cancelled (approval denied or withdrawn).
+    """
     name = (name or "").strip()
-    if name in _status_set("JIRA_APPROVED_STATUSES", "Approved,Done"):
+    approved = _status_set("JIRA_APPROVED_STATUSES", "Approved,Done")
+    approved |= {inprogress_status(), resolved_status()}
+    if name in approved:
         return "approved"
     if name in _status_set("JIRA_REJECTED_STATUSES", "Rejected,Cancelled"):
         return "rejected"

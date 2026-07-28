@@ -194,8 +194,11 @@ def test_transition_to_unavailable_status_raises(monkeypatch):
 @pytest.mark.parametrize(
     "name,expected",
     [("Approved", "approved"), ("Done", "approved"),
+     # In Progress / Resolved are post-approval lifecycle states: authority was
+     # granted, so the orchestrator's re-check must still see "approved".
+     ("In Progress", "approved"), ("Resolved", "approved"),
      ("Rejected", "rejected"), ("Cancelled", "rejected"),
-     ("In Progress", "pending"), ("Waiting for approval", "pending")],
+     ("Open", "pending"), ("Waiting for approval", "pending")],
 )
 def test_status_mapping(monkeypatch, name, expected):
     monkeypatch.setattr(
