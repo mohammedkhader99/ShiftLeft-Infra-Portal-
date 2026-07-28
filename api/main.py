@@ -1,7 +1,9 @@
 import json
 import os
+import threading
 import time
 from collections.abc import Iterator
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -49,7 +51,22 @@ from db.session import SessionLocal
 
 load_dotenv()
 
-app = FastAPI(title="Infra Portal API")
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    """Start the background Jira poller on startup, stop it on shutdown.
+
+    The functions are defined further down; they run only when AUTO_PROVISION
+    is on, so nothing polls by default.
+    """
+    _start_poller()
+    try:
+        yield
+    finally:
+        _stop_poller()
+
+
+app = FastAPI(title="Infra Portal API", lifespan=_lifespan)
 
 # No login yet (real identity arrives in increment E1); stamp a fixed requester.
 MOCK_REQUESTER = "mohammed.khader@emaratechg.ae"
@@ -680,3 +697,158 @@ def destroy_request(reference: str, session: Session = Depends(get_session)):
                  detail=response.json())
     session.commit()
     return {"destroyed": True, "message": response.json().get("summary")}
+
+
+# --- Automatic Jira-status poller (increment 2.7) ----------------------------
+# A background thread that pulls the live Jira status on a timer and advances
+# approved requests automatically — the same steps the portal's buttons run,
+# just without a human click. Jira still holds the approval (a manager moving
+# the ticket to Assigned); the orchestrator still re-verifies it (§4). The
+# poller only *reacts* to that approval; it never decides one.
+
+_poller_stop = threading.Event()
+_poller_thread: threading.Thread | None = None
+
+
+def provision_mode() -> str:
+    """The real-provisioning mode the orchestrator is running (mock|plan|apply).
+
+    The poller reads the same switch so it only auto-*applies* (creates real
+    resources) when apply is enabled; otherwise it stops at the plan.
+    """
+    return os.getenv("PROVISION_MODE", "mock").strip().lower()
+
+
+def auto_provision_enabled() -> bool:
+    """Master on/off switch for the poller (default off). Nothing polls unless set."""
+    return os.getenv("AUTO_PROVISION", "false").strip().lower() == "true"
+
+
+def _advance_request(session: Session, req: Request) -> str:
+    """Advance one request as far as its live Jira status allows, in one pass.
+
+    Idempotent and safe to call every cycle: each step commits and re-entry
+    resumes from the committed state. Returns the request status afterwards.
+    Reuses the exact building blocks the manual buttons use, so the poller and
+    a manual click can never diverge or double-provision (the orchestrator keeps
+    its own idempotency ledger keyed on the Jira key).
+    """
+    appr = req.approval
+    if appr is None:
+        return req.status
+    jira_key = appr.jira_key
+
+    # Step 1 — approve + plan (from 'submitted'). Read the approval from Jira;
+    # never decide it here.
+    if req.status == "submitted":
+        status = get_status(jira_key)  # live Jira; JiraError bubbles to the caller
+        if status == "rejected":
+            if appr.status != "rejected":
+                appr.status = "rejected"
+                req.status = "rejected"
+                append_audit(session, "approval.rejected", reference=req.reference,
+                             jira_key=jira_key, actor="poller")
+                session.commit()
+            return req.status
+        if status != "approved":
+            if appr.status != status:  # reflect 'pending' etc. without audit noise
+                appr.status = status
+                session.commit()
+            return req.status
+        # Approved — record it once, then run the same signed handoff (plan) the
+        # approve button runs. On a retry (a previous plan failed) appr.status is
+        # already 'approved', so we skip straight to re-planning.
+        if appr.status != "approved":
+            appr.status = "approved"
+            append_audit(session, "approval.approved", reference=req.reference,
+                         jira_key=jira_key, actor="poller")
+            session.commit()
+        body, signature = _handoff_payload(req)
+        append_audit(session, "orchestrator.handoff", reference=req.reference,
+                     jira_key=jira_key, detail={"contract": CONTRACT_VERSION})
+        session.commit()
+        response, error = _post_to_orchestrator(body, signature)
+        if response is None or response.status_code != 200:
+            append_audit(session, "plan.failed", reference=req.reference, jira_key=jira_key,
+                         detail={"error": error or (response.text if response else "")})
+            session.commit()
+            return req.status  # still 'submitted' — retried next cycle
+        result = response.json()
+        if result.get("provisioned"):  # mock mode fully provisions on the handoff
+            req.status = "provisioned"
+            append_audit(session, "provisioned", reference=req.reference, jira_key=jira_key,
+                         detail=result)
+            session.commit()
+            return req.status
+        req.status = "planned"
+        append_audit(session, "plan.previewed", reference=req.reference, jira_key=jira_key,
+                     detail={"plan_summary": result.get("plan_summary")})
+        session.commit()
+
+    # Step 2 — apply (from 'planned'), only when real apply is enabled. This is
+    # the same work the Apply button starts; here it runs inline in the poller
+    # thread. Respects PROVISION_MODE so plan-mode auto-runs stop at the plan.
+    if req.status == "planned" and provision_mode() == "apply":
+        ttl_expiry = datetime.now(timezone.utc) + timedelta(days=PROVISION_TTL_DAYS)
+        body, signature = _handoff_payload(req, ttl_expiry=ttl_expiry.isoformat())
+        _transition_jira(session, req, inprogress_status(), "jira.in_progress")
+        req.status = "in-progress"
+        append_audit(session, "provisioning.started", reference=req.reference,
+                     jira_key=jira_key, actor="poller")
+        session.commit()
+        _provision_in_background(req.reference, jira_key, body, signature,
+                                 ttl_expiry.isoformat())
+        session.refresh(req)  # pick up 'provisioned' / 'apply-failed' from the apply
+    return req.status
+
+
+def _poll_once() -> None:
+    """One sweep: advance every request that isn't finished, each in its own
+    session so one bad request can't abort the others."""
+    with SessionLocal() as session:
+        refs = [
+            r.reference
+            for r in session.scalars(
+                select(Request).where(Request.status.in_(("submitted", "planned")))
+            ).all()
+            if r.approval is not None
+        ]
+    for ref in refs:
+        try:
+            with SessionLocal() as session:
+                req = session.scalar(select(Request).where(Request.reference == ref))
+                if req is not None and req.approval is not None:
+                    _advance_request(session, req)
+        except JiraError:
+            continue  # transient — try again next cycle, no audit noise
+        except Exception as exc:  # noqa: BLE001 — never let one request stop the sweep
+            try:
+                with SessionLocal() as session:
+                    append_audit(session, "poll.error", reference=ref, detail={"error": str(exc)})
+                    session.commit()
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def _poller_loop() -> None:
+    interval = int(os.getenv("POLL_INTERVAL_SECONDS", "30"))
+    while not _poller_stop.is_set():
+        try:
+            _poll_once()
+        except Exception:  # noqa: BLE001 — the loop must survive anything
+            pass
+        _poller_stop.wait(interval)
+
+
+def _start_poller() -> None:
+    """Start the background poller only if AUTO_PROVISION is on (called on startup)."""
+    global _poller_thread
+    if auto_provision_enabled() and (_poller_thread is None or not _poller_thread.is_alive()):
+        _poller_stop.clear()
+        _poller_thread = threading.Thread(target=_poller_loop, name="jira-poller", daemon=True)
+        _poller_thread.start()
+
+
+def _stop_poller() -> None:
+    """Signal the poller loop to exit (called on shutdown)."""
+    _poller_stop.set()

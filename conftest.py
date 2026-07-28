@@ -28,3 +28,6 @@ os.environ["JIRA_SET_REPORTER"] = "true"
 os.environ["JIRA_EXTRA_FIELDS"] = ""
 os.environ["JIRA_TEMPLATE_ISSUE"] = ""
 os.environ["JIRA_RESOLVE_FIELDS"] = ""
+# Keep the background poller OFF during tests (it must never start a thread that
+# calls the real orchestrator/Jira). Tests drive _advance_request directly.
+os.environ["AUTO_PROVISION"] = "false"

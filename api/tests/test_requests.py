@@ -447,3 +447,142 @@ def test_submit_add_requires_existing_target(client):
     )
     ok = client.post(f"/api/requests/{ref}/submit")
     assert ok.status_code == 200
+
+
+# --- Automatic poller (increment 2.7) ----------------------------------------
+
+@pytest.fixture()
+def poller():
+    """A client plus direct access to its DB session, for driving the poller's
+    _advance_request the way the background thread would."""
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+        future=True,
+    )
+    Base.metadata.create_all(engine)
+    TestSession = sessionmaker(bind=engine, expire_on_commit=False)
+    session = TestSession()
+    seed(session)
+
+    def override_get_session():
+        yield session
+
+    app.dependency_overrides[get_session] = override_get_session
+    app.dependency_overrides[get_policy_evaluator] = lambda: (
+        lambda data: {"allow": True, "violations": []}
+    )
+    try:
+        yield TestClient(app), session
+    finally:
+        app.dependency_overrides.clear()
+        session.close()
+
+
+def _submit_request(client, session):
+    """Create + submit a request; return the (Request, jira_key)."""
+    import api.main as main
+
+    ref = client.post("/api/requests/draft", json=VALID_CREATE).json()["reference"]
+    key = client.post(f"/api/requests/{ref}/submit").json()["approval"]["jira_key"]
+    req = session.scalar(main.select(main.Request).where(main.Request.reference == ref))
+    return req, key
+
+
+def _events(session, reference):
+    import api.main as main
+
+    return [
+        e.event
+        for e in session.scalars(
+            main.select(main.AuditLog)
+            .where(main.AuditLog.reference == reference)
+            .order_by(main.AuditLog.id)
+        )
+    ]
+
+
+class _PlanResp:
+    status_code = 200
+    text = ""
+
+    def json(self):
+        return {"provisioned": False, "planned": True, "plan_summary": "Plan: 1 to add"}
+
+
+def test_poller_auto_approves_and_plans(poller, monkeypatch):
+    """Assigned in Jira -> poller marks approved and runs the plan (plan mode)."""
+    import api.main as main
+
+    client, session = poller
+    req, key = _submit_request(client, session)
+
+    monkeypatch.setattr(main, "get_status", lambda k: "approved")
+    monkeypatch.setattr(main, "_post_to_orchestrator", lambda *a, **k: (_PlanResp(), None))
+    monkeypatch.setattr(main, "provision_mode", lambda: "plan")  # stop at the plan
+
+    assert main._advance_request(session, req) == "planned"
+    session.refresh(req)
+    assert req.status == "planned"
+    events = _events(session, req.reference)
+    assert "approval.approved" in events and "plan.previewed" in events
+
+
+def test_poller_marks_rejected(poller, monkeypatch):
+    """Rejected in Jira -> poller stops the request, creates nothing."""
+    import api.main as main
+
+    client, session = poller
+    req, key = _submit_request(client, session)
+
+    monkeypatch.setattr(main, "get_status", lambda k: "rejected")
+
+    assert main._advance_request(session, req) == "rejected"
+    session.refresh(req)
+    assert req.status == "rejected"
+    assert "approval.rejected" in _events(session, req.reference)
+
+
+def test_poller_leaves_pending_untouched(poller, monkeypatch):
+    """Not yet approved -> poller leaves the request submitted and audits nothing."""
+    import api.main as main
+
+    client, session = poller
+    req, key = _submit_request(client, session)
+
+    monkeypatch.setattr(main, "get_status", lambda k: "pending")
+
+    assert main._advance_request(session, req) == "submitted"
+    session.refresh(req)
+    assert req.status == "submitted"
+    assert "approval.approved" not in _events(session, req.reference)
+
+
+def test_poller_auto_applies_in_apply_mode(poller, monkeypatch):
+    """In apply mode the poller goes all the way: plan -> In Progress -> provision."""
+    import api.main as main
+
+    client, session = poller
+    req, key = _submit_request(client, session)
+
+    monkeypatch.setattr(main, "get_status", lambda k: "approved")
+    monkeypatch.setattr(main, "_post_to_orchestrator", lambda *a, **k: (_PlanResp(), None))
+    monkeypatch.setattr(main, "provision_mode", lambda: "apply")
+    monkeypatch.setattr(main, "jira_mode", lambda: "mock")  # transition is a no-op audit
+    started = {}
+    monkeypatch.setattr(main, "_provision_in_background",
+                        lambda ref, *a, **k: started.setdefault("ref", ref))
+
+    main._advance_request(session, req)
+    assert started.get("ref") == req.reference  # real apply was kicked off
+    session.refresh(req)
+    assert req.status == "in-progress"  # bg is stubbed, so it stays here
+    assert "provisioning.started" in _events(session, req.reference)
+
+
+def test_poller_disabled_by_default():
+    """The master switch is off unless AUTO_PROVISION is explicitly set true."""
+    import api.main as main
+
+    assert main.auto_provision_enabled() is False

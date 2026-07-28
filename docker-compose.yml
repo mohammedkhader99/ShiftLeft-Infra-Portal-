@@ -74,6 +74,13 @@ services:
       JIRA_TEMPLATE_ISSUE: ${JIRA_TEMPLATE_ISSUE:-}
       # JSON overrides applied on top of the template (rarely needed).
       JIRA_EXTRA_FIELDS: ${JIRA_EXTRA_FIELDS:-}
+      # Automatic Jira-status poller (2.7). When AUTO_PROVISION=true a background
+      # thread pulls the live Jira status every POLL_INTERVAL_SECONDS and advances
+      # approved requests on its own. The API reads PROVISION_MODE too, so it only
+      # auto-*applies* (creates real resources) when apply is enabled.
+      AUTO_PROVISION: ${AUTO_PROVISION:-false}
+      POLL_INTERVAL_SECONDS: ${POLL_INTERVAL_SECONDS:-30}
+      PROVISION_MODE: ${PROVISION_MODE:-mock}
     ports:
       - "8081:8081"
     depends_on:
