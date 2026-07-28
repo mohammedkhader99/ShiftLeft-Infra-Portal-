@@ -121,7 +121,7 @@ async def provision(request: Request) -> dict:
     if mode in ("plan", "apply"):
         bucket, tags = _bucket_and_tags(payload)
         try:
-            plan = provisioner.terraform_plan(bucket, tags)
+            plan = provisioner.terraform_plan(reference, bucket, tags)
         except provisioner.ProvisionError as exc:
             raise HTTPException(status_code=400, detail=f"Terraform plan failed: {exc}")
         return {
@@ -155,7 +155,7 @@ async def apply(request: Request) -> dict:
 
     bucket, tags = _bucket_and_tags(payload)
     try:
-        result = provisioner.terraform_apply(bucket, tags)
+        result = provisioner.terraform_apply(reference, bucket, tags)
     except provisioner.ProvisionError as exc:
         raise HTTPException(status_code=400, detail=f"Terraform apply failed: {exc}")
 
@@ -182,7 +182,7 @@ async def destroy(request: Request) -> dict:
     payload = json.loads(body)
     bucket, tags = _bucket_and_tags(payload)
     try:
-        result = provisioner.terraform_destroy(bucket, tags)
+        result = provisioner.terraform_destroy(payload["reference"], bucket, tags)
     except provisioner.ProvisionError as exc:
         raise HTTPException(status_code=400, detail=f"Terraform destroy failed: {exc}")
     _provisioned.pop(payload.get("idempotency_key", ""), None)

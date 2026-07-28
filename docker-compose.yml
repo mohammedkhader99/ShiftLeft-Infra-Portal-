@@ -102,6 +102,8 @@ services:
       - "9091:9091"
     volumes:
       - ./secrets:/secrets:ro
+      # Durable per-request Terraform state (2.6c) — survives restarts.
+      - tfstate:/tfstate
     depends_on:
       - opa
 
@@ -126,3 +128,4 @@ services:
 
 volumes:
   db_data:
+  tfstate:

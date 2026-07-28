@@ -1,21 +1,28 @@
-"""Terraform provisioner (increment 2.6a — plan only).
+"""Terraform provisioner (2.6a plan, 2.6b apply/destroy, 2.6c hardening).
 
-PROVISION_MODE:
-- mock  (default): no Terraform, no cloud — the orchestrator returns a mock result.
-- plan            : run `terraform plan` against the OCI sandbox and return the
-                    plan. NOTHING is created — there is no apply path in 2.6a.
-- apply           : NOT enabled yet (2.6b). Rejected here on purpose.
+PROVISION_MODE: mock (no cloud) | plan (terraform plan) | apply (enables the
+separate apply/destroy). Credentials come from the environment / a mounted key
+file, never held in code or git (P3).
 
-Credentials come from the environment / a mounted key file, supplied by the
-reviewer — never held in code or git (P3).
+Hardening (2.6c):
+- Each request gets its OWN working directory under a persistent volume
+  (TF_STATE_DIR, default /tfstate), so concurrent requests never share state and
+  state survives orchestrator restarts.
+- Plan is saved (`-out=tfplan`); apply runs that exact saved plan, so what is
+  created is exactly what was reviewed.
+- A shared provider plugin cache (baked at build) keeps init fast.
 """
 
+import json
 import os
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
-TF_DIR = Path(__file__).resolve().parent / "terraform"
+MODULE_DIR = Path(__file__).resolve().parent / "terraform"
+STATE_ROOT = Path(os.getenv("TF_STATE_DIR", "/tfstate"))
+PLAN_FILE = "tfplan"
 
 
 class ProvisionError(RuntimeError):
@@ -24,6 +31,13 @@ class ProvisionError(RuntimeError):
 
 def provision_mode() -> str:
     return os.getenv("PROVISION_MODE", "mock").strip().lower()
+
+
+def _require_oci() -> None:
+    missing = [k for k in ("OCI_TENANCY_OCID", "OCI_COMPARTMENT_OCID", "OCI_REGION")
+               if not os.getenv(k)]
+    if missing:
+        raise ProvisionError(f"OCI not configured: missing {', '.join(missing)}")
 
 
 def _oci_vars(bucket_name: str, tags: dict) -> dict:
@@ -39,19 +53,28 @@ def _oci_vars(bucket_name: str, tags: dict) -> dict:
     }
 
 
-def _write_tfvars(variables: dict) -> None:
-    import json
+def _workdir(reference: str) -> Path:
+    """Per-request working dir on the persistent volume, seeded with the module."""
+    workdir = STATE_ROOT / reference
+    workdir.mkdir(parents=True, exist_ok=True)
+    for tf in MODULE_DIR.glob("*.tf"):
+        dest = workdir / tf.name
+        if not dest.exists():
+            shutil.copy(tf, dest)
+    return workdir
 
-    (TF_DIR / "terraform.tfvars.json").write_text(json.dumps(variables), encoding="utf-8")
+
+def _write_tfvars(workdir: Path, variables: dict) -> None:
+    (workdir / "terraform.tfvars.json").write_text(json.dumps(variables), encoding="utf-8")
 
 
-def _run(args: list[str]) -> subprocess.CompletedProcess:
+def _run(args: list[str], workdir: Path) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["terraform", *args],
-        cwd=str(TF_DIR),
+        cwd=str(workdir),
         capture_output=True,
         text=True,
-        timeout=300,
+        timeout=600,
     )
 
 
@@ -64,55 +87,49 @@ def _plan_summary(stdout: str) -> str:
     return "plan generated"
 
 
-def _require_oci() -> None:
-    missing = [k for k in ("OCI_TENANCY_OCID", "OCI_COMPARTMENT_OCID", "OCI_REGION")
-               if not os.getenv(k)]
-    if missing:
-        raise ProvisionError(f"OCI not configured: missing {', '.join(missing)}")
-
-
 def _summary(stdout: str, pattern: str, fallback: str) -> str:
-    import re
     match = re.search(pattern, stdout)
     return match.group(0) if match else fallback
 
 
-def terraform_plan(bucket_name: str, tags: dict) -> dict:
-    """Run init + plan against OCI. Returns a summary + output. Creates nothing."""
+def terraform_plan(reference: str, bucket_name: str, tags: dict) -> dict:
+    """Init + plan in the request's workspace, saving the plan. Creates nothing."""
     _require_oci()
-    _write_tfvars(_oci_vars(bucket_name, tags))
+    workdir = _workdir(reference)
+    _write_tfvars(workdir, _oci_vars(bucket_name, tags))
 
-    init = _run(["init", "-input=false", "-no-color"])
+    init = _run(["init", "-input=false", "-no-color"], workdir)
     if init.returncode != 0:
         raise ProvisionError(f"terraform init failed: {init.stderr[-800:]}")
 
-    plan = _run(["plan", "-input=false", "-no-color"])
+    plan = _run(["plan", "-input=false", "-no-color", f"-out={PLAN_FILE}"], workdir)
     if plan.returncode != 0:
         raise ProvisionError(f"terraform plan failed: {plan.stderr[-800:]}")
 
     return {"summary": _plan_summary(plan.stdout), "output": plan.stdout[-4000:]}
 
 
-def terraform_apply(bucket_name: str, tags: dict) -> dict:
-    """Run init + apply against OCI. CREATES the resource. Requires apply mode."""
+def terraform_apply(reference: str, bucket_name: str, tags: dict) -> dict:
+    """Apply the EXACT saved plan for this request. CREATES the resource."""
     if provision_mode() != "apply":
         raise ProvisionError("apply is not enabled (PROVISION_MODE is not 'apply')")
     _require_oci()
-    _write_tfvars(_oci_vars(bucket_name, tags))
+    workdir = _workdir(reference)
+    if not (workdir / PLAN_FILE).exists():
+        raise ProvisionError("no saved plan for this request — approve (plan) it first")
 
-    init = _run(["init", "-input=false", "-no-color"])
+    init = _run(["init", "-input=false", "-no-color"], workdir)
     if init.returncode != 0:
         raise ProvisionError(f"terraform init failed: {init.stderr[-800:]}")
 
-    apply = _run(["apply", "-input=false", "-no-color", "-auto-approve"])
+    apply = _run(["apply", "-input=false", "-no-color", PLAN_FILE], workdir)
     if apply.returncode != 0:
         raise ProvisionError(f"terraform apply failed: {apply.stderr[-1200:]}")
 
     outputs = {}
-    out = _run(["output", "-json"])
+    out = _run(["output", "-json"], workdir)
     if out.returncode == 0:
         try:
-            import json
             outputs = {k: v.get("value") for k, v in json.loads(out.stdout).items()}
         except Exception:  # noqa: BLE001
             outputs = {}
@@ -124,13 +141,14 @@ def terraform_apply(bucket_name: str, tags: dict) -> dict:
     }
 
 
-def terraform_destroy(bucket_name: str, tags: dict) -> dict:
-    """Run destroy against OCI — removes the resource (rollback / cleanup)."""
+def terraform_destroy(reference: str, bucket_name: str, tags: dict) -> dict:
+    """Destroy the resources for this request from its own state."""
     _require_oci()
-    _write_tfvars(_oci_vars(bucket_name, tags))
+    workdir = _workdir(reference)
+    _write_tfvars(workdir, _oci_vars(bucket_name, tags))
 
-    _run(["init", "-input=false", "-no-color"])
-    destroy = _run(["destroy", "-input=false", "-no-color", "-auto-approve"])
+    _run(["init", "-input=false", "-no-color"], workdir)
+    destroy = _run(["destroy", "-input=false", "-no-color", "-auto-approve"], workdir)
     if destroy.returncode != 0:
         raise ProvisionError(f"terraform destroy failed: {destroy.stderr[-1200:]}")
     return {
