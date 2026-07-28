@@ -163,6 +163,34 @@ def test_live_create_failure_raises(monkeypatch):
         jira.create_issue(session=None, req=_request(), body="body")
 
 
+def test_transition_issue_finds_and_posts(monkeypatch):
+    posted = {}
+
+    def fake_get(url, *a, **k):
+        return _Resp({"transitions": [
+            {"id": "31", "name": "Start Progress", "to": {"name": "In Progress"}},
+            {"id": "41", "name": "Resolve", "to": {"name": "Resolved"}},
+        ]})
+
+    def fake_post(url, *a, **k):
+        posted["json"] = k.get("json")
+        return _Resp({}, status=204)
+
+    monkeypatch.setattr(jira.httpx, "get", fake_get)
+    monkeypatch.setattr(jira.httpx, "post", fake_post)
+    jira.transition_issue("SDIMD-1", "In Progress")
+    assert posted["json"]["transition"]["id"] == "31"
+
+
+def test_transition_to_unavailable_status_raises(monkeypatch):
+    monkeypatch.setattr(
+        jira.httpx, "get",
+        lambda *a, **k: _Resp({"transitions": [{"id": "41", "to": {"name": "Resolved"}}]}),
+    )
+    with pytest.raises(JiraError):
+        jira.transition_issue("SDIMD-1", "In Progress")
+
+
 @pytest.mark.parametrize(
     "name,expected",
     [("Approved", "approved"), ("Done", "approved"),

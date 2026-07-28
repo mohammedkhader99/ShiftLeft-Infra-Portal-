@@ -286,6 +286,56 @@ def create_issue(
     )
 
 
+def inprogress_status() -> str:
+    return os.getenv("JIRA_INPROGRESS_STATUS", "In Progress")
+
+
+def resolved_status() -> str:
+    return os.getenv("JIRA_RESOLVED_STATUS", "Resolved")
+
+
+def transition_issue(jira_key: str, target_status: str) -> str:
+    """Move a Jira issue to the workflow status matching `target_status`.
+
+    Finds the available transition whose destination (or name) matches, and
+    performs it. No-op in mock mode. Raises JiraError if unavailable/failed.
+    """
+    if jira_mode() != "live":
+        return target_status
+
+    base, h = _base_url(), _headers()
+    try:
+        resp = httpx.get(f"{base}/rest/api/2/issue/{jira_key}/transitions", headers=h, timeout=10.0)
+        resp.raise_for_status()
+        transitions = resp.json().get("transitions", [])
+    except Exception as exc:  # noqa: BLE001
+        raise JiraError(f"could not read transitions for {jira_key}: {exc}") from exc
+
+    target = target_status.strip().lower()
+    match = next(
+        (t for t in transitions
+         if t.get("to", {}).get("name", "").strip().lower() == target
+         or t.get("name", "").strip().lower() == target),
+        None,
+    )
+    if match is None:
+        available = [t.get("to", {}).get("name") for t in transitions]
+        raise JiraError(f"no transition to '{target_status}' from here; available: {available}")
+
+    try:
+        r = httpx.post(
+            f"{base}/rest/api/2/issue/{jira_key}/transitions",
+            json={"transition": {"id": match["id"]}}, headers=h, timeout=10.0,
+        )
+        if r.status_code >= 300:
+            raise JiraError(f"transition to '{target_status}' failed {r.status_code}: {r.text}")
+    except JiraError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise JiraError(f"transition to '{target_status}' failed: {exc}") from exc
+    return target_status
+
+
 def get_status(jira_key: str) -> str:
     """Read the live approval status from Jira: pending | approved | rejected."""
     try:

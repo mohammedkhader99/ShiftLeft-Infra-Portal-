@@ -63,6 +63,9 @@ services:
       JIRA_ISSUE_TYPE: ${JIRA_ISSUE_TYPE:-Task}
       JIRA_APPROVED_STATUSES: ${JIRA_APPROVED_STATUSES:-Approved,Done}
       JIRA_REJECTED_STATUSES: ${JIRA_REJECTED_STATUSES:-Rejected,Cancelled}
+      # Jira statuses the portal transitions the ticket to during provisioning.
+      JIRA_INPROGRESS_STATUS: ${JIRA_INPROGRESS_STATUS:-In Progress}
+      JIRA_RESOLVED_STATUS: ${JIRA_RESOLVED_STATUS:-Resolved}
       JIRA_SET_REPORTER: ${JIRA_SET_REPORTER:-true}
       # A template ticket whose create-screen fields the portal replicates
       # automatically (incl. Insight/Assets object fields).

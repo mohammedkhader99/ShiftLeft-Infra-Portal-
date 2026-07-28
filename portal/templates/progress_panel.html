@@ -1,0 +1,19 @@
+{# Live provisioning status (2.x). While in-progress it re-fetches itself every
+   few seconds; once resolved/failed it stops polling. #}
+{% if status == 'in-progress' %}
+  <div class="banner banner-saved" id="progress"
+       hx-get="/request/{{ reference }}/progress" hx-trigger="load delay:4s"
+       hx-swap="outerHTML">
+    <strong>Provisioning in progress…</strong> Jira ticket set to <em>In Progress</em>. This refreshes automatically.
+  </div>
+{% elif status == 'provisioned' %}
+  <div class="banner banner-submitted" id="progress">
+    <strong>Provisioned — Jira ticket set to Resolved.</strong> Real resources were created (see the audit trail).
+  </div>
+{% elif status == 'apply-failed' %}
+  <div class="banner banner-error" id="progress">
+    <strong>Provisioning failed.</strong> See the audit trail; the Jira ticket stays In Progress for follow-up.
+  </div>
+{% else %}
+  <div id="progress" class="muted">Status: {{ status or 'unknown' }}</div>
+{% endif %}

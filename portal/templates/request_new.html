@@ -96,6 +96,9 @@
           <span class="muted" style="margin-left:0.5rem;">runs terraform apply against OCI</span>
         </form>
       {% endif %}
+      {% if in_progress %}
+        <div hx-get="/request/{{ reference }}/progress" hx-trigger="load" hx-swap="outerHTML"></div>
+      {% endif %}
       {% if provisioned %}
         <div class="banner banner-submitted">
           <strong>Provisioned.</strong> Real resources were created in the sandbox (see the audit trail).

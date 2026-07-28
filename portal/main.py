@@ -173,6 +173,7 @@ def _render_form(
     provisioned: bool = False,
     planned: bool = False,
     plan_summary: str | None = None,
+    in_progress: bool = False,
     decommissioned: bool = False,
     audit: list | None = None,
     banner_error: str | None = None,
@@ -195,6 +196,7 @@ def _render_form(
             "provisioned": provisioned,
             "planned": planned,
             "plan_summary": plan_summary,
+            "in_progress": in_progress,
             "decommissioned": decommissioned,
             "audit": audit or [],
             "user": auth.session_user(request) or auth.DEFAULT_DEV_USER,
@@ -422,8 +424,36 @@ def _action_and_render(request: Request, reference: str, path: str, *, provision
 
 @app.post("/request/{reference}/apply", response_class=HTMLResponse)
 def request_apply(request: Request, reference: str) -> HTMLResponse:
-    """Explicitly apply a planned request — creates real resources."""
-    return _action_and_render(request, reference, "apply", provisioned=True)
+    """Start provisioning; the page then polls for live progress -> resolved."""
+    try:
+        resp = httpx.post(f"{API_BASE_URL}/api/requests/{reference}/apply", timeout=30.0)
+        saved_request = httpx.get(f"{API_BASE_URL}/api/requests/{reference}", timeout=5.0).json()
+        audit = httpx.get(
+            f"{API_BASE_URL}/api/requests/{reference}/audit", timeout=5.0
+        ).json().get("entries", [])
+    except Exception as exc:  # noqa: BLE001
+        return _render_form(request, form={}, reference=reference, banner_error=str(exc))
+    if resp.status_code != 200:
+        error = resp.json().get("error", "Apply failed.") if \
+            resp.headers.get("content-type", "").startswith("application/json") else "Apply failed."
+        return _render_form(request, form=saved_request, reference=reference, submitted=True,
+                            audit=audit, banner_error=error)
+    return _render_form(request, form=saved_request, reference=reference, submitted=True,
+                        in_progress=True, audit=audit)
+
+
+@app.get("/request/{reference}/progress", response_class=HTMLResponse)
+def request_progress(request: Request, reference: str) -> HTMLResponse:
+    """Live progress fragment (HTMX polls this until provisioning finishes)."""
+    try:
+        status = httpx.get(
+            f"{API_BASE_URL}/api/requests/{reference}", timeout=5.0
+        ).json().get("status")
+    except Exception:  # noqa: BLE001
+        status = None
+    return templates.TemplateResponse(
+        request, "progress_panel.html", {"status": status, "reference": reference}
+    )
 
 
 @app.post("/request/{reference}/destroy", response_class=HTMLResponse)

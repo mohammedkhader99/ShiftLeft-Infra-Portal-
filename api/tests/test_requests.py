@@ -204,7 +204,7 @@ def test_approve_fires_handoff_and_provisions_with_audit(client, monkeypatch):
     assert events == ["approval.approved", "orchestrator.handoff", "provisioned"]
 
 
-def test_apply_flow_creates_and_registers_resource(client, monkeypatch):
+def test_apply_starts_provisioning_in_progress(client, monkeypatch):
     import api.main as main
 
     ref = client.post("/api/requests/draft", json=VALID_CREATE).json()["reference"]
@@ -220,28 +220,24 @@ def test_apply_flow_creates_and_registers_resource(client, monkeypatch):
         def json(self):
             return self._data
 
-    def fake_post(url, *a, **k):
-        if url.endswith("/provision"):
-            return Resp(200, {"provisioned": False, "planned": True, "plan_summary": "Plan: 1 to add"})
-        if url.endswith("/apply"):
-            return Resp(200, {"provisioned": True,
-                              "resource": {"kind": "oci-bucket", "name": "egate-uat",
-                                           "region": "me-dubai-1", "outputs": {}}})
-        return Resp(200, {})
+    monkeypatch.setattr(
+        main.httpx, "post",
+        lambda url, *a, **k: Resp(200, {"provisioned": False, "planned": True,
+                                        "plan_summary": "Plan: 1 to add"})
+        if url.endswith("/provision") else Resp(200, {}),
+    )
+    # Don't run the real background apply in this unit test.
+    monkeypatch.setattr(main, "_provision_in_background", lambda *a, **k: None)
 
-    monkeypatch.setattr(main.httpx, "post", fake_post)
-
-    # Approve -> plan only (nothing created), status 'planned'.
     client.post(f"/api/approvals/{key}/approve")
     assert client.get(f"/api/requests/{ref}").json()["status"] == "planned"
 
-    # Explicit apply -> provisioned + resource registered.
+    # Apply returns immediately with in-progress; Jira set to In Progress.
     applied = client.post(f"/api/requests/{ref}/apply").json()
-    assert applied["provisioned"] is True
-    assert applied["resource"]["name"] == "egate-uat"
-    assert client.get(f"/api/requests/{ref}").json()["status"] == "provisioned"
+    assert applied["status"] == "in-progress"
+    assert client.get(f"/api/requests/{ref}").json()["status"] == "in-progress"
     events = [e["event"] for e in client.get(f"/api/requests/{ref}/audit").json()["entries"]]
-    assert "apply.handoff" in events and "provisioned" in events
+    assert "provisioning.started" in events
 
 
 def test_apply_refused_before_plan(client):

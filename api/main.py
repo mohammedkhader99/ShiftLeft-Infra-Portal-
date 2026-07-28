@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import func, select
@@ -15,7 +15,16 @@ from sqlalchemy.orm import Session
 from api.attachment import build_request_pdf
 from api.audit import append_audit
 from api.auth import get_requester
-from api.jira import JiraError, build_ticket_body, create_issue, get_status, jira_mode
+from api.jira import (
+    JiraError,
+    build_ticket_body,
+    create_issue,
+    get_status,
+    inprogress_status,
+    jira_mode,
+    resolved_status,
+    transition_issue,
+)
 from api.plan_preview import build_plan_preview
 from api.policy import PolicyUnavailable, get_policy_evaluator
 from api.pricing import estimate_cost
@@ -558,15 +567,62 @@ def _handoff_payload(req: Request, *, ttl_expiry: str | None = None) -> tuple[by
     return body, sign(WEBHOOK_SECRET, body)
 
 
+def _transition_jira(session: Session, req: Request, target: str, event: str) -> None:
+    """Best-effort Jira status transition + audit. Never blocks provisioning."""
+    if jira_mode() == "live":
+        try:
+            transition_issue(req.approval.jira_key, target)
+            append_audit(session, event, reference=req.reference, jira_key=req.approval.jira_key,
+                         detail={"jira_status": target})
+        except JiraError as exc:
+            append_audit(session, f"{event}.jira_failed", reference=req.reference,
+                         jira_key=req.approval.jira_key, detail={"error": str(exc)})
+    else:
+        append_audit(session, event, reference=req.reference, jira_key=req.approval.jira_key,
+                     detail={"jira_status": target})
+
+
+def _provision_in_background(reference: str, jira_key: str, body: bytes, signature: str,
+                            ttl_expiry_iso: str) -> None:
+    """Run the real apply, then set Jira Resolved + status provisioned (or failed)."""
+    with SessionLocal() as session:
+        req = session.scalar(select(Request).where(Request.reference == reference))
+        if req is None:
+            return
+        response, error = _post_to_orchestrator(body, signature, path="/apply")
+        if response is None or response.status_code != 200:
+            req.status = "apply-failed"
+            append_audit(session, "apply.failed", reference=reference, jira_key=jira_key,
+                         detail={"error": error or (response.text if response else "")})
+            session.commit()
+            return
+
+        result = response.json()
+        res = result.get("resource", {})
+        session.add(ProvisionedResource(
+            reference=reference, kind=res.get("kind", "resource"), name=res.get("name", ""),
+            region=res.get("region"), details=res.get("outputs", {}),
+            ttl_expiry=datetime.fromisoformat(ttl_expiry_iso), lifecycle_state="active",
+        ))
+        _transition_jira(session, req, resolved_status(), "jira.resolved")
+        req.status = "provisioned"
+        append_audit(session, "provisioned", reference=reference, jira_key=jira_key, detail=result)
+        session.commit()
+
+
 @app.post("/api/requests/{reference}/apply")
-def apply_request(reference: str, session: Session = Depends(get_session)):
-    """Explicitly apply an approved+planned request — CREATES real resources."""
+def apply_request(reference: str, background_tasks: BackgroundTasks,
+                  session: Session = Depends(get_session)):
+    """Start provisioning: set Jira In Progress, then apply in the background.
+
+    Returns immediately with status 'in-progress' so the portal can show live
+    progress; the background task creates the resource and sets Jira Resolved.
+    """
     req = _load_request(reference, session)
     if req.approval is None:
         raise HTTPException(status_code=400, detail="Request has no approval to apply.")
-    if req.status == "provisioned":
-        return {"provisioned": True, "idempotent": True,
-                "message": f"{reference} is already provisioned."}
+    if req.status in ("in-progress", "provisioned"):
+        return {"status": req.status, "message": f"{reference} is already {req.status}."}
     if req.status != "planned":
         return JSONResponse(
             status_code=409,
@@ -575,35 +631,16 @@ def apply_request(reference: str, session: Session = Depends(get_session)):
 
     ttl_expiry = datetime.now(timezone.utc) + timedelta(days=PROVISION_TTL_DAYS)
     body, signature = _handoff_payload(req, ttl_expiry=ttl_expiry.isoformat())
-    append_audit(session, "apply.handoff", reference=reference, jira_key=req.approval.jira_key,
-                 actor="approver")
+    # Move Jira to In Progress and mark the request in-progress up front.
+    _transition_jira(session, req, inprogress_status(), "jira.in_progress")
+    req.status = "in-progress"
+    append_audit(session, "provisioning.started", reference=reference,
+                 jira_key=req.approval.jira_key, actor="approver")
     session.commit()
 
-    response, error = _post_to_orchestrator(body, signature, path="/apply")
-    if response is None:
-        append_audit(session, "apply.unreachable", reference=reference,
-                     jira_key=req.approval.jira_key, detail={"error": error})
-        session.commit()
-        return JSONResponse(status_code=503, content={"error": f"Orchestrator unreachable ({error})."})
-    if response.status_code != 200:
-        append_audit(session, "apply.failed", reference=reference,
-                     jira_key=req.approval.jira_key, detail={"body": response.text})
-        session.commit()
-        return JSONResponse(status_code=response.status_code,
-                            content={"error": "Apply failed.", "detail": response.text})
-
-    result = response.json()
-    res = result.get("resource", {})
-    session.add(ProvisionedResource(
-        reference=reference, kind=res.get("kind", "resource"), name=res.get("name", ""),
-        region=res.get("region"), details=res.get("outputs", {}), ttl_expiry=ttl_expiry,
-        lifecycle_state="active",
-    ))
-    req.status = "provisioned"
-    append_audit(session, "provisioned", reference=reference, jira_key=req.approval.jira_key,
-                 detail=result)
-    session.commit()
-    return {"provisioned": True, "resource": res, "message": result.get("message")}
+    background_tasks.add_task(_provision_in_background, reference, req.approval.jira_key,
+                             body, signature, ttl_expiry.isoformat())
+    return {"status": "in-progress", "message": f"Provisioning {reference} started."}
 
 
 @app.post("/api/requests/{reference}/destroy")
