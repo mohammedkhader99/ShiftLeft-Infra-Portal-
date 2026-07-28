@@ -43,6 +43,26 @@ def test_logout_clears_user():
     assert "Alice" not in home.text
 
 
+def test_expired_token_redirects_to_login(monkeypatch):
+    # API returns 401 (Microsoft token expired) -> portal re-authenticates.
+    class _Resp401:
+        status_code = 401
+
+        def raise_for_status(self):
+            raise RuntimeError("401")
+
+        def json(self):
+            return {"detail": "Invalid token"}
+
+    monkeypatch.setattr("portal.main.httpx.post", lambda *a, **k: _Resp401())
+
+    c = TestClient(app)
+    c.post("/login", data={"email": "bob@example.com", "name": "Bob"})
+    resp = c.post("/request/save", data={"request_type": "create"}, follow_redirects=False)
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/login"
+
+
 def test_portal_sends_requester_header_from_session(monkeypatch):
     captured = {}
 

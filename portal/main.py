@@ -67,6 +67,15 @@ def _requester_headers(request: Request) -> dict:
     return headers
 
 
+def _reauth_redirect(request: Request) -> RedirectResponse:
+    """The Microsoft token expired: drop it and send the user to sign in again,
+    returning them to the request page afterwards."""
+    request.session.pop("id_token", None)
+    request.session.pop("user", None)
+    request.session["post_login"] = "/request/new"
+    return RedirectResponse("/login", status_code=303)
+
+
 @app.get("/login", response_class=HTMLResponse)
 async def login(request: Request):
     """Live: redirect to Microsoft. Mock: show a simple dev login form."""
@@ -95,7 +104,9 @@ async def auth_callback(request: Request):
     # Keep the raw ID token so we can forward it to the API, which validates it
     # independently (step B, §8).
     request.session["id_token"] = token.get("id_token")
-    return RedirectResponse("/", status_code=303)
+    # Return to wherever the user was when their token expired, if we saved it.
+    dest = request.session.pop("post_login", "/")
+    return RedirectResponse(dest, status_code=303)
 
 
 @app.get("/logout")
@@ -250,6 +261,14 @@ def request_save(
             headers=_requester_headers(request),
             timeout=5.0,
         )
+    except Exception as exc:  # noqa: BLE001
+        return _render_form(
+            request, form=_values(scalars, components), reference=reference or None,
+            banner_error=str(exc),
+        )
+    if response.status_code == 401:  # token expired -> re-authenticate
+        return _reauth_redirect(request)
+    try:
         response.raise_for_status()
         saved_request = response.json()
     except Exception as exc:  # noqa: BLE001
@@ -288,6 +307,14 @@ def request_submit(
             headers=_requester_headers(request),
             timeout=5.0,
         )
+    except Exception as exc:  # noqa: BLE001
+        return _render_form(
+            request, form=_values(scalars, components), reference=reference or None,
+            banner_error=str(exc),
+        )
+    if draft.status_code == 401:  # token expired -> re-authenticate
+        return _reauth_redirect(request)
+    try:
         draft.raise_for_status()
         saved_request = draft.json()
         ref = saved_request["reference"]
