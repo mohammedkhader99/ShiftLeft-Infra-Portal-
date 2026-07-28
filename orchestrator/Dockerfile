@@ -23,6 +23,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY orchestrator ./orchestrator
 COPY common ./common
 
+# Pre-download the Terraform providers at build time so runtime plans are fast
+# (no ~3-minute provider download on the first real plan).
+RUN cd orchestrator/terraform && terraform init -input=false
+
 EXPOSE 9091
 
 CMD ["uvicorn", "orchestrator.main:app", "--host", "0.0.0.0", "--port", "9091"]

@@ -47,6 +47,9 @@ WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "dev-mock-secret")
 # Versioned contract to the orchestrator (2.5).
 CONTRACT_VERSION = "1.0"
 ORCH_MAX_ATTEMPTS = 3
+# Real provisioning (terraform plan/apply) can take a while, so the handoff
+# waits longer than a normal API call.
+ORCH_TIMEOUT = 180.0
 
 
 def _post_to_orchestrator(body: bytes, signature: str):
@@ -62,7 +65,7 @@ def _post_to_orchestrator(body: bytes, signature: str):
                 f"{ORCHESTRATOR_URL}/provision",
                 content=body,
                 headers={"X-Signature": signature, "Content-Type": "application/json"},
-                timeout=10.0,
+                timeout=ORCH_TIMEOUT,
             )
         except Exception as exc:  # noqa: BLE001 — transient network failure
             error = f"unreachable: {exc}"

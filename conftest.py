@@ -11,7 +11,8 @@ load_dotenv() does not override already-set variables, so these win.
 
 import os
 
-for _var in ("AUTH_MODE", "AZURE_PRICING_MODE", "OCI_PRICING_MODE", "JIRA_MODE"):
+for _var in ("AUTH_MODE", "AZURE_PRICING_MODE", "OCI_PRICING_MODE", "JIRA_MODE",
+             "PROVISION_MODE"):
     os.environ[_var] = "mock"
 os.environ["USE_MOCK"] = "true"
 
