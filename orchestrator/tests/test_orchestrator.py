@@ -136,8 +136,60 @@ def test_plan_mode_previews_and_creates_nothing(monkeypatch):
     assert orch._provisioned == {}
 
 
-def test_apply_mode_is_not_enabled_yet(monkeypatch):
+def test_provision_only_plans_in_apply_mode(monkeypatch):
+    # In apply mode, /provision still ONLY plans (creation is the separate /apply).
     _patch(monkeypatch)
     monkeypatch.setattr(orch.provisioner, "provision_mode", lambda: "apply")
+    monkeypatch.setattr(orch.provisioner, "terraform_plan",
+                        lambda b, t: {"summary": "Plan: 1 to add", "output": "..."})
     body = _body()
-    assert client.post("/provision", content=body, headers=_signed(body)).status_code == 501
+    resp = client.post("/provision", content=body, headers=_signed(body)).json()
+    assert resp["planned"] is True and resp["provisioned"] is False
+
+
+def test_apply_creates_resource(monkeypatch):
+    _patch(monkeypatch)
+    monkeypatch.setattr(orch.provisioner, "provision_mode", lambda: "apply")
+    monkeypatch.setattr(orch.provisioner, "terraform_apply",
+                        lambda b, t: {"summary": "Apply complete! Resources: 1 added.",
+                                      "outputs": {"bucket_name": b}, "output": "..."})
+    body = _body()
+    resp = client.post("/apply", content=body, headers=_signed(body))
+    assert resp.status_code == 200
+    assert resp.json()["provisioned"] is True
+    assert resp.json()["resource"]["name"]
+
+
+def test_apply_refused_when_not_apply_mode(monkeypatch):
+    _patch(monkeypatch)
+    monkeypatch.setattr(orch.provisioner, "provision_mode", lambda: "plan")
+    body = _body()
+    assert client.post("/apply", content=body, headers=_signed(body)).status_code == 501
+
+
+def test_apply_is_idempotent(monkeypatch):
+    _patch(monkeypatch)
+    monkeypatch.setattr(orch.provisioner, "provision_mode", lambda: "apply")
+    calls = {"n": 0}
+
+    def fake_apply(b, t):
+        calls["n"] += 1
+        return {"summary": "Apply complete!", "outputs": {}, "output": ""}
+
+    monkeypatch.setattr(orch.provisioner, "terraform_apply", fake_apply)
+    body = _body()
+    client.post("/apply", content=body, headers=_signed(body))
+    second = client.post("/apply", content=body, headers=_signed(body)).json()
+    assert second.get("idempotent") is True
+    assert calls["n"] == 1  # created only once
+
+
+def test_destroy_removes_resource(monkeypatch):
+    monkeypatch.setattr(orch.provisioner, "provision_mode", lambda: "apply")
+    monkeypatch.setattr(orch.provisioner, "terraform_destroy",
+                        lambda b, t: {"summary": "Destroy complete! Resources: 1 destroyed.",
+                                      "output": "..."})
+    body = _body()
+    resp = client.post("/destroy", content=body, headers=_signed(body))
+    assert resp.status_code == 200
+    assert resp.json()["destroyed"] is True

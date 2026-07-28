@@ -2,7 +2,7 @@ import json
 import os
 import time
 from collections.abc import Iterator
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 from dotenv import load_dotenv
@@ -29,6 +29,7 @@ from db.models import (
     Environment,
     Estimate,
     Project,
+    ProvisionedResource,
     Request,
     RequestComponent,
     SizingAnchor,
@@ -49,11 +50,13 @@ CONTRACT_VERSION = "1.0"
 ORCH_MAX_ATTEMPTS = 3
 # Real provisioning (terraform plan/apply) can take a while, so the handoff
 # waits longer than a normal API call.
-ORCH_TIMEOUT = 180.0
+ORCH_TIMEOUT = 300.0
+# Sandbox resources get a short time-to-live (F-FIN-07 foundation).
+PROVISION_TTL_DAYS = int(os.getenv("PROVISION_TTL_DAYS", "7"))
 
 
-def _post_to_orchestrator(body: bytes, signature: str):
-    """POST the signed handoff, retrying transient (network/5xx) failures.
+def _post_to_orchestrator(body: bytes, signature: str, path: str = "/provision"):
+    """POST the signed handoff to an orchestrator path, retrying transient failures.
 
     Returns (response, error). error is None on success; otherwise a string.
     Safe to retry because the handoff is idempotent (keyed on the request).
@@ -62,7 +65,7 @@ def _post_to_orchestrator(body: bytes, signature: str):
     for attempt in range(ORCH_MAX_ATTEMPTS):
         try:
             response = httpx.post(
-                f"{ORCHESTRATOR_URL}/provision",
+                f"{ORCHESTRATOR_URL}{path}",
                 content=body,
                 headers={"X-Signature": signature, "Content-Type": "application/json"},
                 timeout=ORCH_TIMEOUT,
@@ -529,3 +532,107 @@ def request_audit(reference: str, session: Session = Depends(get_session)) -> di
             for r in rows
         ],
     }
+
+
+# --- Real apply / destroy (increment 2.6b) -----------------------------------
+
+
+def _handoff_payload(req: Request, *, ttl_expiry: str | None = None) -> tuple[bytes, str]:
+    """Build and sign the orchestrator handoff for a request."""
+    payload = {
+        "contract_version": CONTRACT_VERSION,
+        "idempotency_key": req.approval.jira_key,
+        "issued_at": datetime.now(timezone.utc).isoformat(),
+        "jira_key": req.approval.jira_key,
+        "reference": req.reference,
+        "policy_input": _policy_input(req),
+        "approved_monthly": float(req.estimate.monthly) if req.estimate else None,
+    }
+    if ttl_expiry:
+        payload["ttl_expiry"] = ttl_expiry
+    body = json.dumps(payload, sort_keys=True).encode()
+    return body, sign(WEBHOOK_SECRET, body)
+
+
+@app.post("/api/requests/{reference}/apply")
+def apply_request(reference: str, session: Session = Depends(get_session)):
+    """Explicitly apply an approved+planned request — CREATES real resources."""
+    req = _load_request(reference, session)
+    if req.approval is None:
+        raise HTTPException(status_code=400, detail="Request has no approval to apply.")
+    if req.status == "provisioned":
+        return {"provisioned": True, "idempotent": True,
+                "message": f"{reference} is already provisioned."}
+    if req.status != "planned":
+        return JSONResponse(
+            status_code=409,
+            content={"error": "Request must be approved and planned before it can be applied."},
+        )
+
+    ttl_expiry = datetime.now(timezone.utc) + timedelta(days=PROVISION_TTL_DAYS)
+    body, signature = _handoff_payload(req, ttl_expiry=ttl_expiry.isoformat())
+    append_audit(session, "apply.handoff", reference=reference, jira_key=req.approval.jira_key,
+                 actor="approver")
+    session.commit()
+
+    response, error = _post_to_orchestrator(body, signature, path="/apply")
+    if response is None:
+        append_audit(session, "apply.unreachable", reference=reference,
+                     jira_key=req.approval.jira_key, detail={"error": error})
+        session.commit()
+        return JSONResponse(status_code=503, content={"error": f"Orchestrator unreachable ({error})."})
+    if response.status_code != 200:
+        append_audit(session, "apply.failed", reference=reference,
+                     jira_key=req.approval.jira_key, detail={"body": response.text})
+        session.commit()
+        return JSONResponse(status_code=response.status_code,
+                            content={"error": "Apply failed.", "detail": response.text})
+
+    result = response.json()
+    res = result.get("resource", {})
+    session.add(ProvisionedResource(
+        reference=reference, kind=res.get("kind", "resource"), name=res.get("name", ""),
+        region=res.get("region"), details=res.get("outputs", {}), ttl_expiry=ttl_expiry,
+        lifecycle_state="active",
+    ))
+    req.status = "provisioned"
+    append_audit(session, "provisioned", reference=reference, jira_key=req.approval.jira_key,
+                 detail=result)
+    session.commit()
+    return {"provisioned": True, "resource": res, "message": result.get("message")}
+
+
+@app.post("/api/requests/{reference}/destroy")
+def destroy_request(reference: str, session: Session = Depends(get_session)):
+    """Destroy the resources created for a request (rollback / cleanup)."""
+    req = _load_request(reference, session)
+    if req.approval is None:
+        raise HTTPException(status_code=400, detail="Request has no approval.")
+
+    body, signature = _handoff_payload(req)
+    append_audit(session, "destroy.handoff", reference=reference, jira_key=req.approval.jira_key,
+                 actor="approver")
+    session.commit()
+
+    response, error = _post_to_orchestrator(body, signature, path="/destroy")
+    if response is None:
+        return JSONResponse(status_code=503, content={"error": f"Orchestrator unreachable ({error})."})
+    if response.status_code != 200:
+        append_audit(session, "destroy.failed", reference=reference,
+                     jira_key=req.approval.jira_key, detail={"body": response.text})
+        session.commit()
+        return JSONResponse(status_code=response.status_code,
+                            content={"error": "Destroy failed.", "detail": response.text})
+
+    for res in session.scalars(
+        select(ProvisionedResource).where(
+            ProvisionedResource.reference == reference,
+            ProvisionedResource.lifecycle_state == "active",
+        )
+    ):
+        res.lifecycle_state = "decommissioned"
+    req.status = "decommissioned"
+    append_audit(session, "destroyed", reference=reference, jira_key=req.approval.jira_key,
+                 detail=response.json())
+    session.commit()
+    return {"destroyed": True, "message": response.json().get("summary")}

@@ -220,6 +220,26 @@ class Approval(Base):
     request: Mapped["Request"] = relationship(back_populates="approval")
 
 
+class ProvisionedResource(Base):
+    """A resource actually created by an apply (2.6b; ARCHITECTURE.md §5 registry).
+
+    Records what exists so it can be tracked, given a TTL, and destroyed.
+    """
+
+    __tablename__ = "provisioned_resource"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    reference: Mapped[str] = mapped_column(String(20), index=True)
+    kind: Mapped[str] = mapped_column(String(32))  # e.g. oci-bucket
+    name: Mapped[str] = mapped_column(String(120))
+    region: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    details: Mapped[dict] = mapped_column(JSON, default=dict)
+    ttl_expiry: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # active | decommissioned
+    lifecycle_state: Mapped[str] = mapped_column(String(16), default="active")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
 class AuditLog(Base):
     """Append-only, hash-chained audit trail (1.9; F-SEC-01 foundation).
 

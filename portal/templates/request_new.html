@@ -77,7 +77,7 @@
             <pre style="white-space:pre-wrap; font-size:0.8rem; background:#f0f5f6; padding:0.6rem; border-radius:6px; margin-top:0.4rem;">{{ appr.ticket_body }}</pre>
           </details>
         {% endif %}
-        {% if appr and not provisioned %}
+        {% if appr and not provisioned and not planned %}
           <form method="post" action="/request/{{ reference }}/approve" style="margin-top:0.75rem;">
             <input type="hidden" name="jira_key" value="{{ appr.jira_key }}">
             <button class="btn-submit" type="submit">Simulate Jira approval &amp; provision</button>
@@ -85,11 +85,28 @@
           </form>
         {% endif %}
       </div>
+      {% if planned and not provisioned %}
+        <div class="banner banner-saved">
+          <strong>Plan ready — nothing created yet.</strong>
+          {% if plan_summary %}<div class="mono" style="margin-top:0.3rem;">{{ plan_summary }}</div>{% endif %}
+        </div>
+        <form method="post" action="/request/{{ reference }}/apply" style="margin-top:0.5rem;"
+              onsubmit="return confirm('This will CREATE real cloud resources in the sandbox. Continue?');">
+          <button class="btn-submit" type="submit" style="background:#b3261e;">Apply — create real resources</button>
+          <span class="muted" style="margin-left:0.5rem;">runs terraform apply against OCI</span>
+        </form>
+      {% endif %}
       {% if provisioned %}
         <div class="banner banner-submitted">
-          <strong>Provisioned (mock).</strong>
-          The signed handoff reached the orchestrator, which re-verified the approval and re-checked policy before acting. No real resources were created.
+          <strong>Provisioned.</strong> Real resources were created in the sandbox (see the audit trail).
         </div>
+        <form method="post" action="/request/{{ reference }}/destroy" style="margin-top:0.5rem;"
+              onsubmit="return confirm('This will DESTROY the resources created for this request. Continue?');">
+          <button class="btn-save" type="submit">Destroy resources</button>
+        </form>
+      {% endif %}
+      {% if decommissioned %}
+        <div class="banner banner-saved"><strong>Resources destroyed.</strong> The request's resources were removed.</div>
       {% endif %}
       {% if audit %}
         <fieldset>

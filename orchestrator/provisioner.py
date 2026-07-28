@@ -64,13 +64,22 @@ def _plan_summary(stdout: str) -> str:
     return "plan generated"
 
 
-def terraform_plan(bucket_name: str, tags: dict) -> dict:
-    """Run init + plan against OCI. Returns a summary + output. Creates nothing."""
+def _require_oci() -> None:
     missing = [k for k in ("OCI_TENANCY_OCID", "OCI_COMPARTMENT_OCID", "OCI_REGION")
                if not os.getenv(k)]
     if missing:
         raise ProvisionError(f"OCI not configured: missing {', '.join(missing)}")
 
+
+def _summary(stdout: str, pattern: str, fallback: str) -> str:
+    import re
+    match = re.search(pattern, stdout)
+    return match.group(0) if match else fallback
+
+
+def terraform_plan(bucket_name: str, tags: dict) -> dict:
+    """Run init + plan against OCI. Returns a summary + output. Creates nothing."""
+    _require_oci()
     _write_tfvars(_oci_vars(bucket_name, tags))
 
     init = _run(["init", "-input=false", "-no-color"])
@@ -81,7 +90,50 @@ def terraform_plan(bucket_name: str, tags: dict) -> dict:
     if plan.returncode != 0:
         raise ProvisionError(f"terraform plan failed: {plan.stderr[-800:]}")
 
+    return {"summary": _plan_summary(plan.stdout), "output": plan.stdout[-4000:]}
+
+
+def terraform_apply(bucket_name: str, tags: dict) -> dict:
+    """Run init + apply against OCI. CREATES the resource. Requires apply mode."""
+    if provision_mode() != "apply":
+        raise ProvisionError("apply is not enabled (PROVISION_MODE is not 'apply')")
+    _require_oci()
+    _write_tfvars(_oci_vars(bucket_name, tags))
+
+    init = _run(["init", "-input=false", "-no-color"])
+    if init.returncode != 0:
+        raise ProvisionError(f"terraform init failed: {init.stderr[-800:]}")
+
+    apply = _run(["apply", "-input=false", "-no-color", "-auto-approve"])
+    if apply.returncode != 0:
+        raise ProvisionError(f"terraform apply failed: {apply.stderr[-1200:]}")
+
+    outputs = {}
+    out = _run(["output", "-json"])
+    if out.returncode == 0:
+        try:
+            import json
+            outputs = {k: v.get("value") for k, v in json.loads(out.stdout).items()}
+        except Exception:  # noqa: BLE001
+            outputs = {}
+
     return {
-        "summary": _plan_summary(plan.stdout),
-        "output": plan.stdout[-4000:],
+        "summary": _summary(apply.stdout, r"Apply complete!.*", "apply complete"),
+        "outputs": outputs,
+        "output": apply.stdout[-4000:],
+    }
+
+
+def terraform_destroy(bucket_name: str, tags: dict) -> dict:
+    """Run destroy against OCI — removes the resource (rollback / cleanup)."""
+    _require_oci()
+    _write_tfvars(_oci_vars(bucket_name, tags))
+
+    _run(["init", "-input=false", "-no-color"])
+    destroy = _run(["destroy", "-input=false", "-no-color", "-auto-approve"])
+    if destroy.returncode != 0:
+        raise ProvisionError(f"terraform destroy failed: {destroy.stderr[-1200:]}")
+    return {
+        "summary": _summary(destroy.stdout, r"Destroy complete!.*", "destroy complete"),
+        "output": destroy.stdout[-4000:],
     }

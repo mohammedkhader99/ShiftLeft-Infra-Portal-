@@ -204,6 +204,54 @@ def test_approve_fires_handoff_and_provisions_with_audit(client, monkeypatch):
     assert events == ["approval.approved", "orchestrator.handoff", "provisioned"]
 
 
+def test_apply_flow_creates_and_registers_resource(client, monkeypatch):
+    import api.main as main
+
+    ref = client.post("/api/requests/draft", json=VALID_CREATE).json()["reference"]
+    key = client.post(f"/api/requests/{ref}/submit").json()["approval"]["jira_key"]
+
+    class Resp:
+        def __init__(self, code, data):
+            self.status_code = code
+            self._data = data
+            self.text = ""
+            self.headers = {"content-type": "application/json"}
+
+        def json(self):
+            return self._data
+
+    def fake_post(url, *a, **k):
+        if url.endswith("/provision"):
+            return Resp(200, {"provisioned": False, "planned": True, "plan_summary": "Plan: 1 to add"})
+        if url.endswith("/apply"):
+            return Resp(200, {"provisioned": True,
+                              "resource": {"kind": "oci-bucket", "name": "egate-uat",
+                                           "region": "me-dubai-1", "outputs": {}}})
+        return Resp(200, {})
+
+    monkeypatch.setattr(main.httpx, "post", fake_post)
+
+    # Approve -> plan only (nothing created), status 'planned'.
+    client.post(f"/api/approvals/{key}/approve")
+    assert client.get(f"/api/requests/{ref}").json()["status"] == "planned"
+
+    # Explicit apply -> provisioned + resource registered.
+    applied = client.post(f"/api/requests/{ref}/apply").json()
+    assert applied["provisioned"] is True
+    assert applied["resource"]["name"] == "egate-uat"
+    assert client.get(f"/api/requests/{ref}").json()["status"] == "provisioned"
+    events = [e["event"] for e in client.get(f"/api/requests/{ref}/audit").json()["entries"]]
+    assert "apply.handoff" in events and "provisioned" in events
+
+
+def test_apply_refused_before_plan(client):
+    # A brand-new draft can't be applied — it must be approved+planned first.
+    ref = client.post("/api/requests/draft", json=VALID_CREATE).json()["reference"]
+    client.post(f"/api/requests/{ref}/submit")
+    resp = client.post(f"/api/requests/{ref}/apply")
+    assert resp.status_code == 409
+
+
 def test_plan_mode_marks_request_planned_not_provisioned(client, monkeypatch):
     import api.main as main
 

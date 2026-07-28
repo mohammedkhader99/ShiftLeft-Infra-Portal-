@@ -171,6 +171,9 @@ def _render_form(
     saved: bool = False,
     submitted: bool = False,
     provisioned: bool = False,
+    planned: bool = False,
+    plan_summary: str | None = None,
+    decommissioned: bool = False,
     audit: list | None = None,
     banner_error: str | None = None,
     notice: str | None = None,
@@ -190,6 +193,9 @@ def _render_form(
             "saved": saved,
             "submitted": submitted,
             "provisioned": provisioned,
+            "planned": planned,
+            "plan_summary": plan_summary,
+            "decommissioned": decommissioned,
             "audit": audit or [],
             "user": auth.session_user(request) or auth.DEFAULT_DEV_USER,
         },
@@ -375,15 +381,51 @@ def request_approve(
 
     data = approve_resp.json() if approve_resp.headers.get("content-type", "").startswith("application/json") else {}
     provisioned = bool(data.get("provisioned"))
+    planned = bool(data.get("planned"))
+    plan_summary = (data.get("result") or {}).get("plan_summary")
     if approve_resp.status_code != 200:
         banner_error, notice = data.get("error", "Approval failed."), None
     else:
         # 200 but not provisioned = not yet approved in Jira: an informational notice.
-        banner_error, notice = None, (None if provisioned else data.get("message"))
+        banner_error, notice = None, (None if provisioned or planned else data.get("message"))
     return _render_form(
         request, form=saved_request, reference=reference, submitted=True,
-        provisioned=provisioned, audit=audit, banner_error=banner_error, notice=notice,
+        provisioned=provisioned, planned=planned, plan_summary=plan_summary,
+        audit=audit, banner_error=banner_error, notice=notice,
     )
+
+
+def _action_and_render(request: Request, reference: str, path: str, *, provisioned: bool = False,
+                       decommissioned: bool = False) -> HTMLResponse:
+    """Call an API request-action (apply/destroy) and re-render with the result."""
+    try:
+        resp = httpx.post(f"{API_BASE_URL}/api/requests/{reference}/{path}", timeout=310.0)
+        saved_request = httpx.get(f"{API_BASE_URL}/api/requests/{reference}", timeout=5.0).json()
+        audit = httpx.get(
+            f"{API_BASE_URL}/api/requests/{reference}/audit", timeout=5.0
+        ).json().get("entries", [])
+    except Exception as exc:  # noqa: BLE001
+        return _render_form(request, form={}, reference=reference, banner_error=str(exc))
+    ok = resp.status_code == 200
+    error = None if ok else (resp.json().get("error", f"{path} failed.")
+                             if resp.headers.get("content-type", "").startswith("application/json")
+                             else f"{path} failed.")
+    return _render_form(
+        request, form=saved_request, reference=reference, submitted=True, audit=audit,
+        provisioned=provisioned and ok, decommissioned=decommissioned and ok, banner_error=error,
+    )
+
+
+@app.post("/request/{reference}/apply", response_class=HTMLResponse)
+def request_apply(request: Request, reference: str) -> HTMLResponse:
+    """Explicitly apply a planned request — creates real resources."""
+    return _action_and_render(request, reference, "apply", provisioned=True)
+
+
+@app.post("/request/{reference}/destroy", response_class=HTMLResponse)
+def request_destroy(request: Request, reference: str) -> HTMLResponse:
+    """Destroy the resources created for a request."""
+    return _action_and_render(request, reference, "destroy", decommissioned=True)
 
 
 @app.post("/request/sizing", response_class=HTMLResponse)
