@@ -18,7 +18,10 @@ def live_env(monkeypatch):
     monkeypatch.setenv("JIRA_PAT", "test-pat")
     monkeypatch.setenv("JIRA_PROJECT_KEY", "INFRA")
     monkeypatch.setenv("JIRA_ISSUE_TYPE", "Service Request")
+    monkeypatch.delenv("JIRA_TEMPLATE_ISSUE", raising=False)
+    jira._template_cache = None
     yield
+    jira._template_cache = None
 
 
 class _Resp:
@@ -57,6 +60,45 @@ def test_live_create_returns_real_key(monkeypatch):
     assert captured["auth"] == "Bearer test-pat"
     assert captured["json"]["fields"]["reporter"] == {"name": "alice@x.com"}
     assert captured["url"].endswith("/rest/api/2/issue")
+
+
+def test_template_fields_are_replicated(monkeypatch):
+    monkeypatch.setenv("JIRA_TEMPLATE_ISSUE", "SDIMD-68275")
+    jira._template_cache = None  # clear cache
+
+    def fake_get(url, *a, **k):
+        if url.endswith("/issuetypes"):
+            return _Resp({"values": [{"id": "10", "name": "Service Request"}]})
+        if "/issuetypes/10" in url:
+            return _Resp({"values": [
+                {"fieldId": "customfield_13657", "schema": {"type": "option"}},
+                {"fieldId": "customfield_14503", "schema": {"type": "any"}},
+                {"fieldId": "summary", "schema": {"type": "string"}},
+            ]})
+        if "/issue/SDIMD-68275" in url:
+            return _Resp({"fields": {
+                "customfield_13657": {"value": "Non-Production"},
+                "customfield_14503": ["emaratechIT (SD-6759)"],
+                "summary": "should be ignored",
+            }})
+        return _Resp({})
+
+    captured = {}
+
+    def fake_post(url, json, headers, timeout):
+        captured["fields"] = json["fields"]
+        return _Resp({"key": "SDIMD-99"}, status=201)
+
+    monkeypatch.setattr(jira.httpx, "get", fake_get)
+    monkeypatch.setattr(jira.httpx, "post", fake_post)
+    jira.create_issue(session=None, req=_request(), body="body")
+
+    f = captured["fields"]
+    assert f["customfield_13657"] == {"value": "Non-Production"}
+    # Insight asset field auto-transformed to [{"key": ...}]
+    assert f["customfield_14503"] == [{"key": "SD-6759"}]
+    # Our summary/description win over the template's.
+    assert f["summary"].startswith("Provisioning request")
 
 
 def test_extra_fields_are_merged(monkeypatch):

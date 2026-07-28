@@ -20,3 +20,4 @@ os.environ["USE_MOCK"] = "true"
 os.environ["JIRA_APPROVED_STATUSES"] = "Approved,Done"
 os.environ["JIRA_REJECTED_STATUSES"] = "Rejected,Cancelled"
 os.environ.pop("JIRA_EXTRA_FIELDS", None)
+os.environ.pop("JIRA_TEMPLATE_ISSUE", None)

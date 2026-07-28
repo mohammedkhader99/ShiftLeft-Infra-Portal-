@@ -14,12 +14,16 @@ manager via Jira's own workflow.
 
 import json
 import os
+import re
 
 import httpx
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from db.models import Approval, Request
+
+# Cache of template fields (Jira config is stable; fetched once per process).
+_template_cache: dict | None = None
 
 
 class JiraError(RuntimeError):
@@ -54,11 +58,9 @@ def _set_reporter() -> bool:
 
 
 def _extra_fields() -> dict:
-    """Project-specific required custom fields, supplied as a JSON env value.
+    """Explicit custom-field overrides, supplied as a JSON env value.
 
-    Real Jira projects often require custom fields on create (Environment,
-    Impact, Urgency, etc.). JIRA_EXTRA_FIELDS is merged into the issue's fields
-    so those can be provided as config, not code.
+    Merged last, so it can override anything the template provides.
     """
     raw = os.getenv("JIRA_EXTRA_FIELDS", "").strip()
     if not raw:
@@ -67,6 +69,96 @@ def _extra_fields() -> dict:
         return json.loads(raw)
     except json.JSONDecodeError as exc:
         raise JiraError(f"JIRA_EXTRA_FIELDS is not valid JSON: {exc}") from exc
+
+
+# Fields we set ourselves or that are never copied from a template.
+_TEMPLATE_SKIP = {"summary", "description", "project", "issuetype", "reporter",
+                  "attachment", "issuelinks", "comment"}
+
+
+def _to_write(schema: dict, val) -> object | None:
+    """Convert a field's *read* value into its Jira *write* format.
+
+    Handles selects, multi-selects, user pickers, priority, and Insight/Assets
+    object fields (which render as "label (KEY)" and are written as
+    [{"key": "KEY"}]).
+    """
+    t = schema.get("type")
+    items = schema.get("items")
+    if val in (None, "", [], {}):
+        return None
+    if isinstance(val, dict) and "title" in val and "body" in val:
+        return None  # read-only "message" custom field
+    if t == "option":
+        return {"value": val["value"]} if isinstance(val, dict) and val.get("value") else None
+    if t == "user":
+        return {"name": val["name"]} if isinstance(val, dict) else None
+    if t == "priority":
+        return {"id": val["id"]} if isinstance(val, dict) else None
+    if t in ("string", "number", "date", "datetime"):
+        return val
+    if t in ("array", "any") and isinstance(val, list):
+        out = []
+        for v in val:
+            if items == "option" and isinstance(v, dict):
+                out.append({"value": v.get("value")})
+            elif items == "user" and isinstance(v, dict):
+                out.append({"name": v.get("name")})
+            elif isinstance(v, str):
+                m = re.search(r"\(([^)]+)\)\s*$", v)  # Insight "label (KEY)"
+                if m:
+                    out.append({"key": m.group(1)})
+            elif isinstance(v, dict) and v.get("key"):
+                out.append({"key": v["key"]})
+        return out or None
+    return None
+
+
+def _template_fields() -> dict:
+    """Replicate the create-screen fields of a template ticket (JIRA_TEMPLATE_ISSUE).
+
+    Reads the target project/issue-type's create screen and the template issue,
+    then copies each create-screen field's value in the correct write format.
+    Cached for the process. Empty if no template is configured.
+    """
+    global _template_cache
+    if _template_cache is not None:
+        return _template_cache
+
+    key = os.getenv("JIRA_TEMPLATE_ISSUE", "").strip()
+    if not key:
+        _template_cache = {}
+        return {}
+
+    base, h = _base_url(), _headers()
+    project, issue_type = _project_key(), _issue_type()
+    try:
+        its = httpx.get(f"{base}/rest/api/2/issue/createmeta/{project}/issuetypes",
+                        headers=h, timeout=15.0).json()
+        values = its.get("values", its if isinstance(its, list) else [])
+        match = [v for v in values if v.get("name") == issue_type]
+        if not match:
+            raise JiraError(f"issue type '{issue_type}' not available on {project}")
+        tid = match[0]["id"]
+        meta = httpx.get(f"{base}/rest/api/2/issue/createmeta/{project}/issuetypes/{tid}",
+                         headers=h, timeout=15.0).json().get("values", [])
+        template = httpx.get(f"{base}/rest/api/2/issue/{key}",
+                             headers=h, timeout=15.0).json().get("fields", {})
+    except JiraError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise JiraError(f"could not read Jira template {key}: {exc}") from exc
+
+    fields: dict = {}
+    for f in meta:
+        fid = f.get("fieldId")
+        if fid in _TEMPLATE_SKIP or fid not in template:
+            continue
+        written = _to_write(f.get("schema", {}), template[fid])
+        if written is not None:
+            fields[fid] = written
+    _template_cache = fields
+    return fields
 
 
 def _status_set(env_var: str, default: str) -> set[str]:
@@ -143,7 +235,9 @@ def create_issue(session: Session, req: Request, body: str) -> Approval:
     if _set_reporter() and req.requester:
         fields["reporter"] = {"name": req.requester}
 
-    # Project-specific required custom fields (config, not code).
+    # Replicate a template ticket's fields (auto-discovered), then apply any
+    # explicit overrides. Extra fields win over the template.
+    fields.update(_template_fields())
     fields.update(_extra_fields())
 
     try:

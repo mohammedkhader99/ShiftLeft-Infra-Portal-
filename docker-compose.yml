@@ -64,7 +64,10 @@ services:
       JIRA_APPROVED_STATUSES: ${JIRA_APPROVED_STATUSES:-Approved,Done}
       JIRA_REJECTED_STATUSES: ${JIRA_REJECTED_STATUSES:-Rejected,Cancelled}
       JIRA_SET_REPORTER: ${JIRA_SET_REPORTER:-true}
-      # JSON of any required custom fields for the target project/issue type.
+      # A template ticket whose create-screen fields the portal replicates
+      # automatically (incl. Insight/Assets object fields).
+      JIRA_TEMPLATE_ISSUE: ${JIRA_TEMPLATE_ISSUE:-}
+      # JSON overrides applied on top of the template (rarely needed).
       JIRA_EXTRA_FIELDS: ${JIRA_EXTRA_FIELDS:-}
     ports:
       - "8081:8081"
