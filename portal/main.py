@@ -144,6 +144,7 @@ def my_requests(request: Request) -> HTMLResponse:
         "my_requests.html",
         {
             "user": auth.session_user(request) or auth.DEFAULT_DEV_USER,
+            "roles": _fetch_roles(request),
             "requests": rows,
             "error": error,
         },
@@ -187,6 +188,22 @@ def _fetch_lookups() -> tuple[dict, str | None]:
         return response.json(), None
     except Exception as exc:  # noqa: BLE001 — surface the failure on the page
         return EMPTY_LOOKUPS, str(exc)
+
+
+def _fetch_roles(request: Request) -> list[str]:
+    """The signed-in user's roles, from the API (server-side authority). Used to
+    hide actions the user can't take — the API still enforces (P2)."""
+    try:
+        response = httpx.get(
+            f"{API_BASE_URL}/api/me",
+            headers=_requester_headers(request),
+            timeout=5.0,
+        )
+        response.raise_for_status()
+        roles = response.json().get("roles", [])
+        return roles if isinstance(roles, list) else []
+    except Exception:  # noqa: BLE001 — treat an unknown user as least-privilege
+        return ["read_only"]
 
 
 def _fetch_provisioned(request: Request) -> list[dict]:
@@ -237,6 +254,7 @@ def _render_form(
     notice: str | None = None,
 ) -> HTMLResponse:
     lookups, lookup_error = _fetch_lookups()
+    roles = _fetch_roles(request)
     # The decommission source dropdown + which of its technologies are ticked.
     provisioned_requests = _fetch_provisioned(request)
     selected_techs = ",".join(
@@ -248,6 +266,7 @@ def _render_form(
         "request_new.html",
         {
             "lookups": lookups,
+            "roles": roles,
             "provisioned_requests": provisioned_requests,
             "decommission_selected": selected_techs,
             "error": banner_error or lookup_error,
@@ -493,7 +512,7 @@ def request_approve(
     decommissioned = bool(data.get("decommissioned"))
     plan_summary = (data.get("result") or {}).get("plan_summary")
     if approve_resp.status_code != 200:
-        banner_error, notice = data.get("error", "Approval failed."), None
+        banner_error, notice = (data.get("error") or data.get("detail") or "Approval failed."), None
     elif decommissioned:
         banner_error, notice = None, data.get("message")
     else:
@@ -518,9 +537,13 @@ def _action_and_render(request: Request, reference: str, path: str, *, provision
     except Exception as exc:  # noqa: BLE001
         return _render_form(request, form={}, reference=reference, banner_error=str(exc))
     ok = resp.status_code == 200
-    error = None if ok else (resp.json().get("error", f"{path} failed.")
-                             if resp.headers.get("content-type", "").startswith("application/json")
-                             else f"{path} failed.")
+    error = None
+    if not ok:
+        if resp.headers.get("content-type", "").startswith("application/json"):
+            body = resp.json()
+            error = body.get("error") or body.get("detail") or f"{path} failed."
+        else:
+            error = f"{path} failed."
     return _render_form(
         request, form=saved_request, reference=reference, submitted=True, audit=audit,
         provisioned=provisioned and ok, decommissioned=decommissioned and ok, banner_error=error,

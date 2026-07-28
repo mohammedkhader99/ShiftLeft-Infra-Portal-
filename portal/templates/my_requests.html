@@ -58,7 +58,7 @@
 </head>
 <body>
   <div class="whoami">
-    <span>Signed in as <strong>{{ (user.name or user.email) if user else '—' }}</strong></span>
+    <span>Signed in as <strong>{{ (user.name or user.email) if user else '—' }}</strong>{% if roles %} · role: <strong>{{ roles | join(', ') }}</strong>{% endif %}</span>
     <a href="/logout">Log out</a>
   </div>
   <main class="card">

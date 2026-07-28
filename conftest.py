@@ -31,3 +31,8 @@ os.environ["JIRA_RESOLVE_FIELDS"] = ""
 # Keep the background poller OFF during tests (it must never start a thread that
 # calls the real orchestrator/Jira). Tests drive _advance_request directly.
 os.environ["AUTO_PROVISION"] = "false"
+# RBAC (E1.1): resolve roles from the local map, not live Jira. Empty map means
+# unmapped users get full access (mock default), so existing tests aren't
+# blocked; role-specific tests set ROLE_MAP themselves.
+os.environ["ROLE_SOURCE"] = "mock"
+os.environ["ROLE_MAP"] = ""

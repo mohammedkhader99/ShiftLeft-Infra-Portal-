@@ -608,6 +608,46 @@ def test_short_reason_falls_back_to_plain_text():
     assert main._short_reason("") == "Provisioning failed."
 
 
+# --- RBAC enforcement (increment E1.1, F-IAM-01) -----------------------------
+
+def test_me_returns_resolved_roles(client, monkeypatch):
+    monkeypatch.setenv("ROLE_MAP", '{"aud@x.com": ["auditor"]}')
+    resp = client.get("/api/me", headers={"X-Requester": "aud@x.com"})
+    assert resp.status_code == 200
+    assert resp.json() == {"email": "aud@x.com", "roles": ["auditor"]}
+
+
+def test_apply_refused_without_platform_admin(client, monkeypatch):
+    monkeypatch.setenv("ROLE_MAP", '{"dev@x.com": ["requester"]}')
+    resp = client.post("/api/requests/REQ-2026-0001/apply",
+                       headers={"X-Requester": "dev@x.com"})
+    assert resp.status_code == 403
+    assert "not permitted" in resp.json()["detail"]
+
+
+def test_execute_allowed_for_platform_admin(client, monkeypatch):
+    # A platform admin passes the role gate; the request just doesn't exist yet,
+    # so we get 404 (not 403) — proving the gate was cleared.
+    monkeypatch.setenv("ROLE_MAP", '{"ops@x.com": ["platform_admin"]}')
+    resp = client.post("/api/requests/REQ-9999-9999/apply",
+                       headers={"X-Requester": "ops@x.com"})
+    assert resp.status_code == 404
+
+
+def test_create_refused_for_read_only(client, monkeypatch):
+    monkeypatch.setenv("ROLE_MAP", '{"ro@x.com": ["read_only"]}')
+    resp = client.post("/api/requests/draft", json=VALID_CREATE,
+                       headers={"X-Requester": "ro@x.com"})
+    assert resp.status_code == 403
+
+
+def test_audit_refused_without_audit_role(client, monkeypatch):
+    monkeypatch.setenv("ROLE_MAP", '{"ro@x.com": ["read_only"]}')
+    resp = client.get("/api/requests/REQ-2026-0001/audit",
+                      headers={"X-Requester": "ro@x.com"})
+    assert resp.status_code == 403
+
+
 # --- 'My requests' dashboard list endpoint (increment 2.8) --------------------
 
 def test_list_requests_newest_first_and_filtered_by_requester(client):

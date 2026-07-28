@@ -49,10 +49,11 @@
   {% set f = form or {} %}
   {% set rtype = f.get('request_type') or 'create' %}
   {% set comps = f.get('components') or [{}] %}
+  {% set is_admin = 'platform_admin' in (roles or []) %}
   <main class="card">
     <div style="display:flex; justify-content:space-between; align-items:center; font-size:0.82rem; color:#5b6b72;">
       <a class="back" href="/">← Back to portal</a>
-      <span>Signed in as <strong>{{ (user.name or user.email) if user else '—' }}</strong> · <a href="/logout" style="color:#0B5563;">Log out</a></span>
+      <span>Signed in as <strong>{{ (user.name or user.email) if user else '—' }}</strong>{% if roles %} · role: <strong>{{ roles | join(', ') }}</strong>{% endif %} · <a href="/logout" style="color:#0B5563;">Log out</a></span>
     </div>
     <h1>New infrastructure request</h1>
     <p class="subtitle">Guided request — collect &amp; validate (ARCHITECTURE.md §4)</p>
@@ -78,11 +79,15 @@
           </details>
         {% endif %}
         {% if appr and not provisioned and not planned %}
+          {% if is_admin %}
           <form method="post" action="/request/{{ reference }}/approve" style="margin-top:0.75rem;">
             <input type="hidden" name="jira_key" value="{{ appr.jira_key }}">
             <button class="btn-submit" type="submit">Simulate Jira approval &amp; provision</button>
             <span class="muted" style="margin-left:0.5rem;">(stands in for the approver acting in Jira)</span>
           </form>
+          {% else %}
+          <p class="muted" style="margin-top:0.75rem;">Only a platform administrator can provision. Awaiting approval in Jira.</p>
+          {% endif %}
         {% endif %}
       </div>
       {% if planned and not provisioned %}
@@ -90,11 +95,15 @@
           <strong>Plan ready — nothing created yet.</strong>
           {% if plan_summary %}<div class="mono" style="margin-top:0.3rem;">{{ plan_summary }}</div>{% endif %}
         </div>
+        {% if is_admin %}
         <form method="post" action="/request/{{ reference }}/apply" style="margin-top:0.5rem;"
               onsubmit="return confirm('This will CREATE real cloud resources in the sandbox. Continue?');">
           <button class="btn-submit" type="submit" style="background:#b3261e;">Apply — create real resources</button>
           <span class="muted" style="margin-left:0.5rem;">runs terraform apply against OCI</span>
         </form>
+        {% else %}
+        <p class="muted" style="margin-top:0.5rem;">Only a platform administrator can apply this plan.</p>
+        {% endif %}
       {% endif %}
       {% if in_progress %}
         <div hx-get="/request/{{ reference }}/progress" hx-trigger="load" hx-swap="outerHTML"></div>
@@ -103,10 +112,12 @@
         <div class="banner banner-submitted">
           <strong>Provisioned.</strong> Real resources were created in the sandbox (see the audit trail).
         </div>
+        {% if is_admin %}
         <form method="post" action="/request/{{ reference }}/destroy" style="margin-top:0.5rem;"
               onsubmit="return confirm('This will DESTROY the resources created for this request. Continue?');">
           <button class="btn-save" type="submit">Destroy resources</button>
         </form>
+        {% endif %}
       {% endif %}
       {% if decommissioned %}
         <div class="banner banner-saved"><strong>Resources destroyed.</strong> The request's resources were removed.</div>

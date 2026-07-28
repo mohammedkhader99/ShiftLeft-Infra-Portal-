@@ -81,6 +81,11 @@ services:
       AUTO_PROVISION: ${AUTO_PROVISION:-false}
       POLL_INTERVAL_SECONDS: ${POLL_INTERVAL_SECONDS:-30}
       PROVISION_MODE: ${PROVISION_MODE:-mock}
+      # RBAC (E1.1). ROLE_SOURCE=jira resolves each user's roles from their Jira
+      # group membership via JIRA_ROLE_MAP; "mock" uses ROLE_MAP (email->roles).
+      ROLE_SOURCE: ${ROLE_SOURCE:-mock}
+      ROLE_MAP: ${ROLE_MAP:-}
+      JIRA_ROLE_MAP: ${JIRA_ROLE_MAP:-}
     ports:
       - "8081:8081"
     depends_on:

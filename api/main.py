@@ -32,6 +32,7 @@ from api.jira import (
 from api.plan_preview import build_plan_preview
 from api.policy import PolicyUnavailable, get_policy_evaluator
 from api.pricing import estimate_cost
+from api import roles as roles_mod
 from api.sizing import resolve_components
 from api.validation import validate_submission
 from common.signing import sign
@@ -117,6 +118,32 @@ def get_session() -> Iterator[Session]:
     """Hand out a database session for the life of one request (read-only use here)."""
     with SessionLocal() as session:
         yield session
+
+
+def require_action(action: str):
+    """FastAPI dependency: authorise the signed-in user for a guarded action.
+
+    Resolves the user's roles server-side (F-IAM-01) and refuses with 403 if none
+    of them permit the action. Returns the requester so endpoints can also use it.
+    """
+    def _dep(requester: str = Depends(get_requester)) -> str:
+        user_roles = roles_mod.resolve_roles(requester)
+        if not roles_mod.can(user_roles, action):
+            have = ", ".join(sorted(user_roles)) or "none"
+            raise HTTPException(
+                status_code=403,
+                detail=(f"Your role ({have}) is not permitted to {action.replace('_', ' ')}. "
+                        "Ask a platform administrator."),
+            )
+        return requester
+    return _dep
+
+
+@app.get("/api/me")
+def whoami(requester: str = Depends(get_requester)) -> dict:
+    """The signed-in user's identity and resolved roles (for the portal to
+    show the role and hide actions it can't take — the API stays the gate)."""
+    return {"email": requester, "roles": sorted(roles_mod.resolve_roles(requester))}
 
 
 @app.get("/health")
@@ -259,7 +286,7 @@ def _load_request(reference: str, session: Session) -> Request:
 def save_draft(
     body: DraftIn,
     session: Session = Depends(get_session),
-    requester: str = Depends(get_requester),
+    requester: str = Depends(require_action("create_request")),
 ) -> RequestOut:
     """Create or update a draft. Lenient: partial data is allowed.
 
@@ -328,6 +355,7 @@ def submit_request(
     reference: str,
     session: Session = Depends(get_session),
     policy_eval=Depends(get_policy_evaluator),
+    _auth: str = Depends(require_action("create_request")),
 ):
     """Validate, run the OPA policy gate, then mark the request submitted."""
     req = _load_request(reference, session)
@@ -479,7 +507,8 @@ def get_approval(jira_key: str, session: Session = Depends(get_session)) -> dict
 
 
 @app.post("/api/approvals/{jira_key}/approve")
-def approve(jira_key: str, session: Session = Depends(get_session)):
+def approve(jira_key: str, session: Session = Depends(get_session),
+            _auth: str = Depends(require_action("execute"))):
     """Proceed with the signed orchestrator handoff once the request is approved.
 
     Approval authority lives in Jira (ARCHITECTURE.md §4). In live mode this
@@ -585,7 +614,8 @@ def approve(jira_key: str, session: Session = Depends(get_session)):
 
 
 @app.get("/api/requests/{reference}/audit")
-def request_audit(reference: str, session: Session = Depends(get_session)) -> dict:
+def request_audit(reference: str, session: Session = Depends(get_session),
+                  _auth: str = Depends(require_action("view_audit"))) -> dict:
     """Return the audit trail for one request (append-only, hash-chained)."""
     rows = session.scalars(
         select(AuditLog).where(AuditLog.reference == reference).order_by(AuditLog.id)
@@ -700,7 +730,8 @@ def _provision_in_background(reference: str, jira_key: str, body: bytes, signatu
 
 @app.post("/api/requests/{reference}/apply")
 def apply_request(reference: str, background_tasks: BackgroundTasks,
-                  session: Session = Depends(get_session)):
+                  session: Session = Depends(get_session),
+                  _auth: str = Depends(require_action("execute"))):
     """Start provisioning: set Jira In Progress, then apply in the background.
 
     Returns immediately with status 'in-progress' so the portal can show live
@@ -732,7 +763,8 @@ def apply_request(reference: str, background_tasks: BackgroundTasks,
 
 
 @app.post("/api/requests/{reference}/destroy")
-def destroy_request(reference: str, session: Session = Depends(get_session)):
+def destroy_request(reference: str, session: Session = Depends(get_session),
+                    _auth: str = Depends(require_action("execute"))):
     """Destroy the resources created for a request (rollback / cleanup)."""
     req = _load_request(reference, session)
     if req.approval is None:
