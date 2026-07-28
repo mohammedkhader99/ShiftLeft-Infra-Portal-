@@ -193,3 +193,32 @@ def test_destroy_removes_resource(monkeypatch):
     resp = client.post("/destroy", content=body, headers=_signed(body))
     assert resp.status_code == 200
     assert resp.json()["destroyed"] is True
+
+
+# --- Collision-proof bucket names (increment 2.10) ---------------------------
+
+def test_bucket_name_is_unique_per_request():
+    # The bucket name suffixes the reference, so a generic env name like "test"
+    # can't collide with an existing bucket (or another request's).
+    name = orch._bucket_name({"environment_name": "test"}, "REQ-2026-0027")
+    assert name == "test-req-2026-0027"
+
+    a = orch._bucket_name({"environment_name": "test"}, "REQ-2026-0027")
+    b = orch._bucket_name({"environment_name": "test"}, "REQ-2026-0099")
+    assert a != b  # same env name, different requests -> different buckets
+
+
+def test_bucket_name_is_oci_safe():
+    # Spaces / illegal characters are collapsed to hyphens; result is lowercase.
+    name = orch._bucket_name({"environment_name": "My Env!"}, "REQ-2026-0001")
+    assert name == "my-env-req-2026-0001"
+
+
+def test_bucket_and_tags_uses_derived_name():
+    bucket, tags = orch._bucket_and_tags({
+        "reference": "REQ-2026-0027",
+        "policy_input": {"environment_name": "test", "cost_centre_code": "IMD-1001",
+                         "data_classification": "internal"},
+    })
+    assert bucket == "test-req-2026-0027"
+    assert tags["reference"] == "REQ-2026-0027"

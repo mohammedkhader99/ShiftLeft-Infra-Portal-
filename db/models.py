@@ -125,6 +125,9 @@ class Request(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     reference: Mapped[str] = mapped_column(String(20), unique=True, index=True)
     status: Mapped[str] = mapped_column(String(16), default="draft")  # draft | submitted
+    # A short human-readable reason for the current status (e.g. why an apply
+    # failed), surfaced in the portal. Null unless there's something to explain.
+    status_detail: Mapped[str | None] = mapped_column(String(500), nullable=True)
     requester: Mapped[str] = mapped_column(String(120))
 
     # create | add | resize | decommission

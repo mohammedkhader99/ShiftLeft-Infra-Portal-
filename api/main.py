@@ -19,6 +19,7 @@ from api.audit import append_audit
 from api.auth import get_requester
 from api.jira import (
     JiraError,
+    add_comment,
     build_ticket_body,
     create_issue,
     get_status,
@@ -232,6 +233,7 @@ class RequestOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     reference: str
     status: str
+    status_detail: str | None = None
     requester: str
     request_type: str | None = None
     project_code: str | None = None
@@ -608,6 +610,25 @@ def request_audit(reference: str, session: Session = Depends(get_session)) -> di
 # --- Real apply / destroy (increment 2.6b) -----------------------------------
 
 
+def _short_reason(text: str, limit: int = 300) -> str:
+    """Pull a concise, human-readable reason out of an orchestrator/terraform
+    error blob, for the portal and a Jira comment. Falls back to a trim."""
+    if not text:
+        return "Provisioning failed."
+    # The orchestrator wraps terraform failures as JSON {"detail": "..."}.
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict) and parsed.get("detail"):
+            text = parsed["detail"]
+    except (ValueError, TypeError):
+        pass
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("Error:"):  # terraform's own headline
+            return line[:limit]
+    return " ".join(text.split())[:limit]
+
+
 def _handoff_payload(req: Request, *, ttl_expiry: str | None = None) -> tuple[bytes, str]:
     """Build and sign the orchestrator handoff for a request."""
     payload = {
@@ -651,9 +672,15 @@ def _provision_in_background(reference: str, jira_key: str, body: bytes, signatu
             return
         response, error = _post_to_orchestrator(body, signature, path="/apply")
         if response is None or response.status_code != 200:
+            raw = error or (response.text if response else "")
+            reason = _short_reason(raw)
             req.status = "apply-failed"
+            req.status_detail = reason
             append_audit(session, "apply.failed", reference=reference, jira_key=jira_key,
-                         detail={"error": error or (response.text if response else "")})
+                         detail={"error": raw})
+            # Leave the approver a note on the ticket rather than a silent stall.
+            add_comment(jira_key, "⚠️ Automated provisioning failed and no resources "
+                                  f"were created.\n\n{reason}")
             session.commit()
             return
 
@@ -666,6 +693,7 @@ def _provision_in_background(reference: str, jira_key: str, body: bytes, signatu
         ))
         _transition_jira(session, req, resolved_status(), "jira.resolved")
         req.status = "provisioned"
+        req.status_detail = None
         append_audit(session, "provisioned", reference=reference, jira_key=jira_key, detail=result)
         session.commit()
 
@@ -753,6 +781,7 @@ def _decommission(session: Session, req: Request, actor: str) -> dict:
     )
     if source is None:
         req.status = "decommission-failed"
+        req.status_detail = f"Source request {req.source_reference} not found."
         append_audit(session, "decommission.source_missing", reference=req.reference,
                      jira_key=req.approval.jira_key, detail={"source": req.source_reference})
         session.commit()
@@ -773,14 +802,17 @@ def _decommission(session: Session, req: Request, actor: str) -> dict:
 
     response, error = _post_to_orchestrator(body, signature, path="/destroy")
     if response is None or response.status_code != 200:
+        raw = error or (response.text if response else "")
+        reason = _short_reason(raw)
         req.status = "decommission-failed"
+        req.status_detail = reason
         append_audit(session, "destroy.failed", reference=req.reference,
                      jira_key=req.approval.jira_key,
-                     detail={"source": source.reference,
-                             "error": error or (response.text if response else "")})
+                     detail={"source": source.reference, "error": raw})
+        add_comment(req.approval.jira_key, "⚠️ Automated decommission failed; resources "
+                                           f"were not removed.\n\n{reason}")
         session.commit()
-        return {"approval": "approved", "decommissioned": False,
-                "error": error or (response.text if response else "destroy failed")}
+        return {"approval": "approved", "decommissioned": False, "error": reason}
 
     # Mark the source's live resources and the source request decommissioned.
     for res in session.scalars(

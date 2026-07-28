@@ -588,6 +588,26 @@ def test_poller_disabled_by_default():
     assert main.auto_provision_enabled() is False
 
 
+# --- Apply-failure hardening (increment 2.10) --------------------------------
+
+def test_short_reason_extracts_terraform_error():
+    import api.main as main
+
+    blob = ('{"detail":"Terraform apply failed: terraform apply failed: '
+            '\\nError: 409-BucketAlreadyExists, the bucket \'test\' already exists'
+            '\\nSuggestion: retry\\n"}')
+    reason = main._short_reason(blob)
+    assert reason.startswith("Error: 409-BucketAlreadyExists")
+    assert "already exists" in reason
+
+
+def test_short_reason_falls_back_to_plain_text():
+    import api.main as main
+
+    assert main._short_reason("unreachable: connection refused").startswith("unreachable")
+    assert main._short_reason("") == "Provisioning failed."
+
+
 # --- 'My requests' dashboard list endpoint (increment 2.8) --------------------
 
 def test_list_requests_newest_first_and_filtered_by_requester(client):

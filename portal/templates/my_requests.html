@@ -49,6 +49,7 @@
     .s-decommissioned{ background: #eceff1; color: #52616b; }
     .s-rejected      { background: #fadcdc; color: #97231f; }
     .s-apply-failed  { background: #fadcdc; color: #97231f; }
+    .fail-reason { margin-top: 0.3rem; font-size: 0.75rem; color: #97231f; max-width: 22rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .empty { background: #f0f5f6; border: 1px solid #cfe0e2; border-radius: 6px; padding: 1.25rem; color: #5b6b72; }
     .err { background: #fadcdc; border: 1px solid #f0b8b8; color: #97231f; border-radius: 6px; padding: 0.75rem 1rem; margin-bottom: 1rem; font-size: 0.88rem; }
     .actions { margin-top: 1.5rem; }
@@ -84,7 +85,12 @@
           {% for r in requests %}
           <tr>
             <td><a class="ref" href="/request/{{ r.reference }}">{{ r.reference }}</a></td>
-            <td><span class="badge s-{{ r.status }}">{{ r.status }}</span></td>
+            <td>
+              <span class="badge s-{{ r.status }}">{{ r.status }}</span>
+              {% if r.status_detail and 'failed' in r.status %}
+                <div class="fail-reason" title="{{ r.status_detail }}">{{ r.status_detail }}</div>
+              {% endif %}
+            </td>
             <td>{{ r.environment_name or r.target_environment or '—' }}</td>
             <td>
               {%- set parts = [] -%}

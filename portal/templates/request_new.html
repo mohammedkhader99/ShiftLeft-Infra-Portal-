@@ -136,6 +136,14 @@
       </div>
     {% endif %}
 
+    {% if f.get('status') in ['apply-failed', 'decommission-failed'] %}
+      <div class="banner banner-error">
+        <strong>{{ f.get('status') }} — nothing was created.</strong>
+        {% if f.get('status_detail') %}<div style="margin-top:0.4rem;">{{ f.get('status_detail') }}</div>{% endif %}
+        <div style="margin-top:0.4rem; font-size:0.85rem;">Tip: a unique environment name avoids “already exists” clashes. Submit a fresh request to try again.</div>
+      </div>
+    {% endif %}
+
     {% if error %}
       <div class="banner banner-error"><strong>Problem:</strong> {{ error }}</div>
     {% elif errors %}

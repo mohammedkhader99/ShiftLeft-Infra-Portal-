@@ -368,6 +368,21 @@ def transition_issue(jira_key: str, target_status: str, fields: dict | None = No
     return target_status
 
 
+def add_comment(jira_key: str, body: str) -> None:
+    """Add a comment to an issue. Best-effort: never raises (informational)."""
+    if jira_mode() != "live":
+        return
+    try:
+        httpx.post(
+            f"{_base_url()}/rest/api/2/issue/{jira_key}/comment",
+            json={"body": body},
+            headers=_headers(),
+            timeout=10.0,
+        )
+    except Exception:  # noqa: BLE001 — a comment is a nice-to-have, not critical
+        pass
+
+
 def get_status(jira_key: str) -> str:
     """Read the live approval status from Jira: pending | approved | rejected."""
     try:

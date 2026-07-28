@@ -11,6 +11,7 @@ re-checks OPA + cost before acting (§4). PROVISION_MODE gates real work:
 
 import json
 import os
+import re
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
@@ -90,9 +91,25 @@ def _authorise(body: bytes, signature: str) -> dict:
     return payload
 
 
+def _bucket_name(policy_input: dict, reference: str) -> str:
+    """A globally-unique, OCI-safe bucket name derived from the request.
+
+    The environment name alone can collide with a bucket that already exists in
+    the tenancy (e.g. a generic 'test'), so we suffix the request reference,
+    which is unique per request. The environment name stays the human-facing
+    label everywhere else; this is just the physical bucket's name.
+    """
+    env = (policy_input.get("environment_name") or "env").strip().lower()
+    raw = f"{env}-{reference}".lower()
+    # OCI bucket names allow letters, digits, hyphens, underscores and periods.
+    safe = re.sub(r"[^a-z0-9._-]+", "-", raw)
+    safe = re.sub(r"-+", "-", safe).strip("-")  # collapse runs of hyphens
+    return safe or reference.lower()
+
+
 def _bucket_and_tags(payload: dict) -> tuple[str, dict]:
     policy_input = payload.get("policy_input", {})
-    bucket = policy_input.get("environment_name") or payload["reference"].lower()
+    bucket = _bucket_name(policy_input, payload["reference"])
     tags = {
         "managed_by": "infra-portal",
         "reference": payload["reference"],
