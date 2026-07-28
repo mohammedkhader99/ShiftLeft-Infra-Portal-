@@ -5,6 +5,7 @@ python-multipart
 authlib
 itsdangerous
 pyjwt[crypto]
+fpdf2
 sqlalchemy
 psycopg[binary]
 pytest

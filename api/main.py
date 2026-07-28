@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from api.attachment import build_request_pdf
 from api.audit import append_audit
 from api.auth import get_requester
 from api.jira import JiraError, build_ticket_body, create_issue, get_status, jira_mode
@@ -312,8 +313,16 @@ def submit_request(
     # than leaving a submitted request with no approval ticket.
     plan_preview = build_plan_preview(req, session)
     ticket_body = build_ticket_body(req, breakdown, plan_preview)
+    # A one-page request + costing PDF for the approver (2.4c).
+    attachment = None
     try:
-        req.approval = create_issue(session, req, ticket_body)
+        sizing = resolve_components(components_data, session)
+        pdf = build_request_pdf(req, breakdown, sizing)
+        attachment = (f"request-{req.reference}.pdf", pdf)
+    except Exception:  # noqa: BLE001 — never fail a submit over the PDF
+        attachment = None
+    try:
+        req.approval = create_issue(session, req, ticket_body, attachment=attachment)
     except JiraError as exc:
         session.rollback()
         return JSONResponse(

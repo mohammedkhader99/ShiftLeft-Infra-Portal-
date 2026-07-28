@@ -214,8 +214,31 @@ def _next_mock_key(session: Session) -> str:
     return f"INFRA-{1000 + seq}"
 
 
-def create_issue(session: Session, req: Request, body: str) -> Approval:
-    """Create the Jira issue and return an Approval row (not yet added)."""
+def _upload_attachment(jira_key: str, filename: str, content: bytes) -> None:
+    """Attach a file to an issue. Best-effort: never raise (issue already exists)."""
+    try:
+        httpx.post(
+            f"{_base_url()}/rest/api/2/issue/{jira_key}/attachments",
+            headers={
+                "Authorization": f"Bearer {os.getenv('JIRA_PAT', '')}",
+                # Required by Jira to accept attachment uploads.
+                "X-Atlassian-Token": "no-check",
+            },
+            files={"file": (filename, content, "application/pdf")},
+            timeout=30.0,
+        )
+    except Exception:  # noqa: BLE001 — attachment is a nice-to-have, not critical
+        pass
+
+
+def create_issue(
+    session: Session, req: Request, body: str, attachment: tuple[str, bytes] | None = None
+) -> Approval:
+    """Create the Jira issue and return an Approval row (not yet added).
+
+    If `attachment` (filename, bytes) is given, it is uploaded to the issue
+    after creation (live mode only).
+    """
     if jira_mode() != "live":
         key = _next_mock_key(session)
         return Approval(
@@ -253,6 +276,8 @@ def create_issue(session: Session, req: Request, body: str) -> Approval:
         raise JiraError(f"Jira returned {response.status_code}: {response.text}")
 
     key = response.json()["key"]
+    if attachment is not None:
+        _upload_attachment(key, attachment[0], attachment[1])
     return Approval(
         jira_key=key,
         status="pending",

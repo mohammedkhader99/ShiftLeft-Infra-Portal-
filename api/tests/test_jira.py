@@ -126,6 +126,36 @@ def test_bad_extra_fields_json_raises(monkeypatch):
         jira.create_issue(session=None, req=_request(), body="body")
 
 
+def test_attachment_uploaded_after_create(monkeypatch):
+    calls = {"attach": 0}
+
+    def fake_post(url, *a, **k):
+        if url.endswith("/attachments"):
+            calls["attach"] += 1
+            assert "file" in k.get("files", {})
+            assert k["headers"].get("X-Atlassian-Token") == "no-check"
+            return _Resp([{}], status=200)
+        return _Resp({"key": "SDIMD-1"}, status=201)
+
+    monkeypatch.setattr(jira.httpx, "post", fake_post)
+    jira.create_issue(session=None, req=_request(), body="body",
+                      attachment=("request-REQ-1.pdf", b"%PDF-1.4 test"))
+    assert calls["attach"] == 1
+
+
+def test_attachment_failure_does_not_break_create(monkeypatch):
+    def fake_post(url, *a, **k):
+        if url.endswith("/attachments"):
+            raise RuntimeError("attachment service down")
+        return _Resp({"key": "SDIMD-2"}, status=201)
+
+    monkeypatch.setattr(jira.httpx, "post", fake_post)
+    # The issue is still created even though the attachment upload fails.
+    approval = jira.create_issue(session=None, req=_request(), body="body",
+                                 attachment=("x.pdf", b"%PDF-1.4"))
+    assert approval.jira_key == "SDIMD-2"
+
+
 def test_live_create_failure_raises(monkeypatch):
     monkeypatch.setattr(jira.httpx, "post",
                         lambda *a, **k: _Resp({}, status=403, text="Forbidden"))

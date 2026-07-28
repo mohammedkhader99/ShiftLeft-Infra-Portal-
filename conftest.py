@@ -19,5 +19,8 @@ os.environ["USE_MOCK"] = "true"
 # names, extra fields, etc.) can't leak in via load_dotenv and break them.
 os.environ["JIRA_APPROVED_STATUSES"] = "Approved,Done"
 os.environ["JIRA_REJECTED_STATUSES"] = "Rejected,Cancelled"
-os.environ.pop("JIRA_EXTRA_FIELDS", None)
-os.environ.pop("JIRA_TEMPLATE_ISSUE", None)
+os.environ["JIRA_SET_REPORTER"] = "true"
+# Set (not pop) to empty: load_dotenv(override=False) won't touch a var that
+# already exists, but WILL set one that's absent — so popping wouldn't help.
+os.environ["JIRA_EXTRA_FIELDS"] = ""
+os.environ["JIRA_TEMPLATE_ISSUE"] = ""
