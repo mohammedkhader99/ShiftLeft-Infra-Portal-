@@ -14,3 +14,9 @@ import os
 for _var in ("AUTH_MODE", "AZURE_PRICING_MODE", "OCI_PRICING_MODE", "JIRA_MODE"):
     os.environ[_var] = "mock"
 os.environ["USE_MOCK"] = "true"
+
+# Pin config that tests assert on, so a developer's .env (real Jira workflow
+# names, extra fields, etc.) can't leak in via load_dotenv and break them.
+os.environ["JIRA_APPROVED_STATUSES"] = "Approved,Done"
+os.environ["JIRA_REJECTED_STATUSES"] = "Rejected,Cancelled"
+os.environ.pop("JIRA_EXTRA_FIELDS", None)
