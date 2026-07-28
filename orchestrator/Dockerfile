@@ -6,6 +6,16 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+# Terraform, for real provisioning (plan in 2.6a; apply in 2.6b).
+ARG TERRAFORM_VERSION=1.9.8
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl unzip ca-certificates \
+    && curl -fsSL "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip" -o /tmp/tf.zip \
+    && unzip /tmp/tf.zip -d /usr/local/bin \
+    && rm /tmp/tf.zip \
+    && apt-get purge -y unzip \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 

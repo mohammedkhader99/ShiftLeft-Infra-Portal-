@@ -19,6 +19,7 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request
 
 from common.signing import verify
+from orchestrator import provisioner
 
 API_URL = os.getenv("API_URL", "http://localhost:8081")
 OPA_URL = os.getenv("OPA_URL", "http://localhost:8181")
@@ -104,12 +105,49 @@ async def provision(request: Request) -> dict:
                 ),
             )
 
-    # 6) Mock provision — nothing real is created (USE_MOCK).
+    # 6) Execute, per PROVISION_MODE.
+    mode = provisioner.provision_mode()
+    verified = {"approval": True, "policy": True, "cost": True}
+
+    if mode == "plan":
+        # Plan-only (2.6a): show what WOULD be created — nothing is created.
+        bucket = policy_input.get("environment_name") or reference.lower()
+        tags = {
+            "managed_by": "infra-portal",
+            "reference": reference,
+            "cost_centre": str(policy_input.get("cost_centre_code", "")),
+            "project": str(policy_input.get("project_code", "")),
+            "classification": str(policy_input.get("data_classification", "")),
+        }
+        try:
+            plan = provisioner.terraform_plan(bucket, tags)
+        except provisioner.ProvisionError as exc:
+            # Config/plan errors are not transient — 400 so the API won't retry
+            # and the real reason reaches the user.
+            raise HTTPException(status_code=400, detail=f"Terraform plan failed: {exc}")
+        # Not provisioned — this is a preview. Do NOT record in the idempotency
+        # ledger (a plan can be re-run safely).
+        return {
+            "provisioned": False,
+            "planned": True,
+            "reference": reference,
+            "jira_key": jira_key,
+            "verified": verified,
+            "plan_summary": plan["summary"],
+            "plan_output": plan["output"],
+            "message": f"Terraform plan for {reference}: {plan['summary']} — nothing created.",
+        }
+
+    if mode == "apply":
+        # Real apply is 2.6b — deliberately not wired yet.
+        raise HTTPException(status_code=501, detail="Real apply is not enabled yet (2.6b).")
+
+    # Mock (default): nothing real is created.
     provisioned = {
         "provisioned": True,
         "reference": reference,
         "jira_key": jira_key,
-        "verified": {"approval": True, "policy": True, "cost": True},
+        "verified": verified,
         "message": f"Mock-provisioned {reference} (no real resources created).",
     }
     _provisioned[key] = provisioned

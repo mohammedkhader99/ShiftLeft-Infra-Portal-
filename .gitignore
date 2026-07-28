@@ -3,3 +3,14 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# Real cloud credentials (OCI API key etc.) — never commit. Mounted into the
+# orchestrator read-only (2.6a).
+secrets/
+
+# Terraform working state / provider downloads.
+orchestrator/terraform/.terraform/
+orchestrator/terraform/.terraform.lock.hcl
+orchestrator/terraform/terraform.tfvars.json
+orchestrator/terraform/*.tfstate
+orchestrator/terraform/*.tfstate.*

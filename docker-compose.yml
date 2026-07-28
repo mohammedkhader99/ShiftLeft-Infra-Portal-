@@ -82,8 +82,21 @@ services:
       API_URL: http://api:8081
       OPA_URL: http://opa:8181
       WEBHOOK_SECRET: ${WEBHOOK_SECRET}
+      # Real provisioning (2.6a). mock (default) creates nothing; plan runs
+      # `terraform plan` against the OCI sandbox (still creates nothing); apply
+      # is not enabled until 2.6b. OCI creds are supplied by the reviewer and
+      # the private key is mounted read-only from ./secrets (git-ignored).
+      PROVISION_MODE: ${PROVISION_MODE:-mock}
+      OCI_TENANCY_OCID: ${OCI_TENANCY_OCID:-}
+      OCI_USER_OCID: ${OCI_USER_OCID:-}
+      OCI_FINGERPRINT: ${OCI_FINGERPRINT:-}
+      OCI_PRIVATE_KEY_PATH: ${OCI_PRIVATE_KEY_PATH:-/secrets/oci_api_key.pem}
+      OCI_REGION: ${OCI_REGION:-}
+      OCI_COMPARTMENT_OCID: ${OCI_COMPARTMENT_OCID:-}
     ports:
       - "9091:9091"
+    volumes:
+      - ./secrets:/secrets:ro
     depends_on:
       - opa
 

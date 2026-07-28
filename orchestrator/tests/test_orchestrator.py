@@ -117,3 +117,27 @@ def test_idempotent_replay_provisions_once(monkeypatch):
     second = client.post("/provision", content=body, headers=_signed(body)).json()
     assert first.get("idempotent") is None
     assert second.get("idempotent") is True
+
+
+def test_plan_mode_previews_and_creates_nothing(monkeypatch):
+    _patch(monkeypatch)
+    monkeypatch.setattr(orch.provisioner, "provision_mode", lambda: "plan")
+    monkeypatch.setattr(
+        orch.provisioner, "terraform_plan",
+        lambda bucket, tags: {"summary": "Plan: 1 to add, 0 to change, 0 to destroy.",
+                              "output": "..."},
+    )
+    body = _body()
+    resp = client.post("/provision", content=body, headers=_signed(body)).json()
+    assert resp["planned"] is True
+    assert resp["provisioned"] is False
+    assert "1 to add" in resp["plan_summary"]
+    # A plan is not recorded in the idempotency ledger — nothing was created.
+    assert orch._provisioned == {}
+
+
+def test_apply_mode_is_not_enabled_yet(monkeypatch):
+    _patch(monkeypatch)
+    monkeypatch.setattr(orch.provisioner, "provision_mode", lambda: "apply")
+    body = _body()
+    assert client.post("/provision", content=body, headers=_signed(body)).status_code == 501

@@ -204,6 +204,30 @@ def test_approve_fires_handoff_and_provisions_with_audit(client, monkeypatch):
     assert events == ["approval.approved", "orchestrator.handoff", "provisioned"]
 
 
+def test_plan_mode_marks_request_planned_not_provisioned(client, monkeypatch):
+    import api.main as main
+
+    ref = client.post("/api/requests/draft", json=VALID_CREATE).json()["reference"]
+    key = client.post(f"/api/requests/{ref}/submit").json()["approval"]["jira_key"]
+
+    class Resp:
+        status_code = 200
+
+        def json(self):
+            return {"provisioned": False, "planned": True,
+                    "plan_summary": "Plan: 1 to add, 0 to change, 0 to destroy.",
+                    "message": "Terraform plan — nothing created."}
+
+    monkeypatch.setattr(main.httpx, "post", lambda *a, **k: Resp())
+    result = client.post(f"/api/approvals/{key}/approve").json()
+    assert result["planned"] is True
+    assert result["provisioned"] is False
+    # Recorded as 'planned', NOT 'provisioned' — nothing was created.
+    assert client.get(f"/api/requests/{ref}").json()["status"] == "planned"
+    events = [e["event"] for e in client.get(f"/api/requests/{ref}/audit").json()["entries"]]
+    assert "plan.previewed" in events and "provisioned" not in events
+
+
 def test_approve_is_idempotent(client, monkeypatch):
     import api.main as main
 

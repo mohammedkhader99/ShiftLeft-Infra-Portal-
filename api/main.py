@@ -475,6 +475,20 @@ def approve(jira_key: str, session: Session = Depends(get_session)):
                                      "detail": response.text})
 
     result = response.json()
+    if not result.get("provisioned"):
+        # Plan-only (2.6a): a preview came back, nothing was created.
+        req.status = "planned"
+        append_audit(session, "plan.previewed", reference=req.reference, jira_key=jira_key,
+                     detail={"plan_summary": result.get("plan_summary")})
+        session.commit()
+        return {
+            "approval": "approved",
+            "provisioned": False,
+            "planned": True,
+            "message": result.get("message"),
+            "result": result,
+        }
+
     req.status = "provisioned"
     append_audit(session, "provisioned", reference=req.reference, jira_key=jira_key,
                  detail=result)
