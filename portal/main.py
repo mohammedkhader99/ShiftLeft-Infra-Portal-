@@ -325,7 +325,9 @@ def request_submit(
         saved_request = draft.json()
         ref = saved_request["reference"]
 
-        submit = httpx.post(f"{API_BASE_URL}/api/requests/{ref}/submit", timeout=5.0)
+        # Submit does live work (create the Jira ticket + attach the PDF), so
+        # it needs a generous timeout.
+        submit = httpx.post(f"{API_BASE_URL}/api/requests/{ref}/submit", timeout=60.0)
     except Exception as exc:  # noqa: BLE001
         return _render_form(
             request, form=_values(scalars, components), reference=reference or None,
@@ -367,8 +369,10 @@ def request_approve(
     API, which records the approval and fires the signed orchestrator handoff.
     """
     try:
+        # Approving fires the handoff, which in live mode runs a real terraform
+        # plan against OCI — allow plenty of time.
         approve_resp = httpx.post(
-            f"{API_BASE_URL}/api/approvals/{jira_key}/approve", timeout=15.0
+            f"{API_BASE_URL}/api/approvals/{jira_key}/approve", timeout=310.0
         )
         saved_request = httpx.get(
             f"{API_BASE_URL}/api/requests/{reference}", timeout=5.0

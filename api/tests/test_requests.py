@@ -380,6 +380,14 @@ def test_audit_chain_hashes_link(client, monkeypatch):
         assert entry["entry_hash"]
 
 
+def test_resubmit_does_not_duplicate_the_ticket(client):
+    ref = client.post("/api/requests/draft", json=VALID_CREATE).json()["reference"]
+    first = client.post(f"/api/requests/{ref}/submit").json()["approval"]["jira_key"]
+    # A retry (e.g. after a portal timeout) returns the same ticket, not a new one.
+    second = client.post(f"/api/requests/{ref}/submit").json()["approval"]["jira_key"]
+    assert first == second
+
+
 def test_submit_raises_jira_ticket_with_config_and_cost(client):
     ref = client.post("/api/requests/draft", json=VALID_CREATE).json()["reference"]
     submitted = client.post(f"/api/requests/{ref}/submit").json()

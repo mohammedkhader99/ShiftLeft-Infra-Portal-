@@ -280,6 +280,10 @@ def submit_request(
 ):
     """Validate, run the OPA policy gate, then mark the request submitted."""
     req = _load_request(reference, session)
+    # Idempotent: if a ticket was already raised (e.g. a retry after the portal
+    # timed out), return it rather than creating a duplicate.
+    if req.approval is not None:
+        return RequestOut.model_validate(req)
     components_data = [
         {"technology_code": c.technology_code, "size": c.size} for c in req.components
     ]
