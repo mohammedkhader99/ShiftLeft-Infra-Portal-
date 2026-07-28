@@ -12,6 +12,7 @@ live mode the reporter is set to the real requester so it routes to their line
 manager via Jira's own workflow.
 """
 
+import json
 import os
 
 import httpx
@@ -50,6 +51,22 @@ def _issue_type() -> str:
 
 def _set_reporter() -> bool:
     return os.getenv("JIRA_SET_REPORTER", "true").strip().lower() == "true"
+
+
+def _extra_fields() -> dict:
+    """Project-specific required custom fields, supplied as a JSON env value.
+
+    Real Jira projects often require custom fields on create (Environment,
+    Impact, Urgency, etc.). JIRA_EXTRA_FIELDS is merged into the issue's fields
+    so those can be provided as config, not code.
+    """
+    raw = os.getenv("JIRA_EXTRA_FIELDS", "").strip()
+    if not raw:
+        return {}
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise JiraError(f"JIRA_EXTRA_FIELDS is not valid JSON: {exc}") from exc
 
 
 def _status_set(env_var: str, default: str) -> set[str]:
@@ -125,6 +142,9 @@ def create_issue(session: Session, req: Request, body: str) -> Approval:
     # Set the reporter to the real requester so Jira routes to their manager.
     if _set_reporter() and req.requester:
         fields["reporter"] = {"name": req.requester}
+
+    # Project-specific required custom fields (config, not code).
+    fields.update(_extra_fields())
 
     try:
         response = httpx.post(

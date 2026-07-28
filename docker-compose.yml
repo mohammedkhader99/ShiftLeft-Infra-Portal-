@@ -64,6 +64,8 @@ services:
       JIRA_APPROVED_STATUSES: ${JIRA_APPROVED_STATUSES:-Approved,Done}
       JIRA_REJECTED_STATUSES: ${JIRA_REJECTED_STATUSES:-Rejected,Cancelled}
       JIRA_SET_REPORTER: ${JIRA_SET_REPORTER:-true}
+      # JSON of any required custom fields for the target project/issue type.
+      JIRA_EXTRA_FIELDS: ${JIRA_EXTRA_FIELDS:-}
     ports:
       - "8081:8081"
     depends_on:

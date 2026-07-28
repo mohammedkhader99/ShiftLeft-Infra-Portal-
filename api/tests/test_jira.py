@@ -59,6 +59,31 @@ def test_live_create_returns_real_key(monkeypatch):
     assert captured["url"].endswith("/rest/api/2/issue")
 
 
+def test_extra_fields_are_merged(monkeypatch):
+    monkeypatch.setenv(
+        "JIRA_EXTRA_FIELDS",
+        '{"customfield_13657": {"value": "Non-Production"}, '
+        '"customfield_14503": ["svc (SD-1)"]}',
+    )
+    captured = {}
+
+    def fake_post(url, json, headers, timeout):
+        captured["fields"] = json["fields"]
+        return _Resp({"key": "SDIMD-1"}, status=201)
+
+    monkeypatch.setattr(jira.httpx, "post", fake_post)
+    jira.create_issue(session=None, req=_request(), body="body")
+    assert captured["fields"]["customfield_13657"] == {"value": "Non-Production"}
+    assert captured["fields"]["customfield_14503"] == ["svc (SD-1)"]
+
+
+def test_bad_extra_fields_json_raises(monkeypatch):
+    monkeypatch.setenv("JIRA_EXTRA_FIELDS", "{not valid json")
+    monkeypatch.setattr(jira.httpx, "post", lambda *a, **k: _Resp({"key": "X-1"}, 201))
+    with pytest.raises(JiraError):
+        jira.create_issue(session=None, req=_request(), body="body")
+
+
 def test_live_create_failure_raises(monkeypatch):
     monkeypatch.setattr(jira.httpx, "post",
                         lambda *a, **k: _Resp({}, status=403, text="Forbidden"))
