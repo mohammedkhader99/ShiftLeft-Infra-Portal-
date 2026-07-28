@@ -293,6 +293,22 @@ def save_draft(
     return RequestOut.model_validate(req)
 
 
+@app.get("/api/requests", response_model=list[RequestOut])
+def list_requests(
+    requester: str | None = None, session: Session = Depends(get_session)
+) -> list[RequestOut]:
+    """List requests newest-first, optionally filtered to one requester.
+
+    Powers the portal's 'My requests' dashboard. Read-only; every lifecycle
+    state (draft through decommissioned) is included so a person can see all
+    of their work in one place.
+    """
+    stmt = select(Request).order_by(Request.id.desc())
+    if requester:
+        stmt = stmt.where(Request.requester == requester)
+    return [RequestOut.model_validate(r) for r in session.scalars(stmt)]
+
+
 @app.get("/api/requests/{reference}", response_model=RequestOut)
 def get_request(reference: str, session: Session = Depends(get_session)) -> RequestOut:
     """Load a draft (or submitted request) so it can be resumed/viewed."""

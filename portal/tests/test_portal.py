@@ -227,3 +227,49 @@ def test_cost_panel_prompts_without_target(monkeypatch):
     monkeypatch.setattr("portal.main.httpx.post", lambda *a, **k: _FakeResp(no_target))
     response = client.post("/request/cost", data={"deployment_target": ""})
     assert "Choose a deployment target" in response.text
+
+
+# --- Increment 2.8: 'My requests' dashboard ----------------------------------
+
+FAKE_REQUESTS = [
+    {
+        "reference": "REQ-2026-0007", "status": "provisioned",
+        "requester": "mohammed.khader@emaratechg.ae",
+        "environment_name": "egate-uat", "target_environment": None,
+        "components": [{"technology_code": "postgres16", "size": "medium"}],
+        "estimate": {"currency": "AED", "one_time": 500.0, "monthly": 672.0, "annual": 8064.0},
+        "approval": {"jira_key": "SDIMD-99", "status": "approved",
+                     "ticket_url": "https://jira.emaratech.ae/browse/SDIMD-99"},
+    },
+]
+
+
+def test_my_requests_dashboard_renders(monkeypatch):
+    monkeypatch.setattr("portal.main.httpx.get", lambda *a, **k: _FakeResp(FAKE_REQUESTS))
+    response = client.get("/requests")
+    assert response.status_code == 200
+    body = response.text
+    assert "My requests" in body
+    assert 'href="/request/REQ-2026-0007"' in body       # reference links to detail
+    assert "s-provisioned" in body                        # status badge class
+    assert "postgres16 (medium)" in body                  # components summary
+    assert "672.00 AED" in body                           # monthly cost
+    assert "SDIMD-99" in body                             # Jira ticket link
+
+
+def test_my_requests_empty_state(monkeypatch):
+    monkeypatch.setattr("portal.main.httpx.get", lambda *a, **k: _FakeResp([]))
+    response = client.get("/requests")
+    assert response.status_code == 200
+    assert "haven't raised any requests yet" in response.text
+
+
+def test_my_requests_reports_api_failure(monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("connection refused")
+
+    monkeypatch.setattr("portal.main.httpx.get", boom)
+    response = client.get("/requests")
+    assert response.status_code == 200
+    assert "Couldn't load requests" in response.text
+    assert "connection refused" in response.text

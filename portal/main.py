@@ -123,6 +123,33 @@ def index(request: Request) -> HTMLResponse:
     )
 
 
+@app.get("/requests", response_class=HTMLResponse)
+def my_requests(request: Request) -> HTMLResponse:
+    """The 'My requests' dashboard: every request the signed-in user has made,
+    newest first, with its live status and a link to its Jira ticket."""
+    email = auth.requester_email(request)
+    try:
+        response = httpx.get(
+            f"{API_BASE_URL}/api/requests",
+            params={"requester": email},
+            headers=_requester_headers(request),
+            timeout=5.0,
+        )
+        response.raise_for_status()
+        rows, error = response.json(), None
+    except Exception as exc:  # noqa: BLE001 — surface the failure on the page
+        rows, error = [], str(exc)
+    return templates.TemplateResponse(
+        request,
+        "my_requests.html",
+        {
+            "user": auth.session_user(request) or auth.DEFAULT_DEV_USER,
+            "requests": rows,
+            "error": error,
+        },
+    )
+
+
 # --- Guided request: dropdowns, drafts, validation (increments 1.2 + 1.3) ----
 
 EMPTY_LOOKUPS = {"projects": [], "cost_centres": [], "technologies": [], "environments": []}

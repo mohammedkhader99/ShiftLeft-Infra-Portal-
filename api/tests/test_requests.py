@@ -586,3 +586,27 @@ def test_poller_disabled_by_default():
     import api.main as main
 
     assert main.auto_provision_enabled() is False
+
+
+# --- 'My requests' dashboard list endpoint (increment 2.8) --------------------
+
+def test_list_requests_newest_first_and_filtered_by_requester(client):
+    r1 = client.post("/api/requests/draft", json=VALID_CREATE,
+                     headers={"X-Requester": "alice@example.com"}).json()["reference"]
+    r2 = client.post("/api/requests/draft", json=VALID_CREATE,
+                     headers={"X-Requester": "bob@example.com"}).json()["reference"]
+    r3 = client.post("/api/requests/draft", json=VALID_CREATE,
+                     headers={"X-Requester": "alice@example.com"}).json()["reference"]
+
+    # Unfiltered: everyone's, newest first.
+    all_refs = [r["reference"] for r in client.get("/api/requests").json()]
+    assert all_refs == [r3, r2, r1]
+
+    # Filtered to one requester: only theirs, still newest first.
+    alice = client.get("/api/requests", params={"requester": "alice@example.com"}).json()
+    assert [r["reference"] for r in alice] == [r3, r1]
+    assert all(r["requester"] == "alice@example.com" for r in alice)
+
+
+def test_list_requests_empty_when_none(client):
+    assert client.get("/api/requests", params={"requester": "nobody@example.com"}).json() == []

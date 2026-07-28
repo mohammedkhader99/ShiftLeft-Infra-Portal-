@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>My requests · Infra Portal</title>
+  <script src="/static/htmx.min.js"></script>
+  <style>
+    /* Brand colours from ARCHITECTURE.md §9: petrol teal, amber, Calibri. */
+    body {
+      font-family: Calibri, "Segoe UI", sans-serif;
+      background: #f4f6f7;
+      color: #14303a;
+      margin: 0;
+      padding: 2.5rem;
+    }
+    .card {
+      max-width: 60rem;
+      margin: 0 auto;
+      background: #fff;
+      border: 1px solid #d7dee1;
+      border-top: 4px solid #0B5563;
+      border-radius: 8px;
+      padding: 1.75rem 2rem;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+    }
+    h1 { color: #0B5563; margin: 0 0 0.25rem; font-size: 1.4rem; }
+    .subtitle { color: #5b6b72; margin: 0 0 1.5rem; font-size: 0.9rem; }
+    .whoami { max-width: 60rem; margin: 0 auto 1rem; display: flex; justify-content: flex-end; gap: 0.6rem; font-size: 0.82rem; color: #5b6b72; }
+    .whoami a { color: #0B5563; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+    th, td { text-align: left; padding: 0.6rem 0.7rem; border-bottom: 1px solid #e4eaec; vertical-align: top; }
+    th { color: #5b6b72; font-weight: 600; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.03em; }
+    tr:hover td { background: #f7fafa; }
+    td.num { text-align: right; white-space: nowrap; }
+    a { color: #0B5563; }
+    a.ref { font-weight: bold; text-decoration: none; }
+    a.ref:hover { text-decoration: underline; }
+    .badge {
+      display: inline-block; padding: 0.15rem 0.55rem; border-radius: 999px;
+      font-size: 0.75rem; font-weight: 600; white-space: nowrap;
+    }
+    /* status -> colour */
+    .s-draft         { background: #eceff1; color: #52616b; }
+    .s-submitted     { background: #e3f0f6; color: #16607e; }
+    .s-planned       { background: #fdeccd; color: #8a5200; }
+    .s-in-progress   { background: #fde4c4; color: #8a4b00; }
+    .s-provisioned   { background: #d8f0dd; color: #1c6b34; }
+    .s-decommissioned{ background: #eceff1; color: #52616b; }
+    .s-rejected      { background: #fadcdc; color: #97231f; }
+    .s-apply-failed  { background: #fadcdc; color: #97231f; }
+    .empty { background: #f0f5f6; border: 1px solid #cfe0e2; border-radius: 6px; padding: 1.25rem; color: #5b6b72; }
+    .err { background: #fadcdc; border: 1px solid #f0b8b8; color: #97231f; border-radius: 6px; padding: 0.75rem 1rem; margin-bottom: 1rem; font-size: 0.88rem; }
+    .actions { margin-top: 1.5rem; }
+    .actions a { font-weight: bold; margin-right: 1.25rem; }
+  </style>
+</head>
+<body>
+  <div class="whoami">
+    <span>Signed in as <strong>{{ (user.name or user.email) if user else '—' }}</strong></span>
+    <a href="/logout">Log out</a>
+  </div>
+  <main class="card">
+    <h1>My requests</h1>
+    <p class="subtitle">Every request you've raised, newest first, with its live status.</p>
+
+    {% if error %}
+      <div class="err">Couldn't load requests from the API: {{ error }}</div>
+    {% endif %}
+
+    {% if requests %}
+      <table>
+        <thead>
+          <tr>
+            <th>Reference</th>
+            <th>Status</th>
+            <th>Environment</th>
+            <th>Components</th>
+            <th style="text-align:right;">Monthly</th>
+            <th>Jira ticket</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in requests %}
+          <tr>
+            <td><a class="ref" href="/request/{{ r.reference }}">{{ r.reference }}</a></td>
+            <td><span class="badge s-{{ r.status }}">{{ r.status }}</span></td>
+            <td>{{ r.environment_name or r.target_environment or '—' }}</td>
+            <td>
+              {%- set parts = [] -%}
+              {%- for c in r.components -%}
+                {%- set _ = parts.append((c.technology_code or '?') ~ ' (' ~ (c.size or '?') ~ ')') -%}
+              {%- endfor -%}
+              {{ parts | join(', ') if parts else '—' }}
+            </td>
+            <td class="num">
+              {% if r.estimate %}{{ '%.2f' | format(r.estimate.monthly) }} {{ r.estimate.currency }}{% else %}—{% endif %}
+            </td>
+            <td>
+              {% if r.approval and r.approval.jira_key %}
+                {% if r.approval.ticket_url %}
+                  <a href="{{ r.approval.ticket_url }}" target="_blank" rel="noopener">{{ r.approval.jira_key }}</a>
+                {% else %}{{ r.approval.jira_key }}{% endif %}
+              {% else %}—{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      {% if not error %}
+        <div class="empty">You haven't raised any requests yet. <a href="/request/new">Start your first one →</a></div>
+      {% endif %}
+    {% endif %}
+
+    <div class="actions">
+      <a href="/request/new">+ New request</a>
+      <a href="/">← Home</a>
+    </div>
+  </main>
+</body>
+</html>
