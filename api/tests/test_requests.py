@@ -699,6 +699,9 @@ def test_decommission_tears_down_source(client, monkeypatch):
     assert client.get(f"/api/requests/{source}").json()["status"] == "decommissioned"
     events = [e["event"] for e in client.get(f"/api/requests/{ref}/audit").json()["entries"]]
     assert "destroy.handoff" in events and "decommissioned" in events
+    # The ticket walks Assigned -> In Progress -> Resolved, like provisioning, so
+    # the Resolve transition is reachable (no direct Assigned -> Resolved hop).
+    assert "jira.in_progress" in events and "jira.resolved" in events
 
 
 def test_decommission_ticket_body_lists_technologies(client, monkeypatch):

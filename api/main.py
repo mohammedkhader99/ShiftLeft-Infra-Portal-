@@ -759,6 +759,12 @@ def _decommission(session: Session, req: Request, actor: str) -> dict:
         return {"approval": "approved", "decommissioned": False,
                 "error": f"Source request {req.source_reference} not found."}
 
+    # Move the ticket into the provisioning lifecycle (Assigned -> In Progress)
+    # so that, like provisioning, the Resolve transition is reachable afterwards
+    # (the workflow has no direct Assigned -> Resolved hop).
+    _transition_jira(session, req, inprogress_status(), "jira.in_progress")
+    session.commit()
+
     body, signature = _handoff_payload(source)
     append_audit(session, "destroy.handoff", reference=req.reference,
                  jira_key=req.approval.jira_key, actor=actor,
