@@ -63,6 +63,7 @@ def test_panel_reports_api_failure_plainly(monkeypatch):
 FAKE_LOOKUPS = {
     "projects": [{"code": "EGATE", "name": "eGate Modernisation"}],
     "cost_centres": [{"code": "IMD-1001", "name": "Infrastructure Management"}],
+    "subsidiaries": [{"code": "EMRTECH", "name": "emaratech"}],
     "technologies": [
         {"code": "postgres16", "name": "PostgreSQL 16", "lifecycle_state": "certified"}
     ],
@@ -91,6 +92,7 @@ def test_request_new_populates_dropdowns(monkeypatch):
     assert "Infrastructure Management" in body
     assert "PostgreSQL 16 (certified)" in body
     assert "egate-prod (prod)" in body
+    assert "emaratech" in body  # subsidiary dropdown
     # The four request types are present.
     for value in ("create", "add", "resize", "decommission"):
         assert f'value="{value}"' in body
@@ -234,7 +236,7 @@ def test_cost_panel_prompts_without_target(monkeypatch):
 FAKE_REQUESTS = [
     {
         "reference": "REQ-2026-0007", "status": "provisioned",
-        "requester": "mohammed.khader@emaratechg.ae",
+        "requester": "mohammed.khader@emaratechg.ae", "requester_name": "Mohammed Khader",
         "environment_name": "egate-uat", "target_environment": None,
         "components": [{"technology_code": "postgres16", "size": "medium"}],
         "estimate": {"currency": "AED", "one_time": 500.0, "monthly": 672.0, "annual": 8064.0},
@@ -255,6 +257,7 @@ def test_my_requests_dashboard_renders(monkeypatch):
     assert "postgres16 (medium)" in body                  # components summary
     assert "672.00 AED" in body                           # monthly cost
     assert "SDIMD-99" in body                             # Jira ticket link
+    assert "Submitted by" in body and "Mohammed Khader" in body  # submitter full name
 
 
 def test_my_requests_empty_state(monkeypatch):

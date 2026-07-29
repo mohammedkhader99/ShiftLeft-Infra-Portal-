@@ -671,6 +671,45 @@ def test_stats_aggregates_for_oversight_role(client, monkeypatch):
     assert "postgres16" in techs
 
 
+# --- Submitter name + subsidiary (increment 2.14) ----------------------------
+
+def test_draft_captures_requester_name(client):
+    resp = client.post("/api/requests/draft", json={"request_type": "create"},
+                       headers={"X-Requester-Name": "Mohammed Khader"})
+    assert resp.json()["requester_name"] == "Mohammed Khader"
+
+
+def test_valid_subsidiary_accepted_and_stored(client):
+    ref = client.post("/api/requests/draft",
+                      json={**VALID_CREATE, "subsidiary": "EMRTECH"}).json()["reference"]
+    resp = client.post(f"/api/requests/{ref}/submit")
+    assert resp.status_code == 200
+    assert resp.json()["subsidiary"] == "EMRTECH"
+
+
+def test_unknown_subsidiary_rejected(client):
+    ref = client.post("/api/requests/draft",
+                      json={**VALID_CREATE, "subsidiary": "NOPE"}).json()["reference"]
+    errors = client.post(f"/api/requests/{ref}/submit").json()["errors"]
+    assert "subsidiary" in errors
+
+
+def test_stats_includes_requester_and_subsidiary(client, monkeypatch):
+    monkeypatch.setenv("ROLE_MAP", '{"aud@x.com": ["auditor"]}')
+    client.post("/api/requests/draft", json={**VALID_CREATE, "subsidiary": "EMRTECH"},
+                headers={"X-Requester-Name": "Mohammed Khader"})
+    data = client.get("/api/stats", headers={"X-Requester": "aud@x.com"}).json()
+    assert "by_requester" in data and "by_subsidiary" in data
+    assert "EMRTECH" in {b["key"] for b in data["by_subsidiary"]}
+    assert "Mohammed Khader" in {b["key"] for b in data["by_requester"]}
+
+
+def test_list_filter_by_subsidiary(client):
+    client.post("/api/requests/draft", json={**VALID_CREATE, "subsidiary": "EMRTECH"})
+    res = client.get("/api/requests", params={"subsidiary": "EMRTECH"}).json()
+    assert res and all(r["subsidiary"] == "EMRTECH" for r in res)
+
+
 # --- 'My requests' dashboard list endpoint (increment 2.8) --------------------
 
 def test_list_requests_newest_first_and_filtered_by_requester(client):

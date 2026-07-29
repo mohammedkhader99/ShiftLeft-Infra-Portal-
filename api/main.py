@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from api.attachment import build_request_pdf
 from api.audit import append_audit
-from api.auth import get_requester
+from api.auth import get_requester, get_requester_name
 from api.jira import (
     JiraError,
     add_comment,
@@ -48,6 +48,7 @@ from db.models import (
     Request,
     RequestComponent,
     SizingAnchor,
+    Subsidiary,
     Technology,
 )
 from db.session import SessionLocal
@@ -165,6 +166,8 @@ def stats(session: Session = Depends(get_session),
     by_type = breakdown(Request.request_type)
     by_target = breakdown(Request.deployment_target)
     by_technology = breakdown(RequestComponent.technology_code)
+    by_requester = breakdown(func.coalesce(Request.requester_name, Request.requester))
+    by_subsidiary = breakdown(Request.subsidiary)
 
     status_count = {r["key"]: r["count"] for r in by_status}
 
@@ -197,6 +200,8 @@ def stats(session: Session = Depends(get_session),
         "by_type": by_type,
         "by_technology": by_technology,
         "by_target": by_target,
+        "by_requester": by_requester,
+        "by_subsidiary": by_subsidiary,
         "trend": [{"week": w, "count": weeks[w]} for w in sorted(weeks)][-8:],
     }
 
@@ -238,6 +243,7 @@ class EnvironmentOut(BaseModel):
 class LookupsResponse(BaseModel):
     projects: list[ProjectOut]
     cost_centres: list[CostCentreOut]
+    subsidiaries: list[CostCentreOut]
     technologies: list[TechnologyOut]
     environments: list[EnvironmentOut]
 
@@ -248,6 +254,7 @@ def lookups(session: Session = Depends(get_session)) -> LookupsResponse:
     return LookupsResponse(
         projects=session.scalars(select(Project).order_by(Project.name)).all(),
         cost_centres=session.scalars(select(CostCentre).order_by(CostCentre.name)).all(),
+        subsidiaries=session.scalars(select(Subsidiary).order_by(Subsidiary.name)).all(),
         technologies=session.scalars(select(Technology).order_by(Technology.name)).all(),
         environments=session.scalars(select(Environment).order_by(Environment.name)).all(),
     )
@@ -261,6 +268,7 @@ REQUEST_FIELDS = (
     "request_type",
     "project_code",
     "cost_centre_code",
+    "subsidiary",
     "deployment_target",
     "environment_name",
     "target_environment",
@@ -287,6 +295,7 @@ class DraftIn(BaseModel):
     request_type: str | None = None
     project_code: str | None = None
     cost_centre_code: str | None = None
+    subsidiary: str | None = None
     deployment_target: str | None = None
     environment_name: str | None = None
     target_environment: str | None = None
@@ -317,9 +326,11 @@ class RequestOut(BaseModel):
     status: str
     status_detail: str | None = None
     requester: str
+    requester_name: str | None = None
     request_type: str | None = None
     project_code: str | None = None
     cost_centre_code: str | None = None
+    subsidiary: str | None = None
     deployment_target: str | None = None
     environment_name: str | None = None
     target_environment: str | None = None
@@ -342,6 +353,7 @@ def save_draft(
     body: DraftIn,
     session: Session = Depends(get_session),
     requester: str = Depends(require_action("create_request")),
+    requester_name: str | None = Depends(get_requester_name),
 ) -> RequestOut:
     """Create or update a draft. Lenient: partial data is allowed.
 
@@ -357,6 +369,7 @@ def save_draft(
         req = Request(
             status="draft",
             requester=requester,
+            requester_name=requester_name,
             reference=f"REQ-{datetime.now(timezone.utc).year}-{next_seq:04d}",
         )
         session.add(req)
@@ -383,6 +396,8 @@ def save_draft(
 @app.get("/api/requests", response_model=list[RequestOut])
 def list_requests(
     requester: str | None = None,
+    requested_by: str | None = None,
+    subsidiary: str | None = None,
     status: str | None = None,
     request_type: str | None = None,
     technology: str | None = None,
@@ -400,6 +415,12 @@ def list_requests(
     stmt = select(Request).order_by(Request.id.desc())
     if requester:
         stmt = stmt.where(Request.requester == requester)
+    if requested_by:  # matches the displayed name-or-email (the by-requester chart)
+        stmt = stmt.where(
+            func.coalesce(Request.requester_name, Request.requester) == requested_by
+        )
+    if subsidiary:
+        stmt = stmt.where(Request.subsidiary == subsidiary)
     if status:
         wanted = [s.strip() for s in status.split(",") if s.strip()]
         stmt = stmt.where(Request.status.in_(wanted))
@@ -449,6 +470,7 @@ def submit_request(
             req.deployment_target = req.deployment_target or source.deployment_target
             req.project_code = req.project_code or source.project_code
             req.cost_centre_code = req.cost_centre_code or source.cost_centre_code
+            req.subsidiary = req.subsidiary or source.subsidiary
             req.environment_name = req.environment_name or source.environment_name
 
     components_data = [

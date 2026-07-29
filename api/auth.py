@@ -75,3 +75,22 @@ def get_requester(
     except Exception as exc:  # noqa: BLE001 — any validation failure is a 401
         raise HTTPException(status_code=401, detail=f"Invalid token: {exc}") from exc
     return claims.get("preferred_username") or claims.get("email") or claims.get("sub")
+
+
+def get_requester_name(
+    authorization: str | None = Header(default=None),
+    x_requester_name: str | None = Header(default=None),
+) -> str | None:
+    """FastAPI dependency: the requester's display name (full name), if known.
+
+    Live: the 'name' claim from the validated token. Mock: the X-Requester-Name
+    header the portal forwards from the session. None if unavailable.
+    """
+    if not is_live():
+        return x_requester_name
+    if not authorization or not authorization.startswith("Bearer "):
+        return None
+    try:
+        return validate_token(authorization.split(" ", 1)[1]).get("name")
+    except Exception:  # noqa: BLE001 — name is best-effort, never fail the request
+        return None

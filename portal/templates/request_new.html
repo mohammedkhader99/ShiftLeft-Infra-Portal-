@@ -245,6 +245,17 @@
           {% if errors.get('cost_centre_code') %}<p class="field-error">{{ errors.get('cost_centre_code') }}</p>{% endif %}
         </div>
 
+        <div class="{% if errors.get('subsidiary') %}has-error{% endif %}">
+          <label for="subsidiary">Subsidiary</label>
+          <select id="subsidiary" name="subsidiary">
+            <option value="">— select —</option>
+            {% for s in lookups.subsidiaries %}
+              <option value="{{ s.code }}" {% if f.get('subsidiary')==s.code %}selected{% endif %}>{{ s.name }}</option>
+            {% endfor %}
+          </select>
+          {% if errors.get('subsidiary') %}<p class="field-error">{{ errors.get('subsidiary') }}</p>{% endif %}
+        </div>
+
         <div class="{% if errors.get('deployment_target') %}has-error{% endif %}">
           <label for="deployment_target">Deployment target</label>
           <select id="deployment_target" name="deployment_target">

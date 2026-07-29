@@ -110,6 +110,7 @@
           <tr>
             <th>Reference</th>
             <th>Status</th>
+            <th>Submitted by</th>
             <th>Environment</th>
             <th>Components</th>
             <th style="text-align:right;">Monthly</th>
@@ -133,6 +134,7 @@
                 <div class="fail-reason" title="{{ r.status_detail }}">{{ r.status_detail }}</div>
               {% endif %}
             </td>
+            <td>{{ r.requester_name or r.requester or '—' }}</td>
             <td>{{ r.environment_name or r.target_environment or '—' }}</td>
             <td>
               {%- set parts = [] -%}
@@ -152,7 +154,7 @@
               {% else %}—{% endif %}
             </td>
           </tr>
-          <tr class="wf-detail"><td colspan="6"><div id="wf-{{ r.reference }}"></div></td></tr>
+          <tr class="wf-detail"><td colspan="7"><div id="wf-{{ r.reference }}"></div></td></tr>
           {% endfor %}
         </tbody>
       </table>

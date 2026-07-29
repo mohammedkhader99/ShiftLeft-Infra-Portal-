@@ -13,7 +13,7 @@ import re
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from db.models import CostCentre, Environment, Project, Request, Technology
+from db.models import CostCentre, Environment, Project, Request, Subsidiary, Technology
 
 REQUEST_TYPES = {"create", "add", "resize", "decommission"}
 SIZES = {"small", "medium", "large"}
@@ -51,6 +51,13 @@ def validate_submission(data: dict, session: Session) -> dict[str, str]:
             )
         elif session.scalar(select(CostCentre).where(CostCentre.code == cost_centre)) is None:
             errors["cost_centre_code"] = f"Unknown cost centre '{cost_centre}'."
+
+        # Subsidiary is optional, but must be a known one if given.
+        subsidiary = (data.get("subsidiary") or "").strip()
+        if subsidiary and session.scalar(
+            select(Subsidiary).where(Subsidiary.code == subsidiary)
+        ) is None:
+            errors["subsidiary"] = f"Unknown subsidiary '{subsidiary}'."
 
     if request_type == "create":
         _validate_create_fields(data, session, errors)

@@ -20,6 +20,7 @@ from db.models import (
     Project,
     RateCard,
     SizingAnchor,
+    Subsidiary,
     Technology,
 )
 from db.session import Base, SessionLocal, engine
@@ -34,6 +35,13 @@ COST_CENTRES = [
     {"code": "IMD-1001", "name": "Infrastructure Management"},
     {"code": "IMD-2002", "name": "Border Systems"},
     {"code": "IMD-3003", "name": "Identity & Biometrics"},
+]
+
+# Placeholder subsidiaries — adjust the codes/names to your real org structure.
+SUBSIDIARIES = [
+    {"code": "EMRTECH", "name": "emaratech"},
+    {"code": "GDRFAD", "name": "GDRFA Dubai"},
+    {"code": "ICP", "name": "ICP"},
 ]
 
 TECHNOLOGIES = [
@@ -92,6 +100,7 @@ def seed(session: Session) -> None:
     """Insert all reference data (idempotent)."""
     _upsert_by(session, Project, "code", PROJECTS)
     _upsert_by(session, CostCentre, "code", COST_CENTRES)
+    _upsert_by(session, Subsidiary, "code", SUBSIDIARIES)
     _upsert_by(session, Technology, "code", TECHNOLOGIES)
     session.flush()  # projects & technologies now have ids
 

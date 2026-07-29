@@ -61,6 +61,9 @@ def _requester_headers(request: Request) -> dict:
     Microsoft ID token as a Bearer, which the API validates itself (2.3b).
     """
     headers = {"X-Requester": auth.requester_email(request)}
+    name = (auth.session_user(request) or {}).get("name")
+    if name:
+        headers["X-Requester-Name"] = name
     id_token = request.session.get("id_token")
     if id_token:
         headers["Authorization"] = f"Bearer {id_token}"
@@ -177,7 +180,8 @@ def overview(request: Request):
 
 _FILTER_PARAMS = (("status", "status"), ("type", "request_type"),
                   ("technology", "technology"), ("target", "deployment_target"),
-                  ("week", "created_week"))
+                  ("week", "created_week"), ("requested_by", "requested_by"),
+                  ("subsidiary", "subsidiary"))
 
 
 @app.get("/requests", response_class=HTMLResponse)
@@ -225,11 +229,13 @@ def my_requests(request: Request):
 
 # --- Guided request: dropdowns, drafts, validation (increments 1.2 + 1.3) ----
 
-EMPTY_LOOKUPS = {"projects": [], "cost_centres": [], "technologies": [], "environments": []}
+EMPTY_LOOKUPS = {"projects": [], "cost_centres": [], "subsidiaries": [],
+                 "technologies": [], "environments": []}
 FORM_FIELDS = (
     "request_type",
     "project_code",
     "cost_centre_code",
+    "subsidiary",
     "deployment_target",
     "environment_name",
     "target_environment",
@@ -508,6 +514,7 @@ def request_save(
     request_type: str = Form(""),
     project_code: str = Form(""),
     cost_centre_code: str = Form(""),
+    subsidiary: str = Form(""),
     deployment_target: str = Form(""),
     environment_name: str = Form(""),
     target_environment: str = Form(""),
@@ -559,6 +566,7 @@ def request_submit(
     request_type: str = Form(""),
     project_code: str = Form(""),
     cost_centre_code: str = Form(""),
+    subsidiary: str = Form(""),
     deployment_target: str = Form(""),
     environment_name: str = Form(""),
     target_environment: str = Form(""),

@@ -45,6 +45,17 @@ class CostCentre(Base):
     active: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
+class Subsidiary(Base):
+    """A subsidiary a request can be raised for (a lookup)."""
+
+    __tablename__ = "subsidiary"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    code: Mapped[str] = mapped_column(String(32), unique=True)
+    name: Mapped[str] = mapped_column(String(120))
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
 class Technology(Base):
     """A technology that can be requested, with its lifecycle state (F-CAT-02)."""
 
@@ -129,6 +140,11 @@ class Request(Base):
     # failed), surfaced in the portal. Null unless there's something to explain.
     status_detail: Mapped[str | None] = mapped_column(String(500), nullable=True)
     requester: Mapped[str] = mapped_column(String(120))
+    # The requester's display name, captured from the sign-in identity at
+    # creation (the requester column holds the email/username).
+    requester_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    # The subsidiary the request is raised for (chosen on the form).
+    subsidiary: Mapped[str | None] = mapped_column(String(120), nullable=True)
 
     # create | add | resize | decommission
     request_type: Mapped[str | None] = mapped_column(String(16), nullable=True)

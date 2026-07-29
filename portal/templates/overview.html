@@ -82,6 +82,8 @@
       </div>
 
       <div class="ov-grid">
+        {{ barchart('By requester', stats.by_requester, 'requested_by') }}
+        {{ barchart('By subsidiary', stats.by_subsidiary, 'subsidiary') }}
         {{ barchart('By status', stats.by_status, 'status') }}
         {{ barchart('By request type', stats.by_type, 'type') }}
         {{ barchart('By technology', stats.by_technology, 'technology') }}
