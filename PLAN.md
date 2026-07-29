@@ -112,13 +112,13 @@ With the spine proven, switch `USE_MOCK=false` and enable each adapter individua
 
 ## 4a. Phase UX — Premium portal redesign (React + IBM Carbon) — decided 2026-07-29
 
-Per the reviewer's UX brief (*"UX Portal Design.docx"*) and ARCHITECTURE.md §14.1, the portal front end moves from HTMX+Jinja to a **React (Vite + TypeScript) SPA on IBM Carbon**, served via a **FastAPI Backend-for-Frontend** that keeps Entra OIDC + token handling server-side. **The API, RBAC, OPA, Jira, orchestrator, cost engine, poller and audit are unchanged** — this phase only replaces the presentation layer. Migration is incremental; the HTMX portal keeps running until each screen reaches parity.
+Per the reviewer's UX brief (*"UX Portal Design.docx"*) and ARCHITECTURE.md §14.1, the portal front end moves from HTMX+Jinja to a **React (Vite + TypeScript) SPA on IBM Carbon**, served via a **FastAPI Backend-for-Frontend** that keeps Entra OIDC + token handling server-side. **The API, RBAC, OPA, Jira, orchestrator, cost engine, poller and audit are unchanged** — this phase only replaces the presentation layer. Migration was incremental (screen by screen); **cutover completed at UX.5 (2026-07-29)** — React is now the portal on port 5173, with the HTMX portal parked as a demo fallback.
 
 - **UX.1 — Design-system foundation & app shell.** Vite+React+TS app + Carbon; the BFF (serves the SPA, does OIDC, proxies `/api/*`); the enterprise shell (top nav, left nav, dark/light, WCAG 2.2). *You'll know it works when:* you sign in and see the empty Carbon shell calling the real API (e.g. `/api/me` shows your roles), running alongside the old portal.
 - **UX.2 — Request form** (reskin today's guided form: request types, subsidiary, technology/size cards, live cost panel, validation, submit).
 - **UX.3 — My Requests** (table, status badges, workflow drawer, live auto-update, drill-down).
 - **UX.4 — Estate overview** (KPIs + charts, live refresh, drill-down).
-- **UX.5 — Cutover** (route users to React; retire the Jinja templates once parity + tests hold).
+- **UX.5 — Cutover** ✅ *(done 2026-07-29)*. The React portal became the front door: the `webapp` (BFF) now answers on host port **5173** — the classic portal's old port — reusing the Entra redirect URI already registered for 5173, so no new registration was needed. The HTMX portal is **parked as a demo fallback** under a docker-compose `fallback` profile (kept, not deleted; a plain `docker compose up` no longer starts it). Live sign-in verified on 5173 (`/login` → Microsoft Entra → `…/5173/auth/callback`). The classic portal's manual approve/apply/destroy buttons were **not** ported — they were mock/demo affordances; the live flow approves in Jira and provisions via the autonomous poller. If manual controls are wanted in the new UI later, that's a separate increment.
 
 Each UX increment keeps every existing control/validation/integration and its backend tests; new UI gets component tests.
 

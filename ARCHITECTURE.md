@@ -66,7 +66,7 @@ Six cooperating parts.
 
 **Horizontal (across all parts):** Langfuse (agent tracing/eval); OpenTelemetry distributed tracing (F-OPS-04); OPA governance; the tamper-evident audit log as system of record.
 
-**Portal front end (revised 2026-07-29):** the baseline was built HTMX+Jinja (draft v2's choice for one-language/no-JS-toolchain). It is now being migrated to a **React (Vite + TypeScript) SPA on IBM Carbon**, for premium enterprise UI fidelity (sharp-edged, blue/white, WCAG 2.2, dark/light). A **Backend-for-Frontend** (the existing FastAPI portal service) keeps doing Entra OIDC and proxies the SPA's calls to the API with the user's token — so **the API, RBAC, policy, Jira, orchestrator and every server-side control are unchanged**. Migration is incremental (screen by screen, HTMX portal running until parity). Backstage.io was considered and declined (heavyweight platform re-architecture; conflicts with the simple/mainstream principle).
+**Portal front end (revised 2026-07-29):** the baseline was built HTMX+Jinja (draft v2's choice for one-language/no-JS-toolchain). It is now being migrated to a **React (Vite + TypeScript) SPA on IBM Carbon**, for premium enterprise UI fidelity (sharp-edged, blue/white, WCAG 2.2, dark/light). A **Backend-for-Frontend** (the existing FastAPI portal service) keeps doing Entra OIDC and proxies the SPA's calls to the API with the user's token — so **the API, RBAC, policy, Jira, orchestrator and every server-side control are unchanged**. Migration was incremental (screen by screen, HTMX portal running until parity); **cutover completed 2026-07-29 (UX.5)** — the React portal is now the front door on port 5173 and the HTMX portal is parked as a demo fallback (docker-compose `fallback` profile). Backstage.io was considered and declined (heavyweight platform re-architecture; conflicts with the simple/mainstream principle).
 
 ---
 
@@ -361,7 +361,7 @@ Adopted from the catalogue's sequencing (authoritative). Guiding principle: **bu
 
 Each shapes multiple features and should be settled before the relevant increment starts.
 
-1. **Portal framework** — ✅ **RESOLVED 2026-07-29: React (Vite + TypeScript) + IBM Carbon, via a FastAPI BFF.** Chosen over the baseline HTMX+Jinja for premium enterprise UI; the BFF keeps auth server-side so the API/controls are unchanged. Migration is incremental. (The baseline HTMX portal was built first and is being reskinned/replaced screen by screen.)
+1. **Portal framework** — ✅ **RESOLVED 2026-07-29: React (Vite + TypeScript) + IBM Carbon, via a FastAPI BFF.** Chosen over the baseline HTMX+Jinja for premium enterprise UI; the BFF keeps auth server-side so the API/controls are unchanged. Migration was incremental and **cutover completed 2026-07-29 (UX.5)**: the React portal is the front door on port 5173 (reusing the classic portal's registered Entra redirect URI); the HTMX portal is parked as a demo fallback under the docker-compose `fallback` profile.
 2. **Workflow engine** — Temporal vs. Argo Workflows for durable orchestration.
 3. **Control frameworks to evidence** — e.g. ISO 27001 and the national information-assurance standard (drives F-GOV-09 and the evidence pack).
 4. **Sovereign / air-gapped profile** — required or not (constrains all outbound pricing/identity calls, F-SEC-11).

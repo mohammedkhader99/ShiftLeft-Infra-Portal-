@@ -124,7 +124,13 @@ services:
     depends_on:
       - opa
 
+  # Classic HTMX+Jinja portal. Superseded by the React `webapp` at UX.5 and
+  # parked here as a demo fallback: it is in the "fallback" profile, so a plain
+  # `docker compose up` does NOT start it. It still claims host port 5173, so
+  # bring it back only after stopping `webapp`:
+  #   docker compose stop webapp && docker compose --profile fallback up -d portal
   portal:
+    profiles: ["fallback"]
     build:
       context: .
       dockerfile: portal/Dockerfile
@@ -143,8 +149,10 @@ services:
     depends_on:
       - api
 
-  # New React + IBM Carbon portal (UX.1) served via a FastAPI Backend-for-Frontend.
-  # Runs alongside the HTMX portal (5173) during the incremental migration.
+  # React + IBM Carbon portal served via a FastAPI Backend-for-Frontend.
+  # UX.5 cutover (2026-07-29): this is now THE portal — it answers on host port
+  # 5173 (the classic portal's old port), reusing the Entra redirect URI that is
+  # already registered for 5173. The container still listens on 5174 internally.
   webapp:
     build:
       context: ./webapp
@@ -162,7 +170,8 @@ services:
       OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
       OIDC_REDIRECT_URI: ${WEBAPP_OIDC_REDIRECT_URI:-}
     ports:
-      - "5174:5174"
+      # Host 5173 (familiar URL, registered redirect URI) -> container 5174.
+      - "5173:5174"
     depends_on:
       - api
 
