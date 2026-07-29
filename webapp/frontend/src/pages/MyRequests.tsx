@@ -18,8 +18,10 @@ import {
 import { getMe, getRequests, getAudit, type RequestRow } from '../api'
 import { workflowSteps, fmtWhen, type WFStep } from '../workflow'
 
-type BadgeType =
-  | 'green' | 'teal' | 'blue' | 'cyan' | 'red' | 'gray' | 'cool-gray'
+const FILTER_KEYS = ['status', 'request_type', 'technology', 'deployment_target', 'created_week', 'requested_by', 'subsidiary']
+const OVERSIGHT = ['platform_admin', 'auditor', 'finops']
+
+type BadgeType = 'green' | 'teal' | 'blue' | 'cyan' | 'red' | 'gray' | 'cool-gray'
 
 function badgeType(status: string): BadgeType {
   if (status === 'provisioned') return 'green'
@@ -38,23 +40,35 @@ function componentsText(r: RequestRow): string {
   return parts.length ? parts.join(', ') : '—'
 }
 
-export default function MyRequests() {
-  const [email, setEmail] = useState<string | null>(null)
+function parseQuery(route: string): Record<string, string> {
+  const i = route.indexOf('?')
+  return i < 0 ? {} : Object.fromEntries(new URLSearchParams(route.slice(i + 1)))
+}
+
+export default function MyRequests({ route }: { route: string }) {
+  const [me, setMe] = useState<{ email: string; roles: string[] } | null>(null)
   const [rows, setRows] = useState<RequestRow[]>([])
   const [loaded, setLoaded] = useState(false)
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [steps, setSteps] = useState<Record<string, WFStep[]>>({})
 
+  const query = parseQuery(route)
+  const filters: Record<string, string> = {}
+  for (const k of FILTER_KEYS) if (query[k]) filters[k] = query[k]
+  const oversight = !!me && me.roles.some((r) => OVERSIGHT.includes(r))
+  const estate = query.scope === 'all' && oversight
+  const filterActive = estate || Object.keys(filters).length > 0
+
   useEffect(() => {
-    getMe().then((m) => setEmail(m?.email ?? null))
+    getMe().then(setMe)
   }, [])
 
-  // Poll the list so status badges update live (no F5).
   useEffect(() => {
-    if (!email) return
+    if (!me) return
+    const params = estate ? { ...filters } : { requester: me.email, ...filters }
     let active = true
     const load = () =>
-      getRequests(email)
+      getRequests(params)
         .then((rs) => active && setRows(rs))
         .catch(() => {})
         .finally(() => active && setLoaded(true))
@@ -64,9 +78,9 @@ export default function MyRequests() {
       active = false
       clearInterval(id)
     }
-  }, [email])
+    // route captures scope + all filters
+  }, [me, route])
 
-  // Keep the workflow of every expanded row fresh as the list polls.
   useEffect(() => {
     expanded.forEach((ref) => {
       const status = rows.find((r) => r.reference === ref)?.status ?? ''
@@ -84,91 +98,130 @@ export default function MyRequests() {
     })
   }
 
-  if (!loaded) return <InlineLoading description="Loading your requests…" />
+  if (!loaded) return <InlineLoading description="Loading requests…" />
 
-  if (rows.length === 0) {
-    return (
-      <p style={{ color: 'var(--cds-text-secondary)' }}>
-        You haven't raised any requests yet.
-      </p>
-    )
-  }
+  const banner = filterActive && (
+    <div
+      style={{
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        flexWrap: 'wrap',
+        gap: '1rem',
+        background: 'var(--cds-layer-accent)',
+        padding: '0.5rem 0.9rem',
+        marginBottom: '0.75rem',
+        fontSize: '0.85rem',
+      }}
+    >
+      <span>
+        {Object.keys(filters).length > 0 && (
+          <>
+            Filtered by{' '}
+            {Object.entries(filters).map(([k, v], i) => (
+              <span key={k}>
+                {i > 0 && ', '}
+                <strong>{k} = {v}</strong>
+              </span>
+            ))}{' '}
+            ·{' '}
+          </>
+        )}
+        {rows.length} result{rows.length === 1 ? '' : 's'}
+      </span>
+      <span>
+        {estate && (
+          <a href="#/overview" style={{ marginRight: '1rem' }}>
+            ← Back to overview
+          </a>
+        )}
+        <a href="#/requests">Clear filter</a>
+      </span>
+    </div>
+  )
 
   return (
-    <TableContainer title="My requests" description="Live — updates automatically.">
-      <Table>
-        <TableHead>
-          <TableRow>
-            <TableExpandHeader aria-label="Expand row" />
-            <TableHeader>Reference</TableHeader>
-            <TableHeader>Status</TableHeader>
-            <TableHeader>Submitted by</TableHeader>
-            <TableHeader>Environment</TableHeader>
-            <TableHeader>Components</TableHeader>
-            <TableHeader>Monthly</TableHeader>
-            <TableHeader>Jira ticket</TableHeader>
-          </TableRow>
-        </TableHead>
-        <TableBody>
-          {rows.map((r) => (
-            <Fragment key={r.reference}>
-              <TableExpandRow
-                aria-label={`Toggle workflow for ${r.reference}`}
-                isExpanded={expanded.has(r.reference)}
-                onExpand={() => toggle(r.reference)}
-              >
-                <TableCell>
-                  <strong>{r.reference}</strong>
-                </TableCell>
-                <TableCell>
-                  <Tag type={badgeType(r.status)} size="sm">
-                    {r.status}
-                  </Tag>
-                </TableCell>
-                <TableCell>{r.requester_name || r.requester}</TableCell>
-                <TableCell>{r.environment_name || r.target_environment || '—'}</TableCell>
-                <TableCell>{componentsText(r)}</TableCell>
-                <TableCell>
-                  {r.estimate ? `${r.estimate.monthly.toFixed(2)} ${r.estimate.currency}` : '—'}
-                </TableCell>
-                <TableCell>
-                  {r.approval?.jira_key ? (
-                    r.approval.ticket_url ? (
-                      <a href={r.approval.ticket_url} target="_blank" rel="noopener noreferrer">
-                        {r.approval.jira_key}
-                      </a>
+    <div>
+      {banner}
+      {rows.length === 0 ? (
+        <p style={{ color: 'var(--cds-text-secondary)' }}>No matching requests.</p>
+      ) : (
+        <TableContainer title={estate ? 'Estate requests' : 'My requests'} description="Live — updates automatically.">
+          <Table>
+            <TableHead>
+              <TableRow>
+                <TableExpandHeader aria-label="Expand row" />
+                <TableHeader>Reference</TableHeader>
+                <TableHeader>Status</TableHeader>
+                <TableHeader>Submitted by</TableHeader>
+                <TableHeader>Environment</TableHeader>
+                <TableHeader>Components</TableHeader>
+                <TableHeader>Monthly</TableHeader>
+                <TableHeader>Jira ticket</TableHeader>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {rows.map((r) => (
+                <Fragment key={r.reference}>
+                  <TableExpandRow
+                    aria-label={`Toggle workflow for ${r.reference}`}
+                    isExpanded={expanded.has(r.reference)}
+                    onExpand={() => toggle(r.reference)}
+                  >
+                    <TableCell>
+                      <strong>{r.reference}</strong>
+                    </TableCell>
+                    <TableCell>
+                      <Tag type={badgeType(r.status)} size="sm">
+                        {r.status}
+                      </Tag>
+                    </TableCell>
+                    <TableCell>{r.requester_name || r.requester}</TableCell>
+                    <TableCell>{r.environment_name || r.target_environment || '—'}</TableCell>
+                    <TableCell>{componentsText(r)}</TableCell>
+                    <TableCell>
+                      {r.estimate ? `${r.estimate.monthly.toFixed(2)} ${r.estimate.currency}` : '—'}
+                    </TableCell>
+                    <TableCell>
+                      {r.approval?.jira_key ? (
+                        r.approval.ticket_url ? (
+                          <a href={r.approval.ticket_url} target="_blank" rel="noopener noreferrer">
+                            {r.approval.jira_key}
+                          </a>
+                        ) : (
+                          r.approval.jira_key
+                        )
+                      ) : (
+                        '—'
+                      )}
+                    </TableCell>
+                  </TableExpandRow>
+                  <TableExpandedRow colSpan={8}>
+                    {steps[r.reference] ? (
+                      <div style={{ padding: '1rem 0.5rem' }}>
+                        <ProgressIndicator spaceEqually>
+                          {steps[r.reference].map((s) => (
+                            <ProgressStep
+                              key={s.label}
+                              label={s.label}
+                              secondaryLabel={fmtWhen(s.when)}
+                              complete={s.state === 'done'}
+                              current={s.state === 'current'}
+                              invalid={s.state === 'failed'}
+                            />
+                          ))}
+                        </ProgressIndicator>
+                      </div>
                     ) : (
-                      r.approval.jira_key
-                    )
-                  ) : (
-                    '—'
-                  )}
-                </TableCell>
-              </TableExpandRow>
-              <TableExpandedRow colSpan={8}>
-                {steps[r.reference] ? (
-                  <div style={{ padding: '1rem 0.5rem' }}>
-                    <ProgressIndicator spaceEqually>
-                      {steps[r.reference].map((s) => (
-                        <ProgressStep
-                          key={s.label}
-                          label={s.label}
-                          secondaryLabel={fmtWhen(s.when)}
-                          complete={s.state === 'done'}
-                          current={s.state === 'current'}
-                          invalid={s.state === 'failed'}
-                        />
-                      ))}
-                    </ProgressIndicator>
-                  </div>
-                ) : (
-                  <InlineLoading description="Loading workflow…" />
-                )}
-              </TableExpandedRow>
-            </Fragment>
-          ))}
-        </TableBody>
-      </Table>
-    </TableContainer>
+                      <InlineLoading description="Loading workflow…" />
+                    )}
+                  </TableExpandedRow>
+                </Fragment>
+              ))}
+            </TableBody>
+          </Table>
+        </TableContainer>
+      )}
+    </div>
   )
 }

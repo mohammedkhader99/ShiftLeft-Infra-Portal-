@@ -9,7 +9,6 @@ import {
   SideNavLink,
   Theme,
   Tag,
-  Tile,
 } from '@carbon/react'
 import {
   Notification,
@@ -23,6 +22,7 @@ import {
 } from '@carbon/icons-react'
 import RequestForm from './pages/RequestForm'
 import MyRequests from './pages/MyRequests'
+import Overview from './pages/Overview'
 
 type Me = { email: string; roles: string[] }
 
@@ -40,17 +40,6 @@ function useHashRoute() {
     return () => window.removeEventListener('hashchange', onHash)
   }, [])
   return route
-}
-
-function Placeholder({ name }: { name: string }) {
-  return (
-    <Tile>
-      <p style={{ color: 'var(--cds-text-secondary)' }}>
-        {name} moves to Carbon in the next increment. For now it's live in the classic
-        portal at <a href="http://localhost:5173">:5173</a>.
-      </p>
-    </Tile>
-  )
 }
 
 export default function App() {
@@ -75,10 +64,10 @@ export default function App() {
   let page: JSX.Element
   if (route.startsWith('#/requests')) {
     title = 'My requests'
-    page = <MyRequests />
+    page = <MyRequests route={route} />
   } else if (route.startsWith('#/overview')) {
     title = 'Estate overview'
-    page = <Placeholder name="Estate overview" />
+    page = <Overview />
   } else {
     title = 'New infrastructure request'
     page = <RequestForm />

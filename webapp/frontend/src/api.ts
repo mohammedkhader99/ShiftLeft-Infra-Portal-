@@ -77,10 +77,33 @@ export async function getMe(): Promise<{ email: string; roles: string[] } | null
   return r.ok ? r.json() : null
 }
 
-export async function getRequests(requester?: string): Promise<RequestRow[]> {
-  const q = requester ? `?requester=${encodeURIComponent(requester)}` : ''
-  const r = await fetch(`/api/requests${q}`)
+export async function getRequests(
+  params: Record<string, string | undefined> = {},
+): Promise<RequestRow[]> {
+  const clean: Record<string, string> = {}
+  for (const [k, v] of Object.entries(params)) if (v) clean[k] = v
+  const qs = new URLSearchParams(clean).toString()
+  const r = await fetch(`/api/requests${qs ? `?${qs}` : ''}`)
   return r.ok ? r.json() : []
+}
+
+export type Breakdown = { key: string; count: number }
+export type Stats = {
+  kpis: { total: number; active: number; in_flight: number; failed: number; decommissioned: number }
+  active_monthly_cost: { amount: number; currency: string }
+  by_status: Breakdown[]
+  by_type: Breakdown[]
+  by_technology: Breakdown[]
+  by_target: Breakdown[]
+  by_requester: Breakdown[]
+  by_subsidiary: Breakdown[]
+  trend: { week: string; count: number }[]
+}
+
+export async function getStats(): Promise<Stats | 'forbidden' | null> {
+  const r = await fetch('/api/stats')
+  if (r.status === 403) return 'forbidden'
+  return r.ok ? r.json() : null
 }
 
 export type AuditEntry = { event: string; created_at: string }
