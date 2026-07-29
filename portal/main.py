@@ -605,13 +605,16 @@ def request_submit(
 
         # Submit does live work (create the Jira ticket + attach the PDF), so
         # it needs a generous timeout.
-        submit = httpx.post(f"{API_BASE_URL}/api/requests/{ref}/submit", timeout=60.0)
+        submit = httpx.post(f"{API_BASE_URL}/api/requests/{ref}/submit",
+                            headers=_requester_headers(request), timeout=60.0)
     except Exception as exc:  # noqa: BLE001
         return _render_form(
             request, form=_values(scalars, components), reference=reference or None,
             banner_error=str(exc),
         )
 
+    if submit.status_code == 401:  # token expired mid-flow -> re-authenticate
+        return _reauth_redirect(request)
     if submit.status_code == 422:
         payload = submit.json()
         return _render_form(
@@ -649,14 +652,15 @@ def request_approve(
     try:
         # Approving fires the handoff, which in live mode runs a real terraform
         # plan against OCI — allow plenty of time.
+        hdrs = _requester_headers(request)
         approve_resp = httpx.post(
-            f"{API_BASE_URL}/api/approvals/{jira_key}/approve", timeout=310.0
+            f"{API_BASE_URL}/api/approvals/{jira_key}/approve", headers=hdrs, timeout=310.0
         )
         saved_request = httpx.get(
-            f"{API_BASE_URL}/api/requests/{reference}", timeout=5.0
+            f"{API_BASE_URL}/api/requests/{reference}", headers=hdrs, timeout=5.0
         ).json()
         audit = httpx.get(
-            f"{API_BASE_URL}/api/requests/{reference}/audit", timeout=5.0
+            f"{API_BASE_URL}/api/requests/{reference}/audit", headers=hdrs, timeout=5.0
         ).json().get("entries", [])
     except Exception as exc:  # noqa: BLE001
         return _render_form(request, form={}, reference=reference, banner_error=str(exc))
@@ -684,10 +688,13 @@ def _action_and_render(request: Request, reference: str, path: str, *, provision
                        decommissioned: bool = False) -> HTMLResponse:
     """Call an API request-action (apply/destroy) and re-render with the result."""
     try:
-        resp = httpx.post(f"{API_BASE_URL}/api/requests/{reference}/{path}", timeout=310.0)
-        saved_request = httpx.get(f"{API_BASE_URL}/api/requests/{reference}", timeout=5.0).json()
+        hdrs = _requester_headers(request)
+        resp = httpx.post(f"{API_BASE_URL}/api/requests/{reference}/{path}",
+                          headers=hdrs, timeout=310.0)
+        saved_request = httpx.get(f"{API_BASE_URL}/api/requests/{reference}",
+                                  headers=hdrs, timeout=5.0).json()
         audit = httpx.get(
-            f"{API_BASE_URL}/api/requests/{reference}/audit", timeout=5.0
+            f"{API_BASE_URL}/api/requests/{reference}/audit", headers=hdrs, timeout=5.0
         ).json().get("entries", [])
     except Exception as exc:  # noqa: BLE001
         return _render_form(request, form={}, reference=reference, banner_error=str(exc))
@@ -709,10 +716,13 @@ def _action_and_render(request: Request, reference: str, path: str, *, provision
 def request_apply(request: Request, reference: str) -> HTMLResponse:
     """Start provisioning; the page then polls for live progress -> resolved."""
     try:
-        resp = httpx.post(f"{API_BASE_URL}/api/requests/{reference}/apply", timeout=30.0)
-        saved_request = httpx.get(f"{API_BASE_URL}/api/requests/{reference}", timeout=5.0).json()
+        hdrs = _requester_headers(request)
+        resp = httpx.post(f"{API_BASE_URL}/api/requests/{reference}/apply",
+                          headers=hdrs, timeout=30.0)
+        saved_request = httpx.get(f"{API_BASE_URL}/api/requests/{reference}",
+                                  headers=hdrs, timeout=5.0).json()
         audit = httpx.get(
-            f"{API_BASE_URL}/api/requests/{reference}/audit", timeout=5.0
+            f"{API_BASE_URL}/api/requests/{reference}/audit", headers=hdrs, timeout=5.0
         ).json().get("entries", [])
     except Exception as exc:  # noqa: BLE001
         return _render_form(request, form={}, reference=reference, banner_error=str(exc))

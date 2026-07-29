@@ -95,3 +95,43 @@ def test_portal_sends_requester_header_from_session(monkeypatch):
     c.post("/login", data={"email": "bob@example.com", "name": "Bob"})
     c.post("/request/save", data={"request_type": "create"})
     assert captured["headers"].get("X-Requester") == "bob@example.com"
+
+
+def test_submit_forwards_auth_headers(monkeypatch):
+    """Regression: submit is RBAC-gated (E1.1), so the portal must forward the
+    user's token — not just on draft. Otherwise live submit 401s -> 500."""
+    seen = []
+
+    class _R:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"reference": "REQ-2026-0001", "status": "submitted"}
+
+    def fake_post(url, *args, **kwargs):
+        seen.append((url, kwargs.get("headers", {})))
+        return _R()
+
+    def fake_get(*args, **kwargs):
+        class G:
+            status_code = 200
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"projects": [], "cost_centres": [], "subsidiaries": [],
+                        "technologies": [], "environments": []}
+        return G()
+
+    monkeypatch.setattr("portal.main.httpx.post", fake_post)
+    monkeypatch.setattr("portal.main.httpx.get", fake_get)
+
+    c = TestClient(app)
+    c.post("/login", data={"email": "bob@example.com", "name": "Bob"})
+    c.post("/request/submit", data={"request_type": "create"})
+    submit_headers = [h for url, h in seen if url.endswith("/submit")]
+    assert submit_headers and submit_headers[0].get("X-Requester") == "bob@example.com"
