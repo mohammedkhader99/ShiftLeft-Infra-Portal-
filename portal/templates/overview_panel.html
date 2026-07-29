@@ -1,0 +1,51 @@
+{% macro barchart(title, items, filter_key) %}
+  <div class="ov-card">
+    <h3>{{ title }}</h3>
+    {% if items %}
+      {% set maxc = items | map(attribute='count') | max %}
+      {% for it in items %}
+        <a class="ov-bar-row" href="/requests?scope=all&{{ filter_key }}={{ it.key | urlencode }}"
+           title="Show the {{ it.count }} request(s) — {{ it.key }}">
+          <div class="ov-bar-label">{{ it.key }}</div>
+          <div class="ov-bar-track"><div class="ov-bar-fill" style="width: {{ (it.count / maxc * 100) | round(1) }}%;"></div></div>
+          <div class="ov-bar-count">{{ it.count }}</div>
+        </a>
+      {% endfor %}
+    {% else %}<p class="muted">No data yet.</p>{% endif %}
+  </div>
+{% endmacro %}
+
+<div class="ov-kpis">
+  {% set k = stats.kpis %}
+  <a class="ov-tile" href="/requests?scope=all"><div class="ov-tile-num">{{ k.total }}</div><div class="ov-tile-label">Total requests</div></a>
+  <a class="ov-tile" href="/requests?scope=all&status=provisioned"><div class="ov-tile-num" style="color:#1c6b34;">{{ k.active }}</div><div class="ov-tile-label">Active</div></a>
+  <a class="ov-tile" href="/requests?scope=all&status=submitted,planned,in-progress"><div class="ov-tile-num" style="color:#8a5200;">{{ k.in_flight }}</div><div class="ov-tile-label">In flight</div></a>
+  <a class="ov-tile" href="/requests?scope=all&status=apply-failed,decommission-failed,rejected"><div class="ov-tile-num" style="color:#97231f;">{{ k.failed }}</div><div class="ov-tile-label">Failed</div></a>
+  <a class="ov-tile" href="/requests?scope=all&status=decommissioned"><div class="ov-tile-num">{{ k.decommissioned }}</div><div class="ov-tile-label">Decommissioned</div></a>
+  <a class="ov-tile" href="/requests?scope=all&status=provisioned"><div class="ov-tile-num">{{ '%.0f' | format(stats.active_monthly_cost.amount) }} <span style="font-size:0.8rem;">{{ stats.active_monthly_cost.currency }}</span></div><div class="ov-tile-label">Active monthly cost</div></a>
+</div>
+
+<div class="ov-grid">
+  {{ barchart('By requester', stats.by_requester, 'requested_by') }}
+  {{ barchart('By subsidiary', stats.by_subsidiary, 'subsidiary') }}
+  {{ barchart('By status', stats.by_status, 'status') }}
+  {{ barchart('By request type', stats.by_type, 'type') }}
+  {{ barchart('By technology', stats.by_technology, 'technology') }}
+  {{ barchart('By deployment target', stats.by_target, 'target') }}
+</div>
+
+<div class="ov-card">
+  <h3>Requests per week</h3>
+  {% if stats.trend %}
+    {% set maxt = stats.trend | map(attribute='count') | max %}
+    <div class="ov-cols">
+      {% for t in stats.trend %}
+        <a class="ov-col" href="/requests?scope=all&week={{ t.week | urlencode }}" title="{{ t.week }}: {{ t.count }} request(s)">
+          <div class="ov-col-bar" style="height: {{ (t.count / maxt * 100) | round(0) }}%;"></div>
+          <div class="ov-col-count">{{ t.count }}</div>
+          <div class="ov-col-week">{{ t.week[5:] }}</div>
+        </a>
+      {% endfor %}
+    </div>
+  {% else %}<p class="muted">No data yet.</p>{% endif %}
+</div>

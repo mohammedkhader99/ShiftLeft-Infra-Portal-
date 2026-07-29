@@ -178,6 +178,22 @@ def overview(request: Request):
     )
 
 
+@app.get("/overview/panel", response_class=HTMLResponse)
+def overview_panel(request: Request) -> HTMLResponse:
+    """HTMX fragment: just the dashboard's numbers + charts, re-fetched on a timer
+    so the estate overview updates live without a page refresh."""
+    try:
+        resp = httpx.get(f"{API_BASE_URL}/api/stats",
+                         headers=_requester_headers(request), timeout=6.0)
+        if resp.status_code == 403:
+            return HTMLResponse("")  # lost access; leave the page as-is
+        resp.raise_for_status()
+        stats = resp.json()
+    except Exception as exc:  # noqa: BLE001
+        return HTMLResponse(f"<div class='err'>Couldn't refresh: {exc}</div>")
+    return templates.TemplateResponse(request, "overview_panel.html", {"stats": stats})
+
+
 _FILTER_PARAMS = (("status", "status"), ("type", "request_type"),
                   ("technology", "technology"), ("target", "deployment_target"),
                   ("week", "created_week"), ("requested_by", "requested_by"),

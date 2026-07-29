@@ -436,6 +436,50 @@ def test_workflow_steps_decommissioned_appends_terminal():
     assert all(s["state"] == "done" for s in steps)
 
 
+def test_overview_panel_fragment_renders(monkeypatch):
+    def fake_get(url, *a, **k):
+        if url.endswith("/api/stats"):
+            return _FakeResp(FAKE_STATS)
+        return _FakeResp({})
+
+    monkeypatch.setattr("portal.main.httpx.get", fake_get)
+    body = client.get("/overview/panel").text
+    assert "postgres16" in body and "provisioned" in body
+    assert "/requests?scope=all" in body  # drill-down links preserved in the fragment
+
+
+def test_overview_page_polls_the_panel(monkeypatch):
+    def fake_get(url, *a, **k):
+        if url.endswith("/api/me"):
+            return _FakeResp({"roles": ["auditor"]})
+        if url.endswith("/api/stats"):
+            return _FakeResp(FAKE_STATS)
+        return _FakeResp({})
+
+    monkeypatch.setattr("portal.main.httpx.get", fake_get)
+    body = client.get("/overview").text
+    assert 'hx-get="/overview/panel"' in body and "every 10s" in body
+
+
+def test_request_detail_shows_live_status(monkeypatch):
+    def fake_get(url, *a, **k):
+        if url.endswith("/api/lookups"):
+            return _FakeResp(FAKE_LOOKUPS)
+        if url.endswith("/api/me"):
+            return _FakeResp({"roles": []})
+        if url.endswith("/api/requests/REQ-2026-0007"):
+            return _FakeResp({"reference": "REQ-2026-0007", "status": "planned",
+                              "status_detail": None, "components": [],
+                              "approval": None, "estimate": None})
+        return _FakeResp([])
+
+    monkeypatch.setattr("portal.main.httpx.get", fake_get)
+    body = client.get("/request/REQ-2026-0007").text
+    assert "live-status" in body
+    assert "s-planned" in body
+    assert "/request/REQ-2026-0007/workflow" in body  # workflow auto-loads
+
+
 def test_status_badge_polls_while_in_flight(monkeypatch):
     monkeypatch.setattr("portal.main.httpx.get",
                         lambda *a, **k: _FakeResp({"status": "planned", "status_detail": None}))
