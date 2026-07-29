@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type CSSProperties } from 'react'
 import {
   Stack,
   RadioButtonGroup,
@@ -12,11 +12,22 @@ import {
   Checkbox,
   Button,
   Tile,
+  Tag,
   InlineNotification,
-  IconButton,
   FormGroup,
 } from '@carbon/react'
-import { Add, TrashCan } from '@carbon/icons-react'
+import {
+  TrashCan,
+  DataBase,
+  Api,
+  Search,
+  Code,
+  Application,
+  ContainerSoftware,
+  Security,
+  Terminal,
+  type CarbonIconType,
+} from '@carbon/icons-react'
 import {
   getLookups,
   getMe,
@@ -54,6 +65,29 @@ const CRITICALITIES: [string, string][] = [
   ['tier4', 'Tier 4 — low impact'],
 ]
 
+// Size specs shown on the size cards. These mirror the server-side sizing
+// anchors (db/seed.py SIZES); the server remains authoritative for pricing.
+type Spec = { vcpu: number; mem: number; storage: number }
+const SIZE_SPECS: Record<string, Spec> = {
+  small: { vcpu: 2, mem: 4, storage: 50 },
+  medium: { vcpu: 4, mem: 16, storage: 200 },
+  large: { vcpu: 8, mem: 64, storage: 500 },
+  xlarge: { vcpu: 16, mem: 128, storage: 1000 },
+}
+
+// Generic category icons — NOT brand logos (trademarked + external assets).
+const TECH_ICON_BY_CODE: Record<string, CarbonIconType> = {
+  postgres16: DataBase, 'oracle-db': DataBase, mssql: DataBase, mongodb: DataBase, redis7: DataBase,
+  kafka: Api, rabbitmq: Api,
+  elasticsearch: Search, opensearch: Search,
+  java21: Code, dotnet8: Code, nodejs20: Code, python312: Code,
+  nginx: Application, apache: Application,
+  k8s: ContainerSoftware, openshift: ContainerSoftware,
+  vault: Security, keycloak: Security,
+  rhel9: Terminal, win2019: Terminal,
+}
+const techIcon = (code: string): CarbonIconType => TECH_ICON_BY_CODE[code] ?? Application
+
 type Result = { kind: 'success' | 'error'; title: string; subtitle?: string }
 
 const compKey = (c: Component) => `${c.technology_code}:${c.size}`
@@ -64,6 +98,22 @@ const fmtDate = (d: Date) =>
     d.getDate(),
   ).padStart(2, '0')}`
 const TODAY = fmtDate(new Date())
+
+// A sharp-edged selection card styled with Carbon design tokens (theme-aware).
+const cardStyle = (selected: boolean): CSSProperties => ({
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '0.3rem',
+  padding: '0.7rem 0.75rem',
+  textAlign: 'left',
+  cursor: 'pointer',
+  width: '100%',
+  borderRadius: 0,
+  color: 'var(--cds-text-primary)',
+  background: selected ? 'var(--cds-layer-selected)' : 'var(--cds-layer)',
+  border: `1px solid ${selected ? 'var(--cds-border-interactive)' : 'var(--cds-border-subtle)'}`,
+  boxShadow: selected ? 'inset 0 0 0 1px var(--cds-border-interactive)' : 'none',
+})
 
 export default function RequestForm() {
   const [lookups, setLookups] = useState<Lookups | null>(null)
@@ -78,7 +128,7 @@ export default function RequestForm() {
   const [envTier, setEnvTier] = useState('')
   const [targetEnv, setTargetEnv] = useState('')
   const [classification, setClassification] = useState('')
-  const [components, setComponents] = useState<Component[]>([{ technology_code: '', size: '' }])
+  const [components, setComponents] = useState<Component[]>([])
 
   // Governance metadata (increment 6.1).
   const [justification, setJustification] = useState('')
@@ -151,8 +201,19 @@ export default function RequestForm() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pricedKey])
 
-  function setComponent(i: number, patch: Partial<Component>) {
-    setComponents((cs) => cs.map((c, idx) => (idx === i ? { ...c, ...patch } : c)))
+  const techName = (code: string) =>
+    lookups?.technologies.find((t) => t.code === code)?.name ?? code
+
+  // Click a technology card to add/remove it as a component (default size medium).
+  function toggleTech(code: string) {
+    setComponents((cs) =>
+      cs.some((c) => c.technology_code === code)
+        ? cs.filter((c) => c.technology_code !== code)
+        : [...cs, { technology_code: code, size: 'medium' }],
+    )
+  }
+  function setSize(code: string, size: string) {
+    setComponents((cs) => cs.map((c) => (c.technology_code === code ? { ...c, size } : c)))
   }
   function toggleSelected(c: Component, checked: boolean) {
     setSelected((s) => {
@@ -375,34 +436,60 @@ export default function RequestForm() {
                 {errors.components && (
                   <p style={{ color: 'var(--cds-text-error)', fontSize: '0.75rem', marginBottom: '0.5rem' }}>{errors.components}</p>
                 )}
-                <Stack gap={4}>
-                  {components.map((c, i) => (
-                    <div key={i} style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-end' }}>
-                      <div style={{ flex: 3 }}>
-                        <Select id={`tech-${i}`} labelText={i === 0 ? 'Technology' : ''} value={c.technology_code} onChange={(e) => setComponent(i, { technology_code: e.target.value })}>
-                          <SelectItem value="" text="— technology —" />
-                          {lookups.technologies.map((t) => (
-                            <SelectItem key={t.code} value={t.code} text={`${t.name} (${t.lifecycle_state})`} />
-                          ))}
-                        </Select>
-                      </div>
-                      <div style={{ flex: 2 }}>
-                        <Select id={`size-${i}`} labelText={i === 0 ? 'Size' : ''} value={c.size} onChange={(e) => setComponent(i, { size: e.target.value })}>
-                          <SelectItem value="" text="— size —" />
-                          {SIZES.map((s) => (
-                            <SelectItem key={s} value={s} text={s} />
-                          ))}
-                        </Select>
-                      </div>
-                      <IconButton label="Remove" kind="ghost" onClick={() => setComponents((cs) => (cs.length > 1 ? cs.filter((_, idx) => idx !== i) : cs))} disabled={components.length === 1}>
-                        <TrashCan />
-                      </IconButton>
-                    </div>
-                  ))}
-                </Stack>
-                <Button kind="ghost" size="sm" renderIcon={Add} onClick={() => setComponents((cs) => [...cs, { technology_code: '', size: '' }])} style={{ marginTop: '0.5rem' }}>
-                  Add component
-                </Button>
+                <p style={{ fontSize: '0.8rem', color: 'var(--cds-text-secondary)', margin: '0 0 0.6rem' }}>
+                  Pick one or more technologies, then choose a size for each.
+                </p>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(9.5rem, 1fr))', gap: '0.5rem' }}>
+                  {lookups.technologies.map((t) => {
+                    const Icon = techIcon(t.code)
+                    const sel = components.some((c) => c.technology_code === t.code)
+                    return (
+                      <button key={t.code} type="button" aria-pressed={sel} onClick={() => toggleTech(t.code)} style={cardStyle(sel)}>
+                        <Icon size={20} style={{ color: 'var(--cds-icon-primary)' }} />
+                        <span style={{ fontWeight: 500, fontSize: '0.82rem', lineHeight: 1.2 }}>{t.name}</span>
+                        {t.lifecycle_state !== 'certified' && (
+                          <Tag type={t.lifecycle_state === 'deprecated' ? 'red' : 'purple'} size="sm" style={{ margin: 0 }}>
+                            {t.lifecycle_state}
+                          </Tag>
+                        )}
+                      </button>
+                    )
+                  })}
+                </div>
+
+                {components.length > 0 && (
+                  <div style={{ marginTop: '1.25rem', display: 'flex', flexDirection: 'column', gap: '1.1rem' }}>
+                    {components.map((c) => {
+                      const Icon = techIcon(c.technology_code)
+                      return (
+                        <div key={c.technology_code}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.4rem' }}>
+                            <span style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontWeight: 500, fontSize: '0.9rem' }}>
+                              <Icon size={16} /> {techName(c.technology_code)}
+                            </span>
+                            <Button kind="ghost" size="sm" renderIcon={TrashCan} onClick={() => toggleTech(c.technology_code)}>
+                              Remove
+                            </Button>
+                          </div>
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(8rem, 1fr))', gap: '0.5rem' }}>
+                            {SIZES.map((s) => {
+                              const spec = SIZE_SPECS[s]
+                              const sel = c.size === s
+                              return (
+                                <button key={s} type="button" aria-pressed={sel} onClick={() => setSize(c.technology_code, s)} style={cardStyle(sel)}>
+                                  <span style={{ fontWeight: 500, textTransform: 'capitalize', fontSize: '0.85rem' }}>{s}</span>
+                                  <span style={{ fontSize: '0.72rem', color: 'var(--cds-text-secondary)', lineHeight: 1.5 }}>
+                                    {spec.vcpu} vCPU · {spec.mem} GB RAM<br />{spec.storage} GB storage
+                                  </span>
+                                </button>
+                              )
+                            })}
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
               </FormGroup>
 
               <FormGroup legendText="Request details">
