@@ -110,6 +110,31 @@ With the spine proven, switch `USE_MOCK=false` and enable each adapter individua
 
 ---
 
+## 4a. Phase UX — Premium portal redesign (React + IBM Carbon) — decided 2026-07-29
+
+Per the reviewer's UX brief (*"UX Portal Design.docx"*) and ARCHITECTURE.md §14.1, the portal front end moves from HTMX+Jinja to a **React (Vite + TypeScript) SPA on IBM Carbon**, served via a **FastAPI Backend-for-Frontend** that keeps Entra OIDC + token handling server-side. **The API, RBAC, OPA, Jira, orchestrator, cost engine, poller and audit are unchanged** — this phase only replaces the presentation layer. Migration is incremental; the HTMX portal keeps running until each screen reaches parity.
+
+- **UX.1 — Design-system foundation & app shell.** Vite+React+TS app + Carbon; the BFF (serves the SPA, does OIDC, proxies `/api/*`); the enterprise shell (top nav, left nav, dark/light, WCAG 2.2). *You'll know it works when:* you sign in and see the empty Carbon shell calling the real API (e.g. `/api/me` shows your roles), running alongside the old portal.
+- **UX.2 — Request form** (reskin today's guided form: request types, subsidiary, technology/size cards, live cost panel, validation, submit).
+- **UX.3 — My Requests** (table, status badges, workflow drawer, live auto-update, drill-down).
+- **UX.4 — Estate overview** (KPIs + charts, live refresh, drill-down).
+- **UX.5 — Cutover** (route users to React; retire the Jinja templates once parity + tests hold).
+
+Each UX increment keeps every existing control/validation/integration and its backend tests; new UI gets component tests.
+
+### Scope backlog from the UX brief (functionality, sequenced after the reskin)
+The brief also adds substantial *functionality*; it lands as backend increments (mostly already anticipated), not part of the reskin:
+- **Requester profile enrichment** (employee ID, dept, manager, location, company…) via Microsoft Graph → with **E1**.
+- **Request metadata** (business justification, priority, criticality, required delivery date, app/business/technical/environment owners) → a request-form increment.
+- **Catalog expansion** (more request types: clone/DR/sandbox/temporary/reduce/remove; environments: Dev/Test/SIT/UAT/PreProd/Prod/DR; sizes: XLarge/Custom; ~24 technologies; ~20 advanced options) → catalog increments. *Catalog entry is cheap; real per-technology provisioning is the deferred heavy work.*
+- **Multi-cloud** (AWS, GCP, hybrid, multi-cloud) — one pricing/provisioning adapter each → later phase (large).
+- **Cost breakdown** (network/backup/monitoring/support lines) + optimization tips, and **Excel** cost-sheet export alongside today's PDF → with **E3**.
+- **Approver assignment + notifications + SLA** → **E2**.
+- **AI Copilot** (recommend sizing/cloud, explain costs, detect gaps, compliance guidance) — **recommend-only per P3** → **E4**.
+- **"Validate request" / "Preview environment"** actions → small increments.
+
+---
+
 ## 5. Phase 3+ — Enterprise increments (E1–E4)
 
 Sequenced per ARCHITECTURE.md §12 — **build what's hard to retrofit first.** Listed here at batch level; each will be decomposed into Phase-1-style small increments when we reach it.

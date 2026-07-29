@@ -57,7 +57,7 @@ Six cooperating parts.
 
 | # | Part | Technology | Responsibility |
 |---|------|-----------|----------------|
-| 1 | **Portal (UI)** | FastAPI + Jinja + HTMX, Tailwind | Guided multi-step request, live validation, live cost panel, approvals preview, people-pickers, My-Environments dashboard |
+| 1 | **Portal (UI)** | React (Vite + TypeScript) + IBM Carbon Design System, served via a FastAPI Backend-for-Frontend | Guided multi-step request, live validation, live cost panel, approvals preview, people-pickers, My-Environments dashboard. *(Decision §14.1, 2026-07-29: React + Carbon chosen over the HTMX+Jinja of draft v2, for a premium enterprise UI; the BFF keeps Entra OIDC + token handling server-side so the API/authority layer is unchanged.)* |
 | 2 | **API / Authority layer** | FastAPI (Python 3.12), Pydantic | Re-validation, sizing, costing, persistence, Jira creation, signed orchestrator handoff. Holds all credentials and pricing logic. |
 | 3 | **Agent service** | Python, Anthropic SDK + agent framework, behind tool-scoped APIs | Skilled Agents + Supervisor. Assists requesters; recommends sizing/technology; explains estimates and policy. Read-and-recommend only. |
 | 4 | **Database** | PostgreSQL 16 | Lookups, sizing anchors, rate cards, requests, estimates, approvals, registry, budgets/quotas, policy decisions, audit |
@@ -66,7 +66,7 @@ Six cooperating parts.
 
 **Horizontal (across all parts):** Langfuse (agent tracing/eval); OpenTelemetry distributed tracing (F-OPS-04); OPA governance; the tamper-evident audit log as system of record.
 
-**Why HTMX, not Streamlit:** the portal is a form-and-workflow product used daily, needing field-level validation and a live cost panel. HTMX delivers that server-side in Python without a JS build pipeline; Streamlit re-runs per interaction and is a dashboard/demo tool. *(Open decision §14: React remains the lowest-risk alternative for maximum UI richness.)*
+**Portal front end (revised 2026-07-29):** the baseline was built HTMX+Jinja (draft v2's choice for one-language/no-JS-toolchain). It is now being migrated to a **React (Vite + TypeScript) SPA on IBM Carbon**, for premium enterprise UI fidelity (sharp-edged, blue/white, WCAG 2.2, dark/light). A **Backend-for-Frontend** (the existing FastAPI portal service) keeps doing Entra OIDC and proxies the SPA's calls to the API with the user's token — so **the API, RBAC, policy, Jira, orchestrator and every server-side control are unchanged**. Migration is incremental (screen by screen, HTMX portal running until parity). Backstage.io was considered and declined (heavyweight platform re-architecture; conflicts with the simple/mainstream principle).
 
 ---
 
@@ -124,7 +124,7 @@ OIDC bearer validation against the IdP's JWKS (no mock auth in production) · se
 
 | Decision | Choice | One-line reason |
 |----------|--------|-----------------|
-| Portal UI | FastAPI + Jinja + HTMX + Tailwind | Enterprise interactivity in pure Python, no JS build pipeline |
+| Portal UI | React (Vite + TypeScript) + IBM Carbon, via a FastAPI BFF | Premium enterprise UI (Carbon: sharp-edged, WCAG 2.2, dark/light); BFF keeps auth server-side so the API is unchanged. Revised 2026-07-29 from HTMX+Jinja (see §14.1). |
 | Backend/API | FastAPI (Python 3.12) + Pydantic | Same language as the agents; strong typed validation; async |
 | Agents | Python + Anthropic SDK + agent framework | The agentic ecosystem is Python-first |
 | Database | PostgreSQL 16 | Mature relational store for rate cards, registry, audit |
@@ -361,7 +361,7 @@ Adopted from the catalogue's sequencing (authoritative). Guiding principle: **bu
 
 Each shapes multiple features and should be settled before the relevant increment starts.
 
-1. **Portal framework** — HTMX (recommended) vs. React. Decide on one-language/no-JS-toolchain (→ HTMX) vs. maximum UI richness/talent pool (→ React).
+1. **Portal framework** — ✅ **RESOLVED 2026-07-29: React (Vite + TypeScript) + IBM Carbon, via a FastAPI BFF.** Chosen over the baseline HTMX+Jinja for premium enterprise UI; the BFF keeps auth server-side so the API/controls are unchanged. Migration is incremental. (The baseline HTMX portal was built first and is being reskinned/replaced screen by screen.)
 2. **Workflow engine** — Temporal vs. Argo Workflows for durable orchestration.
 3. **Control frameworks to evidence** — e.g. ISO 27001 and the national information-assurance standard (drives F-GOV-09 and the evidence pack).
 4. **Sovereign / air-gapped profile** — required or not (constrains all outbound pricing/identity calls, F-SEC-11).
@@ -372,7 +372,7 @@ Each shapes multiple features and should be settled before the relevant incremen
 9. **CMDB system of record** — internal registry only, or bi-directional sync to ServiceNow (F-INT-04).
 10. **AI position in a governed workflow** — which actions an assistant may *never* take (answered by P3; confirm and record).
 11. **Ownership of catalogue, rate cards and approval rules** — a permanent operational responsibility, not a project task.
-12. **IDP re-visit** — custom FastAPI+HTMX portal vs. revisiting Backstage golden paths, now that agents are in scope.
+12. **IDP re-visit** — ✅ **RESOLVED 2026-07-29: custom portal (now React + Carbon), Backstage declined** — adopting Backstage would mean re-architecting around its catalog/scaffolder/auth model and re-homing everything already built; conflicts with the simple/mainstream principle.
 
 ---
 
