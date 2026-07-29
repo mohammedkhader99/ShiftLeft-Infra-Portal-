@@ -64,6 +64,15 @@ export type RequestRow = {
   deployment_target?: string | null
   environment_name?: string | null
   target_environment?: string | null
+  // Governance metadata (increment 6.1).
+  business_justification?: string | null
+  priority?: string | null
+  business_criticality?: string | null
+  required_delivery_date?: string | null
+  application_owner?: string | null
+  business_owner?: string | null
+  technical_owner?: string | null
+  environment_owner?: string | null
   components: { technology_code: string | null; size: string | null }[]
   estimate?: { currency: string; monthly: number } | null
   approval?: { jira_key: string; ticket_url?: string | null } | null

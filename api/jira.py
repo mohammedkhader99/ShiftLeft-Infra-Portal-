@@ -206,6 +206,31 @@ def build_ticket_body(req: Request, estimate: dict, plan_preview: str) -> str:
     if req.target_environment:
         lines.append(f"Target environment: {req.target_environment}")
 
+    # Governance metadata (increment 6.1) — captured for create/add/resize.
+    if not is_decommission and (req.business_justification or req.priority):
+        lines.append("")
+        lines.append("Request details:")
+        lines.append(
+            f"  Priority: {req.priority or '-'}    "
+            f"Criticality: {req.business_criticality or '-'}"
+        )
+        if req.required_delivery_date:
+            lines.append(f"  Required delivery date: {req.required_delivery_date}")
+        owners = "    ".join(
+            f"{label}: {value}"
+            for label, value in (
+                ("Application owner", req.application_owner),
+                ("Business owner", req.business_owner),
+                ("Technical owner", req.technical_owner),
+                ("Environment owner", req.environment_owner),
+            )
+            if value
+        )
+        if owners:
+            lines.append(f"  {owners}")
+        if req.business_justification:
+            lines.append(f"  Justification: {req.business_justification}")
+
     lines.append("")
     lines.append("Technologies to decommission:" if is_decommission else "Components:")
     for comp in req.components:

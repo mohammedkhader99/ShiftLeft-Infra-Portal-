@@ -5,13 +5,13 @@ import time
 from collections import Counter
 from collections.abc import Iterator
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import httpx
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -274,6 +274,15 @@ REQUEST_FIELDS = (
     "target_environment",
     "source_reference",
     "data_classification",
+    # Governance metadata (increment 6.1).
+    "business_justification",
+    "priority",
+    "business_criticality",
+    "required_delivery_date",
+    "application_owner",
+    "business_owner",
+    "technical_owner",
+    "environment_owner",
 )
 
 
@@ -301,7 +310,22 @@ class DraftIn(BaseModel):
     target_environment: str | None = None
     source_reference: str | None = None
     data_classification: str | None = None
+    # Governance metadata (increment 6.1). All optional at draft time.
+    business_justification: str | None = None
+    priority: str | None = None
+    business_criticality: str | None = None
+    required_delivery_date: date | None = None
+    application_owner: str | None = None
+    business_owner: str | None = None
+    technical_owner: str | None = None
+    environment_owner: str | None = None
     components: list[ComponentIn] | None = None
+
+    @field_validator("required_delivery_date", mode="before")
+    @classmethod
+    def _blank_date_to_none(cls, v):
+        """Treat an empty string (an unfilled date field) as no date."""
+        return None if v in ("", None) else v
 
 
 class EstimateOut(BaseModel):
@@ -336,6 +360,15 @@ class RequestOut(BaseModel):
     target_environment: str | None = None
     source_reference: str | None = None
     data_classification: str | None = None
+    # Governance metadata (increment 6.1).
+    business_justification: str | None = None
+    priority: str | None = None
+    business_criticality: str | None = None
+    required_delivery_date: date | None = None
+    application_owner: str | None = None
+    business_owner: str | None = None
+    technical_owner: str | None = None
+    environment_owner: str | None = None
     components: list[ComponentOut] = []
     estimate: EstimateOut | None = None
     approval: ApprovalOut | None = None
@@ -476,7 +509,7 @@ def submit_request(
     components_data = [
         {"technology_code": c.technology_code, "size": c.size} for c in req.components
     ]
-    data = {field: getattr(req, field) for field in REQUEST_FIELDS}
+    data = {field: _jsonable(getattr(req, field)) for field in REQUEST_FIELDS}
     data["components"] = components_data
     errors = validate_submission(data, session)
     if errors:
@@ -569,8 +602,14 @@ def cost(body: CostIn, session: Session = Depends(get_session)) -> dict:
 # --- Approval + signed orchestrator handoff (increment 1.9) -------------------
 
 
+def _jsonable(value):
+    """Make a scalar field JSON-safe (dates -> ISO strings) for the policy gate
+    and the signed orchestrator handoff."""
+    return value.isoformat() if isinstance(value, date) else value
+
+
 def _policy_input(req: Request) -> dict:
-    data = {field: getattr(req, field) for field in REQUEST_FIELDS}
+    data = {field: _jsonable(getattr(req, field)) for field in REQUEST_FIELDS}
     data["components"] = [
         {"technology_code": c.technology_code, "size": c.size} for c in req.components
     ]

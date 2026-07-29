@@ -6,6 +6,9 @@ import {
   Select,
   SelectItem,
   TextInput,
+  TextArea,
+  DatePicker,
+  DatePickerInput,
   Checkbox,
   Button,
   Tile,
@@ -34,10 +37,24 @@ const TARGETS: [string, string][] = [
   ['azure', 'Microsoft Azure'],
   ['oci', 'Oracle Cloud (OCI)'],
 ]
+const PRIORITIES = ['low', 'medium', 'high', 'critical']
+const CRITICALITIES: [string, string][] = [
+  ['tier1', 'Tier 1 — mission critical'],
+  ['tier2', 'Tier 2 — business critical'],
+  ['tier3', 'Tier 3 — important'],
+  ['tier4', 'Tier 4 — low impact'],
+]
 
 type Result = { kind: 'success' | 'error'; title: string; subtitle?: string }
 
 const compKey = (c: Component) => `${c.technology_code}:${c.size}`
+
+// Local YYYY-MM-DD (avoids the UTC shift that toISOString can cause).
+const fmtDate = (d: Date) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(
+    d.getDate(),
+  ).padStart(2, '0')}`
+const TODAY = fmtDate(new Date())
 
 export default function RequestForm() {
   const [lookups, setLookups] = useState<Lookups | null>(null)
@@ -52,6 +69,16 @@ export default function RequestForm() {
   const [targetEnv, setTargetEnv] = useState('')
   const [classification, setClassification] = useState('')
   const [components, setComponents] = useState<Component[]>([{ technology_code: '', size: '' }])
+
+  // Governance metadata (increment 6.1).
+  const [justification, setJustification] = useState('')
+  const [priority, setPriority] = useState('')
+  const [criticality, setCriticality] = useState('')
+  const [deliveryDate, setDeliveryDate] = useState('')
+  const [appOwner, setAppOwner] = useState('')
+  const [bizOwner, setBizOwner] = useState('')
+  const [techOwner, setTechOwner] = useState('')
+  const [envOwner, setEnvOwner] = useState('')
 
   // Decommission
   const [provisioned, setProvisioned] = useState<RequestRow[]>([])
@@ -139,6 +166,14 @@ export default function RequestForm() {
       subsidiary: subsidiary || null,
       deployment_target: target || null,
       data_classification: classification || null,
+      business_justification: justification || null,
+      priority: priority || null,
+      business_criticality: criticality || null,
+      required_delivery_date: deliveryDate || null,
+      application_owner: appOwner || null,
+      business_owner: bizOwner || null,
+      technical_owner: techOwner || null,
+      environment_owner: envOwner || null,
       components: filledComponents,
     }
     if (isCreate) {
@@ -348,6 +383,65 @@ export default function RequestForm() {
                 <Button kind="ghost" size="sm" renderIcon={Add} onClick={() => setComponents((cs) => [...cs, { technology_code: '', size: '' }])} style={{ marginTop: '0.5rem' }}>
                   Add component
                 </Button>
+              </FormGroup>
+
+              <FormGroup legendText="Request details">
+                <Stack gap={5}>
+                  <TextArea
+                    id="business_justification"
+                    labelText="Business justification"
+                    placeholder="Why is this needed? (at least 20 characters)"
+                    rows={3}
+                    value={justification}
+                    onChange={(e) => setJustification(e.target.value)}
+                    invalid={!!errors.business_justification}
+                    invalidText={errors.business_justification}
+                  />
+                  <div style={{ display: 'flex', gap: '0.75rem' }}>
+                    <div style={{ flex: 1 }}>
+                      <Select id="priority" labelText="Priority" value={priority} onChange={(e) => setPriority(e.target.value)} invalid={!!errors.priority} invalidText={errors.priority}>
+                        <SelectItem value="" text="— select —" />
+                        {PRIORITIES.map((p) => (
+                          <SelectItem key={p} value={p} text={p} />
+                        ))}
+                      </Select>
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <Select id="business_criticality" labelText="Business criticality" value={criticality} onChange={(e) => setCriticality(e.target.value)} invalid={!!errors.business_criticality} invalidText={errors.business_criticality}>
+                        <SelectItem value="" text="— select —" />
+                        {CRITICALITIES.map(([v, label]) => (
+                          <SelectItem key={v} value={v} text={label} />
+                        ))}
+                      </Select>
+                    </div>
+                  </div>
+                  <DatePicker
+                    datePickerType="single"
+                    dateFormat="Y-m-d"
+                    minDate={TODAY}
+                    value={deliveryDate}
+                    onChange={(dates: Date[]) => setDeliveryDate(dates[0] ? fmtDate(dates[0]) : '')}
+                  >
+                    <DatePickerInput
+                      id="required_delivery_date"
+                      labelText="Required delivery date"
+                      placeholder="yyyy-mm-dd"
+                      invalid={!!errors.required_delivery_date}
+                      invalidText={errors.required_delivery_date}
+                    />
+                  </DatePicker>
+                  <p style={{ fontSize: '0.75rem', color: 'var(--cds-text-secondary)', margin: 0 }}>
+                    Owners (optional)
+                  </p>
+                  <div style={{ display: 'flex', gap: '0.75rem' }}>
+                    <TextInput id="application_owner" labelText="Application owner" placeholder="name or email" value={appOwner} onChange={(e) => setAppOwner(e.target.value)} />
+                    <TextInput id="business_owner" labelText="Business owner" placeholder="name or email" value={bizOwner} onChange={(e) => setBizOwner(e.target.value)} />
+                  </div>
+                  <div style={{ display: 'flex', gap: '0.75rem' }}>
+                    <TextInput id="technical_owner" labelText="Technical owner" placeholder="name or email" value={techOwner} onChange={(e) => setTechOwner(e.target.value)} />
+                    <TextInput id="environment_owner" labelText="Environment owner" placeholder="name or email" value={envOwner} onChange={(e) => setEnvOwner(e.target.value)} />
+                  </div>
+                </Stack>
               </FormGroup>
             </>
           )}

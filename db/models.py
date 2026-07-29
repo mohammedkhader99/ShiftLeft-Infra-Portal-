@@ -160,6 +160,18 @@ class Request(Base):
     source_reference: Mapped[str | None] = mapped_column(String(20), nullable=True)
     data_classification: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
+    # Governance metadata captured on the form (increment 6.1, from the UX
+    # brief). Nullable so existing rows and drafts are unaffected; required-on-
+    # submit rules live in api/validation.py, not the database.
+    business_justification: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    priority: Mapped[str | None] = mapped_column(String(16), nullable=True)  # low|medium|high|critical
+    business_criticality: Mapped[str | None] = mapped_column(String(16), nullable=True)  # tier1..tier4
+    required_delivery_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    application_owner: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    business_owner: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    technical_owner: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    environment_owner: Mapped[str | None] = mapped_column(String(160), nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow

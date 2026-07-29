@@ -3,6 +3,8 @@
 Runs against a fast in-memory seeded database via a dependency override.
 """
 
+from datetime import date, timedelta
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -68,6 +70,17 @@ def test_submit_policy_unavailable_returns_503(client):
     assert "unavailable" in resp.json()["policy_error"].lower()
 
 
+# Governance metadata required on submit for create/add/resize (increment 6.1).
+_FUTURE_DATE = (date.today() + timedelta(days=30)).isoformat()
+VALID_METADATA = {
+    "business_justification": "Needed to run the eGate UAT load tests before go-live.",
+    "priority": "high",
+    "business_criticality": "tier2",
+    "required_delivery_date": _FUTURE_DATE,
+    "application_owner": "app.owner@emaratechg.ae",
+    "technical_owner": "tech.owner@emaratechg.ae",
+}
+
 VALID_CREATE = {
     "request_type": "create",
     "project_code": "EGATE",
@@ -76,6 +89,7 @@ VALID_CREATE = {
     "environment_name": "egate-uat",
     "data_classification": "internal",
     "components": [{"technology_code": "postgres16", "size": "medium"}],
+    **VALID_METADATA,
 }
 
 
@@ -435,6 +449,7 @@ def test_submit_add_requires_existing_target(client):
             "cost_centre_code": "IMD-1001",
             "deployment_target": "onprem",
             "components": [{"technology_code": "redis7", "size": "small"}],
+            **VALID_METADATA,
         },
     ).json()["reference"]
     errors = client.post(f"/api/requests/{ref}/submit").json()["errors"]
@@ -859,3 +874,70 @@ def test_decommission_ticket_body_lists_technologies(client, monkeypatch):
     assert "Decommissioning provisioned request" in body
     assert source in body
     assert "Technologies to decommission" in body
+
+
+# --- Governance metadata (increment 6.1) -------------------------------------
+
+def _draft_ref(client, payload):
+    return client.post("/api/requests/draft", json=payload).json()["reference"]
+
+
+def test_submit_requires_business_justification(client):
+    ref = _draft_ref(client, {**VALID_CREATE, "business_justification": "too short"})
+    errors = client.post(f"/api/requests/{ref}/submit").json()["errors"]
+    assert "business_justification" in errors
+
+
+def test_submit_rejects_unknown_priority(client):
+    ref = _draft_ref(client, {**VALID_CREATE, "priority": "urgent"})
+    errors = client.post(f"/api/requests/{ref}/submit").json()["errors"]
+    assert "priority" in errors
+
+
+def test_submit_rejects_unknown_criticality(client):
+    ref = _draft_ref(client, {**VALID_CREATE, "business_criticality": "tier9"})
+    errors = client.post(f"/api/requests/{ref}/submit").json()["errors"]
+    assert "business_criticality" in errors
+
+
+def test_submit_rejects_past_delivery_date(client):
+    past = (date.today() - timedelta(days=1)).isoformat()
+    ref = _draft_ref(client, {**VALID_CREATE, "required_delivery_date": past})
+    errors = client.post(f"/api/requests/{ref}/submit").json()["errors"]
+    assert "required_delivery_date" in errors
+
+
+def test_submit_requires_delivery_date(client):
+    ref = _draft_ref(client, {**VALID_CREATE, "required_delivery_date": None})
+    errors = client.post(f"/api/requests/{ref}/submit").json()["errors"]
+    assert "required_delivery_date" in errors
+
+
+def test_metadata_persisted_and_returned(client):
+    ref = _draft_ref(client, VALID_CREATE)
+    assert client.post(f"/api/requests/{ref}/submit").status_code == 200
+    row = client.get(f"/api/requests/{ref}").json()
+    assert row["priority"] == "high"
+    assert row["business_criticality"] == "tier2"
+    assert row["required_delivery_date"] == _FUTURE_DATE
+    assert row["application_owner"] == "app.owner@emaratechg.ae"
+    assert row["business_justification"].startswith("Needed to run")
+
+
+def test_ticket_body_includes_request_details(client):
+    ref = _draft_ref(client, VALID_CREATE)
+    body = client.post(f"/api/requests/{ref}/submit").json()["approval"]["ticket_body"]
+    assert "Request details" in body
+    assert "Priority: high" in body
+    assert "Needed to run" in body
+
+
+def test_decommission_submits_without_metadata(client, monkeypatch):
+    # Decommission carries no governance metadata and must still submit cleanly.
+    source = _provision_a_request(client, monkeypatch)
+    ref = client.post("/api/requests/draft", json={
+        "request_type": "decommission",
+        "source_reference": source,
+        "components": [{"technology_code": "postgres16", "size": "medium"}],
+    }).json()["reference"]
+    assert client.post(f"/api/requests/{ref}/submit").status_code == 200

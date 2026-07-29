@@ -40,6 +40,16 @@ function componentsText(r: RequestRow): string {
   return parts.length ? parts.join(', ') : '—'
 }
 
+function MetaField({ label, value }: { label: string; value?: string | null }) {
+  if (!value) return null
+  return (
+    <div>
+      <span style={{ color: 'var(--cds-text-secondary)' }}>{label}: </span>
+      {value}
+    </div>
+  )
+}
+
 function parseQuery(route: string): Record<string, string> {
   const i = route.indexOf('?')
   return i < 0 ? {} : Object.fromEntries(new URLSearchParams(route.slice(i + 1)))
@@ -197,8 +207,33 @@ export default function MyRequests({ route }: { route: string }) {
                     </TableCell>
                   </TableExpandRow>
                   <TableExpandedRow colSpan={8}>
-                    {steps[r.reference] ? (
-                      <div style={{ padding: '1rem 0.5rem' }}>
+                    <div style={{ padding: '1rem 0.5rem' }}>
+                      {(r.priority || r.business_justification) && (
+                        <div
+                          style={{
+                            marginBottom: '1.25rem',
+                            fontSize: '0.85rem',
+                            display: 'grid',
+                            gridTemplateColumns: 'repeat(auto-fit, minmax(12rem, 1fr))',
+                            gap: '0.4rem 1.5rem',
+                          }}
+                        >
+                          <MetaField label="Priority" value={r.priority} />
+                          <MetaField label="Criticality" value={r.business_criticality} />
+                          <MetaField label="Required by" value={r.required_delivery_date} />
+                          <MetaField label="App owner" value={r.application_owner} />
+                          <MetaField label="Tech owner" value={r.technical_owner} />
+                          <MetaField label="Business owner" value={r.business_owner} />
+                          <MetaField label="Env owner" value={r.environment_owner} />
+                          {r.business_justification && (
+                            <div style={{ gridColumn: '1 / -1' }}>
+                              <span style={{ color: 'var(--cds-text-secondary)' }}>Justification: </span>
+                              {r.business_justification}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                      {steps[r.reference] ? (
                         <ProgressIndicator spaceEqually>
                           {steps[r.reference].map((s) => (
                             <ProgressStep
@@ -211,10 +246,10 @@ export default function MyRequests({ route }: { route: string }) {
                             />
                           ))}
                         </ProgressIndicator>
-                      </div>
-                    ) : (
-                      <InlineLoading description="Loading workflow…" />
-                    )}
+                      ) : (
+                        <InlineLoading description="Loading workflow…" />
+                      )}
+                    </div>
                   </TableExpandedRow>
                 </Fragment>
               ))}

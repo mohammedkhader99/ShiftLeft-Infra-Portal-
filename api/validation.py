@@ -9,6 +9,7 @@ only when a request is *submitted*.
 """
 
 import re
+from datetime import date, datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -19,6 +20,10 @@ REQUEST_TYPES = {"create", "add", "resize", "decommission"}
 SIZES = {"small", "medium", "large"}
 CLASSIFICATIONS = {"public", "internal", "confidential", "restricted"}
 DEPLOYMENT_TARGETS = {"onprem", "azure", "oci"}
+# Governance metadata value sets (increment 6.1, from the UX brief).
+PRIORITIES = {"low", "medium", "high", "critical"}
+CRITICALITIES = {"tier1", "tier2", "tier3", "tier4"}
+MIN_JUSTIFICATION = 20
 # Simple naming standard for now (F-CAT-04 full engine comes later).
 NAME_PATTERN = re.compile(r"^[a-z0-9-]{3,40}$")
 
@@ -26,6 +31,9 @@ NAME_PATTERN = re.compile(r"^[a-z0-9-]{3,40}$")
 TARGET_TYPES = {"add", "resize"}
 # Request types that must carry at least one technology component.
 COMPONENT_TYPES = {"create", "add", "resize"}
+# Request types that must carry the governance metadata (all but decommission,
+# which inherits its context from the request it tears down).
+METADATA_TYPES = {"create", "add", "resize"}
 
 
 def validate_submission(data: dict, session: Session) -> dict[str, str]:
@@ -82,7 +90,53 @@ def validate_submission(data: dict, session: Session) -> dict[str, str]:
             )
         _validate_components(data, session, errors)
 
+    if request_type in METADATA_TYPES:
+        _validate_metadata(data, errors)
+
     return errors
+
+
+def _validate_metadata(data: dict, errors: dict[str, str]) -> None:
+    """Governance metadata required at submission for provisioning requests (6.1).
+
+    Owners are optional this round (free-text name/email); the rest are required
+    so approvers get a justification, priority, criticality and a target date.
+    """
+    justification = (data.get("business_justification") or "").strip()
+    if len(justification) < MIN_JUSTIFICATION:
+        errors["business_justification"] = (
+            f"Give a business justification of at least {MIN_JUSTIFICATION} characters "
+            "so approvers understand why this is needed."
+        )
+
+    priority = (data.get("priority") or "").strip().lower()
+    if priority not in PRIORITIES:
+        errors["priority"] = "Select a priority (low, medium, high or critical)."
+
+    criticality = (data.get("business_criticality") or "").strip().lower()
+    if criticality not in CRITICALITIES:
+        errors["business_criticality"] = (
+            "Select a business criticality (tier1, tier2, tier3 or tier4)."
+        )
+
+    # The value is a date at submit (from the model) or an ISO string in
+    # direct-dict callers; accept either.
+    raw_date = data.get("required_delivery_date")
+    delivery: date | None = None
+    if isinstance(raw_date, date):
+        delivery = raw_date
+    elif isinstance(raw_date, str) and raw_date.strip():
+        try:
+            delivery = date.fromisoformat(raw_date.strip())
+        except ValueError:
+            errors["required_delivery_date"] = "Enter a valid delivery date (YYYY-MM-DD)."
+    if "required_delivery_date" not in errors:
+        if delivery is None:
+            errors["required_delivery_date"] = "Choose the required delivery date."
+        elif delivery < datetime.now(timezone.utc).date():
+            errors["required_delivery_date"] = (
+                "The required delivery date can't be in the past."
+            )
 
 
 def _validate_decommission_fields(data: dict, session: Session, errors: dict[str, str]) -> None:

@@ -8,6 +8,11 @@ REQ = SimpleNamespace(
     reference="REQ-2026-0001", requester="alice@x.com", request_type="create",
     project_code="EGATE", cost_centre_code="IMD-1001", deployment_target="onprem",
     environment_name="egate-uat", target_environment=None, data_classification="internal",
+    # Governance metadata (increment 6.1).
+    business_justification="Load testing before go-live.", priority="high",
+    business_criticality="tier2", required_delivery_date="2026-12-31",
+    application_owner="app@x.com", business_owner=None,
+    technical_owner="tech@x.com", environment_owner=None,
 )
 BREAKDOWN = {
     "currency": "AED", "pricing_source": "mock",

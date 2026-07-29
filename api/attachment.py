@@ -42,6 +42,19 @@ def build_request_pdf(req, breakdown: dict, sizing: dict) -> bytes:
     _kv(pdf, "Data classification", req.data_classification)
     pdf.ln(2)
 
+    # --- Governance & ownership (increment 6.1) ---
+    if req.request_type != "decommission" and (req.business_justification or req.priority):
+        _heading(pdf, "Governance & ownership", TEAL)
+        _kv(pdf, "Priority", req.priority)
+        _kv(pdf, "Business criticality", req.business_criticality)
+        _kv(pdf, "Required delivery", req.required_delivery_date)
+        _kv(pdf, "Application owner", req.application_owner)
+        _kv(pdf, "Business owner", req.business_owner)
+        _kv(pdf, "Technical owner", req.technical_owner)
+        _kv(pdf, "Environment owner", req.environment_owner)
+        _kv(pdf, "Business justification", req.business_justification)
+        pdf.ln(2)
+
     # --- Components, sizing & cost ---
     _heading(pdf, "Components, sizing & cost", TEAL)
     cols = [("Technology", 46), ("Size", 18), ("vCPU", 14), ("RAM GB", 18),
