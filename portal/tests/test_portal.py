@@ -330,6 +330,63 @@ def test_overview_renders_for_oversight(monkeypatch):
     assert "426" in body               # active monthly cost tile
 
 
+def test_overview_has_drilldown_links(monkeypatch):
+    def fake_get(url, *a, **k):
+        if url.endswith("/api/me"):
+            return _FakeResp({"email": "a@x.com", "roles": ["auditor"]})
+        if url.endswith("/api/stats"):
+            return _FakeResp(FAKE_STATS)
+        return _FakeResp({})
+
+    monkeypatch.setattr("portal.main.httpx.get", fake_get)
+    body = client.get("/overview").text
+    assert "/requests?scope=all" in body               # KPI drill-down
+    assert "status=provisioned" in body                 # active tile / status bar
+    assert "technology=postgres16" in body              # technology bar
+    assert "week=2026-W30" in body                       # trend column
+
+
+def test_requests_estate_scope_for_oversight(monkeypatch):
+    calls = {}
+
+    def fake_get(url, params=None, **k):
+        if url.endswith("/api/me"):
+            return _FakeResp({"email": "a@x.com", "roles": ["platform_admin"]})
+        if url.endswith("/api/requests"):
+            calls["params"] = params or {}
+            return _FakeResp([{"reference": "REQ-1", "status": "provisioned",
+                               "environment_name": "e", "target_environment": None,
+                               "components": [], "estimate": None, "approval": None}])
+        return _FakeResp({})
+
+    monkeypatch.setattr("portal.main.httpx.get", fake_get)
+    resp = client.get("/requests?scope=all&status=provisioned")
+    assert resp.status_code == 200
+    assert "Estate requests" in resp.text and "Back to overview" in resp.text
+    # estate scope drops the per-user filter and forwards the status filter
+    assert "requester" not in calls["params"]
+    assert calls["params"].get("status") == "provisioned"
+
+
+def test_requests_estate_scope_denied_for_requester(monkeypatch):
+    calls = {}
+
+    def fake_get(url, params=None, **k):
+        if url.endswith("/api/me"):
+            return _FakeResp({"email": "r@x.com", "roles": ["requester"]})
+        if url.endswith("/api/requests"):
+            calls["params"] = params or {}
+            return _FakeResp([])
+        return _FakeResp({})
+
+    monkeypatch.setattr("portal.main.httpx.get", fake_get)
+    resp = client.get("/requests?scope=all&status=provisioned")
+    assert resp.status_code == 200
+    # a non-oversight user can't get the estate view — falls back to their own
+    assert "requester" in calls["params"]
+    assert "My requests" in resp.text
+
+
 def test_overview_forbidden_for_requester(monkeypatch):
     def fake_get(url, *a, **k):
         if url.endswith("/api/me"):

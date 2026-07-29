@@ -15,18 +15,22 @@
     h3 { color: #0B5563; margin: 0 0 0.75rem; font-size: 1rem; }
     .muted { color: #7a8a90; font-style: italic; font-size: 0.9rem; }
     .ov-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr)); gap: 0.75rem; margin-bottom: 1.5rem; }
-    .ov-tile { background: #fff; border: 1px solid #e4eaec; border-top: 3px solid #0B5563; border-radius: 8px; padding: 0.9rem 1rem; }
+    .ov-tile { display: block; text-decoration: none; color: inherit; cursor: pointer; background: #fff; border: 1px solid #e4eaec; border-top: 3px solid #0B5563; border-radius: 8px; padding: 0.9rem 1rem; }
+    .ov-tile:hover { border-color: #0B5563; box-shadow: 0 1px 4px rgba(11,85,99,0.15); }
     .ov-tile-num { font-size: 1.7rem; font-weight: bold; color: #14303a; line-height: 1.1; }
     .ov-tile-label { font-size: 0.78rem; color: #5b6b72; margin-top: 0.2rem; }
     .ov-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr)); gap: 1rem; }
     .ov-card { background: #fff; border: 1px solid #e4eaec; border-radius: 8px; padding: 1rem 1.25rem; margin-bottom: 1rem; }
-    .ov-bar-row { display: flex; align-items: center; gap: 0.6rem; margin: 0.4rem 0; font-size: 0.85rem; }
+    .ov-bar-row { display: flex; align-items: center; gap: 0.6rem; margin: 0.15rem 0; padding: 0.25rem 0.3rem; font-size: 0.85rem; text-decoration: none; color: inherit; cursor: pointer; border-radius: 4px; }
+    .ov-bar-row:hover { background: #f2f8f9; }
     .ov-bar-label { flex: 0 0 8rem; color: #52616b; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .ov-bar-track { flex: 1 1 auto; background: #eef3f4; border-radius: 4px; height: 0.85rem; }
     .ov-bar-fill { background: #0B5563; height: 100%; border-radius: 4px; min-width: 2px; }
     .ov-bar-count { flex: 0 0 2rem; text-align: right; font-weight: 600; color: #14303a; }
     .ov-cols { display: flex; align-items: flex-end; gap: 0.5rem; height: 9rem; padding-top: 0.5rem; }
-    .ov-col { flex: 1 1 auto; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; }
+    .ov-col { flex: 1 1 auto; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; text-decoration: none; color: inherit; cursor: pointer; border-radius: 4px 4px 0 0; }
+    .ov-col:hover { background: #f2f8f9; }
+    .ov-col:hover .ov-col-bar { background: #b8630a; }
     .ov-col-bar { width: 70%; background: #D97706; border-radius: 4px 4px 0 0; min-height: 2px; }
     .ov-col-count { font-size: 0.75rem; font-weight: 600; margin-top: 0.2rem; }
     .ov-col-week { font-size: 0.68rem; color: #90a4ae; }
@@ -37,17 +41,18 @@
   </style>
 </head>
 <body>
-  {% macro barchart(title, items) %}
+  {% macro barchart(title, items, filter_key) %}
     <div class="ov-card">
       <h3>{{ title }}</h3>
       {% if items %}
         {% set maxc = items | map(attribute='count') | max %}
         {% for it in items %}
-          <div class="ov-bar-row">
-            <div class="ov-bar-label" title="{{ it.key }}">{{ it.key }}</div>
+          <a class="ov-bar-row" href="/requests?scope=all&{{ filter_key }}={{ it.key | urlencode }}"
+             title="Show the {{ it.count }} request(s) — {{ it.key }}">
+            <div class="ov-bar-label">{{ it.key }}</div>
             <div class="ov-bar-track"><div class="ov-bar-fill" style="width: {{ (it.count / maxc * 100) | round(1) }}%;"></div></div>
             <div class="ov-bar-count">{{ it.count }}</div>
-          </div>
+          </a>
         {% endfor %}
       {% else %}<p class="muted">No data yet.</p>{% endif %}
     </div>
@@ -68,19 +73,19 @@
     {% elif stats %}
       <div class="ov-kpis">
         {% set k = stats.kpis %}
-        <div class="ov-tile"><div class="ov-tile-num">{{ k.total }}</div><div class="ov-tile-label">Total requests</div></div>
-        <div class="ov-tile"><div class="ov-tile-num" style="color:#1c6b34;">{{ k.active }}</div><div class="ov-tile-label">Active</div></div>
-        <div class="ov-tile"><div class="ov-tile-num" style="color:#8a5200;">{{ k.in_flight }}</div><div class="ov-tile-label">In flight</div></div>
-        <div class="ov-tile"><div class="ov-tile-num" style="color:#97231f;">{{ k.failed }}</div><div class="ov-tile-label">Failed</div></div>
-        <div class="ov-tile"><div class="ov-tile-num">{{ k.decommissioned }}</div><div class="ov-tile-label">Decommissioned</div></div>
-        <div class="ov-tile"><div class="ov-tile-num">{{ '%.0f' | format(stats.active_monthly_cost.amount) }} <span style="font-size:0.8rem;">{{ stats.active_monthly_cost.currency }}</span></div><div class="ov-tile-label">Active monthly cost</div></div>
+        <a class="ov-tile" href="/requests?scope=all"><div class="ov-tile-num">{{ k.total }}</div><div class="ov-tile-label">Total requests</div></a>
+        <a class="ov-tile" href="/requests?scope=all&status=provisioned"><div class="ov-tile-num" style="color:#1c6b34;">{{ k.active }}</div><div class="ov-tile-label">Active</div></a>
+        <a class="ov-tile" href="/requests?scope=all&status=submitted,planned,in-progress"><div class="ov-tile-num" style="color:#8a5200;">{{ k.in_flight }}</div><div class="ov-tile-label">In flight</div></a>
+        <a class="ov-tile" href="/requests?scope=all&status=apply-failed,decommission-failed,rejected"><div class="ov-tile-num" style="color:#97231f;">{{ k.failed }}</div><div class="ov-tile-label">Failed</div></a>
+        <a class="ov-tile" href="/requests?scope=all&status=decommissioned"><div class="ov-tile-num">{{ k.decommissioned }}</div><div class="ov-tile-label">Decommissioned</div></a>
+        <a class="ov-tile" href="/requests?scope=all&status=provisioned"><div class="ov-tile-num">{{ '%.0f' | format(stats.active_monthly_cost.amount) }} <span style="font-size:0.8rem;">{{ stats.active_monthly_cost.currency }}</span></div><div class="ov-tile-label">Active monthly cost</div></a>
       </div>
 
       <div class="ov-grid">
-        {{ barchart('By status', stats.by_status) }}
-        {{ barchart('By request type', stats.by_type) }}
-        {{ barchart('By technology', stats.by_technology) }}
-        {{ barchart('By deployment target', stats.by_target) }}
+        {{ barchart('By status', stats.by_status, 'status') }}
+        {{ barchart('By request type', stats.by_type, 'type') }}
+        {{ barchart('By technology', stats.by_technology, 'technology') }}
+        {{ barchart('By deployment target', stats.by_target, 'target') }}
       </div>
 
       <div class="ov-card">
@@ -89,11 +94,11 @@
           {% set maxt = stats.trend | map(attribute='count') | max %}
           <div class="ov-cols">
             {% for t in stats.trend %}
-              <div class="ov-col">
-                <div class="ov-col-bar" style="height: {{ (t.count / maxt * 100) | round(0) }}%;" title="{{ t.week }}: {{ t.count }}"></div>
+              <a class="ov-col" href="/requests?scope=all&week={{ t.week | urlencode }}" title="{{ t.week }}: {{ t.count }} request(s)">
+                <div class="ov-col-bar" style="height: {{ (t.count / maxt * 100) | round(0) }}%;"></div>
                 <div class="ov-col-count">{{ t.count }}</div>
                 <div class="ov-col-week">{{ t.week[5:] }}</div>
-              </div>
+              </a>
             {% endfor %}
           </div>
         {% else %}<p class="muted">No data yet.</p>{% endif %}

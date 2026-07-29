@@ -175,25 +175,40 @@ def overview(request: Request):
     )
 
 
+_FILTER_PARAMS = (("status", "status"), ("type", "request_type"),
+                  ("technology", "technology"), ("target", "deployment_target"),
+                  ("week", "created_week"))
+
+
 @app.get("/requests", response_class=HTMLResponse)
 def my_requests(request: Request):
-    """The 'My requests' dashboard: every request the signed-in user has made,
-    newest first, with its live status and a link to its Jira ticket."""
+    """'My requests', plus the overview dashboard's drill-down.
+
+    Normally shows the signed-in user's own requests. With `scope=all` (oversight
+    roles only) it shows the whole estate, filtered by the query params the
+    dashboard links pass (status/type/technology/target/week) — so a dashboard
+    number opens exactly the requests behind it.
+    """
     roles = _roles_or_reauth(request)
     if isinstance(roles, RedirectResponse):
         return roles
-    email = auth.requester_email(request)
+    q = request.query_params
+    is_oversight = any(r in roles for r in ("platform_admin", "auditor", "finops"))
+    estate = q.get("scope") == "all" and is_oversight
+
+    params: dict = {} if estate else {"requester": auth.requester_email(request)}
+    for qkey, apikey in _FILTER_PARAMS:
+        if q.get(qkey):
+            params[apikey] = q.get(qkey)
     try:
-        response = httpx.get(
-            f"{API_BASE_URL}/api/requests",
-            params={"requester": email},
-            headers=_requester_headers(request),
-            timeout=5.0,
-        )
+        response = httpx.get(f"{API_BASE_URL}/api/requests", params=params,
+                             headers=_requester_headers(request), timeout=5.0)
         response.raise_for_status()
         rows, error = response.json(), None
     except Exception as exc:  # noqa: BLE001 — surface the failure on the page
         rows, error = [], str(exc)
+
+    active_filters = {qkey: q.get(qkey) for qkey, _ in _FILTER_PARAMS if q.get(qkey)}
     return templates.TemplateResponse(
         request,
         "my_requests.html",
@@ -202,6 +217,8 @@ def my_requests(request: Request):
             "roles": roles,
             "requests": rows,
             "error": error,
+            "estate": estate,
+            "filters": active_filters,
         },
     )
 

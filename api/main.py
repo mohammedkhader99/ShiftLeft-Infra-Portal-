@@ -384,19 +384,39 @@ def save_draft(
 def list_requests(
     requester: str | None = None,
     status: str | None = None,
+    request_type: str | None = None,
+    technology: str | None = None,
+    deployment_target: str | None = None,
+    created_week: str | None = None,
     session: Session = Depends(get_session),
 ) -> list[RequestOut]:
-    """List requests newest-first, optionally filtered to one requester/status.
+    """List requests newest-first with optional filters.
 
-    Powers the portal's 'My requests' dashboard (no status filter) and the
-    decommission form's source dropdown (status='provisioned'). Read-only.
+    `status` accepts a comma-separated set (e.g. 'submitted,planned'). Powers My
+    requests, the decommission source picker (status='provisioned'), and the
+    overview dashboard's drill-down (filter by status/type/technology/target/week).
+    Read-only.
     """
     stmt = select(Request).order_by(Request.id.desc())
     if requester:
         stmt = stmt.where(Request.requester == requester)
     if status:
-        stmt = stmt.where(Request.status == status)
-    return [RequestOut.model_validate(r) for r in session.scalars(stmt)]
+        wanted = [s.strip() for s in status.split(",") if s.strip()]
+        stmt = stmt.where(Request.status.in_(wanted))
+    if request_type:
+        stmt = stmt.where(Request.request_type == request_type)
+    if deployment_target:
+        stmt = stmt.where(Request.deployment_target == deployment_target)
+    if technology:
+        stmt = stmt.where(Request.components.any(RequestComponent.technology_code == technology))
+
+    results = list(session.scalars(stmt))
+    if created_week:  # ISO week bucket, matched in Python for DB portability
+        def _week(dt) -> str:
+            iso = dt.isocalendar()
+            return f"{iso[0]}-W{iso[1]:02d}"
+        results = [r for r in results if r.created_at and _week(r.created_at) == created_week]
+    return [RequestOut.model_validate(r) for r in results]
 
 
 @app.get("/api/requests/{reference}", response_model=RequestOut)

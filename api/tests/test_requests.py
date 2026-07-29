@@ -695,6 +695,27 @@ def test_list_requests_empty_when_none(client):
     assert client.get("/api/requests", params={"requester": "nobody@example.com"}).json() == []
 
 
+def test_list_requests_filters_for_drilldown(client):
+    client.post("/api/requests/draft", json=VALID_CREATE)  # create · postgres16 · onprem
+    client.post("/api/requests/draft", json={
+        "request_type": "add", "cost_centre_code": "IMD-1001", "deployment_target": "azure",
+        "target_environment": "egate-prod", "components": [{"technology_code": "redis7", "size": "small"}],
+    })
+
+    creates = client.get("/api/requests", params={"request_type": "create"}).json()
+    assert creates and all(r["request_type"] == "create" for r in creates)
+
+    az = client.get("/api/requests", params={"deployment_target": "azure"}).json()
+    assert az and all(r["deployment_target"] == "azure" for r in az)
+
+    pg = client.get("/api/requests", params={"technology": "postgres16"}).json()
+    assert pg and all(any(c["technology_code"] == "postgres16" for c in r["components"]) for r in pg)
+
+    # Comma-separated status accepts a set.
+    drafts = client.get("/api/requests", params={"status": "draft,provisioned"}).json()
+    assert drafts and all(r["status"] == "draft" for r in drafts)
+
+
 def test_list_requests_status_filter(client, monkeypatch):
     _provision_a_request(client, monkeypatch)  # one provisioned
     client.post("/api/requests/draft", json=VALID_CREATE)  # one draft
