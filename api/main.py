@@ -272,6 +272,7 @@ REQUEST_FIELDS = (
     "deployment_target",
     "environment_name",
     "target_environment",
+    "environment_tier",
     "source_reference",
     "data_classification",
     # Governance metadata (increment 6.1).
@@ -308,6 +309,7 @@ class DraftIn(BaseModel):
     deployment_target: str | None = None
     environment_name: str | None = None
     target_environment: str | None = None
+    environment_tier: str | None = None
     source_reference: str | None = None
     data_classification: str | None = None
     # Governance metadata (increment 6.1). All optional at draft time.
@@ -358,6 +360,7 @@ class RequestOut(BaseModel):
     deployment_target: str | None = None
     environment_name: str | None = None
     target_environment: str | None = None
+    environment_tier: str | None = None
     source_reference: str | None = None
     data_classification: str | None = None
     # Governance metadata (increment 6.1).

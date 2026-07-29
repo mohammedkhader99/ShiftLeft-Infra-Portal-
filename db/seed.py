@@ -51,6 +51,25 @@ TECHNOLOGIES = [
     {"code": "k8s", "name": "Kubernetes", "lifecycle_state": "preview"},
     {"code": "rhel9", "name": "RHEL 9 VM", "lifecycle_state": "certified"},
     {"code": "win2019", "name": "Windows Server 2019", "lifecycle_state": "deprecated"},
+    # Catalog expansion (increment 6.2, from the UX brief). Sizing is uniform
+    # per size (below); a few carry a software licence (see RATE_CARDS +
+    # api/pricing.TECHNOLOGY_LICENCE). Real per-technology provisioning is still
+    # deferred — an apply creates the same placeholder resource, tagged.
+    {"code": "oracle-db", "name": "Oracle Database 19c", "lifecycle_state": "certified"},
+    {"code": "mssql", "name": "SQL Server 2022", "lifecycle_state": "certified"},
+    {"code": "mongodb", "name": "MongoDB 7", "lifecycle_state": "certified"},
+    {"code": "kafka", "name": "Apache Kafka", "lifecycle_state": "certified"},
+    {"code": "rabbitmq", "name": "RabbitMQ", "lifecycle_state": "certified"},
+    {"code": "elasticsearch", "name": "Elasticsearch 8", "lifecycle_state": "certified"},
+    {"code": "opensearch", "name": "OpenSearch 2", "lifecycle_state": "preview"},
+    {"code": "java21", "name": "Java 21 (JVM)", "lifecycle_state": "certified"},
+    {"code": "dotnet8", "name": ".NET 8", "lifecycle_state": "certified"},
+    {"code": "nodejs20", "name": "Node.js 20", "lifecycle_state": "certified"},
+    {"code": "python312", "name": "Python 3.12", "lifecycle_state": "certified"},
+    {"code": "apache", "name": "Apache HTTP Server", "lifecycle_state": "certified"},
+    {"code": "openshift", "name": "OpenShift", "lifecycle_state": "preview"},
+    {"code": "vault", "name": "HashiCorp Vault", "lifecycle_state": "certified"},
+    {"code": "keycloak", "name": "Keycloak", "lifecycle_state": "certified"},
 ]
 
 # size -> (vcpu, memory_gb, storage_gb), applied to every technology.
@@ -58,6 +77,7 @@ SIZES = {
     "small": (2, 4, 50),
     "medium": (4, 16, 200),
     "large": (8, 64, 500),
+    "xlarge": (16, 128, 1000),
 }
 
 RATE_CARDS = [
@@ -69,6 +89,9 @@ RATE_CARDS = [
     # Software licences (independent of deployment target), charged monthly.
     {"kind": "licence", "item": "postgres-licence", "unit": "per month", "rate": 0.0},
     {"kind": "licence", "item": "windows-licence", "unit": "per month", "rate": 320.0},
+    # Commercial database licences (increment 6.2).
+    {"kind": "licence", "item": "oracle-licence", "unit": "per month", "rate": 1800.0},
+    {"kind": "licence", "item": "mssql-licence", "unit": "per month", "rate": 700.0},
     # Azure: compute per hour, storage per GB/month; 20% negotiated discount.
     {"kind": "cloud_azure", "item": "vcpu-hour", "unit": "per vCPU/hour", "rate": 0.14,
      "discount_pct": 20.0},

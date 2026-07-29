@@ -30,8 +30,17 @@ import {
   type RequestRow,
 } from '../api'
 
-const SIZES = ['small', 'medium', 'large']
+const SIZES = ['small', 'medium', 'large', 'xlarge']
 const CLASSIFICATIONS = ['public', 'internal', 'confidential', 'restricted']
+const ENV_TIERS: [string, string][] = [
+  ['dev', 'Development'],
+  ['test', 'Test'],
+  ['sit', 'SIT'],
+  ['uat', 'UAT'],
+  ['preprod', 'Pre-Production'],
+  ['prod', 'Production'],
+  ['dr', 'Disaster Recovery'],
+]
 const TARGETS: [string, string][] = [
   ['onprem', 'On-premises'],
   ['azure', 'Microsoft Azure'],
@@ -66,6 +75,7 @@ export default function RequestForm() {
   const [subsidiary, setSubsidiary] = useState('')
   const [target, setTarget] = useState('')
   const [envName, setEnvName] = useState('')
+  const [envTier, setEnvTier] = useState('')
   const [targetEnv, setTargetEnv] = useState('')
   const [classification, setClassification] = useState('')
   const [components, setComponents] = useState<Component[]>([{ technology_code: '', size: '' }])
@@ -179,6 +189,7 @@ export default function RequestForm() {
     if (isCreate) {
       p.project_code = projectCode || null
       p.environment_name = envName || null
+      p.environment_tier = envTier || null
     } else {
       p.target_environment = targetEnv || null
     }
@@ -338,6 +349,15 @@ export default function RequestForm() {
                   <SelectItem value="" text="— select —" />
                   {lookups.environments.map((e) => (
                     <SelectItem key={e.name} value={e.name} text={`${e.name} (${e.environment_class})`} />
+                  ))}
+                </Select>
+              )}
+
+              {isCreate && (
+                <Select id="environment_tier" labelText="Environment tier" value={envTier} onChange={(e) => setEnvTier(e.target.value)} invalid={!!errors.environment_tier} invalidText={errors.environment_tier}>
+                  <SelectItem value="" text="— select —" />
+                  {ENV_TIERS.map(([v, label]) => (
+                    <SelectItem key={v} value={v} text={label} />
                   ))}
                 </Select>
               )}

@@ -17,9 +17,11 @@ from sqlalchemy.orm import Session
 from db.models import CostCentre, Environment, Project, Request, Subsidiary, Technology
 
 REQUEST_TYPES = {"create", "add", "resize", "decommission"}
-SIZES = {"small", "medium", "large"}
+SIZES = {"small", "medium", "large", "xlarge"}
 CLASSIFICATIONS = {"public", "internal", "confidential", "restricted"}
 DEPLOYMENT_TARGETS = {"onprem", "azure", "oci"}
+# Environment tier ladder (increment 6.2, from the UX brief).
+ENV_TIERS = {"dev", "test", "sit", "uat", "preprod", "prod", "dr"}
 # Governance metadata value sets (increment 6.1, from the UX brief).
 PRIORITIES = {"low", "medium", "high", "critical"}
 CRITICALITIES = {"tier1", "tier2", "tier3", "tier4"}
@@ -195,6 +197,12 @@ def _validate_create_fields(data: dict, session: Session, errors: dict[str, str]
     if classification not in CLASSIFICATIONS:
         errors["data_classification"] = (
             "Select a data classification (public, internal, confidential or restricted)."
+        )
+
+    tier = (data.get("environment_tier") or "").strip().lower()
+    if tier not in ENV_TIERS:
+        errors["environment_tier"] = (
+            "Select the environment tier (dev, test, sit, uat, preprod, prod or dr)."
         )
 
 

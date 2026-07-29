@@ -87,6 +87,7 @@ VALID_CREATE = {
     "cost_centre_code": "IMD-1001",
     "deployment_target": "onprem",
     "environment_name": "egate-uat",
+    "environment_tier": "uat",
     "data_classification": "internal",
     "components": [{"technology_code": "postgres16", "size": "medium"}],
     **VALID_METADATA,
@@ -941,3 +942,53 @@ def test_decommission_submits_without_metadata(client, monkeypatch):
         "components": [{"technology_code": "postgres16", "size": "medium"}],
     }).json()["reference"]
     assert client.post(f"/api/requests/{ref}/submit").status_code == 200
+
+
+# --- Richer catalog (increment 6.2) ------------------------------------------
+
+def _cost_monthly(client, tech, size="medium", target="onprem"):
+    resp = client.post("/api/cost", json={
+        "deployment_target": target,
+        "components": [{"technology_code": tech, "size": size}],
+    })
+    assert resp.status_code == 200
+    return resp.json()["totals"]["monthly"]
+
+
+def test_catalog_new_technology_prices(client):
+    # A newly-added catalog technology prices via the per-resource rates.
+    assert _cost_monthly(client, "mongodb") > 0
+
+
+def test_catalog_xlarge_prices_more_than_large(client):
+    assert _cost_monthly(client, "mongodb", "xlarge") > _cost_monthly(client, "mongodb", "large")
+
+
+def test_catalog_oracle_licence_adds_to_cost(client):
+    # Oracle carries a licence, so it costs more than an unlicensed tech, same size.
+    assert _cost_monthly(client, "oracle-db") > _cost_monthly(client, "mongodb")
+
+
+def test_xlarge_size_is_accepted_on_submit(client):
+    ref = _draft_ref(client, {**VALID_CREATE,
+                              "components": [{"technology_code": "mongodb", "size": "xlarge"}]})
+    assert client.post(f"/api/requests/{ref}/submit").status_code == 200
+
+
+def test_create_requires_environment_tier(client):
+    payload = {k: v for k, v in VALID_CREATE.items() if k != "environment_tier"}
+    ref = _draft_ref(client, payload)
+    errors = client.post(f"/api/requests/{ref}/submit").json()["errors"]
+    assert "environment_tier" in errors
+
+
+def test_create_rejects_unknown_environment_tier(client):
+    ref = _draft_ref(client, {**VALID_CREATE, "environment_tier": "staging"})
+    errors = client.post(f"/api/requests/{ref}/submit").json()["errors"]
+    assert "environment_tier" in errors
+
+
+def test_environment_tier_persisted_and_returned(client):
+    ref = _draft_ref(client, VALID_CREATE)
+    assert client.post(f"/api/requests/{ref}/submit").status_code == 200
+    assert client.get(f"/api/requests/{ref}").json()["environment_tier"] == "uat"

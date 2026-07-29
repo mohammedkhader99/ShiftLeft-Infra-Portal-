@@ -64,6 +64,7 @@ export type RequestRow = {
   deployment_target?: string | null
   environment_name?: string | null
   target_environment?: string | null
+  environment_tier?: string | null
   // Governance metadata (increment 6.1).
   business_justification?: string | null
   priority?: string | null

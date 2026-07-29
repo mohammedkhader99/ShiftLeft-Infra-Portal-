@@ -27,10 +27,10 @@ def test_seed_populates_reference_data(session):
     seed(session)
     assert session.scalar(select(func.count()).select_from(Project)) == 3
     assert session.scalar(select(func.count()).select_from(CostCentre)) == 3
-    assert session.scalar(select(func.count()).select_from(Technology)) == 6
-    # 6 technologies * 3 sizes = 18 sizing anchors.
-    assert session.scalar(select(func.count()).select_from(SizingAnchor)) == 18
-    assert session.scalar(select(func.count()).select_from(RateCard)) == 12
+    assert session.scalar(select(func.count()).select_from(Technology)) == 21
+    # 21 technologies * 4 sizes (incl. xlarge) = 84 sizing anchors.
+    assert session.scalar(select(func.count()).select_from(SizingAnchor)) == 84
+    assert session.scalar(select(func.count()).select_from(RateCard)) == 14
 
 
 def test_seed_query_returns_named_rows(session):
@@ -52,7 +52,7 @@ def test_seed_is_idempotent(session):
     seed(session)
     seed(session)
     assert session.scalar(select(func.count()).select_from(Project)) == 3
-    assert session.scalar(select(func.count()).select_from(SizingAnchor)) == 18
+    assert session.scalar(select(func.count()).select_from(SizingAnchor)) == 84
 
 
 def test_lifecycle_states_present(session):

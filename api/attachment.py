@@ -39,6 +39,7 @@ def build_request_pdf(req, breakdown: dict, sizing: dict) -> bytes:
     _kv(pdf, "Cost centre", req.cost_centre_code)
     _kv(pdf, "Deployment target", req.deployment_target)
     _kv(pdf, "Environment", req.environment_name or req.target_environment)
+    _kv(pdf, "Environment tier", getattr(req, "environment_tier", None))
     _kv(pdf, "Data classification", req.data_classification)
     pdf.ln(2)
 

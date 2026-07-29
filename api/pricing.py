@@ -31,6 +31,9 @@ DEPLOYMENT_TARGETS = set(TARGET_KIND)
 TECHNOLOGY_LICENCE = {
     "postgres16": "postgres-licence",
     "win2019": "windows-licence",
+    # Catalog expansion (6.2): commercial DB licences.
+    "oracle-db": "oracle-licence",
+    "mssql": "mssql-licence",
 }
 
 

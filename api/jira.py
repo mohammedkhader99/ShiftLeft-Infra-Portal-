@@ -203,6 +203,8 @@ def build_ticket_body(req: Request, estimate: dict, plan_preview: str) -> str:
     if req.environment_name:
         label = "Environment to remove" if is_decommission else "New environment"
         lines.append(f"{label}: {req.environment_name}")
+    if getattr(req, "environment_tier", None):
+        lines.append(f"Environment tier: {req.environment_tier}")
     if req.target_environment:
         lines.append(f"Target environment: {req.target_environment}")
 

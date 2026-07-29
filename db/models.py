@@ -155,6 +155,8 @@ class Request(Base):
     # New environment name (for 'create'); target existing environment (others).
     environment_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
     target_environment: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    # Environment tier/stage for 'create' (dev|test|sit|uat|preprod|prod|dr) — 6.2.
+    environment_tier: Mapped[str | None] = mapped_column(String(16), nullable=True)
     # For 'decommission': the reference of the previously provisioned request
     # whose resources this request tears down (2.9).
     source_reference: Mapped[str | None] = mapped_column(String(20), nullable=True)

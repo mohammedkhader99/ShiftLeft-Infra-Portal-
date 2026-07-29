@@ -218,6 +218,7 @@ export default function MyRequests({ route }: { route: string }) {
                             gap: '0.4rem 1.5rem',
                           }}
                         >
+                          <MetaField label="Tier" value={r.environment_tier} />
                           <MetaField label="Priority" value={r.priority} />
                           <MetaField label="Criticality" value={r.business_criticality} />
                           <MetaField label="Required by" value={r.required_delivery_date} />
