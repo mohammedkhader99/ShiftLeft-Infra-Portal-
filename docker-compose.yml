@@ -151,8 +151,16 @@ services:
       dockerfile: Dockerfile
     environment:
       API_BASE_URL: http://api:8081
-      DEV_USER: ${MOCK_REQUESTER:-mohammed.khader@emaratechg.ae}
-      DEV_NAME: ${MOCK_REQUESTER_NAME:-Mohammed Khader}
+      # Sign-in (UX.1b). mock = local dev identity; live = Microsoft Entra ID.
+      # Reuses the same Entra app as the portal but needs its OWN redirect URI
+      # (this service runs on :5174) — set WEBAPP_OIDC_REDIRECT_URI and register
+      # it in Entra. The id token is forwarded to the API (validated there).
+      AUTH_MODE: ${AUTH_MODE:-mock}
+      SESSION_SECRET: ${SESSION_SECRET:-dev-insecure-session-secret}
+      OIDC_TENANT_ID: ${OIDC_TENANT_ID:-}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
+      OIDC_REDIRECT_URI: ${WEBAPP_OIDC_REDIRECT_URI:-}
     ports:
       - "5174:5174"
     depends_on:

@@ -2,10 +2,6 @@
 FROM node:22-alpine AS build
 WORKDIR /frontend
 COPY frontend/package.json ./
-# Bump CACHEBUST (or pass --build-arg CACHEBUST=$(date +%s)) to force a clean
-# npm install without re-pulling the base image (BuildKit's --no-cache can't,
-# since Docker Hub is unreachable here).
-ARG CACHEBUST=2
 RUN npm install --no-audit --no-fund
 COPY frontend/ ./
 RUN npm run build

@@ -30,7 +30,14 @@ export default function App() {
 
   useEffect(() => {
     fetch('/api/me')
-      .then((r) => (r.ok ? r.json() : null))
+      .then((r) => {
+        // Token expired mid-session -> bounce through sign-in to refresh it.
+        if (r.status === 401) {
+          window.location.href = '/login'
+          return null
+        }
+        return r.ok ? r.json() : null
+      })
       .then(setMe)
       .catch(() => setMe(null))
       .finally(() => setLoaded(true))
