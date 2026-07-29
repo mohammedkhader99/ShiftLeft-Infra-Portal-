@@ -72,9 +72,12 @@
 
     <button id="refresh" type="button">Refresh</button>
 
-    <p style="margin-top:1.5rem; display:flex; gap:1.5rem;">
+    <p style="margin-top:1.5rem; display:flex; gap:1.5rem; flex-wrap:wrap;">
       <a href="/request/new" style="color:#0B5563; font-weight:bold;">Start a new request →</a>
       <a href="/requests" style="color:#0B5563; font-weight:bold;">My requests →</a>
+      {% if 'platform_admin' in roles or 'auditor' in roles or 'finops' in roles %}
+        <a href="/overview" style="color:#0B5563; font-weight:bold;">Estate overview →</a>
+      {% endif %}
     </p>
   </main>
 </body>

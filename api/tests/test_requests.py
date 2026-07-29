@@ -648,6 +648,29 @@ def test_audit_refused_without_audit_role(client, monkeypatch):
     assert resp.status_code == 403
 
 
+# --- Estate overview stats (increment 2.12, F-RPT-01) ------------------------
+
+def test_stats_refused_without_oversight_role(client, monkeypatch):
+    monkeypatch.setenv("ROLE_MAP", '{"dev@x.com": ["requester"]}')
+    resp = client.get("/api/stats", headers={"X-Requester": "dev@x.com"})
+    assert resp.status_code == 403
+
+
+def test_stats_aggregates_for_oversight_role(client, monkeypatch):
+    monkeypatch.setenv("ROLE_MAP", '{"aud@x.com": ["auditor"]}')
+    # Two requests (created by the default all-roles mock user).
+    client.post("/api/requests/draft", json=VALID_CREATE)
+    client.post("/api/requests/draft", json=VALID_CREATE)
+
+    resp = client.get("/api/stats", headers={"X-Requester": "aud@x.com"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["kpis"]["total"] >= 2
+    assert {"by_status", "by_type", "by_technology", "by_target", "trend"} <= set(data)
+    techs = {b["key"] for b in data["by_technology"]}
+    assert "postgres16" in techs
+
+
 # --- 'My requests' dashboard list endpoint (increment 2.8) --------------------
 
 def test_list_requests_newest_first_and_filtered_by_requester(client):

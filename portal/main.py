@@ -119,7 +119,31 @@ def logout(request: Request):
 def index(request: Request) -> HTMLResponse:
     """Serve the portal page."""
     return templates.TemplateResponse(
-        request, "index.html", {"user": auth.session_user(request) or auth.DEFAULT_DEV_USER}
+        request, "index.html",
+        {"user": auth.session_user(request) or auth.DEFAULT_DEV_USER,
+         "roles": _fetch_roles(request)},
+    )
+
+
+@app.get("/overview", response_class=HTMLResponse)
+def overview(request: Request) -> HTMLResponse:
+    """Whole-estate overview dashboard (F-RPT-01) — for oversight roles."""
+    roles = _fetch_roles(request)
+    stats, error, forbidden = None, None, False
+    try:
+        resp = httpx.get(f"{API_BASE_URL}/api/stats",
+                         headers=_requester_headers(request), timeout=6.0)
+        if resp.status_code == 403:
+            forbidden = True
+        else:
+            resp.raise_for_status()
+            stats = resp.json()
+    except Exception as exc:  # noqa: BLE001
+        error = str(exc)
+    return templates.TemplateResponse(
+        request, "overview.html",
+        {"user": auth.session_user(request) or auth.DEFAULT_DEV_USER,
+         "roles": roles, "stats": stats, "forbidden": forbidden, "error": error},
     )
 
 

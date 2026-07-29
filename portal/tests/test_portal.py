@@ -302,6 +302,48 @@ def test_request_new_shows_decommission_picker(monkeypatch):
     assert "REQ-2026-0031" in body                     # a provisioned request is listed
 
 
+FAKE_STATS = {
+    "kpis": {"total": 5, "active": 2, "in_flight": 1, "failed": 1, "decommissioned": 1},
+    "active_monthly_cost": {"amount": 426.0, "currency": "AED"},
+    "by_status": [{"key": "provisioned", "count": 2}, {"key": "apply-failed", "count": 1}],
+    "by_type": [{"key": "create", "count": 4}],
+    "by_technology": [{"key": "postgres16", "count": 3}],
+    "by_target": [{"key": "onprem", "count": 5}],
+    "trend": [{"week": "2026-W30", "count": 5}],
+}
+
+
+def test_overview_renders_for_oversight(monkeypatch):
+    def fake_get(url, *a, **k):
+        if url.endswith("/api/me"):
+            return _FakeResp({"email": "a@x.com", "roles": ["platform_admin"]})
+        if url.endswith("/api/stats"):
+            return _FakeResp(FAKE_STATS)
+        return _FakeResp({})
+
+    monkeypatch.setattr("portal.main.httpx.get", fake_get)
+    resp = client.get("/overview")
+    assert resp.status_code == 200
+    body = resp.text
+    assert "Estate overview" in body
+    assert "provisioned" in body and "postgres16" in body
+    assert "426" in body               # active monthly cost tile
+
+
+def test_overview_forbidden_for_requester(monkeypatch):
+    def fake_get(url, *a, **k):
+        if url.endswith("/api/me"):
+            return _FakeResp({"email": "r@x.com", "roles": ["requester"]})
+        if url.endswith("/api/stats"):
+            return _FakeResp({}, status=403)
+        return _FakeResp({})
+
+    monkeypatch.setattr("portal.main.httpx.get", fake_get)
+    resp = client.get("/overview")
+    assert resp.status_code == 200
+    assert "doesn't have access" in resp.text
+
+
 def test_workflow_steps_marks_done_and_current():
     from portal.main import _workflow_steps
 

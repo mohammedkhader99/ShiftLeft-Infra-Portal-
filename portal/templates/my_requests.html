@@ -146,6 +146,9 @@
 
     <div class="actions">
       <a href="/request/new">+ New request</a>
+      {% if 'platform_admin' in roles or 'auditor' in roles or 'finops' in roles %}
+        <a href="/overview">Estate overview →</a>
+      {% endif %}
       <a href="/">← Home</a>
     </div>
   </main>

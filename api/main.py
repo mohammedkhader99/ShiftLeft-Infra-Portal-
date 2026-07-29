@@ -2,6 +2,7 @@ import json
 import os
 import threading
 import time
+from collections import Counter
 from collections.abc import Iterator
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -144,6 +145,60 @@ def whoami(requester: str = Depends(get_requester)) -> dict:
     """The signed-in user's identity and resolved roles (for the portal to
     show the role and hide actions it can't take — the API stays the gate)."""
     return {"email": requester, "roles": sorted(roles_mod.resolve_roles(requester))}
+
+
+@app.get("/api/stats")
+def stats(session: Session = Depends(get_session),
+          _auth: str = Depends(require_action("view_overview"))) -> dict:
+    """Whole-estate aggregate metrics for the overview dashboard (F-RPT-01).
+
+    Role-gated to oversight roles (admin / auditor / finops). Computed
+    server-side (authoritative); the portal only draws it.
+    """
+    def breakdown(column) -> list[dict]:
+        rows = session.execute(select(column, func.count()).group_by(column)).all()
+        out = [{"key": k if k is not None else "—", "count": c} for k, c in rows]
+        return sorted(out, key=lambda r: r["count"], reverse=True)
+
+    total = session.scalar(select(func.count()).select_from(Request)) or 0
+    by_status = breakdown(Request.status)
+    by_type = breakdown(Request.request_type)
+    by_target = breakdown(Request.deployment_target)
+    by_technology = breakdown(RequestComponent.technology_code)
+
+    status_count = {r["key"]: r["count"] for r in by_status}
+
+    def sum_of(*names) -> int:
+        return sum(status_count.get(n, 0) for n in names)
+
+    active_cost = session.scalar(
+        select(func.coalesce(func.sum(Estimate.monthly), 0))
+        .select_from(Estimate).join(Request, Estimate.request_id == Request.id)
+        .where(Request.status == "provisioned")
+    ) or 0
+
+    # Trend: requests created per ISO week, bucketed in Python for DB portability.
+    weeks: Counter = Counter()
+    for created in session.scalars(select(Request.created_at)):
+        if created is not None:
+            iso = created.isocalendar()
+            weeks[f"{iso[0]}-W{iso[1]:02d}"] += 1
+
+    return {
+        "kpis": {
+            "total": total,
+            "active": sum_of("provisioned"),
+            "in_flight": sum_of("submitted", "planned", "in-progress"),
+            "failed": sum_of("apply-failed", "decommission-failed", "rejected"),
+            "decommissioned": sum_of("decommissioned"),
+        },
+        "active_monthly_cost": {"amount": float(active_cost), "currency": "AED"},
+        "by_status": by_status,
+        "by_type": by_type,
+        "by_technology": by_technology,
+        "by_target": by_target,
+        "trend": [{"week": w, "count": weeks[w]} for w in sorted(weeks)][-8:],
+    }
 
 
 @app.get("/health")

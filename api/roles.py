@@ -32,6 +32,7 @@ ACTIONS = {
     "create_request": {REQUESTER, PLATFORM_ADMIN},
     "execute": {PLATFORM_ADMIN},          # approve / apply / destroy / decommission
     "view_audit": {AUDITOR, PLATFORM_ADMIN, REQUESTER},
+    "view_overview": {PLATFORM_ADMIN, AUDITOR, FINOPS},   # whole-estate dashboard
 }
 
 _cache: dict[str, tuple[float, set[str]]] = {}
