@@ -138,7 +138,7 @@ Every section of the brief is mapped here so nothing is dropped (traceability pa
 **Requester Information (~30 fields, auto from Entra)**
 - ✅ email · roles · cost centre · project code (on the form today).
 - ⬜ identity-derived (name, employee ID, business unit, department, designation, phone, manager name/email, country, location, time zone, organization, division, company, auth method, privilege level) → **requester profile enrichment via Microsoft Graph (E1)**.
-- ⬜ owner/metadata (application/business/technical/environment owner, request date, required delivery date, business justification, priority, business criticality) → **request-metadata increment**.
+- ✅ owner/metadata: business justification, priority, business criticality, required delivery date, and the four owner roles — **delivered in increment 6.1** (validated, stored, shown in the Jira ticket + costing PDF + request detail). ⬜ request date auto-stamp is a trivial follow-up.
 
 **Request Type (10)** — ✅ Create · Add Component · Decommission; ◐ Increase Capacity (=resize) · Remove Component (=decommission-by-reference). ⬜ Reduce Capacity · Clone · Disaster Recovery · Sandbox · Temporary → **catalog expansion**.
 
