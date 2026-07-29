@@ -122,16 +122,49 @@ Per the reviewer's UX brief (*"UX Portal Design.docx"*) and ARCHITECTURE.md §14
 
 Each UX increment keeps every existing control/validation/integration and its backend tests; new UI gets component tests.
 
-### Scope backlog from the UX brief (functionality, sequenced after the reskin)
-The brief also adds substantial *functionality*; it lands as backend increments (mostly already anticipated), not part of the reskin:
-- **Requester profile enrichment** (employee ID, dept, manager, location, company…) via Microsoft Graph → with **E1**.
-- **Request metadata** (business justification, priority, criticality, required delivery date, app/business/technical/environment owners) → a request-form increment.
-- **Catalog expansion** (more request types: clone/DR/sandbox/temporary/reduce/remove; environments: Dev/Test/SIT/UAT/PreProd/Prod/DR; sizes: XLarge/Custom; ~24 technologies; ~20 advanced options) → catalog increments. *Catalog entry is cheap; real per-technology provisioning is the deferred heavy work.*
-- **Multi-cloud** (AWS, GCP, hybrid, multi-cloud) — one pricing/provisioning adapter each → later phase (large).
-- **Cost breakdown** (network/backup/monitoring/support lines) + optimization tips, and **Excel** cost-sheet export alongside today's PDF → with **E3**.
-- **Approver assignment + notifications + SLA** → **E2**.
-- **AI Copilot** (recommend sizing/cloud, explain costs, detect gaps, compliance guidance) — **recommend-only per P3** → **E4**.
-- **"Validate request" / "Preview environment"** actions → small increments.
+### UX brief — full traceability (`UX Portal Design.docx`)
+
+Every section of the brief is mapped here so nothing is dropped (traceability pass, 2026-07-29). The reskin (UX.1–UX.5) delivered the **look-and-feel**; the added **breadth and features** land as backend/catalog increments sequenced *after* the reskin — pointers name the target phase. Legend: **✅ done · ◐ partial · ⬜ planned (not started) · ⛔ deliberate deviation.**
+
+**Platform & design language**
+- ⛔ *"Built on Backstage.io"* — **declined**; React + IBM Carbon via a BFF instead (ARCHITECTURE.md §14.1). The brief's design *language* is still followed.
+- ✅ Premium enterprise look: sharp edges, blue/white, large type, minimal palette, Carbon icons, **dark/light**, WCAG 2.2, enterprise data tables, no rounded buttons.
+- ◐ Per-breakpoint **mobile/tablet** optimisation (Carbon grid is responsive but not yet audited); animation/pixel polish — ongoing.
+
+**Page layout panels** — ✅ top nav · left nav · main form · validation messages. ◐ live cost panel (totals now; breakdown → E3). ⬜ environment-summary panel · approval-summary panel · multi-step wizard/progress · sticky submit → *Portal UI polish*. ⬜ AI Assistant panel → **E4**.
+
+**Header** — ✅ logo · app name · notifications *icon* · user avatar · help *icon*. ⬜ **Search**, working notifications (→E2), profile page, AI assistant (→E4).
+
+**Requester Information (~30 fields, auto from Entra)**
+- ✅ email · roles · cost centre · project code (on the form today).
+- ⬜ identity-derived (name, employee ID, business unit, department, designation, phone, manager name/email, country, location, time zone, organization, division, company, auth method, privilege level) → **requester profile enrichment via Microsoft Graph (E1)**.
+- ⬜ owner/metadata (application/business/technical/environment owner, request date, required delivery date, business justification, priority, business criticality) → **request-metadata increment**.
+
+**Request Type (10)** — ✅ Create · Add Component · Decommission; ◐ Increase Capacity (=resize) · Remove Component (=decommission-by-reference). ⬜ Reduce Capacity · Clone · Disaster Recovery · Sandbox · Temporary → **catalog expansion**.
+
+**Target Platform (7)** — ✅ Azure · OCI · On-Premises. ⬜ AWS · Google Cloud · Hybrid · Multi-Cloud → **multi-cloud phase** (one pricing/provisioning adapter each; large).
+
+**Target Environment (7: Dev/Test/SIT/UAT/PreProd/Prod/DR)** — ◐ environments exist; the fixed class ladder → **catalog expansion**.
+
+**Technology Stack (~24, cards w/ icons)** — ✅ 6 seeded (PostgreSQL, Redis, Nginx, Kubernetes, RHEL, Windows). ⬜ Oracle DB, SQL Server, MongoDB, Kafka, RabbitMQ, Elastic/OpenSearch, Java, .NET, NodeJS, Python, Apache, OpenShift, Istio/Service Mesh, Vault, Keycloak, Monitoring, Logging, Backup → **catalog expansion**. ⬜ card-with-icon presentation (today: selects) → *Portal UI polish*. *(Catalog entry is cheap; real per-technology provisioning is the deferred heavy work.)*
+
+**Environment Size (5, cards w/ specs)** — ✅ Small/Medium/Large (server-side sizing anchors exist). ⬜ XLarge · Custom → catalog. ⬜ spec cards (vCPU/RAM/storage/cost/HA/use-cases) → *Portal UI polish*.
+
+**Advanced Options (~20)** — ⬜ region, AZ, DB version, HA, backup retention, encryption, DR, monitoring/logging level, storage tier, autoscaling, network type, firewall profile, private/public endpoint, DNS, certificates, secrets management, compliance profile → **catalog expansion (advanced-options increment)**.
+
+**Live Cost Panel** — ✅ one-time/monthly/annual totals, live update. ⬜ per-line compute/storage/network/backup/license/monitoring/support + savings recommendation + optimization tips → **E3**.
+
+**AI Assistant (8 capabilities)** — ⬜ all (recommend sizing/cloud, explain costs, detect gaps, predict time, compliance) → **E4**, **recommend-only per hard-rule P3** (never decides, executes, or holds credentials).
+
+**Bottom Actions** — ✅ Save Draft · Submit · (Cancel trivial). ◐ Generate Cost Sheet (**PDF exists**; Excel → E3). ⬜ Validate Request · Preview Environment → small increments.
+
+**Submission Flow** — ✅ validate fields · calculate pricing · **create Jira ticket** · **attach costing PDF to the ticket** · plan-preview/blueprint in the ticket body · display tracking ID. ⬜ Excel costing sheet → E3; ⬜ assign approvers · send approval notification → **E2**.
+
+**Design-process outputs (Figma mockup, wireframe, component hierarchy, palette, typography, icons, journey, a11y, responsive, mobile/tablet/desktop)** — ✅ satisfied by *building on Carbon* (its design system, palette, typography, icon set, accessibility and responsive grid) instead of separate Figma artefacts. ⬜ standalone mockup/wireframe/user-journey documents were not produced (we built the working UI) — revisit only if a formal design sign-off deliverable is required.
+
+**Portal UI polish (small, newly tracked here)** — ⬜ header **Search**; on-form **Environment** & **Approval** summary panels; **multi-step wizard** progress; **technology & size cards** with icons/specs; **sticky submit** bar. Low effort; not tied to a backend phase.
+
+> Roll-up to enterprise phases: requester enrichment → **E1** · approvers/notifications/SLA → **E2** · cost breakdown + Excel → **E3** · AI Copilot → **E4** · catalog/advanced-options + multi-cloud → **catalog/multi-cloud increments** · Validate/Preview + UI polish → **small increments**.
 
 ---
 
