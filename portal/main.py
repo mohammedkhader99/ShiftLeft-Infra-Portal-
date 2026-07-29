@@ -86,7 +86,8 @@ def _roles_or_reauth(request: Request):
                          headers=_requester_headers(request), timeout=5.0)
     except Exception:  # noqa: BLE001 — API unreachable: treat as least-privilege
         return ["read_only"]
-    if resp.status_code == 401 and auth.is_live() and not request.session.get("reauth_pending"):
+    if getattr(resp, "status_code", None) == 401 and auth.is_live() \
+            and not request.session.get("reauth_pending"):
         request.session["reauth_pending"] = True
         return _reauth_redirect(request, str(request.url.path))
     try:
