@@ -95,9 +95,14 @@ def logout(request: Request):
 @app.api_route("/api/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
 async def proxy(path: str, request: Request) -> Response:
     body = await request.body()
+    headers = _forward_headers(request)
+    # Preserve the request's Content-Type so JSON POST bodies parse upstream.
+    content_type = request.headers.get("content-type")
+    if content_type:
+        headers["Content-Type"] = content_type
     upstream = await _proxy_upstream(
         request.method, f"{API_BASE_URL}/api/{path}",
-        dict(request.query_params), body, _forward_headers(request),
+        dict(request.query_params), body, headers,
     )
     return Response(content=upstream.content, status_code=upstream.status_code,
                     media_type=upstream.headers.get("content-type", "application/json"))

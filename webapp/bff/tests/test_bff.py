@@ -36,6 +36,25 @@ def test_proxy_forwards_identity_and_path(monkeypatch):
     assert captured["url"].endswith("/api/me")
 
 
+def test_proxy_forwards_content_type_for_json_post(monkeypatch):
+    captured = {}
+
+    class _Upstream:
+        content = b'{"totals":{"monthly":0}}'
+        status_code = 200
+        headers = {"content-type": "application/json"}
+
+    async def fake_upstream(method, url, params, content, headers):
+        captured["headers"] = headers
+        return _Upstream()
+
+    monkeypatch.setattr(bff, "_proxy_upstream", fake_upstream)
+    resp = client.post("/api/cost", json={"deployment_target": "onprem", "components": []})
+    assert resp.status_code == 200
+    # Without this the API can't parse the JSON body upstream.
+    assert captured["headers"].get("Content-Type") == "application/json"
+
+
 def test_live_mode_redirects_anonymous_page_load_to_login(monkeypatch):
     monkeypatch.setattr(auth, "auth_mode", lambda: "live")
     resp = client.get("/", follow_redirects=False)

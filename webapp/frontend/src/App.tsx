@@ -9,6 +9,7 @@ import {
   SideNavLink,
   Theme,
   Tag,
+  Tile,
 } from '@carbon/react'
 import {
   Notification,
@@ -20,18 +21,45 @@ import {
   ListChecked,
   ChartColumn,
 } from '@carbon/icons-react'
+import RequestForm from './pages/RequestForm'
 
 type Me = { email: string; roles: string[] }
 
+const NAV = [
+  { hash: '#/request/new', label: 'New request', icon: Add },
+  { hash: '#/requests', label: 'My requests', icon: ListChecked },
+  { hash: '#/overview', label: 'Estate overview', icon: ChartColumn },
+]
+
+function useHashRoute() {
+  const [route, setRoute] = useState(window.location.hash || '#/request/new')
+  useEffect(() => {
+    const onHash = () => setRoute(window.location.hash || '#/request/new')
+    window.addEventListener('hashchange', onHash)
+    return () => window.removeEventListener('hashchange', onHash)
+  }, [])
+  return route
+}
+
+function Placeholder({ name }: { name: string }) {
+  return (
+    <Tile>
+      <p style={{ color: 'var(--cds-text-secondary)' }}>
+        {name} moves to Carbon in the next increment. For now it's live in the classic
+        portal at <a href="http://localhost:5173">:5173</a>.
+      </p>
+    </Tile>
+  )
+}
+
 export default function App() {
   const [me, setMe] = useState<Me | null>(null)
-  const [loaded, setLoaded] = useState(false)
   const [dark, setDark] = useState(true)
+  const route = useHashRoute()
 
   useEffect(() => {
     fetch('/api/me')
       .then((r) => {
-        // Token expired mid-session -> bounce through sign-in to refresh it.
         if (r.status === 401) {
           window.location.href = '/login'
           return null
@@ -40,21 +68,30 @@ export default function App() {
       })
       .then(setMe)
       .catch(() => setMe(null))
-      .finally(() => setLoaded(true))
   }, [])
+
+  let title: string
+  let page: JSX.Element
+  if (route.startsWith('#/requests')) {
+    title = 'My requests'
+    page = <Placeholder name="My Requests" />
+  } else if (route.startsWith('#/overview')) {
+    title = 'Estate overview'
+    page = <Placeholder name="Estate overview" />
+  } else {
+    title = 'New infrastructure request'
+    page = <RequestForm />
+  }
 
   return (
     <Theme theme={dark ? 'g100' : 'white'}>
       <div style={{ minHeight: '100vh', background: 'var(--cds-background)' }}>
         <Header aria-label="Infrastructure Provisioning Portal">
-          <HeaderName href="#" prefix="IMD">
+          <HeaderName href="#/request/new" prefix="IMD">
             Infrastructure Provisioning Portal
           </HeaderName>
           <HeaderGlobalBar>
-            <HeaderGlobalAction
-              aria-label="Toggle theme"
-              onClick={() => setDark((d) => !d)}
-            >
+            <HeaderGlobalAction aria-label="Toggle theme" onClick={() => setDark((d) => !d)}>
               {dark ? <Light size={20} /> : <Asleep size={20} />}
             </HeaderGlobalAction>
             <HeaderGlobalAction aria-label="Notifications" onClick={() => {}}>
@@ -71,63 +108,36 @@ export default function App() {
 
         <SideNav aria-label="Side navigation" expanded isPersistent>
           <SideNavItems>
-            <SideNavLink renderIcon={Add} href="#/request/new" isActive>
-              New request
-            </SideNavLink>
-            <SideNavLink renderIcon={ListChecked} href="#/requests">
-              My requests
-            </SideNavLink>
-            <SideNavLink renderIcon={ChartColumn} href="#/overview">
-              Estate overview
-            </SideNavLink>
+            {NAV.map((n) => (
+              <SideNavLink
+                key={n.hash}
+                renderIcon={n.icon}
+                href={n.hash}
+                isActive={route.startsWith(n.hash) || (n.hash === '#/request/new' && route === '#/')}
+              >
+                {n.label}
+              </SideNavLink>
+            ))}
           </SideNavItems>
         </SideNav>
 
-        <main style={{ marginTop: '3rem', marginLeft: '16rem', padding: '2.5rem 3rem' }}>
-          <p style={{ color: 'var(--cds-text-secondary)', fontSize: '0.875rem' }}>
-            Home
-          </p>
-          <h1 style={{ fontWeight: 300, fontSize: '2rem', margin: '0.25rem 0 1.5rem' }}>
-            Welcome{me?.email ? `, ${me.email}` : ''}
-          </h1>
-
-          <div
-            style={{
-              background: 'var(--cds-layer)',
-              border: '1px solid var(--cds-border-subtle)',
-              padding: '1.5rem',
-              maxWidth: '40rem',
-            }}
-          >
-            <p style={{ color: 'var(--cds-text-secondary)', margin: '0 0 0.75rem' }}>
-              You are signed in. Your roles (resolved live from the API):
-            </p>
-            {!loaded ? (
-              <span style={{ color: 'var(--cds-text-secondary)' }}>Loading…</span>
-            ) : me && me.roles.length ? (
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.25rem' }}>
-                {me.roles.map((r) => (
-                  <Tag key={r} type="blue">
-                    {r}
-                  </Tag>
-                ))}
-              </div>
-            ) : (
-              <span style={{ color: 'var(--cds-text-error)' }}>
-                Could not read your roles from the API (sign-in required).
-              </span>
-            )}
-            <p
-              style={{
-                marginTop: '1.5rem',
-                color: 'var(--cds-text-secondary)',
-                fontSize: '0.875rem',
-              }}
-            >
-              This is the new React + IBM Carbon shell (UX.1). The request form, My
-              Requests and the overview move here next, screen by screen.
-            </p>
+        <main style={{ marginTop: '3rem', marginLeft: '16rem', padding: '2rem 2.5rem' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '1rem' }}>
+            <div>
+              <p style={{ color: 'var(--cds-text-secondary)', fontSize: '0.8rem', margin: 0 }}>
+                {me?.email || 'Home'}
+              </p>
+              <h1 style={{ fontWeight: 300, fontSize: '1.75rem', margin: '0.25rem 0 0' }}>{title}</h1>
+            </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.25rem', justifyContent: 'flex-end' }}>
+              {me?.roles?.map((r) => (
+                <Tag key={r} type="blue" size="sm">
+                  {r}
+                </Tag>
+              ))}
+            </div>
           </div>
+          <div style={{ marginTop: '1.5rem' }}>{page}</div>
         </main>
       </div>
     </Theme>
