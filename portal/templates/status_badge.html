@@ -1,0 +1,5 @@
+<span class="status-cell"
+      {% if status in ['submitted', 'planned', 'in-progress'] %}hx-get="/request/{{ reference }}/status-badge" hx-trigger="every 5s" hx-swap="outerHTML"{% endif %}>
+  <span class="badge s-{{ status }}">{{ status }}</span>
+  {% if status_detail and 'failed' in status %}<div class="fail-reason" title="{{ status_detail }}">{{ status_detail }}</div>{% endif %}
+</span>

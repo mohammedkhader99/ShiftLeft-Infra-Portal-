@@ -1,15 +1,17 @@
-<div class="wf">
-  {% for s in steps %}
-    <div class="wf-step is-{{ s.state }}">
-      <div class="wf-dot">
-        {%- if s.state == 'done' %}✓{% elif s.state == 'failed' %}✕{% elif s.state == 'current' %}●{% else %}○{% endif -%}
+<div {% if status in ['submitted', 'planned', 'in-progress'] %}hx-get="/request/{{ reference }}/workflow" hx-trigger="every 5s" hx-swap="outerHTML"{% endif %}>
+  <div class="wf">
+    {% for s in steps %}
+      <div class="wf-step is-{{ s.state }}">
+        <div class="wf-dot">
+          {%- if s.state == 'done' %}✓{% elif s.state == 'failed' %}✕{% elif s.state == 'current' %}●{% else %}○{% endif -%}
+        </div>
+        <div class="wf-label">{{ s.label }}</div>
+        <div class="wf-when">{% if s.when %}{{ s.when[:16] | replace('T', ' ') }}{% endif %}</div>
       </div>
-      <div class="wf-label">{{ s.label }}</div>
-      <div class="wf-when">{% if s.when %}{{ s.when[:16] | replace('T', ' ') }}{% endif %}</div>
-    </div>
-    {% if not loop.last %}<div class="wf-line is-{{ s.state }}"></div>{% endif %}
-  {% endfor %}
+      {% if not loop.last %}<div class="wf-line is-{{ s.state }}"></div>{% endif %}
+    {% endfor %}
+  </div>
+  {% if status in ['apply-failed', 'decommission-failed', 'rejected'] %}
+    <p class="wf-fail-note">Stopped at a failure — open the request to see the reason.</p>
+  {% endif %}
 </div>
-{% if status in ['apply-failed', 'decommission-failed', 'rejected'] %}
-  <p class="wf-fail-note">Stopped at a failure — open the request to see the reason.</p>
-{% endif %}

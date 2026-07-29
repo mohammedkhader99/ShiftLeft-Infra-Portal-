@@ -130,10 +130,9 @@
               </div>
             </td>
             <td>
-              <span class="badge s-{{ r.status }}">{{ r.status }}</span>
-              {% if r.status_detail and 'failed' in r.status %}
-                <div class="fail-reason" title="{{ r.status_detail }}">{{ r.status_detail }}</div>
-              {% endif %}
+              {% with reference=r.reference, status=r.status, status_detail=r.status_detail %}
+                {% include 'status_badge.html' %}
+              {% endwith %}
             </td>
             <td>{{ r.requester_name or r.requester or '—' }}</td>
             <td>{{ r.environment_name or r.target_environment or '—' }}</td>

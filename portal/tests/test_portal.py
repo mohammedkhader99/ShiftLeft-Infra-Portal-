@@ -436,6 +436,22 @@ def test_workflow_steps_decommissioned_appends_terminal():
     assert all(s["state"] == "done" for s in steps)
 
 
+def test_status_badge_polls_while_in_flight(monkeypatch):
+    monkeypatch.setattr("portal.main.httpx.get",
+                        lambda *a, **k: _FakeResp({"status": "planned", "status_detail": None}))
+    body = client.get("/request/REQ-2026-0007/status-badge").text
+    assert "s-planned" in body
+    assert 'hx-trigger="every 5s"' in body  # still refreshing itself
+
+
+def test_status_badge_stops_at_terminal(monkeypatch):
+    monkeypatch.setattr("portal.main.httpx.get",
+                        lambda *a, **k: _FakeResp({"status": "provisioned"}))
+    body = client.get("/request/REQ-2026-0007/status-badge").text
+    assert "s-provisioned" in body
+    assert "every 5s" not in body  # terminal -> polling stops
+
+
 def test_request_workflow_route_renders(monkeypatch):
     def fake_get(url, *a, **k):
         if url.endswith("/audit"):

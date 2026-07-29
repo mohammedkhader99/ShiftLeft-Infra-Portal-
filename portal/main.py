@@ -428,6 +428,23 @@ def _workflow_steps(req: dict, audit: list[dict]) -> list[dict]:
     return steps
 
 
+@app.get("/request/{reference}/status-badge", response_class=HTMLResponse)
+def request_status_badge(request: Request, reference: str) -> HTMLResponse:
+    """HTMX fragment: the request's current status badge, which self-polls while
+    the request is still in flight — so the list updates without a page refresh."""
+    try:
+        r = httpx.get(f"{API_BASE_URL}/api/requests/{reference}",
+                      headers=_requester_headers(request), timeout=5.0)
+        req = r.json() if r.status_code == 200 else {}
+    except Exception:  # noqa: BLE001
+        req = {}
+    return templates.TemplateResponse(
+        request, "status_badge.html",
+        {"reference": reference, "status": req.get("status", "unknown"),
+         "status_detail": req.get("status_detail")},
+    )
+
+
 @app.get("/request/{reference}/workflow", response_class=HTMLResponse)
 def request_workflow(request: Request, reference: str) -> HTMLResponse:
     """HTMX fragment: the request's lifecycle as a stepper (from My Requests)."""
