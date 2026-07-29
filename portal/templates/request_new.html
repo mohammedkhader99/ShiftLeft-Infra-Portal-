@@ -52,7 +52,7 @@
   {% set is_admin = 'platform_admin' in (roles or []) %}
   <main class="card">
     <div style="display:flex; justify-content:space-between; align-items:center; font-size:0.82rem; color:#5b6b72;">
-      <a class="back" href="/">← Back to portal</a>
+      <a class="back" href="/">⌂ Home</a>
       <span>Signed in as <strong>{{ (user.name or user.email) if user else '—' }}</strong>{% if roles %} · role: <strong>{{ roles | join(', ') }}</strong>{% endif %} · <a href="/logout" style="color:#0B5563;">Log out</a></span>
     </div>
     <h1>New infrastructure request</h1>
@@ -361,6 +361,9 @@
       </p>
     </form>
   </main>
+  <div style="max-width:42rem; margin:1rem auto 0; text-align:center;">
+    <a href="/" style="color:#0B5563; font-weight:bold; font-size:0.9rem;">⌂ Home</a>
+  </div>
 
   <script>
     // Show the fields that match the chosen request type. Decommission uses a
