@@ -22,6 +22,7 @@ import {
   ChartColumn,
 } from '@carbon/icons-react'
 import RequestForm from './pages/RequestForm'
+import MyRequests from './pages/MyRequests'
 
 type Me = { email: string; roles: string[] }
 
@@ -74,7 +75,7 @@ export default function App() {
   let page: JSX.Element
   if (route.startsWith('#/requests')) {
     title = 'My requests'
-    page = <Placeholder name="My Requests" />
+    page = <MyRequests />
   } else if (route.startsWith('#/overview')) {
     title = 'Estate overview'
     page = <Placeholder name="Estate overview" />

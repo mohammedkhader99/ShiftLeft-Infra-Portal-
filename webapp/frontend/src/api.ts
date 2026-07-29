@@ -54,3 +54,40 @@ export async function submitRequest(
   const r = await fetch(`/api/requests/${reference}/submit`, { method: 'POST' })
   return { status: r.status, body: await r.json().catch(() => ({})) }
 }
+
+export type RequestRow = {
+  reference: string
+  status: string
+  status_detail?: string | null
+  requester: string
+  requester_name?: string | null
+  environment_name?: string | null
+  target_environment?: string | null
+  components: { technology_code: string | null; size: string | null }[]
+  estimate?: { currency: string; monthly: number } | null
+  approval?: { jira_key: string; ticket_url?: string | null } | null
+}
+
+export async function getMe(): Promise<{ email: string; roles: string[] } | null> {
+  const r = await fetch('/api/me')
+  if (r.status === 401) {
+    window.location.href = '/login'
+    return null
+  }
+  return r.ok ? r.json() : null
+}
+
+export async function getRequests(requester?: string): Promise<RequestRow[]> {
+  const q = requester ? `?requester=${encodeURIComponent(requester)}` : ''
+  const r = await fetch(`/api/requests${q}`)
+  return r.ok ? r.json() : []
+}
+
+export type AuditEntry = { event: string; created_at: string }
+
+export async function getAudit(reference: string): Promise<AuditEntry[]> {
+  const r = await fetch(`/api/requests/${reference}/audit`)
+  if (!r.ok) return []
+  const d = await r.json()
+  return (d.entries as AuditEntry[]) || []
+}
