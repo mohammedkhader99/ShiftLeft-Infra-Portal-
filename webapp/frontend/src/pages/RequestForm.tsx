@@ -6,6 +6,7 @@ import {
   Select,
   SelectItem,
   TextInput,
+  Checkbox,
   Button,
   Tile,
   InlineNotification,
@@ -15,12 +16,15 @@ import {
 import { Add, TrashCan } from '@carbon/icons-react'
 import {
   getLookups,
+  getMe,
+  getRequests,
   getCost,
   saveDraft,
   submitRequest,
   type Lookups,
   type Component,
   type Cost,
+  type RequestRow,
 } from '../api'
 
 const SIZES = ['small', 'medium', 'large']
@@ -33,9 +37,13 @@ const TARGETS: [string, string][] = [
 
 type Result = { kind: 'success' | 'error'; title: string; subtitle?: string }
 
+const compKey = (c: Component) => `${c.technology_code}:${c.size}`
+
 export default function RequestForm() {
   const [lookups, setLookups] = useState<Lookups | null>(null)
+  const [email, setEmail] = useState<string | null>(null)
   const [requestType, setRequestType] = useState('create')
+
   const [projectCode, setProjectCode] = useState('')
   const [costCentre, setCostCentre] = useState('')
   const [subsidiary, setSubsidiary] = useState('')
@@ -45,6 +53,11 @@ export default function RequestForm() {
   const [classification, setClassification] = useState('')
   const [components, setComponents] = useState<Component[]>([{ technology_code: '', size: '' }])
 
+  // Decommission
+  const [provisioned, setProvisioned] = useState<RequestRow[]>([])
+  const [sourceRef, setSourceRef] = useState('')
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+
   const [cost, setCost] = useState<Cost | null>(null)
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [result, setResult] = useState<Result | null>(null)
@@ -52,42 +65,74 @@ export default function RequestForm() {
 
   useEffect(() => {
     getLookups().then(setLookups).catch(() => setLookups(null))
+    getMe().then((m) => setEmail(m?.email ?? null))
   }, [])
+
+  const isCreate = requestType === 'create'
+  const isDecommission = requestType === 'decommission'
+
+  // Load the user's provisioned requests once decommission is chosen.
+  useEffect(() => {
+    if (isDecommission && email) {
+      getRequests({ requester: email, status: 'provisioned' })
+        .then(setProvisioned)
+        .catch(() => setProvisioned([]))
+    }
+  }, [isDecommission, email])
+
+  const sourceObj = provisioned.find((p) => p.reference === sourceRef)
+  const sourceComponents: Component[] = (sourceObj?.components ?? [])
+    .filter((c) => c.technology_code)
+    .map((c) => ({ technology_code: c.technology_code as string, size: c.size ?? '' }))
 
   const filledComponents = useMemo(
     () => components.filter((c) => c.technology_code || c.size),
     [components],
   )
+  const selectedComponents = sourceComponents.filter((c) => selected.has(compKey(c)))
 
-  // Live cost — recomputed server-side whenever the stack or target changes.
+  // What we price: the chosen stack (create/add/resize) or the selected
+  // technologies being torn down (decommission, at the source's target).
+  const pricedTarget = isDecommission ? sourceObj?.deployment_target ?? '' : target
+  const pricedComponents = isDecommission
+    ? selectedComponents
+    : components.filter((c) => c.technology_code && c.size)
+  const pricedKey = JSON.stringify([pricedTarget, pricedComponents])
+
   useEffect(() => {
-    const priced = components.filter((c) => c.technology_code && c.size)
-    if (!target || priced.length === 0) {
+    if (!pricedTarget || pricedComponents.length === 0) {
       setCost(null)
       return
     }
     let cancelled = false
-    getCost(target, priced)
+    getCost(pricedTarget, pricedComponents)
       .then((c) => !cancelled && setCost(c))
       .catch(() => !cancelled && setCost(null))
     return () => {
       cancelled = true
     }
-  }, [components, target])
-
-  const isCreate = requestType === 'create'
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pricedKey])
 
   function setComponent(i: number, patch: Partial<Component>) {
     setComponents((cs) => cs.map((c, idx) => (idx === i ? { ...c, ...patch } : c)))
   }
-  function addComponent() {
-    setComponents((cs) => [...cs, { technology_code: '', size: '' }])
-  }
-  function removeComponent(i: number) {
-    setComponents((cs) => (cs.length > 1 ? cs.filter((_, idx) => idx !== i) : cs))
+  function toggleSelected(c: Component, checked: boolean) {
+    setSelected((s) => {
+      const next = new Set(s)
+      checked ? next.add(compKey(c)) : next.delete(compKey(c))
+      return next
+    })
   }
 
   function buildPayload(): Record<string, unknown> {
+    if (isDecommission) {
+      return {
+        request_type: 'decommission',
+        source_reference: sourceRef || null,
+        components: selectedComponents,
+      }
+    }
     const p: Record<string, unknown> = {
       request_type: requestType,
       cost_centre_code: costCentre || null,
@@ -110,11 +155,9 @@ export default function RequestForm() {
     setResult(null)
     const { status, body } = await saveDraft(buildPayload())
     setBusy(false)
-    if (status === 200) {
+    if (status === 200)
       setResult({ kind: 'success', title: `Draft saved as ${body.reference}`, subtitle: 'You can resume it later.' })
-    } else {
-      setResult({ kind: 'error', title: 'Could not save the draft', subtitle: body?.detail || '' })
-    }
+    else setResult({ kind: 'error', title: 'Could not save the draft', subtitle: body?.detail || '' })
   }
 
   async function onSubmit() {
@@ -146,9 +189,7 @@ export default function RequestForm() {
     }
   }
 
-  if (!lookups) {
-    return <p style={{ color: 'var(--cds-text-secondary)' }}>Loading form…</p>
-  }
+  if (!lookups) return <p style={{ color: 'var(--cds-text-secondary)' }}>Loading form…</p>
 
   return (
     <div style={{ display: 'flex', gap: '2rem', flexWrap: 'wrap' }}>
@@ -174,165 +215,149 @@ export default function RequestForm() {
             <RadioButton labelText="Create environment" value="create" id="rt-create" />
             <RadioButton labelText="Add component" value="add" id="rt-add" />
             <RadioButton labelText="Resize component" value="resize" id="rt-resize" />
+            <RadioButton labelText="Decommission" value="decommission" id="rt-decom" />
           </RadioButtonGroup>
 
-          {isCreate && (
-            <Select
-              id="project_code"
-              labelText="Project"
-              value={projectCode}
-              onChange={(e) => setProjectCode(e.target.value)}
-              invalid={!!errors.project_code}
-              invalidText={errors.project_code}
-            >
-              <SelectItem value="" text="— select —" />
-              {lookups.projects.map((p) => (
-                <SelectItem key={p.code} value={p.code} text={p.name} />
-              ))}
-            </Select>
-          )}
-
-          <Select
-            id="cost_centre_code"
-            labelText="Cost centre"
-            value={costCentre}
-            onChange={(e) => setCostCentre(e.target.value)}
-            invalid={!!errors.cost_centre_code}
-            invalidText={errors.cost_centre_code}
-          >
-            <SelectItem value="" text="— select —" />
-            {lookups.cost_centres.map((c) => (
-              <SelectItem key={c.code} value={c.code} text={`${c.code} — ${c.name}`} />
-            ))}
-          </Select>
-
-          <Select
-            id="subsidiary"
-            labelText="Subsidiary"
-            value={subsidiary}
-            onChange={(e) => setSubsidiary(e.target.value)}
-            invalid={!!errors.subsidiary}
-            invalidText={errors.subsidiary}
-          >
-            <SelectItem value="" text="— select —" />
-            {lookups.subsidiaries.map((s) => (
-              <SelectItem key={s.code} value={s.code} text={s.name} />
-            ))}
-          </Select>
-
-          <Select
-            id="deployment_target"
-            labelText="Deployment target"
-            value={target}
-            onChange={(e) => setTarget(e.target.value)}
-            invalid={!!errors.deployment_target}
-            invalidText={errors.deployment_target}
-          >
-            <SelectItem value="" text="— select —" />
-            {TARGETS.map(([v, label]) => (
-              <SelectItem key={v} value={v} text={label} />
-            ))}
-          </Select>
-
-          {isCreate ? (
-            <TextInput
-              id="environment_name"
-              labelText="New environment name"
-              placeholder="e.g. egate-uat"
-              value={envName}
-              onChange={(e) => setEnvName(e.target.value)}
-              invalid={!!errors.environment_name}
-              invalidText={errors.environment_name}
-            />
+          {isDecommission ? (
+            <>
+              <Select
+                id="source_reference"
+                labelText="Which provisioned request?"
+                value={sourceRef}
+                onChange={(e) => {
+                  setSourceRef(e.target.value)
+                  setSelected(new Set())
+                }}
+                invalid={!!errors.source_reference}
+                invalidText={errors.source_reference}
+              >
+                <SelectItem value="" text="— select a provisioned request —" />
+                {provisioned.map((p) => (
+                  <SelectItem
+                    key={p.reference}
+                    value={p.reference}
+                    text={`${p.reference} — ${p.environment_name || p.target_environment || 'environment'}`}
+                  />
+                ))}
+              </Select>
+              {provisioned.length === 0 && (
+                <p style={{ color: 'var(--cds-text-secondary)', fontSize: '0.85rem' }}>
+                  You have no provisioned requests to decommission.
+                </p>
+              )}
+              {sourceComponents.length > 0 && (
+                <FormGroup legendText="Technologies to decommission">
+                  {errors.components && (
+                    <p style={{ color: 'var(--cds-text-error)', fontSize: '0.75rem', marginBottom: '0.5rem' }}>
+                      {errors.components}
+                    </p>
+                  )}
+                  {sourceComponents.map((c, i) => (
+                    <Checkbox
+                      key={compKey(c)}
+                      id={`decom-${i}`}
+                      labelText={`${c.technology_code} (${c.size || 'n/a'})`}
+                      checked={selected.has(compKey(c))}
+                      onChange={(_e: unknown, data: { checked: boolean }) => toggleSelected(c, data.checked)}
+                    />
+                  ))}
+                </FormGroup>
+              )}
+            </>
           ) : (
-            <Select
-              id="target_environment"
-              labelText="Existing environment"
-              value={targetEnv}
-              onChange={(e) => setTargetEnv(e.target.value)}
-              invalid={!!errors.target_environment}
-              invalidText={errors.target_environment}
-            >
-              <SelectItem value="" text="— select —" />
-              {lookups.environments.map((e) => (
-                <SelectItem key={e.name} value={e.name} text={`${e.name} (${e.environment_class})`} />
-              ))}
-            </Select>
-          )}
+            <>
+              {isCreate && (
+                <Select id="project_code" labelText="Project" value={projectCode} onChange={(e) => setProjectCode(e.target.value)} invalid={!!errors.project_code} invalidText={errors.project_code}>
+                  <SelectItem value="" text="— select —" />
+                  {lookups.projects.map((p) => (
+                    <SelectItem key={p.code} value={p.code} text={p.name} />
+                  ))}
+                </Select>
+              )}
 
-          {isCreate && (
-            <Select
-              id="data_classification"
-              labelText="Data classification"
-              value={classification}
-              onChange={(e) => setClassification(e.target.value)}
-              invalid={!!errors.data_classification}
-              invalidText={errors.data_classification}
-            >
-              <SelectItem value="" text="— select —" />
-              {CLASSIFICATIONS.map((c) => (
-                <SelectItem key={c} value={c} text={c} />
-              ))}
-            </Select>
-          )}
+              <Select id="cost_centre_code" labelText="Cost centre" value={costCentre} onChange={(e) => setCostCentre(e.target.value)} invalid={!!errors.cost_centre_code} invalidText={errors.cost_centre_code}>
+                <SelectItem value="" text="— select —" />
+                {lookups.cost_centres.map((c) => (
+                  <SelectItem key={c.code} value={c.code} text={`${c.code} — ${c.name}`} />
+                ))}
+              </Select>
 
-          <FormGroup legendText="Components">
-            {errors.components && (
-              <p style={{ color: 'var(--cds-text-error)', fontSize: '0.75rem', marginBottom: '0.5rem' }}>
-                {errors.components}
-              </p>
-            )}
-            <Stack gap={4}>
-              {components.map((c, i) => (
-                <div key={i} style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-end' }}>
-                  <div style={{ flex: 3 }}>
-                    <Select
-                      id={`tech-${i}`}
-                      labelText={i === 0 ? 'Technology' : ''}
-                      value={c.technology_code}
-                      onChange={(e) => setComponent(i, { technology_code: e.target.value })}
-                    >
-                      <SelectItem value="" text="— technology —" />
-                      {lookups.technologies.map((t) => (
-                        <SelectItem key={t.code} value={t.code} text={`${t.name} (${t.lifecycle_state})`} />
-                      ))}
-                    </Select>
-                  </div>
-                  <div style={{ flex: 2 }}>
-                    <Select
-                      id={`size-${i}`}
-                      labelText={i === 0 ? 'Size' : ''}
-                      value={c.size}
-                      onChange={(e) => setComponent(i, { size: e.target.value })}
-                    >
-                      <SelectItem value="" text="— size —" />
-                      {SIZES.map((s) => (
-                        <SelectItem key={s} value={s} text={s} />
-                      ))}
-                    </Select>
-                  </div>
-                  <IconButton
-                    label="Remove"
-                    kind="ghost"
-                    onClick={() => removeComponent(i)}
-                    disabled={components.length === 1}
-                  >
-                    <TrashCan />
-                  </IconButton>
-                </div>
-              ))}
-            </Stack>
-            <Button kind="ghost" size="sm" renderIcon={Add} onClick={addComponent} style={{ marginTop: '0.5rem' }}>
-              Add component
-            </Button>
-          </FormGroup>
+              <Select id="subsidiary" labelText="Subsidiary" value={subsidiary} onChange={(e) => setSubsidiary(e.target.value)} invalid={!!errors.subsidiary} invalidText={errors.subsidiary}>
+                <SelectItem value="" text="— select —" />
+                {lookups.subsidiaries.map((s) => (
+                  <SelectItem key={s.code} value={s.code} text={s.name} />
+                ))}
+              </Select>
+
+              <Select id="deployment_target" labelText="Deployment target" value={target} onChange={(e) => setTarget(e.target.value)} invalid={!!errors.deployment_target} invalidText={errors.deployment_target}>
+                <SelectItem value="" text="— select —" />
+                {TARGETS.map(([v, label]) => (
+                  <SelectItem key={v} value={v} text={label} />
+                ))}
+              </Select>
+
+              {isCreate ? (
+                <TextInput id="environment_name" labelText="New environment name" placeholder="e.g. egate-uat" value={envName} onChange={(e) => setEnvName(e.target.value)} invalid={!!errors.environment_name} invalidText={errors.environment_name} />
+              ) : (
+                <Select id="target_environment" labelText="Existing environment" value={targetEnv} onChange={(e) => setTargetEnv(e.target.value)} invalid={!!errors.target_environment} invalidText={errors.target_environment}>
+                  <SelectItem value="" text="— select —" />
+                  {lookups.environments.map((e) => (
+                    <SelectItem key={e.name} value={e.name} text={`${e.name} (${e.environment_class})`} />
+                  ))}
+                </Select>
+              )}
+
+              {isCreate && (
+                <Select id="data_classification" labelText="Data classification" value={classification} onChange={(e) => setClassification(e.target.value)} invalid={!!errors.data_classification} invalidText={errors.data_classification}>
+                  <SelectItem value="" text="— select —" />
+                  {CLASSIFICATIONS.map((c) => (
+                    <SelectItem key={c} value={c} text={c} />
+                  ))}
+                </Select>
+              )}
+
+              <FormGroup legendText="Components">
+                {errors.components && (
+                  <p style={{ color: 'var(--cds-text-error)', fontSize: '0.75rem', marginBottom: '0.5rem' }}>{errors.components}</p>
+                )}
+                <Stack gap={4}>
+                  {components.map((c, i) => (
+                    <div key={i} style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-end' }}>
+                      <div style={{ flex: 3 }}>
+                        <Select id={`tech-${i}`} labelText={i === 0 ? 'Technology' : ''} value={c.technology_code} onChange={(e) => setComponent(i, { technology_code: e.target.value })}>
+                          <SelectItem value="" text="— technology —" />
+                          {lookups.technologies.map((t) => (
+                            <SelectItem key={t.code} value={t.code} text={`${t.name} (${t.lifecycle_state})`} />
+                          ))}
+                        </Select>
+                      </div>
+                      <div style={{ flex: 2 }}>
+                        <Select id={`size-${i}`} labelText={i === 0 ? 'Size' : ''} value={c.size} onChange={(e) => setComponent(i, { size: e.target.value })}>
+                          <SelectItem value="" text="— size —" />
+                          {SIZES.map((s) => (
+                            <SelectItem key={s} value={s} text={s} />
+                          ))}
+                        </Select>
+                      </div>
+                      <IconButton label="Remove" kind="ghost" onClick={() => setComponents((cs) => (cs.length > 1 ? cs.filter((_, idx) => idx !== i) : cs))} disabled={components.length === 1}>
+                        <TrashCan />
+                      </IconButton>
+                    </div>
+                  ))}
+                </Stack>
+                <Button kind="ghost" size="sm" renderIcon={Add} onClick={() => setComponents((cs) => [...cs, { technology_code: '', size: '' }])} style={{ marginTop: '0.5rem' }}>
+                  Add component
+                </Button>
+              </FormGroup>
+            </>
+          )}
 
           <div style={{ display: 'flex', gap: '0.75rem' }}>
             <Button kind="secondary" onClick={onSaveDraft} disabled={busy}>
               Save draft
             </Button>
             <Button onClick={onSubmit} disabled={busy}>
-              Submit request
+              {isDecommission ? 'Submit decommission' : 'Submit request'}
             </Button>
           </div>
         </Stack>
@@ -341,13 +366,12 @@ export default function RequestForm() {
       <div style={{ flex: '0 0 16rem' }}>
         <Tile style={{ borderTop: '3px solid var(--cds-border-interactive)' }}>
           <p style={{ fontSize: '0.75rem', color: 'var(--cds-text-secondary)', textTransform: 'uppercase', letterSpacing: '0.02em' }}>
-            Live cost
+            {isDecommission ? 'Monthly cost to free' : 'Live cost'}
           </p>
           {cost ? (
             <>
               <p style={{ fontSize: '2rem', fontWeight: 300, margin: '0.25rem 0' }}>
-                {cost.totals.monthly.toFixed(2)}{' '}
-                <span style={{ fontSize: '0.9rem' }}>{cost.currency}/mo</span>
+                {cost.totals.monthly.toFixed(2)} <span style={{ fontSize: '0.9rem' }}>{cost.currency}/mo</span>
               </p>
               <div style={{ fontSize: '0.875rem', color: 'var(--cds-text-secondary)', lineHeight: 2 }}>
                 <div>One-time <span style={{ float: 'right' }}>{cost.totals.one_time.toFixed(2)}</span></div>
@@ -356,7 +380,9 @@ export default function RequestForm() {
             </>
           ) : (
             <p style={{ color: 'var(--cds-text-secondary)', fontSize: '0.875rem', marginTop: '0.5rem' }}>
-              Choose a deployment target and add a component to see the cost.
+              {isDecommission
+                ? 'Pick a provisioned request and tick technologies to see the monthly cost freed.'
+                : 'Choose a deployment target and add a component to see the cost.'}
             </p>
           )}
         </Tile>

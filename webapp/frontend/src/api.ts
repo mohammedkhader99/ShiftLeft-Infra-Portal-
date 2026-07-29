@@ -61,6 +61,7 @@ export type RequestRow = {
   status_detail?: string | null
   requester: string
   requester_name?: string | null
+  deployment_target?: string | null
   environment_name?: string | null
   target_environment?: string | null
   components: { technology_code: string | null; size: string | null }[]
