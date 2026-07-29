@@ -104,9 +104,9 @@
             <td>
               <a class="ref" href="/request/{{ r.reference }}">{{ r.reference }}</a>
               <div>
-                <button type="button" class="wf-toggle" title="Show this request's workflow"
-                        hx-get="/request/{{ r.reference }}/workflow"
-                        hx-target="#wf-{{ r.reference }}" hx-swap="innerHTML">◈ workflow</button>
+                <button type="button" class="wf-toggle" title="Show or hide this request's workflow"
+                        aria-expanded="false"
+                        onclick="toggleWorkflow('{{ r.reference }}', this)">◈ workflow</button>
               </div>
             </td>
             <td>
@@ -149,5 +149,26 @@
       <a href="/">← Home</a>
     </div>
   </main>
+  <script>
+    // Toggle a request's workflow stepper: load it once, then show/hide.
+    function toggleWorkflow(ref, btn) {
+      var box = document.getElementById('wf-' + ref);
+      if (!box) return;
+      if (box.dataset.loaded === '1') {
+        var hidden = box.style.display === 'none';
+        box.style.display = hidden ? '' : 'none';
+        btn.textContent = hidden ? '◈ hide workflow' : '◈ workflow';
+        btn.setAttribute('aria-expanded', hidden ? 'true' : 'false');
+      } else {
+        htmx.ajax('GET', '/request/' + ref + '/workflow',
+                  {target: '#wf-' + ref, swap: 'innerHTML'}).then(function () {
+          box.dataset.loaded = '1';
+          box.style.display = '';
+          btn.textContent = '◈ hide workflow';
+          btn.setAttribute('aria-expanded', 'true');
+        });
+      }
+    }
+  </script>
 </body>
 </html>
