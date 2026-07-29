@@ -67,13 +67,36 @@ def _requester_headers(request: Request) -> dict:
     return headers
 
 
-def _reauth_redirect(request: Request) -> RedirectResponse:
+def _reauth_redirect(request: Request, return_to: str = "/request/new") -> RedirectResponse:
     """The Microsoft token expired: drop it and send the user to sign in again,
-    returning them to the request page afterwards."""
+    returning them to `return_to` afterwards."""
     request.session.pop("id_token", None)
     request.session.pop("user", None)
-    request.session["post_login"] = "/request/new"
+    request.session["post_login"] = return_to
     return RedirectResponse("/login", status_code=303)
+
+
+def _roles_or_reauth(request: Request):
+    """The signed-in user's roles from the API. If the API says the token has
+    expired (401), transparently re-authenticate (returning to this page) rather
+    than silently degrading the role-gated UI to read-only. A one-shot session
+    flag prevents a redirect loop if re-login doesn't clear the 401."""
+    try:
+        resp = httpx.get(f"{API_BASE_URL}/api/me",
+                         headers=_requester_headers(request), timeout=5.0)
+    except Exception:  # noqa: BLE001 — API unreachable: treat as least-privilege
+        return ["read_only"]
+    if resp.status_code == 401 and auth.is_live() and not request.session.get("reauth_pending"):
+        request.session["reauth_pending"] = True
+        return _reauth_redirect(request, str(request.url.path))
+    try:
+        resp.raise_for_status()
+        data = resp.json()
+        roles = data.get("roles", []) if isinstance(data, dict) else []
+    except Exception:  # noqa: BLE001
+        return ["read_only"]
+    request.session.pop("reauth_pending", None)
+    return roles if isinstance(roles, list) else ["read_only"]
 
 
 @app.get("/login", response_class=HTMLResponse)
@@ -116,19 +139,23 @@ def logout(request: Request):
 
 
 @app.get("/", response_class=HTMLResponse)
-def index(request: Request) -> HTMLResponse:
-    """Serve the portal page."""
+def index(request: Request):
+    """Serve the portal landing page."""
+    roles = _roles_or_reauth(request)
+    if isinstance(roles, RedirectResponse):
+        return roles
     return templates.TemplateResponse(
         request, "index.html",
-        {"user": auth.session_user(request) or auth.DEFAULT_DEV_USER,
-         "roles": _fetch_roles(request)},
+        {"user": auth.session_user(request) or auth.DEFAULT_DEV_USER, "roles": roles},
     )
 
 
 @app.get("/overview", response_class=HTMLResponse)
-def overview(request: Request) -> HTMLResponse:
+def overview(request: Request):
     """Whole-estate overview dashboard (F-RPT-01) — for oversight roles."""
-    roles = _fetch_roles(request)
+    roles = _roles_or_reauth(request)
+    if isinstance(roles, RedirectResponse):
+        return roles
     stats, error, forbidden = None, None, False
     try:
         resp = httpx.get(f"{API_BASE_URL}/api/stats",
@@ -148,9 +175,12 @@ def overview(request: Request) -> HTMLResponse:
 
 
 @app.get("/requests", response_class=HTMLResponse)
-def my_requests(request: Request) -> HTMLResponse:
+def my_requests(request: Request):
     """The 'My requests' dashboard: every request the signed-in user has made,
     newest first, with its live status and a link to its Jira ticket."""
+    roles = _roles_or_reauth(request)
+    if isinstance(roles, RedirectResponse):
+        return roles
     email = auth.requester_email(request)
     try:
         response = httpx.get(
@@ -168,7 +198,7 @@ def my_requests(request: Request) -> HTMLResponse:
         "my_requests.html",
         {
             "user": auth.session_user(request) or auth.DEFAULT_DEV_USER,
-            "roles": _fetch_roles(request),
+            "roles": roles,
             "requests": rows,
             "error": error,
         },
