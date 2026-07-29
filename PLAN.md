@@ -146,9 +146,9 @@ Every section of the brief is mapped here so nothing is dropped (traceability pa
 
 **Target Environment (7: Dev/Test/SIT/UAT/PreProd/Prod/DR)** — ✅ **delivered in 6.2**: the full tier ladder is a required-on-create field (`environment_tier`), validated + shown in the ticket/PDF/detail.
 
-**Technology Stack (~24, cards w/ icons)** — ✅ **21 in the catalog after 6.2** (added Oracle DB, SQL Server, MongoDB, Kafka, RabbitMQ, Elastic/OpenSearch, Java, .NET, Node.js, Python, Apache, OpenShift, Vault, Keycloak; Oracle/SQL Server carry licences). ⬜ Istio/Service Mesh, Monitoring, Logging, Backup (platform-service add-ons) → later catalog. ⬜ card-with-icon presentation (today: selects) → *Portal UI polish*. *(Catalog entry is cheap; real per-technology provisioning is the deferred heavy work — an apply still creates a placeholder resource.)*
+**Technology Stack (~24, cards w/ icons)** — ✅ **21 in the catalog after 6.2** (added Oracle DB, SQL Server, MongoDB, Kafka, RabbitMQ, Elastic/OpenSearch, Java, .NET, Node.js, Python, Apache, OpenShift, Vault, Keycloak; Oracle/SQL Server carry licences). ⬜ Istio/Service Mesh, Monitoring, Logging, Backup (platform-service add-ons) → later catalog. ✅ **card-with-icon presentation delivered in 6.3** (generic Carbon category icons, not brand logos). *(Catalog entry is cheap; real per-technology provisioning is the deferred heavy work — an apply still creates a placeholder resource.)*
 
-**Environment Size (5, cards w/ specs)** — ✅ Small/Medium/Large **+ XLarge (6.2)**, server-side sizing anchors + auto-pricing. ⬜ Custom (user-typed resources) → catalog. ⬜ spec cards (vCPU/RAM/storage/cost/HA/use-cases) → *Portal UI polish*.
+**Environment Size (5, cards w/ specs)** — ✅ Small/Medium/Large **+ XLarge (6.2)**, server-side sizing anchors + auto-pricing. ✅ **spec cards delivered in 6.3** (each size card shows vCPU · RAM · storage). ⬜ Custom (user-typed resources) → catalog. ⬜ per-card HA / recommended-use-case hints → later polish.
 
 **Advanced Options (~20)** — ⬜ region, AZ, DB version, HA, backup retention, encryption, DR, monitoring/logging level, storage tier, autoscaling, network type, firewall profile, private/public endpoint, DNS, certificates, secrets management, compliance profile → **catalog expansion (advanced-options increment)**.
 
@@ -162,7 +162,7 @@ Every section of the brief is mapped here so nothing is dropped (traceability pa
 
 **Design-process outputs (Figma mockup, wireframe, component hierarchy, palette, typography, icons, journey, a11y, responsive, mobile/tablet/desktop)** — ✅ satisfied by *building on Carbon* (its design system, palette, typography, icon set, accessibility and responsive grid) instead of separate Figma artefacts. ⬜ standalone mockup/wireframe/user-journey documents were not produced (we built the working UI) — revisit only if a formal design sign-off deliverable is required.
 
-**Portal UI polish (small, newly tracked here)** — ⬜ header **Search**; on-form **Environment** & **Approval** summary panels; **multi-step wizard** progress; **technology & size cards** with icons/specs; **sticky submit** bar. Low effort; not tied to a backend phase.
+**Portal UI polish (small, newly tracked here)** — ✅ **technology & size cards** with icons/specs (6.3). ⬜ header **Search**; on-form **Environment** & **Approval** summary panels; **multi-step wizard** progress; **sticky submit** bar. Low effort; not tied to a backend phase.
 
 > Roll-up to enterprise phases: requester enrichment → **E1** · approvers/notifications/SLA → **E2** · cost breakdown + Excel → **E3** · AI Copilot → **E4** · catalog/advanced-options + multi-cloud → **catalog/multi-cloud increments** · Validate/Preview + UI polish → **small increments**.
 
