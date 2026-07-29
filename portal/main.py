@@ -302,6 +302,81 @@ def request_new(request: Request) -> HTMLResponse:
     return _render_form(request, form={})
 
 
+def _workflow_steps(req: dict, audit: list[dict]) -> list[dict]:
+    """Derive the request's lifecycle stages (done / current / pending / failed)
+    from its status + audit trail, for the per-request workflow graph."""
+    first_ts: dict[str, str] = {}
+    for entry in audit:
+        event = entry.get("event")
+        if event and event not in first_ts:
+            first_ts[event] = entry.get("created_at")
+
+    status = req.get("status") or ""
+    has_ticket = bool((req.get("approval") or {}).get("jira_key"))
+
+    # (label, done?, timestamp) along the happy path.
+    raw = [
+        ("Submitted", has_ticket or status not in ("draft", ""), None),
+        ("Approved", "approval.approved" in first_ts, first_ts.get("approval.approved")),
+        ("Planned", "plan.previewed" in first_ts, first_ts.get("plan.previewed")),
+        ("Provisioning",
+         "provisioning.started" in first_ts or "jira.in_progress" in first_ts,
+         first_ts.get("provisioning.started") or first_ts.get("jira.in_progress")),
+        ("Provisioned", "provisioned" in first_ts or status == "provisioned",
+         first_ts.get("provisioned")),
+    ]
+    steps = [{"label": lbl, "done": bool(done), "when": when} for lbl, done, when in raw]
+
+    # A torn-down request ran the whole path, then a terminal Decommissioned step.
+    if status == "decommissioned":
+        for step in steps:
+            step["done"] = True
+        steps.append({"label": "Decommissioned", "done": True,
+                      "when": first_ts.get("decommissioned") or first_ts.get("destroyed")})
+
+    failed_stage = {"apply-failed": "Provisioning", "decommission-failed": "Provisioning",
+                    "rejected": "Approved"}.get(status)
+
+    for step in steps:
+        step["state"] = "failed" if step["label"] == failed_stage else (
+            "done" if step["done"] else "pending")
+
+    # The current stage is the first not-yet-done one (unless failed / all done).
+    if failed_stage is None and status != "decommissioned":
+        for step in steps:
+            if step["state"] == "pending":
+                step["state"] = "current"
+                break
+    return steps
+
+
+@app.get("/request/{reference}/workflow", response_class=HTMLResponse)
+def request_workflow(request: Request, reference: str) -> HTMLResponse:
+    """HTMX fragment: the request's lifecycle as a stepper (from My Requests)."""
+    try:
+        r = httpx.get(f"{API_BASE_URL}/api/requests/{reference}",
+                      headers=_requester_headers(request), timeout=5.0)
+        if r.status_code == 404:
+            return HTMLResponse("<p class='muted'>Request not found.</p>")
+        r.raise_for_status()
+        req = r.json()
+    except Exception as exc:  # noqa: BLE001
+        return HTMLResponse(f"<p class='muted'>Couldn't load workflow: {exc}</p>")
+    audit: list[dict] = []
+    try:  # best-effort: the stepper still renders from status if audit is denied
+        a = httpx.get(f"{API_BASE_URL}/api/requests/{reference}/audit",
+                      headers=_requester_headers(request), timeout=5.0)
+        if a.status_code == 200:
+            audit = a.json().get("entries", [])
+    except Exception:  # noqa: BLE001
+        audit = []
+    return templates.TemplateResponse(
+        request, "workflow.html",
+        {"steps": _workflow_steps(req, audit), "reference": reference,
+         "status": req.get("status")},
+    )
+
+
 @app.get("/request/decommission-technologies", response_class=HTMLResponse)
 def decommission_technologies(
     request: Request, source_reference: str = "", selected: str = ""

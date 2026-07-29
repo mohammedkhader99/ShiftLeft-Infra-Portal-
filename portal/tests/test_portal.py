@@ -302,6 +302,57 @@ def test_request_new_shows_decommission_picker(monkeypatch):
     assert "REQ-2026-0031" in body                     # a provisioned request is listed
 
 
+def test_workflow_steps_marks_done_and_current():
+    from portal.main import _workflow_steps
+
+    req = {"status": "planned", "approval": {"jira_key": "X"}}
+    audit = [{"event": "approval.approved", "created_at": "2026-07-28T10:00:00"},
+             {"event": "plan.previewed", "created_at": "2026-07-28T10:01:00"}]
+    by = {s["label"]: s["state"] for s in _workflow_steps(req, audit)}
+    assert by["Submitted"] == "done" and by["Approved"] == "done" and by["Planned"] == "done"
+    assert by["Provisioning"] == "current"
+    assert by["Provisioned"] == "pending"
+
+
+def test_workflow_steps_marks_failure():
+    from portal.main import _workflow_steps
+
+    req = {"status": "apply-failed", "approval": {"jira_key": "X"}}
+    audit = [{"event": "approval.approved", "created_at": "t"},
+             {"event": "plan.previewed", "created_at": "t"},
+             {"event": "provisioning.started", "created_at": "t"},
+             {"event": "apply.failed", "created_at": "t"}]
+    by = {s["label"]: s["state"] for s in _workflow_steps(req, audit)}
+    assert by["Provisioning"] == "failed"
+
+
+def test_workflow_steps_decommissioned_appends_terminal():
+    from portal.main import _workflow_steps
+
+    steps = _workflow_steps({"status": "decommissioned", "approval": {"jira_key": "X"}}, [])
+    assert steps[-1]["label"] == "Decommissioned"
+    assert all(s["state"] == "done" for s in steps)
+
+
+def test_request_workflow_route_renders(monkeypatch):
+    def fake_get(url, *a, **k):
+        if url.endswith("/audit"):
+            return _FakeResp({"entries": [
+                {"event": "approval.approved", "created_at": "2026-07-28T10:00:00+00:00"},
+                {"event": "plan.previewed", "created_at": "2026-07-28T10:01:00+00:00"},
+                {"event": "provisioning.started", "created_at": "2026-07-28T10:02:00+00:00"},
+                {"event": "provisioned", "created_at": "2026-07-28T10:03:00+00:00"},
+            ]})
+        return _FakeResp({"reference": "REQ-2026-0007", "status": "provisioned",
+                          "approval": {"jira_key": "SDIMD-9"}})
+
+    monkeypatch.setattr("portal.main.httpx.get", fake_get)
+    resp = client.get("/request/REQ-2026-0007/workflow")
+    assert resp.status_code == 200
+    assert "Provisioned" in resp.text
+    assert "is-done" in resp.text
+
+
 def test_decommission_technologies_fragment(monkeypatch):
     def fake_get(url, *a, **k):
         if "/api/requests/REQ-2026-0031" in url:
