@@ -144,11 +144,11 @@ Every section of the brief is mapped here so nothing is dropped (traceability pa
 
 **Target Platform (7)** — ✅ Azure · OCI · On-Premises. ⬜ AWS · Google Cloud · Hybrid · Multi-Cloud → **multi-cloud phase** (one pricing/provisioning adapter each; large).
 
-**Target Environment (7: Dev/Test/SIT/UAT/PreProd/Prod/DR)** — ◐ environments exist; the fixed class ladder → **catalog expansion**.
+**Target Environment (7: Dev/Test/SIT/UAT/PreProd/Prod/DR)** — ✅ **delivered in 6.2**: the full tier ladder is a required-on-create field (`environment_tier`), validated + shown in the ticket/PDF/detail.
 
-**Technology Stack (~24, cards w/ icons)** — ✅ 6 seeded (PostgreSQL, Redis, Nginx, Kubernetes, RHEL, Windows). ⬜ Oracle DB, SQL Server, MongoDB, Kafka, RabbitMQ, Elastic/OpenSearch, Java, .NET, NodeJS, Python, Apache, OpenShift, Istio/Service Mesh, Vault, Keycloak, Monitoring, Logging, Backup → **catalog expansion**. ⬜ card-with-icon presentation (today: selects) → *Portal UI polish*. *(Catalog entry is cheap; real per-technology provisioning is the deferred heavy work.)*
+**Technology Stack (~24, cards w/ icons)** — ✅ **21 in the catalog after 6.2** (added Oracle DB, SQL Server, MongoDB, Kafka, RabbitMQ, Elastic/OpenSearch, Java, .NET, Node.js, Python, Apache, OpenShift, Vault, Keycloak; Oracle/SQL Server carry licences). ⬜ Istio/Service Mesh, Monitoring, Logging, Backup (platform-service add-ons) → later catalog. ⬜ card-with-icon presentation (today: selects) → *Portal UI polish*. *(Catalog entry is cheap; real per-technology provisioning is the deferred heavy work — an apply still creates a placeholder resource.)*
 
-**Environment Size (5, cards w/ specs)** — ✅ Small/Medium/Large (server-side sizing anchors exist). ⬜ XLarge · Custom → catalog. ⬜ spec cards (vCPU/RAM/storage/cost/HA/use-cases) → *Portal UI polish*.
+**Environment Size (5, cards w/ specs)** — ✅ Small/Medium/Large **+ XLarge (6.2)**, server-side sizing anchors + auto-pricing. ⬜ Custom (user-typed resources) → catalog. ⬜ spec cards (vCPU/RAM/storage/cost/HA/use-cases) → *Portal UI polish*.
 
 **Advanced Options (~20)** — ⬜ region, AZ, DB version, HA, backup retention, encryption, DR, monitoring/logging level, storage tier, autoscaling, network type, firewall profile, private/public endpoint, DNS, certificates, secrets management, compliance profile → **catalog expansion (advanced-options increment)**.
 
