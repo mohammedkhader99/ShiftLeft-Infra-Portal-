@@ -71,6 +71,12 @@ export default function MyRequests({ route }: { route: string }) {
   const estate = query.scope === 'all' && oversight
   const filterActive = estate || Object.keys(filters).length > 0
 
+  // Column widths sum to ~96% so the expand chevron column (which takes the
+  // leftover) stays slim (~4%), and the table fills the width without scrolling.
+  const cw = estate
+    ? { ref: '12%', status: '18%', sub: '12%', env: '11%', comp: '19%', mon: '11%', jira: '13%' }
+    : { ref: '14%', status: '22%', sub: '0%', env: '13%', comp: '23%', mon: '11%', jira: '13%' }
+
   useEffect(() => {
     getMe().then(setMe)
   }, [])
@@ -163,14 +169,14 @@ export default function MyRequests({ route }: { route: string }) {
           <Table size="sm" style={{ tableLayout: 'fixed', width: '100%' }}>
             <TableHead>
               <TableRow>
-                <TableExpandHeader aria-label="Expand row" style={{ width: '2.5rem' }} />
-                <TableHeader style={{ width: '11%' }}>Reference</TableHeader>
-                <TableHeader style={{ width: '19%' }}>Status</TableHeader>
-                {estate && <TableHeader style={{ width: '13%' }}>Submitted by</TableHeader>}
-                <TableHeader style={{ width: '11%' }}>Environment</TableHeader>
-                <TableHeader style={{ width: '17%' }}>Components</TableHeader>
-                <TableHeader style={{ width: '10%' }}>Monthly</TableHeader>
-                <TableHeader style={{ width: '11%' }}>Jira ticket</TableHeader>
+                <TableExpandHeader aria-label="Expand row" />
+                <TableHeader style={{ width: cw.ref }}>Reference</TableHeader>
+                <TableHeader style={{ width: cw.status }}>Status</TableHeader>
+                {estate && <TableHeader style={{ width: cw.sub }}>Submitted by</TableHeader>}
+                <TableHeader style={{ width: cw.env }}>Environment</TableHeader>
+                <TableHeader style={{ width: cw.comp }}>Components</TableHeader>
+                <TableHeader style={{ width: cw.mon }}>Monthly</TableHeader>
+                <TableHeader style={{ width: cw.jira }}>Jira ticket</TableHeader>
               </TableRow>
             </TableHead>
             <TableBody>
