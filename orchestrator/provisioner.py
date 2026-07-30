@@ -20,6 +20,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from orchestrator import scanner
+
 MODULE_DIR = Path(__file__).resolve().parent / "terraform"
 STATE_ROOT = Path(os.getenv("TF_STATE_DIR", "/tfstate"))
 PLAN_FILE = "tfplan"
@@ -106,7 +108,24 @@ def terraform_plan(reference: str, bucket_name: str, tags: dict) -> dict:
     if plan.returncode != 0:
         raise ProvisionError(f"terraform plan failed: {plan.stderr[-800:]}")
 
-    return {"summary": _plan_summary(plan.stdout), "output": plan.stdout[-4000:]}
+    return {"summary": _plan_summary(plan.stdout), "output": plan.stdout[-4000:],
+            "scan": _scan_saved_plan(workdir, tags.get("classification"))}
+
+
+_EMPTY_SCAN = {"findings": [], "counts": {"high": 0, "medium": 0, "low": 0},
+               "high": 0, "ok": True}
+
+
+def _scan_saved_plan(workdir: Path, classification: str | None) -> dict:
+    """Best-effort IaC scan of the saved plan (F-SEC-03/04) via `terraform show
+    -json`. Never breaks the plan — a scan hiccup returns an empty (ok) result."""
+    try:
+        show = _run(["show", "-json", PLAN_FILE], workdir)
+        if show.returncode != 0:
+            return {**_EMPTY_SCAN, "error": "terraform show failed"}
+        return scanner.scan_plan(json.loads(show.stdout), classification)
+    except Exception as exc:  # noqa: BLE001
+        return {**_EMPTY_SCAN, "error": str(exc)}
 
 
 def terraform_apply(reference: str, bucket_name: str, tags: dict) -> dict:

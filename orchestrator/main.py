@@ -25,6 +25,12 @@ WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "dev-mock-secret")
 SUPPORTED_CONTRACT = "1.0"
 COST_DRIFT_THRESHOLD = float(os.getenv("COST_DRIFT_THRESHOLD", "0.10"))
 
+
+def _iac_scan_enforce() -> bool:
+    """Whether HIGH-severity IaC findings block the handoff (F-SEC-03/04). Off by
+    default: findings are scanned + reported but never block until enforced."""
+    return os.getenv("IAC_SCAN_ENFORCE", "false").strip().lower() in ("1", "true", "yes", "on")
+
 app = FastAPI(title="Mock Orchestrator")
 
 _provisioned: dict[str, dict] = {}  # idempotency ledger for real creations
@@ -141,9 +147,18 @@ async def provision(request: Request) -> dict:
             plan = provisioner.terraform_plan(reference, bucket, tags)
         except provisioner.ProvisionError as exc:
             raise HTTPException(status_code=400, detail=f"Terraform plan failed: {exc}")
+        scan = plan.get("scan", {})
+        # IaC scan gate (F-SEC-03/04): block on HIGH findings only when enforced;
+        # otherwise the findings are reported in the response and audited by the API.
+        if scan.get("high", 0) > 0 and _iac_scan_enforce():
+            raise HTTPException(
+                status_code=409,
+                detail=(f"IaC scan blocked: {scan['high']} high-severity finding(s) in the "
+                        f"terraform plan."))
         return {
             "provisioned": False, "planned": True, "reference": reference, "jira_key": jira_key,
             "verified": verified, "plan_summary": plan["summary"], "plan_output": plan["output"],
+            "scan": scan,
             "message": f"Terraform plan for {reference}: {plan['summary']} — nothing created.",
         }
 

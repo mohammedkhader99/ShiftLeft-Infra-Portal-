@@ -159,6 +159,10 @@ services:
       OCI_PRIVATE_KEY_PATH: ${OCI_PRIVATE_KEY_PATH:-/secrets/oci_api_key.pem}
       OCI_REGION: ${OCI_REGION:-}
       OCI_COMPARTMENT_OCID: ${OCI_COMPARTMENT_OCID:-}
+      # IaC security scanning (F-SEC-03/04): the terraform plan is scanned before
+      # apply. When true, a HIGH-severity finding blocks the handoff; default off
+      # = scan + report only (the API audits the findings either way).
+      IAC_SCAN_ENFORCE: ${IAC_SCAN_ENFORCE:-false}
     ports:
       - "9091:9091"
     volumes:

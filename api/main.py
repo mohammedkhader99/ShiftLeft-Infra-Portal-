@@ -1992,6 +1992,22 @@ def auto_provision_enabled() -> bool:
     return os.getenv("AUTO_PROVISION", "false").strip().lower() == "true"
 
 
+def _record_scan(session: Session, req: Request, jira_key: str, scan: dict | None) -> None:
+    """Record the orchestrator's IaC scan findings (F-SEC-03/04) as a tamper-
+    evident scan.findings event, and surface a HIGH-severity summary. Passive:
+    enforcement (blocking) is the orchestrator's call; here we only record what
+    it reported so the findings show in the evidence pack + My Requests."""
+    if not scan or not scan.get("findings"):
+        return
+    append_audit(session, "scan.findings", reference=req.reference, jira_key=jira_key,
+                 actor="poller",
+                 detail={"counts": scan.get("counts"), "findings": scan["findings"]})
+    if scan.get("high"):
+        req.status_detail = (f"IaC scan: {scan['high']} high-severity finding(s) in the "
+                             f"terraform plan — review the audit trail.")
+    session.commit()
+
+
 def _advance_request(session: Session, req: Request) -> str:
     """Advance one request as far as its live Jira status allows, in one pass.
 
@@ -2050,11 +2066,14 @@ def _advance_request(session: Session, req: Request) -> str:
         session.commit()
         response, error = _post_to_orchestrator(body, signature)
         if response is None or response.status_code != 200:
+            raw = error or (response.text if response else "")
+            req.status_detail = _short_reason(raw)  # surface why (e.g. an IaC scan block)
             append_audit(session, "plan.failed", reference=req.reference, jira_key=jira_key,
-                         detail={"error": error or (response.text if response else "")})
+                         detail={"error": raw})
             session.commit()
             return req.status  # still 'submitted' — retried next cycle
         result = response.json()
+        _record_scan(session, req, jira_key, result.get("scan"))  # IaC findings (F-SEC-03/04)
         if result.get("provisioned"):  # mock mode fully provisions on the handoff
             req.status = "provisioned"
             append_audit(session, "provisioned", reference=req.reference, jira_key=jira_key,
