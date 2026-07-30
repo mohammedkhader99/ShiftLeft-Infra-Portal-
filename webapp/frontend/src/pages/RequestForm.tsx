@@ -187,6 +187,8 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
   const [cost, setCost] = useState<Cost | null>(null)
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [result, setResult] = useState<Result | null>(null)
+  // Advisory policy warnings (F-GOV-03) returned by a successful submit.
+  const [warnings, setWarnings] = useState<string[]>([])
   const [busy, setBusy] = useState(false)
 
   useEffect(() => {
@@ -312,6 +314,7 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
     setBusy(true)
     setErrors({})
     setResult(null)
+    setWarnings([])
     const draft = await saveDraft(buildPayload())
     if (draft.status !== 200) {
       setBusy(false)
@@ -328,6 +331,7 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
         title: `Request ${ref} submitted`,
         subtitle: appr?.jira_key ? `Jira ticket ${appr.jira_key} — awaiting approval.` : 'Awaiting approval.',
       })
+      setWarnings(submit.body.policy_warnings || [])
     } else if (submit.status === 422) {
       setErrors(submit.body.errors || {})
       const pv = submit.body.policy_violations
@@ -349,6 +353,16 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
             subtitle={result.subtitle}
             lowContrast
             onCloseButtonClick={() => setResult(null)}
+            style={{ marginBottom: '1rem', maxWidth: 'none' }}
+          />
+        )}
+        {warnings.length > 0 && (
+          <InlineNotification
+            kind="warning"
+            lowContrast
+            title="Submitted with advisory notes (F-GOV-03)"
+            subtitle={warnings.join('  ·  ')}
+            onCloseButtonClick={() => setWarnings([])}
             style={{ marginBottom: '1rem', maxWidth: 'none' }}
           />
         )}

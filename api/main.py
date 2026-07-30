@@ -424,6 +424,9 @@ class RequestOut(BaseModel):
     approval: ApprovalOut | None = None
     # Policy waiver (F-GOV-02): the documented exception, if one was granted.
     waiver: dict | None = None
+    # Advisory policy warnings from the last submit (F-GOV-03). Transient — set on
+    # the submit response, not stored; empty on a plain read.
+    policy_warnings: list[str] = []
 
     @computed_field
     @property
@@ -735,8 +738,18 @@ def submit_request(
             content={"error": f"Could not raise the Jira approval ticket: {exc}"},
         )
 
+    # Advisory policy warnings (F-GOV-03): don't block, but record them in the
+    # tamper-evident trail (so they show in the evidence pack) and hand them back
+    # to the portal to surface to the requester.
+    warnings = verdict.get("warnings") or []
+    if warnings:
+        append_audit(session, "policy.warnings", reference=req.reference,
+                     detail={"warnings": warnings})
+
     session.commit()
-    return RequestOut.model_validate(req)
+    out = RequestOut.model_validate(req)
+    out.policy_warnings = warnings
+    return out
 
 
 # --- Automatic sizing (increment 1.4) ----------------------------------------

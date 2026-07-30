@@ -1559,3 +1559,46 @@ def test_quorum_default_one_is_unaffected(poller, monkeypatch):
     main._advance_request(session, req)
     session.refresh(req)
     assert req.status == "planned"
+
+
+# --- Policy-as-code depth: advisory warnings (F-GOV-03) ----------------------
+
+def test_evaluate_policy_surfaces_warnings(monkeypatch):
+    import api.policy as policy
+
+    class Resp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"result": {"allow": True, "violations": [],
+                               "warnings": ["Name a technical owner."]}}
+
+    monkeypatch.setattr(policy.httpx, "post", lambda *a, **k: Resp())
+    verdict = policy.evaluate_policy({"request_type": "create"})
+    assert verdict["allow"] is True
+    assert verdict["violations"] == []
+    assert verdict["warnings"] == ["Name a technical owner."]
+
+
+def test_policy_warnings_surface_on_submit_without_blocking(client):
+    def warn():
+        return lambda data: {"allow": True, "violations": [],
+                             "warnings": ["Name a technical owner."]}
+
+    app.dependency_overrides[get_policy_evaluator] = warn
+    ref = client.post("/api/requests/draft", json=VALID_CREATE, headers=ALICE).json()["reference"]
+    resp = client.post(f"/api/requests/{ref}/submit", headers=ALICE)
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "submitted"  # warnings never block
+    assert resp.json()["policy_warnings"] == ["Name a technical owner."]
+    # Recorded in the tamper-evident trail (so it shows in the evidence pack).
+    assert "policy.warnings" in _audit_events(client, ref)
+
+
+def test_submit_without_warnings_returns_empty_list(client):
+    # The default allow_everything evaluator returns no warnings.
+    ref = client.post("/api/requests/draft", json=VALID_CREATE).json()["reference"]
+    resp = client.post(f"/api/requests/{ref}/submit")
+    assert resp.status_code == 200
+    assert resp.json()["policy_warnings"] == []

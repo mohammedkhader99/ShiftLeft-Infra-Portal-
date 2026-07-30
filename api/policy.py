@@ -18,9 +18,11 @@ class PolicyUnavailable(RuntimeError):
 
 
 def evaluate_policy(input_doc: dict) -> dict:
-    """Return {'allow': bool, 'violations': [str, ...]} from OPA.
+    """Return {'allow': bool, 'violations': [...], 'warnings': [...]} from OPA.
 
     Only non-None fields are sent, so a missing tag is 'undefined' to the policy.
+    `violations` block submission (F-GOV-03); `warnings` are advisory best-practice
+    guidance that never blocks.
     """
     payload = {"input": {k: v for k, v in input_doc.items() if v is not None}}
     try:
@@ -32,6 +34,7 @@ def evaluate_policy(input_doc: dict) -> dict:
     return {
         "allow": bool(result.get("allow")),
         "violations": sorted(result.get("violations", [])),
+        "warnings": sorted(result.get("warnings", [])),
     }
 
 
