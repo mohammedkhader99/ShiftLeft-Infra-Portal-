@@ -193,6 +193,10 @@ class Request(Base):
     # Approval quorum (F-GOV-06): when provisioning was first held awaiting the
     # required number of distinct Jira approvers (so we audit the hold once).
     quorum_held_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # TTL notification state (F-FIN-07): null | "expiring" | "expired" — so the
+    # poller warns/flags a non-prod environment's expiry once per TTL cycle;
+    # cleared on renewal so a future approach re-warns.
+    ttl_notified: Mapped[str | None] = mapped_column(String(16), nullable=True)
     # Policy waiver (F-GOV-02): a documented, expiring exception that lets a
     # request pass the OPA policy gate despite violations. Holds
     # {reason, granted_by, granted_at, expires_at}. Nullable — most requests have

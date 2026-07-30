@@ -102,6 +102,13 @@ services:
       # Approval quorum (F-GOV-06): distinct Jira approvers (never the requester)
       # required before provisioning. 1 (default) = single approver. Live only.
       APPROVAL_QUORUM: ${APPROVAL_QUORUM:-1}
+      # Environment TTL & renewal (F-FIN-07): non-prod environments expire after
+      # TTL_DAYS_NONPROD; the poller warns owners TTL_WARN_DAYS before expiry.
+      # TTL_ENFORCE=true auto-decommissions expired non-prod envs (default off =
+      # warn/flag only). Prod/dr never expire.
+      TTL_DAYS_NONPROD: ${TTL_DAYS_NONPROD:-30}
+      TTL_WARN_DAYS: ${TTL_WARN_DAYS:-7}
+      TTL_ENFORCE: ${TTL_ENFORCE:-false}
       # Change window (F-GOV-05): when enabled, provisioning of approved requests
       # only happens inside the window; outside it they are held until it opens.
       CHANGE_WINDOW_ENABLED: ${CHANGE_WINDOW_ENABLED:-false}

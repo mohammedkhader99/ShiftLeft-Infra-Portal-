@@ -15,9 +15,10 @@ import {
   ProgressStep,
   InlineLoading,
   InlineNotification,
+  Button,
 } from '@carbon/react'
-import { WarningAltFilled } from '@carbon/icons-react'
-import { getMe, getRequests, getAudit, type RequestRow } from '../api'
+import { WarningAltFilled, Renew } from '@carbon/icons-react'
+import { getMe, getRequests, getAudit, renewRequest, type RequestRow } from '../api'
 import { workflowSteps, fmtWhen, type WFStep } from '../workflow'
 
 const FILTER_KEYS = ['status', 'request_type', 'technology', 'deployment_target', 'created_week', 'requested_by', 'subsidiary']
@@ -68,6 +69,7 @@ export default function MyRequests({ route }: { route: string }) {
   const filters: Record<string, string> = {}
   for (const k of FILTER_KEYS) if (query[k]) filters[k] = query[k]
   const oversight = !!me && me.roles.some((r) => OVERSIGHT.includes(r))
+  const canRenew = !!me && me.roles.includes('platform_admin')  // matches the API gate
   const estate = query.scope === 'all' && oversight
   const filterActive = estate || Object.keys(filters).length > 0
 
@@ -114,6 +116,13 @@ export default function MyRequests({ route }: { route: string }) {
       next.has(ref) ? next.delete(ref) : next.add(ref)
       return next
     })
+  }
+
+  async function onRenew(ref: string) {
+    await renewRequest(ref)
+    if (!me) return
+    const params = estate ? { ...filters } : { requester: me.email, ...filters }
+    getRequests(params).then(setRows).catch(() => {})
   }
 
   if (!loaded) return <InlineLoading description="Loading requests…" />
@@ -202,6 +211,17 @@ export default function MyRequests({ route }: { route: string }) {
                             title={`Awaiting approval · due ${r.approval_sla.due_at.slice(0, 16).replace('T', ' ')}`}
                           >
                             {Math.round(r.approval_sla.elapsed_hours)}h / {Math.round(r.approval_sla.sla_hours)}h · {r.approval_sla.status}
+                          </Tag>
+                        </div>
+                      )}
+                      {r.ttl && (
+                        <div>
+                          <Tag
+                            type={r.ttl.status === 'expired' ? 'red' : r.ttl.status === 'expiring' ? 'purple' : 'teal'}
+                            size="sm"
+                            title={`TTL · expires ${r.ttl.expiry.slice(0, 10)}`}
+                          >
+                            {r.ttl.status === 'expired' ? 'expired' : `expires in ${r.ttl.days_left}d`}
                           </Tag>
                         </div>
                       )}
@@ -325,6 +345,21 @@ export default function MyRequests({ route }: { route: string }) {
                         </ProgressIndicator>
                       ) : (
                         <InlineLoading description="Loading workflow…" />
+                      )}
+                      {r.ttl && (
+                        <div style={{ marginTop: '1rem', display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
+                          <span style={{ fontSize: '0.85rem', color: 'var(--cds-text-secondary)' }}>
+                            Environment TTL:{' '}
+                            {r.ttl.status === 'expired'
+                              ? `expired on ${r.ttl.expiry.slice(0, 10)}`
+                              : `expires ${r.ttl.expiry.slice(0, 10)} (${r.ttl.days_left} day(s))`}
+                          </span>
+                          {canRenew && (
+                            <Button size="sm" kind="tertiary" renderIcon={Renew} onClick={() => onRenew(r.reference)}>
+                              Renew ({30} days)
+                            </Button>
+                          )}
+                        </div>
                       )}
                       <div style={{ marginTop: '1rem', fontSize: '0.85rem', display: 'flex', gap: '1.5rem', flexWrap: 'wrap' }}>
                         <a href={`/api/requests/${r.reference}/costsheet.xlsx`}>

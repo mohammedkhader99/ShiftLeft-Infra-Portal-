@@ -91,6 +91,59 @@ ORCH_TIMEOUT = 300.0
 # Sandbox resources get a short time-to-live (F-FIN-07 foundation).
 PROVISION_TTL_DAYS = int(os.getenv("PROVISION_TTL_DAYS", "7"))
 
+# Environment TTL & renewal (E3.1, F-FIN-07). Only known non-prod tiers auto-
+# expire; prod/dr and unknown-tier requests (e.g. add/resize on an existing
+# environment) never expire, so production is never wrongly reclaimed.
+TTL_NONPROD_TIERS = {"dev", "test", "sit", "uat", "preprod"}
+
+
+def _ttl_days_nonprod() -> int:
+    try:
+        return max(1, int(os.getenv("TTL_DAYS_NONPROD", "30")))
+    except (ValueError, TypeError):
+        return 30
+
+
+def _ttl_warn_days() -> int:
+    try:
+        return max(0, int(os.getenv("TTL_WARN_DAYS", "7")))
+    except (ValueError, TypeError):
+        return 7
+
+
+def _ttl_enforce() -> bool:
+    """Whether an expired non-prod environment is auto-decommissioned. Off by
+    default: expiry only warns/flags until an operator turns enforcement on."""
+    return os.getenv("TTL_ENFORCE", "false").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _ttl_for(req: Request) -> datetime | None:
+    """Expiry for a newly provisioned environment (F-FIN-07): a lifetime for a
+    known non-prod tier, None (never expires) for prod/dr or unknown tier."""
+    tier = (req.environment_tier or "").strip().lower()
+    if tier in TTL_NONPROD_TIERS:
+        return datetime.now(timezone.utc) + timedelta(days=_ttl_days_nonprod())
+    return None
+
+
+def _ttl_status(expiry: datetime | None) -> dict | None:
+    """TTL state for the portal (F-FIN-07), computed server-side: ok / expiring /
+    expired plus days remaining. None when the environment has no expiry."""
+    if expiry is None:
+        return None
+    if expiry.tzinfo is None:
+        expiry = expiry.replace(tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc)
+    if expiry <= now:
+        state = "expired"
+    elif expiry <= now + timedelta(days=_ttl_warn_days()):
+        state = "expiring"
+    else:
+        state = "ok"
+    return {"expiry": expiry.isoformat(),
+            "days_left": (expiry - now).days,
+            "status": state}
+
 
 def _post_to_orchestrator(body: bytes, signature: str, path: str = "/provision"):
     """POST the signed handoff to an orchestrator path, retrying transient failures.
@@ -488,6 +541,9 @@ class RequestOut(BaseModel):
     # Advisory policy warnings from the last submit (F-GOV-03). Transient — set on
     # the submit response, not stored; empty on a plain read.
     policy_warnings: list[str] = []
+    # Environment TTL (F-FIN-07): {expiry, days_left, status} for a provisioned
+    # non-prod environment, else None. Attached by the list/get endpoints.
+    ttl: dict | None = None
 
     @computed_field
     @property
@@ -591,13 +647,45 @@ def list_requests(
             iso = dt.isocalendar()
             return f"{iso[0]}-W{iso[1]:02d}"
         results = [r for r in results if r.created_at and _week(r.created_at) == created_week]
-    return [RequestOut.model_validate(r) for r in results]
+
+    # Attach each environment's TTL (F-FIN-07) from its active resources, batched.
+    refs = [r.reference for r in results]
+    ttl_map: dict[str, datetime] = {}
+    if refs:
+        for ref, exp in session.execute(
+            select(ProvisionedResource.reference, func.min(ProvisionedResource.ttl_expiry))
+            .where(ProvisionedResource.reference.in_(refs),
+                   ProvisionedResource.lifecycle_state == "active",
+                   ProvisionedResource.ttl_expiry.is_not(None))
+            .group_by(ProvisionedResource.reference)
+        ).all():
+            if exp is not None:
+                ttl_map[ref] = exp
+    outs = []
+    for r in results:
+        out = RequestOut.model_validate(r)
+        out.ttl = _ttl_status(ttl_map.get(r.reference))
+        outs.append(out)
+    return outs
 
 
 @app.get("/api/requests/{reference}", response_model=RequestOut)
 def get_request(reference: str, session: Session = Depends(get_session)) -> RequestOut:
     """Load a draft (or submitted request) so it can be resumed/viewed."""
-    return RequestOut.model_validate(_load_request(reference, session))
+    out = RequestOut.model_validate(_load_request(reference, session))
+    out.ttl = _ttl_status(_min_active_ttl(session, reference))
+    return out
+
+
+def _min_active_ttl(session: Session, reference: str) -> datetime | None:
+    """Earliest expiry among a request's active provisioned resources (F-FIN-07)."""
+    return session.scalar(
+        select(func.min(ProvisionedResource.ttl_expiry)).where(
+            ProvisionedResource.reference == reference,
+            ProvisionedResource.lifecycle_state == "active",
+            ProvisionedResource.ttl_expiry.is_not(None),
+        )
+    )
 
 
 def _parse_waiver_expiry(expires: str) -> datetime:
@@ -1302,7 +1390,8 @@ def _provision_in_background(reference: str, jira_key: str, body: bytes, signatu
         session.add(ProvisionedResource(
             reference=reference, kind=res.get("kind", "resource"), name=res.get("name", ""),
             region=res.get("region"), details=res.get("outputs", {}),
-            ttl_expiry=datetime.fromisoformat(ttl_expiry_iso), lifecycle_state="active",
+            ttl_expiry=datetime.fromisoformat(ttl_expiry_iso) if ttl_expiry_iso else None,
+            lifecycle_state="active",
         ))
         _transition_jira(session, req, resolved_status(), "jira.resolved")
         req.status = "provisioned"
@@ -1334,8 +1423,9 @@ def apply_request(reference: str, background_tasks: BackgroundTasks,
             content={"error": "Request must be approved and planned before it can be applied."},
         )
 
-    ttl_expiry = datetime.now(timezone.utc) + timedelta(days=PROVISION_TTL_DAYS)
-    body, signature = _handoff_payload(req, ttl_expiry=ttl_expiry.isoformat())
+    ttl_dt = _ttl_for(req)  # non-prod gets a TTL; prod/dr exempt (F-FIN-07)
+    ttl_iso = ttl_dt.isoformat() if ttl_dt else None
+    body, signature = _handoff_payload(req, ttl_expiry=ttl_iso)
     # Move Jira to In Progress and mark the request in-progress up front.
     _transition_jira(session, req, inprogress_status(), "jira.in_progress")
     req.status = "in-progress"
@@ -1344,7 +1434,7 @@ def apply_request(reference: str, background_tasks: BackgroundTasks,
     session.commit()
 
     background_tasks.add_task(_provision_in_background, reference, req.approval.jira_key,
-                             body, signature, ttl_expiry.isoformat())
+                             body, signature, ttl_iso)
     return {"status": "in-progress", "message": f"Provisioning {reference} started."}
 
 
@@ -1385,6 +1475,44 @@ def destroy_request(reference: str, session: Session = Depends(get_session),
                  detail=response.json())
     session.commit()
     return {"destroyed": True, "message": response.json().get("summary")}
+
+
+@app.post("/api/requests/{reference}/renew")
+def renew_request(reference: str, days: int | None = None,
+                  session: Session = Depends(get_session),
+                  actor: str = Depends(require_action("execute"))):
+    """Extend a non-prod environment's TTL (F-FIN-07).
+
+    Gated to platform_admin. Resets the expiry of the environment's active
+    resources to now + `days` (default the non-prod lifetime), clears the
+    expiring/expired flag so the poller can warn again next cycle, and records a
+    tamper-evident `ttl.renewed` event.
+    """
+    req = _load_request(reference, session)
+    resources = session.scalars(
+        select(ProvisionedResource).where(
+            ProvisionedResource.reference == reference,
+            ProvisionedResource.lifecycle_state == "active",
+            ProvisionedResource.ttl_expiry.is_not(None),
+        )
+    ).all()
+    if not resources:
+        raise HTTPException(
+            status_code=400,
+            detail="Nothing to renew: this request has no active resource with a TTL.")
+    extend = _ttl_days_nonprod() if not days else max(1, int(days))
+    new_expiry = datetime.now(timezone.utc) + timedelta(days=extend)
+    for res in resources:
+        res.ttl_expiry = new_expiry
+    req.ttl_notified = None  # let the poller warn again as the new expiry nears
+    if req.status_detail and ("xpir" in req.status_detail):  # "Expiring"/"Expired"
+        req.status_detail = None
+    append_audit(session, "ttl.renewed", reference=reference,
+                 jira_key=req.approval.jira_key if req.approval else None, actor=actor,
+                 detail={"new_expiry": new_expiry.isoformat(), "days": extend})
+    session.commit()
+    return {"renewed": True, "reference": reference,
+            "new_expiry": new_expiry.isoformat(), "days": extend}
 
 
 def _decommission(session: Session, req: Request, actor: str) -> dict:
@@ -1557,15 +1685,15 @@ def _advance_request(session: Session, req: Request) -> str:
     # the same work the Apply button starts; here it runs inline in the poller
     # thread. Respects PROVISION_MODE so plan-mode auto-runs stop at the plan.
     if req.status == "planned" and provision_mode() == "apply":
-        ttl_expiry = datetime.now(timezone.utc) + timedelta(days=PROVISION_TTL_DAYS)
-        body, signature = _handoff_payload(req, ttl_expiry=ttl_expiry.isoformat())
+        ttl_dt = _ttl_for(req)  # non-prod gets a TTL; prod/dr exempt (F-FIN-07)
+        ttl_iso = ttl_dt.isoformat() if ttl_dt else None
+        body, signature = _handoff_payload(req, ttl_expiry=ttl_iso)
         _transition_jira(session, req, inprogress_status(), "jira.in_progress")
         req.status = "in-progress"
         append_audit(session, "provisioning.started", reference=req.reference,
                      jira_key=jira_key, actor="poller")
         session.commit()
-        _provision_in_background(req.reference, jira_key, body, signature,
-                                 ttl_expiry.isoformat())
+        _provision_in_background(req.reference, jira_key, body, signature, ttl_iso)
         session.refresh(req)  # pick up 'provisioned' / 'apply-failed' from the apply
     return req.status
 
@@ -1676,6 +1804,114 @@ def _escalate_sla(session: Session, req: Request) -> None:
     session.commit()
 
 
+def _ttl_contact(req: Request) -> str | None:
+    """Best contact for a TTL notice: the environment owner, else the requester."""
+    return req.environment_owner or req.application_owner or req.requester or None
+
+
+def _ttl_warn(session: Session, req: Request, expiry: datetime) -> None:
+    """Warn the owner once that a non-prod environment is nearing expiry (F-FIN-07)."""
+    if req.ttl_notified is not None:
+        return
+    days = max(0, (expiry - datetime.now(timezone.utc)).days)
+    req.ttl_notified = "expiring"
+    req.status_detail = (f"Expiring on {expiry.date().isoformat()} "
+                         f"(in {days} day(s)) — renew it to keep it.")
+    if req.approval is not None:
+        try:
+            add_comment(req.approval.jira_key,
+                        f"⏳ Environment {req.reference} expires on {expiry.date().isoformat()} "
+                        f"(in {days} day(s)). Renew it if it is still needed "
+                        f"(contact: {_ttl_contact(req)}).")
+        except JiraError:
+            pass
+    append_audit(session, "ttl.expiring", reference=req.reference,
+                 jira_key=req.approval.jira_key if req.approval else None, actor="poller",
+                 detail={"expiry": expiry.isoformat(), "days_left": days})
+    session.commit()
+
+
+def _ttl_decommission(session: Session, req: Request) -> None:
+    """Auto-reclaim an expired non-prod environment when TTL_ENFORCE is on
+    (F-FIN-07). Tears down its resources via the same signed /destroy handoff the
+    destroy button uses; leaves the resources untouched on any failure."""
+    body, signature = _handoff_payload(req)
+    append_audit(session, "ttl.decommission.handoff", reference=req.reference,
+                 jira_key=req.approval.jira_key if req.approval else None, actor="poller")
+    session.commit()
+    response, error = _post_to_orchestrator(body, signature, path="/destroy")
+    if response is None or response.status_code != 200:
+        append_audit(session, "ttl.decommission.failed", reference=req.reference,
+                     jira_key=req.approval.jira_key if req.approval else None,
+                     detail={"error": error or (response.text if response else "")})
+        session.commit()
+        return
+    for res in session.scalars(
+        select(ProvisionedResource).where(
+            ProvisionedResource.reference == req.reference,
+            ProvisionedResource.lifecycle_state == "active",
+        )
+    ):
+        res.lifecycle_state = "decommissioned"
+    req.status = "decommissioned"
+    req.status_detail = f"Auto-decommissioned at TTL expiry ({datetime.now(timezone.utc).date().isoformat()})."
+    append_audit(session, "ttl.decommissioned", reference=req.reference,
+                 jira_key=req.approval.jira_key if req.approval else None,
+                 detail=response.json())
+    session.commit()
+
+
+def _ttl_expired(session: Session, req: Request, expiry: datetime) -> None:
+    """Flag an expired non-prod environment once, and reclaim it if enforced."""
+    if req.ttl_notified != "expired":
+        enforced = _ttl_enforce()
+        req.ttl_notified = "expired"
+        req.status_detail = (f"Expired on {expiry.date().isoformat()}. "
+                             + ("Decommissioning now." if enforced
+                                else "Renew it, or enable TTL_ENFORCE to auto-reclaim."))
+        if req.approval is not None:
+            try:
+                add_comment(req.approval.jira_key,
+                            f"⛔ Environment {req.reference} expired on {expiry.date().isoformat()}. "
+                            + ("It is being decommissioned." if enforced
+                               else "Renew it to keep it."))
+            except JiraError:
+                pass
+        append_audit(session, "ttl.expired", reference=req.reference,
+                     jira_key=req.approval.jira_key if req.approval else None, actor="poller",
+                     detail={"expiry": expiry.isoformat(), "enforced": enforced})
+        session.commit()
+    if _ttl_enforce():
+        _ttl_decommission(session, req)
+
+
+def _sweep_ttls(session: Session) -> None:
+    """One TTL pass (F-FIN-07): warn owners of non-prod environments nearing
+    expiry, flag expired ones, and — only when TTL_ENFORCE is on — reclaim them.
+    Operates per environment (earliest active-resource expiry); fires once per
+    stage via the ttl_notified flag."""
+    now = datetime.now(timezone.utc)
+    warn_cutoff = now + timedelta(days=_ttl_warn_days())
+    rows = session.execute(
+        select(ProvisionedResource.reference, func.min(ProvisionedResource.ttl_expiry))
+        .where(ProvisionedResource.lifecycle_state == "active",
+               ProvisionedResource.ttl_expiry.is_not(None))
+        .group_by(ProvisionedResource.reference)
+    ).all()
+    for reference, expiry in rows:
+        if expiry is None:
+            continue
+        if expiry.tzinfo is None:
+            expiry = expiry.replace(tzinfo=timezone.utc)
+        req = session.scalar(select(Request).where(Request.reference == reference))
+        if req is None or req.status != "provisioned":
+            continue
+        if expiry <= now:
+            _ttl_expired(session, req, expiry)
+        elif expiry <= warn_cutoff:
+            _ttl_warn(session, req, expiry)
+
+
 def _poll_once() -> None:
     """One sweep: advance every request that isn't finished, each in its own
     session so one bad request can't abort the others."""
@@ -1705,6 +1941,19 @@ def _poll_once() -> None:
                     session.commit()
             except Exception:  # noqa: BLE001
                 pass
+
+    # TTL sweep (F-FIN-07): warn/flag/reclaim expiring non-prod environments once
+    # per cycle, isolated so it can never abort the request advancement above.
+    try:
+        with SessionLocal() as session:
+            _sweep_ttls(session)
+    except Exception as exc:  # noqa: BLE001
+        try:
+            with SessionLocal() as session:
+                append_audit(session, "ttl.sweep.error", detail={"error": str(exc)})
+                session.commit()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def _poller_loop() -> None:

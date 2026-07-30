@@ -49,3 +49,6 @@ os.environ["CHANGE_WINDOW_ENABLED"] = "false"
 # Approval quorum (F-GOV-06): pinned to 1 (single approver) so existing
 # provisioning tests aren't held; the quorum tests set it explicitly.
 os.environ["APPROVAL_QUORUM"] = "1"
+# Environment TTL (F-FIN-07): pin enforcement OFF so a sweep never auto-destroys
+# in tests; the enforcement test enables it explicitly.
+os.environ["TTL_ENFORCE"] = "false"

@@ -1679,3 +1679,135 @@ def test_showback_rejects_bad_group_by(poller):
 def test_showback_requires_oversight_role(client, monkeypatch):
     monkeypatch.setenv("ROLE_MAP", '{"dev@x.com": ["requester"]}')
     assert client.get("/api/showback", headers={"X-Requester": "dev@x.com"}).status_code == 403
+
+
+# --- Environment TTL & renewal (E3.1, F-FIN-07) ------------------------------
+
+def _provisioned_with_ttl(session, ref, *, tier="uat", days, owner="owner@x.com"):
+    """A provisioned request whose active resource expires in `days` days."""
+    import api.main as main
+    from datetime import datetime, timezone, timedelta
+
+    req = main.Request(reference=ref, status="provisioned", requester="u@x.com",
+                       requester_name="U", environment_tier=tier, environment_name="e1",
+                       environment_owner=owner)
+    req.approval = main.Approval(jira_key=f"J-{ref}", status="approved")
+    req.components = [main.RequestComponent(technology_code="postgres16", size="small")]
+    req.estimate = main.Estimate(deployment_target="onprem", currency="AED", one_time=0,
+                                 monthly=10, annual=120, breakdown={})
+    session.add(req)
+    session.add(main.ProvisionedResource(
+        reference=ref, kind="oci-bucket", name="b1",
+        ttl_expiry=datetime.now(timezone.utc) + timedelta(days=days),
+        lifecycle_state="active"))
+    session.commit()
+    return req
+
+
+def test_ttl_for_nonprod_gets_expiry_prod_exempt():
+    import api.main as main
+    from db.models import Request
+    assert main._ttl_for(Request(reference="a", requester="u", environment_tier="uat")) is not None
+    assert main._ttl_for(Request(reference="b", requester="u", environment_tier="prod")) is None
+    assert main._ttl_for(Request(reference="c", requester="u", environment_tier="dr")) is None
+    assert main._ttl_for(Request(reference="d", requester="u", environment_tier=None)) is None
+
+
+def test_ttl_sweep_warns_owner_within_window(poller, monkeypatch):
+    import api.main as main
+    client, session = poller
+    monkeypatch.setattr(main, "add_comment", lambda *a, **k: None)
+    req = _provisioned_with_ttl(session, "REQ-TTL-1", days=3)  # within the 7-day warn window
+    main._sweep_ttls(session)
+    session.refresh(req)
+    assert req.ttl_notified == "expiring"
+    assert "xpir" in (req.status_detail or "")
+    assert "ttl.expiring" in _events(session, "REQ-TTL-1")
+    # Warned once — a second sweep must not add another event.
+    main._sweep_ttls(session)
+    assert _events(session, "REQ-TTL-1").count("ttl.expiring") == 1
+
+
+def test_ttl_sweep_flags_expired_without_enforce(poller, monkeypatch):
+    import api.main as main
+    client, session = poller
+    monkeypatch.setattr(main, "add_comment", lambda *a, **k: None)
+    req = _provisioned_with_ttl(session, "REQ-TTL-2", days=-1)  # already expired
+    main._sweep_ttls(session)
+    session.refresh(req)
+    assert req.ttl_notified == "expired"
+    assert req.status == "provisioned"  # not destroyed — enforcement is off
+    assert "ttl.expired" in _events(session, "REQ-TTL-2")
+    assert "ttl.decommissioned" not in _events(session, "REQ-TTL-2")
+
+
+def test_ttl_enforce_decommissions_expired(poller, monkeypatch):
+    import api.main as main
+    client, session = poller
+    monkeypatch.setenv("TTL_ENFORCE", "true")
+    monkeypatch.setattr(main, "add_comment", lambda *a, **k: None)
+
+    class Resp:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {"summary": "destroyed"}
+
+    monkeypatch.setattr(main, "_post_to_orchestrator", lambda *a, **k: (Resp(), None))
+    req = _provisioned_with_ttl(session, "REQ-TTL-3", days=-1)
+    main._sweep_ttls(session)
+    session.refresh(req)
+    assert req.status == "decommissioned"
+    assert "ttl.decommissioned" in _events(session, "REQ-TTL-3")
+
+
+def test_ttl_renew_extends_and_clears_flag(poller):
+    import api.main as main
+    from datetime import datetime, timezone
+    client, session = poller
+    req = _provisioned_with_ttl(session, "REQ-TTL-4", days=-1)
+    req.ttl_notified = "expired"
+    req.status_detail = "Expired on 2026-01-01."
+    session.commit()
+    resp = client.post("/api/requests/REQ-TTL-4/renew?days=30")
+    assert resp.status_code == 200
+    assert resp.json()["renewed"] is True
+    session.refresh(req)
+    assert req.ttl_notified is None
+    assert req.status_detail is None
+    assert "ttl.renewed" in _events(session, "REQ-TTL-4")
+    # The active resource's expiry now sits in the future.
+    res = session.scalar(main.select(main.ProvisionedResource).where(
+        main.ProvisionedResource.reference == "REQ-TTL-4"))
+    exp = res.ttl_expiry
+    if exp.tzinfo is None:
+        exp = exp.replace(tzinfo=timezone.utc)
+    assert exp > datetime.now(timezone.utc)
+
+
+def test_ttl_exposed_on_request(poller):
+    client, session = poller
+    _provisioned_with_ttl(session, "REQ-TTL-5", days=3)
+    ttl = client.get("/api/requests/REQ-TTL-5").json()["ttl"]
+    assert ttl is not None and ttl["status"] == "expiring"
+    row = next(r for r in client.get("/api/requests").json() if r["reference"] == "REQ-TTL-5")
+    assert row["ttl"]["status"] == "expiring"
+
+
+def test_renew_requires_execute_role(poller, monkeypatch):
+    client, session = poller
+    _provisioned_with_ttl(session, "REQ-TTL-6", days=3)
+    monkeypatch.setenv("ROLE_MAP", '{"dev@x.com": ["requester"]}')
+    resp = client.post("/api/requests/REQ-TTL-6/renew", headers={"X-Requester": "dev@x.com"})
+    assert resp.status_code == 403
+
+
+def test_renew_nothing_to_renew(poller):
+    client, session = poller
+    # A provisioned request with no TTL resource (e.g. a prod env).
+    import api.main as main
+    req = main.Request(reference="REQ-TTL-7", status="provisioned", requester="u@x.com")
+    session.add(req)
+    session.commit()
+    assert client.post("/api/requests/REQ-TTL-7/renew").status_code == 400

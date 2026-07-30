@@ -91,6 +91,17 @@ export type RequestRow = {
   approval?: { jira_key: string; ticket_url?: string | null } | null
   // Policy waiver (F-GOV-02): a documented exception, if one was granted.
   waiver?: { reason: string; granted_by: string; granted_at?: string | null; expires_at?: string | null } | null
+  // Environment TTL (F-FIN-07): expiry + ok/expiring/expired, for provisioned non-prod envs.
+  ttl?: { expiry: string; days_left: number; status: string } | null
+}
+
+export async function renewRequest(
+  reference: string,
+  days?: number,
+): Promise<{ status: number; body: any }> {
+  const qs = days ? `?days=${days}` : ''
+  const r = await fetch(`/api/requests/${reference}/renew${qs}`, { method: 'POST' })
+  return { status: r.status, body: await r.json().catch(() => ({})) }
 }
 
 export async function getMe(): Promise<{ email: string; roles: string[] } | null> {
