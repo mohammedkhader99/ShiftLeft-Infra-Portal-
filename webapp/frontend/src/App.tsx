@@ -7,6 +7,8 @@ import {
   SideNav,
   SideNavItems,
   SideNavLink,
+  SideNavMenu,
+  SideNavMenuItem,
   Theme,
   Tag,
 } from '@carbon/react'
@@ -26,11 +28,20 @@ import Overview from './pages/Overview'
 
 type Me = { email: string; roles: string[] }
 
-const NAV = [
-  { hash: '#/request/new', label: 'New request', icon: Add },
-  { hash: '#/requests', label: 'My requests', icon: ListChecked },
-  { hash: '#/overview', label: 'Estate overview', icon: ChartColumn },
+// Request types live under the expandable "New request" nav menu (each routes
+// to #/request/new/<type>); the form on the right follows the selection.
+const REQUEST_TYPES: [string, string][] = [
+  ['create', 'Create environment'],
+  ['add', 'Add component'],
+  ['resize', 'Resize component'],
+  ['decommission', 'Decommission'],
 ]
+const RT_LABEL = Object.fromEntries(REQUEST_TYPES) as Record<string, string>
+
+function parseRequestType(route: string): string {
+  const m = route.match(/^#\/request\/new\/(create|add|resize|decommission)/)
+  return m ? m[1] : 'create'
+}
 
 function useHashRoute() {
   const [route, setRoute] = useState(window.location.hash || '#/request/new')
@@ -60,6 +71,7 @@ export default function App() {
       .catch(() => setMe(null))
   }, [])
 
+  const onRequest = !route.startsWith('#/requests') && !route.startsWith('#/overview')
   let title: string
   let page: JSX.Element
   if (route.startsWith('#/requests')) {
@@ -69,8 +81,9 @@ export default function App() {
     title = 'Estate overview'
     page = <Overview />
   } else {
-    title = 'New infrastructure request'
-    page = <RequestForm />
+    const t = parseRequestType(route)
+    title = `New request · ${RT_LABEL[t]}`
+    page = <RequestForm initialType={t} />
   }
 
   return (
@@ -98,16 +111,23 @@ export default function App() {
 
         <SideNav aria-label="Side navigation" expanded isPersistent>
           <SideNavItems>
-            {NAV.map((n) => (
-              <SideNavLink
-                key={n.hash}
-                renderIcon={n.icon}
-                href={n.hash}
-                isActive={route.startsWith(n.hash) || (n.hash === '#/request/new' && route === '#/')}
-              >
-                {n.label}
-              </SideNavLink>
-            ))}
+            <SideNavMenu renderIcon={Add} title="New request" defaultExpanded={onRequest} isActive={onRequest}>
+              {REQUEST_TYPES.map(([type, label]) => (
+                <SideNavMenuItem
+                  key={type}
+                  href={`#/request/new/${type}`}
+                  isActive={onRequest && parseRequestType(route) === type}
+                >
+                  {label}
+                </SideNavMenuItem>
+              ))}
+            </SideNavMenu>
+            <SideNavLink renderIcon={ListChecked} href="#/requests" isActive={route.startsWith('#/requests')}>
+              My requests
+            </SideNavLink>
+            <SideNavLink renderIcon={ChartColumn} href="#/overview" isActive={route.startsWith('#/overview')}>
+              Estate overview
+            </SideNavLink>
           </SideNavItems>
         </SideNav>
 

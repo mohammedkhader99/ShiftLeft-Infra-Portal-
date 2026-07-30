@@ -1,8 +1,6 @@
 import { useEffect, useMemo, useState, type CSSProperties } from 'react'
 import {
   Stack,
-  RadioButtonGroup,
-  RadioButton,
   Select,
   SelectItem,
   TextInput,
@@ -149,10 +147,12 @@ const cardStyle = (selected: boolean): CSSProperties => ({
   boxShadow: selected ? 'inset 0 0 0 1px var(--cds-border-interactive)' : 'none',
 })
 
-export default function RequestForm() {
+export default function RequestForm({ initialType = 'create' }: { initialType?: string }) {
   const [lookups, setLookups] = useState<Lookups | null>(null)
   const [email, setEmail] = useState<string | null>(null)
-  const [requestType, setRequestType] = useState('create')
+  // The request type is chosen in the left nav (New request menu) and passed in.
+  const [requestType, setRequestType] = useState(initialType)
+  useEffect(() => setRequestType(initialType), [initialType])
 
   const [projectCode, setProjectCode] = useState('')
   const [costCentre, setCostCentre] = useState('')
@@ -354,17 +354,6 @@ export default function RequestForm() {
         )}
 
         <Stack gap={6}>
-          <RadioButtonGroup
-            legendText="Request type"
-            name="request_type"
-            valueSelected={requestType}
-            onChange={(v) => setRequestType(String(v))}
-          >
-            <RadioButton labelText="Create environment" value="create" id="rt-create" />
-            <RadioButton labelText="Add component" value="add" id="rt-add" />
-            <RadioButton labelText="Resize component" value="resize" id="rt-resize" />
-            <RadioButton labelText="Decommission" value="decommission" id="rt-decom" />
-          </RadioButtonGroup>
 
           {isDecommission ? (
             <>
