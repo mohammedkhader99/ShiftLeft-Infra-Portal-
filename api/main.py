@@ -657,6 +657,27 @@ def get_approval(jira_key: str, session: Session = Depends(get_session)) -> dict
     return {"jira_key": appr.jira_key, "status": status, "reference": appr.request.reference}
 
 
+def _sod_enforced() -> bool:
+    """Whether segregation of duties is enforced (E1.2). On by default."""
+    return os.getenv("SOD_ENFORCED", "true").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _check_sod(session: Session, req: Request, actor: str, action: str) -> None:
+    """Segregation of duties (F-IAM-03): the person who raised a request may not
+    approve/apply/destroy it. The autonomous poller runs _advance_request
+    directly (no human actor), so it is never affected by this guard.
+    """
+    if _sod_enforced() and actor and actor == req.requester:
+        append_audit(session, "sod.blocked", reference=req.reference, actor=actor,
+                     detail={"action": action, "requester": req.requester})
+        session.commit()  # persist the block even though the action is refused
+        raise HTTPException(
+            status_code=403,
+            detail=(f"Segregation of duties (F-IAM-03): you raised {req.reference}, so you "
+                    f"cannot {action} it. A different approver must act."),
+        )
+
+
 @app.post("/api/approvals/{jira_key}/approve")
 def approve(jira_key: str, session: Session = Depends(get_session),
             _auth: str = Depends(require_action("execute"))):
@@ -677,6 +698,8 @@ def approve(jira_key: str, session: Session = Depends(get_session),
             "idempotent": True,
             "message": f"{req.reference} is already provisioned.",
         }
+
+    _check_sod(session, req, _auth, "approve")
 
     if jira_mode() == "live":
         # Do not decide approval — read it from Jira.
@@ -919,6 +942,9 @@ def apply_request(reference: str, background_tasks: BackgroundTasks,
         raise HTTPException(status_code=400, detail="Request has no approval to apply.")
     if req.status in ("in-progress", "provisioned"):
         return {"status": req.status, "message": f"{reference} is already {req.status}."}
+
+    _check_sod(session, req, _auth, "apply")
+
     if req.status != "planned":
         return JSONResponse(
             status_code=409,
@@ -946,6 +972,8 @@ def destroy_request(reference: str, session: Session = Depends(get_session),
     req = _load_request(reference, session)
     if req.approval is None:
         raise HTTPException(status_code=400, detail="Request has no approval.")
+
+    _check_sod(session, req, _auth, "destroy")
 
     body, signature = _handoff_payload(req)
     append_audit(session, "destroy.handoff", reference=reference, jira_key=req.approval.jira_key,

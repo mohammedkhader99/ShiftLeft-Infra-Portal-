@@ -1094,3 +1094,83 @@ def test_unknown_advanced_option_rejected(client):
     ref = _draft_ref(client, {**VALID_CREATE, "advanced_options": {"made_up_key": "x"}})
     errors = client.post(f"/api/requests/{ref}/submit").json()["errors"]
     assert "advanced.made_up_key" in errors
+
+
+# --- Segregation of duties (increment E1.2, F-IAM-03) ------------------------
+
+ALICE = {"X-Requester": "alice@example.com"}
+BOB = {"X-Requester": "bob@example.com"}
+
+
+def _submit_as(client, headers):
+    ref = client.post("/api/requests/draft", json=VALID_CREATE, headers=headers).json()["reference"]
+    key = client.post(f"/api/requests/{ref}/submit", headers=headers).json()["approval"]["jira_key"]
+    return ref, key
+
+
+def _orchestrator_ok(monkeypatch, ref):
+    import api.main as main
+
+    class Resp:
+        status_code = 200
+
+        def json(self):
+            return {"provisioned": True, "reference": ref, "verified": {}}
+
+    monkeypatch.setattr(main.httpx, "post", lambda *a, **k: Resp())
+
+
+def test_sod_blocks_self_approval(client, monkeypatch):
+    monkeypatch.setenv("SOD_ENFORCED", "true")
+    ref, key = _submit_as(client, ALICE)
+    resp = client.post(f"/api/approvals/{key}/approve", headers=ALICE)
+    assert resp.status_code == 403
+    assert "segregation of duties" in resp.json()["detail"].lower()
+    # The block is recorded in the tamper-evident audit trail.
+    events = [e["event"] for e in client.get(f"/api/requests/{ref}/audit", headers=ALICE).json()["entries"]]
+    assert "sod.blocked" in events
+
+
+def test_sod_allows_a_different_approver(client, monkeypatch):
+    monkeypatch.setenv("SOD_ENFORCED", "true")
+    ref, key = _submit_as(client, ALICE)
+    _orchestrator_ok(monkeypatch, ref)
+    resp = client.post(f"/api/approvals/{key}/approve", headers=BOB)
+    assert resp.status_code == 200
+    assert resp.json()["provisioned"] is True
+
+
+def test_sod_blocks_self_apply(client, monkeypatch):
+    monkeypatch.setenv("SOD_ENFORCED", "true")
+    ref, _ = _submit_as(client, ALICE)
+    resp = client.post(f"/api/requests/{ref}/apply", headers=ALICE)
+    assert resp.status_code == 403
+
+
+def test_sod_blocks_self_destroy(client, monkeypatch):
+    monkeypatch.setenv("SOD_ENFORCED", "true")
+    ref, _ = _submit_as(client, ALICE)
+    resp = client.post(f"/api/requests/{ref}/destroy", headers=ALICE)
+    assert resp.status_code == 403
+
+
+def test_sod_off_allows_self_approval(client, monkeypatch):
+    monkeypatch.setenv("SOD_ENFORCED", "false")
+    ref, key = _submit_as(client, ALICE)
+    _orchestrator_ok(monkeypatch, ref)
+    resp = client.post(f"/api/approvals/{key}/approve", headers=ALICE)
+    assert resp.status_code == 200  # self-approval allowed when SoD is off
+
+
+def test_poller_is_exempt_from_sod(poller, monkeypatch):
+    # The autonomous poller runs _advance_request directly (no human actor), so
+    # it is never blocked by SoD even though it advances the requester's own request.
+    monkeypatch.setenv("SOD_ENFORCED", "true")
+    import api.main as main
+
+    client, session = poller
+    req, key = _submit_request(client, session)
+    monkeypatch.setattr(main, "get_status", lambda k: "approved")
+    monkeypatch.setattr(main, "_post_to_orchestrator", lambda *a, **k: (_PlanResp(), None))
+    monkeypatch.setattr(main, "provision_mode", lambda: "plan")
+    assert main._advance_request(session, req) == "planned"

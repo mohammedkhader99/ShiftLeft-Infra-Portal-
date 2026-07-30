@@ -36,3 +36,7 @@ os.environ["AUTO_PROVISION"] = "false"
 # blocked; role-specific tests set ROLE_MAP themselves.
 os.environ["ROLE_SOURCE"] = "mock"
 os.environ["ROLE_MAP"] = ""
+# Segregation of duties (E1.2) is ON in production but OFF in the test baseline,
+# so the existing approve/apply/destroy tests (one actor) are unaffected; the
+# dedicated SoD tests turn it on explicitly.
+os.environ["SOD_ENFORCED"] = "false"
