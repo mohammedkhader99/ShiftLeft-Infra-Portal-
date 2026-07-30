@@ -313,9 +313,12 @@ export default function MyRequests({ route }: { route: string }) {
                       ) : (
                         <InlineLoading description="Loading workflow…" />
                       )}
-                      <div style={{ marginTop: '1rem', fontSize: '0.85rem' }}>
+                      <div style={{ marginTop: '1rem', fontSize: '0.85rem', display: 'flex', gap: '1.5rem', flexWrap: 'wrap' }}>
                         <a href={`/api/requests/${r.reference}/costsheet.xlsx`}>
                           ↓ Download cost sheet (Excel)
+                        </a>
+                        <a href={`/api/requests/${r.reference}/evidence.pdf`}>
+                          ↓ Download evidence pack (PDF)
                         </a>
                       </div>
                     </div>

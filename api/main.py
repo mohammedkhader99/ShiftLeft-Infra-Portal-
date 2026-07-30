@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from api.attachment import build_request_pdf
 from api.costsheet import build_cost_sheet_xlsx
+from api.evidence import build_evidence_pdf
 from api.audit import append_audit, verify_chain
 from api.auth import get_requester, get_requester_name
 from api.jira import (
@@ -919,6 +920,31 @@ def audit_verify(session: Session = Depends(get_session),
     deletion, insertion or reorder is reported with the offending entry.
     """
     return verify_chain(session)
+
+
+@app.get("/api/requests/{reference}/evidence.pdf")
+def request_evidence(reference: str, session: Session = Depends(get_session),
+                     _auth: str = Depends(require_action("view_audit"))) -> Response:
+    """Download the governance evidence pack for a request (F-GOV-10): request +
+    cost + approval + full audit trail + a re-verified tamper-evidence attestation."""
+    req = _load_request(reference, session)
+    components = [{"technology_code": c.technology_code, "size": c.size} for c in req.components]
+    if req.estimate and req.estimate.breakdown:
+        breakdown = req.estimate.breakdown
+    else:
+        breakdown = estimate_cost(components, req.deployment_target, session, req.advanced_options)
+    sizing = resolve_components(components, session)
+    rows = session.scalars(
+        select(AuditLog).where(AuditLog.reference == reference).order_by(AuditLog.id)
+    ).all()
+    audit = [{"when": r.created_at.isoformat(), "event": r.event, "actor": r.actor,
+              "detail": r.detail} for r in rows]
+    pdf = build_evidence_pdf(req, breakdown, sizing, audit, verify_chain(session))
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="evidence-{reference}.pdf"'},
+    )
 
 
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"

@@ -40,3 +40,6 @@ os.environ["ROLE_MAP"] = ""
 # so the existing approve/apply/destroy tests (one actor) are unaffected; the
 # dedicated SoD tests turn it on explicitly.
 os.environ["SOD_ENFORCED"] = "false"
+# Four-eyes (F-GOV-08): pinned OFF in the baseline so the developer's .env (which
+# may disable it) can't leak in; the four-eyes tests turn it on explicitly.
+os.environ["FOUR_EYES_ENFORCED"] = "false"

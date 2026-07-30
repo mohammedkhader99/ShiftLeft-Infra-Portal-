@@ -1235,6 +1235,7 @@ def test_sla_escalation_fires_once(poller, monkeypatch):
 
 def _simulate_live_approval(main, monkeypatch, author):
     """Pretend Jira is live and the ticket is approved by `author` ({email,name})."""
+    monkeypatch.setenv("FOUR_EYES_ENFORCED", "true")  # baseline pins it off
     monkeypatch.setattr(main, "jira_mode", lambda: "live")
     monkeypatch.setattr(main, "get_status", lambda k: "approved")
     monkeypatch.setattr(main, "get_approval_author", lambda k: author)
@@ -1248,7 +1249,9 @@ def test_four_eyes_blocks_self_approval(poller, monkeypatch):
 
     client, session = poller
     req, key = _submit_request(client, session)
-    _simulate_live_approval(main, monkeypatch, {"email": req.requester, "name": None})
+    req.requester = "self@example.com"
+    session.commit()
+    _simulate_live_approval(main, monkeypatch, {"email": "self@example.com", "name": None})
     main._advance_request(session, req)
     session.refresh(req)
     assert req.status == "submitted"  # blocked — not advanced/provisioned
@@ -1265,6 +1268,8 @@ def test_four_eyes_allows_a_different_approver(poller, monkeypatch):
 
     client, session = poller
     req, key = _submit_request(client, session)
+    req.requester = "self@example.com"
+    session.commit()
     _simulate_live_approval(main, monkeypatch, {"email": "manager@example.com", "name": None})
     main._advance_request(session, req)
     session.refresh(req)
@@ -1285,3 +1290,23 @@ def test_four_eyes_skipped_in_mock(poller, monkeypatch):
     main._advance_request(session, req)
     session.refresh(req)
     assert req.status == "planned"
+
+
+# --- Governance evidence pack (F-GOV-10) -------------------------------------
+
+def test_evidence_pack_downloads(client, monkeypatch):
+    ref = _provision_a_request(client, monkeypatch)  # a full audit trail
+    resp = client.get(f"/api/requests/{ref}/evidence.pdf")
+    assert resp.status_code == 200
+    assert resp.content[:5] == b"%PDF-"
+    assert len(resp.content) > 500
+    assert "application/pdf" in resp.headers["content-type"]
+    assert "evidence-" in resp.headers.get("content-disposition", "")
+
+
+def test_evidence_pack_works_for_a_draft(client):
+    # No estimate/approval yet — the endpoint recomputes cost + reads the trail.
+    ref = _draft_ref(client, VALID_CREATE)
+    resp = client.get(f"/api/requests/{ref}/evidence.pdf")
+    assert resp.status_code == 200
+    assert resp.content[:5] == b"%PDF-"
