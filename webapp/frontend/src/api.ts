@@ -161,6 +161,22 @@ export async function getShowback(
   return r.ok ? r.json() : null
 }
 
+// Budget guardrails (E3.3, F-FIN-02).
+export type BudgetRow = {
+  cost_centre: string
+  limit: number
+  currency: string
+  current: number
+  remaining: number
+  status: string
+}
+
+export async function getBudgets(): Promise<{ currency: string; budgets: BudgetRow[] } | 'forbidden' | null> {
+  const r = await fetch('/api/budgets')
+  if (r.status === 403) return 'forbidden'
+  return r.ok ? r.json() : null
+}
+
 export type AuditEntry = { event: string; created_at: string }
 
 export async function getAudit(reference: string): Promise<AuditEntry[]> {

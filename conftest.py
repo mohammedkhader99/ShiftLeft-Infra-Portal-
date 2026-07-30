@@ -52,3 +52,6 @@ os.environ["APPROVAL_QUORUM"] = "1"
 # Environment TTL (F-FIN-07): pin enforcement OFF so a sweep never auto-destroys
 # in tests; the enforcement test enables it explicitly.
 os.environ["TTL_ENFORCE"] = "false"
+# Budget guardrails (F-FIN-02): pin enforcement OFF so an over-budget submit
+# warns rather than blocks; the enforcement test turns it on explicitly.
+os.environ["BUDGET_ENFORCE"] = "false"

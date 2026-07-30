@@ -122,6 +122,25 @@ class RateCard(Base):
     effective_from: Mapped[date] = mapped_column(Date, default=date(2026, 1, 1))
 
 
+class Budget(Base):
+    """A monthly spend ceiling for a cost centre (F-FIN-02, E3.3).
+
+    Optional per cost centre — a cost centre with no row here is ungated. Set by
+    an admin (or loaded from finance); the submit-time guardrail compares the
+    projected committed spend for the cost centre against monthly_limit.
+    """
+
+    __tablename__ = "budget"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    cost_centre_code: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    monthly_limit: Mapped[float] = mapped_column(Numeric(14, 2))
+    currency: Mapped[str] = mapped_column(String(3), default="AED")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )
+
+
 class Request(Base):
     """A provisioning request (increment 1.3): the first transactional table.
 

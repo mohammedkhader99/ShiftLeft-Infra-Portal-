@@ -1811,3 +1811,77 @@ def test_renew_nothing_to_renew(poller):
     session.add(req)
     session.commit()
     assert client.post("/api/requests/REQ-TTL-7/renew").status_code == 400
+
+
+# --- Budget guardrails (E3.3, F-FIN-02) --------------------------------------
+
+def test_budget_status_thresholds(poller):
+    import api.main as main
+    from db.models import Budget
+    client, session = poller
+    session.add(Budget(cost_centre_code="CC-B", monthly_limit=1000, currency="AED"))
+    session.commit()
+    assert main._budget_status(session, "CC-B", 500)["status"] == "ok"
+    assert main._budget_status(session, "CC-B", 950)["status"] == "near"  # >= 90%
+    over = main._budget_status(session, "CC-B", 1200)
+    assert over["status"] == "over" and over["remaining"] == -200.0
+    assert main._budget_status(session, "NO-BUDGET", 999) is None  # ungated
+
+
+def test_committed_spend_counts_committed_only(poller):
+    import api.main as main
+    client, session = poller
+    _add_priced(session, "REQ-B-1", cost_centre="CC-B", status="provisioned", monthly=100)
+    _add_priced(session, "REQ-B-2", cost_centre="CC-B", status="submitted", monthly=40)
+    _add_priced(session, "REQ-B-3", cost_centre="CC-B", status="draft", monthly=999)
+    _add_priced(session, "REQ-B-4", cost_centre="CC-B", status="decommissioned", monthly=999)
+    assert main._committed_spend(session, "CC-B") == 140.0
+    assert main._committed_spend(session, "CC-B", exclude_ref="REQ-B-2") == 100.0
+
+
+def test_budget_set_list_delete(client):
+    assert client.post("/api/budgets",
+                       json={"cost_centre_code": "IMD-1001", "monthly_limit": 5000}).status_code == 200
+    row = next(b for b in client.get("/api/budgets").json()["budgets"] if b["cost_centre"] == "IMD-1001")
+    assert row["limit"] == 5000 and row["remaining"] == 5000  # no committed spend yet
+    assert client.delete("/api/budgets/IMD-1001").status_code == 200
+    assert client.get("/api/budgets").json()["budgets"] == []
+    assert client.delete("/api/budgets/IMD-1001").status_code == 404
+
+
+def test_budget_over_blocks_when_enforced(client, monkeypatch):
+    monkeypatch.setenv("BUDGET_ENFORCE", "true")
+    client.post("/api/budgets", json={"cost_centre_code": "IMD-1001", "monthly_limit": 1})
+    ref = client.post("/api/requests/draft", json=VALID_CREATE).json()["reference"]
+    resp = client.post(f"/api/requests/{ref}/submit")
+    assert resp.status_code == 422
+    assert "budget" in resp.json()["budget_error"].lower()
+    assert client.get(f"/api/requests/{ref}").json()["status"] == "draft"  # not submitted
+
+
+def test_budget_over_warns_when_not_enforced(client, monkeypatch):
+    monkeypatch.setenv("BUDGET_ENFORCE", "false")
+    client.post("/api/budgets", json={"cost_centre_code": "IMD-1001", "monthly_limit": 1})
+    ref = client.post("/api/requests/draft", json=VALID_CREATE).json()["reference"]
+    resp = client.post(f"/api/requests/{ref}/submit")
+    assert resp.status_code == 200  # warned, not blocked
+    assert any("budget" in w.lower() for w in resp.json()["policy_warnings"])
+
+
+def test_budget_undefined_cost_centre_ungated(client):
+    ref = client.post("/api/requests/draft", json=VALID_CREATE).json()["reference"]
+    resp = client.post(f"/api/requests/{ref}/submit")
+    assert resp.status_code == 200
+    assert not any("budget" in w.lower() for w in resp.json()["policy_warnings"])
+
+
+def test_budget_set_requires_admin(client, monkeypatch):
+    monkeypatch.setenv("ROLE_MAP", '{"dev@x.com": ["requester"]}')
+    resp = client.post("/api/budgets", json={"cost_centre_code": "X", "monthly_limit": 10},
+                       headers={"X-Requester": "dev@x.com"})
+    assert resp.status_code == 403
+
+
+def test_budgets_list_requires_oversight(client, monkeypatch):
+    monkeypatch.setenv("ROLE_MAP", '{"dev@x.com": ["requester"]}')
+    assert client.get("/api/budgets", headers={"X-Requester": "dev@x.com"}).status_code == 403

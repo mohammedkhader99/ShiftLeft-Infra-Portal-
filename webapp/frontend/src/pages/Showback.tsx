@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Tile, InlineLoading, Select, SelectItem, ContentSwitcher, Switch } from '@carbon/react'
-import { getShowback, type Showback } from '../api'
+import { getShowback, getBudgets, type Showback, type BudgetRow } from '../api'
 
 // The dimensions cost can be attributed to (must match the API's group_by set).
 const GROUPS: [string, string][] = [
@@ -18,6 +18,7 @@ export default function ShowbackPage() {
   const [groupBy, setGroupBy] = useState('cost_centre')
   const [scope, setScope] = useState('active')
   const [data, setData] = useState<Showback | null>(null)
+  const [budgets, setBudgets] = useState<BudgetRow[]>([])
   const [forbidden, setForbidden] = useState(false)
   const [loaded, setLoaded] = useState(false)
 
@@ -38,6 +39,16 @@ export default function ShowbackPage() {
       active = false
     }
   }, [groupBy, scope])
+
+  useEffect(() => {
+    let active = true
+    getBudgets()
+      .then((b) => active && b && b !== 'forbidden' && setBudgets(b.budgets))
+      .catch(() => {})
+    return () => {
+      active = false
+    }
+  }, [])
 
   if (forbidden)
     return (
@@ -129,6 +140,37 @@ export default function ShowbackPage() {
               )}
             </tbody>
           </table>
+        </Tile>
+      )}
+
+      {budgets.length > 0 && (
+        <Tile style={{ marginTop: '1rem' }}>
+          <h4 style={{ fontSize: '0.95rem', fontWeight: 500, marginBottom: '0.75rem' }}>
+            Cost-centre budgets (F-FIN-02)
+          </h4>
+          {budgets.map((b) => {
+            const used = b.limit > 0 ? Math.min(100, (b.current / b.limit) * 100) : 0
+            const color =
+              b.status === 'over'
+                ? 'var(--cds-support-error)'
+                : b.status === 'near'
+                  ? 'var(--cds-support-warning)'
+                  : 'var(--cds-support-success)'
+            return (
+              <div key={b.cost_centre} style={{ marginBottom: '0.75rem', fontSize: '0.85rem' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.2rem' }}>
+                  <span style={{ fontWeight: 500 }}>{b.cost_centre}</span>
+                  <span style={{ color: 'var(--cds-text-secondary)' }}>
+                    {money(b.current, b.currency)} of {money(b.limit, b.currency)} ·{' '}
+                    <span style={{ color }}>{money(b.remaining, b.currency)} left</span>
+                  </span>
+                </div>
+                <span style={{ display: 'block', background: 'var(--cds-layer-accent)', height: '0.6rem' }}>
+                  <span style={{ display: 'block', width: `${used}%`, height: '100%', background: color }} />
+                </span>
+              </div>
+            )
+          })}
         </Tile>
       )}
     </div>

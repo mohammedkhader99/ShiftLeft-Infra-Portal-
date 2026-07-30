@@ -46,6 +46,7 @@ from common.signing import sign
 from db.models import (
     Approval,
     AuditLog,
+    Budget,
     CostCentre,
     Environment,
     Estimate,
@@ -332,6 +333,126 @@ def showback(group_by: str = "cost_centre", scope: str = "active",
     }
     return {"group_by": group_by, "scope": scope, "currency": "AED",
             "total": total, "rows": out}
+
+
+# --- Budget guardrails (E3.3, F-FIN-02) --------------------------------------
+
+def _budget_enforce() -> bool:
+    """Whether an over-budget submit is a hard block. Off by default: over budget
+    warns until an operator turns enforcement on."""
+    return os.getenv("BUDGET_ENFORCE", "false").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _budget_warn_pct() -> float:
+    try:
+        return max(0.0, min(100.0, float(os.getenv("BUDGET_WARN_PCT", "90"))))
+    except (ValueError, TypeError):
+        return 90.0
+
+
+def _committed_spend(session: Session, cost_centre: str | None,
+                     exclude_ref: str | None = None) -> float:
+    """Committed monthly spend for a cost centre (provisioned + in-flight),
+    optionally excluding one request (the one being submitted)."""
+    if not cost_centre:
+        return 0.0
+    stmt = (select(func.coalesce(func.sum(Estimate.monthly), 0))
+            .select_from(Estimate).join(Request, Estimate.request_id == Request.id)
+            .where(Request.cost_centre_code == cost_centre,
+                   Request.status.in_(SHOWBACK_SCOPES["committed"])))
+    if exclude_ref:
+        stmt = stmt.where(Request.reference != exclude_ref)
+    return float(session.scalar(stmt) or 0)
+
+
+def _budget_status(session: Session, cost_centre: str | None, projected: float) -> dict | None:
+    """Budget standing for a cost centre at a projected monthly spend (F-FIN-02).
+    None when the cost centre has no budget defined (ungated)."""
+    if not cost_centre:
+        return None
+    budget = session.scalar(select(Budget).where(Budget.cost_centre_code == cost_centre))
+    if budget is None:
+        return None
+    limit = float(budget.monthly_limit)
+    if projected > limit:
+        status = "over"
+    elif projected >= _budget_warn_pct() / 100.0 * limit:
+        status = "near"
+    else:
+        status = "ok"
+    return {"cost_centre": cost_centre, "limit": round(limit, 2),
+            "projected": round(projected, 2), "remaining": round(limit - projected, 2),
+            "status": status, "currency": budget.currency}
+
+
+def _budget_message(b: dict) -> str:
+    cc, cur = b["cost_centre"], b["currency"]
+    if b["status"] == "over":
+        return (f"Cost centre {cc} would exceed its monthly budget: projected "
+                f"{cur} {b['projected']:,.0f} vs limit {cur} {b['limit']:,.0f} "
+                f"({cur} {abs(b['remaining']):,.0f} over).")
+    return (f"Cost centre {cc} is near its monthly budget: projected "
+            f"{cur} {b['projected']:,.0f} of {cur} {b['limit']:,.0f} "
+            f"({cur} {b['remaining']:,.0f} remaining).")
+
+
+class BudgetIn(BaseModel):
+    cost_centre_code: str
+    monthly_limit: float
+    currency: str = "AED"
+
+    @field_validator("monthly_limit")
+    @classmethod
+    def _positive(cls, v: float) -> float:
+        if v <= 0:
+            raise ValueError("monthly_limit must be positive.")
+        return v
+
+
+@app.get("/api/budgets")
+def list_budgets(session: Session = Depends(get_session),
+                 _auth: str = Depends(require_action("view_overview"))) -> dict:
+    """Every cost-centre budget with its current committed spend + remaining (F-FIN-02)."""
+    out = []
+    for b in session.scalars(select(Budget).order_by(Budget.cost_centre_code)):
+        current = _committed_spend(session, b.cost_centre_code)
+        st = _budget_status(session, b.cost_centre_code, current)
+        out.append({"cost_centre": b.cost_centre_code, "limit": float(b.monthly_limit),
+                    "currency": b.currency, "current": round(current, 2),
+                    "remaining": round(float(b.monthly_limit) - current, 2),
+                    "status": st["status"] if st else "ok"})
+    return {"currency": "AED", "budgets": out}
+
+
+@app.post("/api/budgets")
+def set_budget(body: BudgetIn, session: Session = Depends(get_session),
+               _auth: str = Depends(require_action("execute"))) -> dict:
+    """Set or update a cost centre's monthly budget (F-FIN-02). platform_admin."""
+    budget = session.scalar(select(Budget).where(Budget.cost_centre_code == body.cost_centre_code))
+    if budget is None:
+        budget = Budget(cost_centre_code=body.cost_centre_code)
+        session.add(budget)
+    budget.monthly_limit = body.monthly_limit
+    budget.currency = body.currency
+    append_audit(session, "budget.set", actor=_auth,
+                 detail={"cost_centre": body.cost_centre_code,
+                         "monthly_limit": body.monthly_limit, "currency": body.currency})
+    session.commit()
+    return {"cost_centre": body.cost_centre_code, "monthly_limit": body.monthly_limit,
+            "currency": body.currency}
+
+
+@app.delete("/api/budgets/{cost_centre_code}")
+def delete_budget(cost_centre_code: str, session: Session = Depends(get_session),
+                  _auth: str = Depends(require_action("execute"))) -> dict:
+    """Remove a cost centre's budget (F-FIN-02). platform_admin."""
+    budget = session.scalar(select(Budget).where(Budget.cost_centre_code == cost_centre_code))
+    if budget is None:
+        raise HTTPException(status_code=404, detail=f"No budget defined for {cost_centre_code}.")
+    session.delete(budget)
+    append_audit(session, "budget.deleted", actor=_auth, detail={"cost_centre": cost_centre_code})
+    session.commit()
+    return {"deleted": True, "cost_centre": cost_centre_code}
 
 
 @app.get("/health")
@@ -846,10 +967,27 @@ def submit_request(
                 status_code=422, content={"policy_violations": verdict["violations"]}
             )
 
+    # Server-computed estimate (1.6) — needed now for the budget guardrail below.
+    breakdown = estimate_cost(components_data, req.deployment_target, session, req.advanced_options)
+    monthly = float(breakdown["totals"]["monthly"])
+
+    # Budget guardrail (F-FIN-02): compare the cost centre's projected committed
+    # spend against its budget. Over budget hard-blocks only when enforcement is
+    # on; otherwise over/near is an advisory warning. Undefined budgets are ungated.
+    budget_warnings: list[str] = []
+    projected = _committed_spend(session, req.cost_centre_code, exclude_ref=req.reference) + monthly
+    bstatus = _budget_status(session, req.cost_centre_code, projected)
+    if bstatus is not None and bstatus["status"] == "over" and _budget_enforce():
+        append_audit(session, "budget.blocked", reference=req.reference, detail=bstatus)
+        session.commit()
+        return JSONResponse(status_code=422, content={"budget_error": _budget_message(bstatus)})
+    if bstatus is not None and bstatus["status"] in ("over", "near"):
+        budget_warnings.append(_budget_message(bstatus))
+        append_audit(session, "budget.warning", reference=req.reference, detail=bstatus)
+
     req.status = "submitted"
     req.submitted_at = req.submitted_at or datetime.now(timezone.utc)  # SLA clock (F-GOV-01)
     # Capture the server-computed estimate as a stored fact at submission (1.6).
-    breakdown = estimate_cost(components_data, req.deployment_target, session, req.advanced_options)
     req.estimate = Estimate(
         deployment_target=breakdown["deployment_target"],
         currency=breakdown["currency"],
@@ -887,13 +1025,14 @@ def submit_request(
             content={"error": f"Could not raise the Jira approval ticket: {exc}"},
         )
 
-    # Advisory policy warnings (F-GOV-03): don't block, but record them in the
-    # tamper-evident trail (so they show in the evidence pack) and hand them back
-    # to the portal to surface to the requester.
-    warnings = verdict.get("warnings") or []
-    if warnings:
+    # Advisory notes (F-GOV-03 policy + F-FIN-02 budget): don't block, but record
+    # them in the tamper-evident trail (so they show in the evidence pack) and hand
+    # them back to the portal to surface to the requester.
+    policy_warnings = verdict.get("warnings") or []
+    if policy_warnings:
         append_audit(session, "policy.warnings", reference=req.reference,
-                     detail={"warnings": warnings})
+                     detail={"warnings": policy_warnings})
+    warnings = policy_warnings + budget_warnings
 
     session.commit()
     out = RequestOut.model_validate(req)
