@@ -100,6 +100,7 @@ export default function Overview() {
         <Kpi value={String(k.total)} label="Total requests" href={drill({})} />
         <Kpi value={String(k.active)} label="Active" color="var(--cds-support-success)" href={drill({ status: 'provisioned' })} />
         <Kpi value={String(k.in_flight)} label="In flight" color="var(--cds-support-warning)" href={drill({ status: 'submitted,planned,in-progress' })} />
+        <Kpi value={String(k.breaching_sla)} label="Approvals breaching SLA" color="var(--cds-support-error)" href={drill({ status: 'submitted' })} />
         <Kpi value={String(k.failed)} label="Failed" color="var(--cds-support-error)" href={drill({ status: 'apply-failed,decommission-failed,rejected' })} />
         <Kpi value={String(k.decommissioned)} label="Decommissioned" href={drill({ status: 'decommissioned' })} />
         <Kpi value={`${stats.active_monthly_cost.amount.toFixed(0)} ${stats.active_monthly_cost.currency}`} label="Active monthly cost" href={drill({ status: 'provisioned' })} />

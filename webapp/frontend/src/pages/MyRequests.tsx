@@ -185,6 +185,17 @@ export default function MyRequests({ route }: { route: string }) {
                       <Tag type={badgeType(r.status)} size="sm">
                         {r.status}
                       </Tag>
+                      {r.approval_sla && (
+                        <div>
+                          <Tag
+                            type={r.approval_sla.status === 'breached' ? 'red' : r.approval_sla.status === 'due-soon' ? 'purple' : 'green'}
+                            size="sm"
+                            title={`Awaiting approval · due ${r.approval_sla.due_at.slice(0, 16).replace('T', ' ')}`}
+                          >
+                            {Math.round(r.approval_sla.elapsed_hours)}h / {Math.round(r.approval_sla.sla_hours)}h · {r.approval_sla.status}
+                          </Tag>
+                        </div>
+                      )}
                     </TableCell>
                     <TableCell>{r.requester_name || r.requester}</TableCell>
                     <TableCell>{r.environment_name || r.target_environment || '—'}</TableCell>

@@ -92,6 +92,9 @@ services:
       # Audit hardening (F-SEC-01): set a secret to sign the audit chain with a
       # keyed HMAC (so raw-DB tampering can't forge hashes). Empty = plain SHA-256.
       AUDIT_HMAC_KEY: ${AUDIT_HMAC_KEY:-}
+      # Approval SLA (F-GOV-01): hours a request may await approval before it is
+      # flagged breached and the poller escalates (a Jira comment). 0 = always breached.
+      APPROVAL_SLA_HOURS: ${APPROVAL_SLA_HOURS:-24}
     ports:
       - "8081:8081"
     depends_on:

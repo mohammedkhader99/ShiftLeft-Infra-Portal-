@@ -11,7 +11,7 @@ import httpx
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Response
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, computed_field, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -188,6 +188,13 @@ def stats(session: Session = Depends(get_session),
             iso = created.isocalendar()
             weeks[f"{iso[0]}-W{iso[1]:02d}"] += 1
 
+    # Approvals past their SLA and still waiting (F-GOV-01).
+    breaching_sla = sum(
+        1
+        for req in session.scalars(select(Request).where(Request.status == "submitted"))
+        if (_compute_sla(req.status, req.submitted_at, req.created_at) or {}).get("status") == "breached"
+    )
+
     return {
         "kpis": {
             "total": total,
@@ -195,6 +202,7 @@ def stats(session: Session = Depends(get_session),
             "in_flight": sum_of("submitted", "planned", "in-progress"),
             "failed": sum_of("apply-failed", "decommission-failed", "rejected"),
             "decommissioned": sum_of("decommissioned"),
+            "breaching_sla": breaching_sla,
         },
         "active_monthly_cost": {"amount": float(active_cost), "currency": "AED"},
         "by_status": by_status,
@@ -350,6 +358,33 @@ class ApprovalOut(BaseModel):
     ticket_body: str | None = None
 
 
+def _compute_sla(status: str | None, submitted_at, created_at) -> dict | None:
+    """Approval SLA status for a request awaiting approval (F-GOV-01), computed
+    server-side (authoritative). None unless the request is still 'submitted'.
+    APPROVAL_SLA_HOURS<=0 means an immediate breach (handy for demos/tests)."""
+    if status != "submitted":
+        return None
+    start = submitted_at or created_at
+    if start is None:
+        return None
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=timezone.utc)
+    sla_hours = float(os.getenv("APPROVAL_SLA_HOURS", "24"))
+    elapsed = (datetime.now(timezone.utc) - start).total_seconds() / 3600.0
+    if sla_hours <= 0 or elapsed >= sla_hours:
+        state = "breached"
+    elif elapsed >= 0.8 * sla_hours:
+        state = "due-soon"
+    else:
+        state = "on-time"
+    return {
+        "sla_hours": sla_hours,
+        "elapsed_hours": round(elapsed, 2),
+        "due_at": (start + timedelta(hours=sla_hours)).isoformat(),
+        "status": state,
+    }
+
+
 class RequestOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     reference: str
@@ -377,9 +412,16 @@ class RequestOut(BaseModel):
     technical_owner: str | None = None
     environment_owner: str | None = None
     advanced_options: dict | None = None
+    submitted_at: datetime | None = None
+    created_at: datetime | None = None
     components: list[ComponentOut] = []
     estimate: EstimateOut | None = None
     approval: ApprovalOut | None = None
+
+    @computed_field
+    @property
+    def approval_sla(self) -> dict | None:
+        return _compute_sla(self.status, self.submitted_at, self.created_at)
 
 
 def _load_request(reference: str, session: Session) -> Request:
@@ -537,6 +579,7 @@ def submit_request(
         )
 
     req.status = "submitted"
+    req.submitted_at = req.submitted_at or datetime.now(timezone.utc)  # SLA clock (F-GOV-01)
     # Capture the server-computed estimate as a stored fact at submission (1.6).
     breakdown = estimate_cost(components_data, req.deployment_target, session, req.advanced_options)
     req.estimate = Estimate(
@@ -1189,6 +1232,33 @@ def _advance_request(session: Session, req: Request) -> str:
     return req.status
 
 
+def _escalate_sla(session: Session, req: Request) -> None:
+    """Escalate an approval that has breached its SLA — once (F-GOV-01).
+
+    Posts a Jira comment (best-effort), records a tamper-evident `sla.breached`
+    audit event, and stamps sla_escalated_at so it never fires twice.
+    """
+    if req.status != "submitted" or req.sla_escalated_at is not None:
+        return
+    sla = _compute_sla(req.status, req.submitted_at, req.created_at)
+    if not sla or sla["status"] != "breached":
+        return
+    if req.approval and jira_mode() == "live":
+        try:
+            add_comment(
+                req.approval.jira_key,
+                f"⏰ Approval SLA breached: {sla['elapsed_hours']:.1f}h elapsed "
+                f"(SLA {sla['sla_hours']:.0f}h). Escalating for review.",
+            )
+        except JiraError:
+            pass  # comment is best-effort; the audit + flag still record the breach
+    req.sla_escalated_at = datetime.now(timezone.utc)
+    append_audit(session, "sla.breached", reference=req.reference,
+                 jira_key=req.approval.jira_key if req.approval else None,
+                 detail={"elapsed_hours": sla["elapsed_hours"], "sla_hours": sla["sla_hours"]})
+    session.commit()
+
+
 def _poll_once() -> None:
     """One sweep: advance every request that isn't finished, each in its own
     session so one bad request can't abort the others."""
@@ -1205,6 +1275,9 @@ def _poll_once() -> None:
             with SessionLocal() as session:
                 req = session.scalar(select(Request).where(Request.reference == ref))
                 if req is not None and req.approval is not None:
+                    # SLA escalation runs first + independently, so a transient
+                    # Jira error while advancing can't skip it (F-GOV-01).
+                    _escalate_sla(session, req)
                     _advance_request(session, req)
         except JiraError:
             continue  # transient — try again next cycle, no audit noise

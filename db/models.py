@@ -182,6 +182,10 @@ class Request(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
     )
+    # Approval SLA (F-GOV-01): when the request entered 'submitted' (the SLA
+    # clock start), and when a breach was escalated (so we escalate only once).
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    sla_escalated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # An environment is made of one or more components, each a technology with
     # its own size (ARCHITECTURE.md §5 — the 'component' model, 1.3a).

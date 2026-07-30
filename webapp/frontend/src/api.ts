@@ -84,6 +84,8 @@ export type RequestRow = {
   technical_owner?: string | null
   environment_owner?: string | null
   advanced_options?: Record<string, unknown> | null
+  submitted_at?: string | null
+  approval_sla?: { sla_hours: number; elapsed_hours: number; due_at: string; status: string } | null
   components: { technology_code: string | null; size: string | null }[]
   estimate?: { currency: string; monthly: number } | null
   approval?: { jira_key: string; ticket_url?: string | null } | null
@@ -110,7 +112,7 @@ export async function getRequests(
 
 export type Breakdown = { key: string; count: number }
 export type Stats = {
-  kpis: { total: number; active: number; in_flight: number; failed: number; decommissioned: number }
+  kpis: { total: number; active: number; in_flight: number; failed: number; decommissioned: number; breaching_sla: number }
   active_monthly_cost: { amount: number; currency: string }
   by_status: Breakdown[]
   by_type: Breakdown[]

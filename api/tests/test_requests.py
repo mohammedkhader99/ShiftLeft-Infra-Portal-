@@ -1184,3 +1184,48 @@ def test_audit_verify_endpoint_reports_intact(client, monkeypatch):
     result = client.get("/api/audit/verify").json()
     assert result["ok"] is True
     assert result["checked"] >= 3  # approval.approved, orchestrator.handoff, provisioned
+
+
+# --- Approval SLA + escalation (F-GOV-01) -------------------------------------
+
+def test_approval_sla_on_time_after_submit(client):
+    ref = _draft_ref(client, VALID_CREATE)
+    client.post(f"/api/requests/{ref}/submit")
+    sla = client.get(f"/api/requests/{ref}").json()["approval_sla"]
+    assert sla is not None
+    assert sla["status"] == "on-time"
+    assert sla["sla_hours"] == 24.0
+
+
+def test_approval_sla_breached_when_hours_zero(client, monkeypatch):
+    monkeypatch.setenv("APPROVAL_SLA_HOURS", "0")
+    ref = _draft_ref(client, VALID_CREATE)
+    client.post(f"/api/requests/{ref}/submit")
+    assert client.get(f"/api/requests/{ref}").json()["approval_sla"]["status"] == "breached"
+
+
+def test_approval_sla_absent_for_a_draft(client):
+    ref = _draft_ref(client, VALID_CREATE)  # never submitted
+    assert client.get(f"/api/requests/{ref}").json()["approval_sla"] is None
+
+
+def test_stats_reports_breaching_sla(client, monkeypatch):
+    monkeypatch.setenv("APPROVAL_SLA_HOURS", "0")
+    ref = _draft_ref(client, VALID_CREATE)
+    client.post(f"/api/requests/{ref}/submit")
+    assert client.get("/api/stats").json()["kpis"]["breaching_sla"] >= 1
+
+
+def test_sla_escalation_fires_once(poller, monkeypatch):
+    monkeypatch.setenv("APPROVAL_SLA_HOURS", "0")  # immediate breach
+    import api.main as main
+
+    client, session = poller
+    req, key = _submit_request(client, session)
+    session.refresh(req)
+    main._escalate_sla(session, req)
+    assert req.sla_escalated_at is not None
+    assert _events(session, req.reference).count("sla.breached") == 1
+    # A second sweep must not escalate again.
+    main._escalate_sla(session, req)
+    assert _events(session, req.reference).count("sla.breached") == 1
