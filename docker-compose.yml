@@ -119,6 +119,10 @@ services:
       # drifts from the estimate by more than this percentage raises a one-time
       # variance alert (Jira comment + audit).
       VARIANCE_ALERT_PCT: ${VARIANCE_ALERT_PCT:-15}
+      # Ownership orphan detection (F-LCM-10): comma-separated people who have
+      # left; a provisioned environment whose effective owner is on this list is
+      # flagged for reassignment. Empty by default (a directory sync fills it later).
+      DEPARTED_OWNERS: ${DEPARTED_OWNERS:-}
       # Change window (F-GOV-05): when enabled, provisioning of approved requests
       # only happens inside the window; outside it they are held until it opens.
       CHANGE_WINDOW_ENABLED: ${CHANGE_WINDOW_ENABLED:-false}

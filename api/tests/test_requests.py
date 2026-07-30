@@ -1972,3 +1972,89 @@ def test_variance_endpoints_require_oversight(client, monkeypatch):
     h = {"X-Requester": "dev@x.com"}
     assert client.get("/api/variance", headers=h).status_code == 403
     assert client.post("/api/requests/X/actual", json={"billed_monthly": 1}, headers=h).status_code == 403
+
+
+# --- Ownership transfer & orphan detection (E3.7, F-LCM-10) ------------------
+
+def _provisioned_owner(session, ref, *, environment_owner=None, application_owner=None,
+                       requester="req@x.com"):
+    import api.main as main
+    req = main.Request(reference=ref, status="provisioned", requester=requester,
+                       environment_owner=environment_owner, application_owner=application_owner,
+                       environment_name="e1")
+    req.approval = main.Approval(jira_key=f"J-{ref}", status="approved")
+    session.add(req)
+    session.commit()
+    return req
+
+
+def test_resolve_owner_and_orphan(monkeypatch):
+    import api.main as main
+    from db.models import Request
+    r1 = Request(reference="a", requester="req@x.com", application_owner="app@x.com",
+                 environment_owner="env@x.com")
+    assert main._resolve_owner(r1) == "env@x.com"       # environment owner wins
+    r2 = Request(reference="b", requester="req@x.com")
+    assert main._resolve_owner(r2) == "req@x.com"       # falls back to requester
+    assert main._is_orphan(r2) is False                 # has a resolvable owner
+    monkeypatch.setenv("DEPARTED_OWNERS", "req@x.com, gone@x.com")
+    assert main._is_orphan(r2) is True                  # effective owner has left
+
+
+def test_transfer_owner_reassigns_and_audits(poller):
+    client, session = poller
+    _provisioned_owner(session, "REQ-O-1", environment_owner="old@x.com")
+    resp = client.post("/api/requests/REQ-O-1/transfer-owner", json={"new_owner": "new@x.com"})
+    assert resp.status_code == 200
+    assert resp.json()["from"] == "old@x.com" and resp.json()["to"] == "new@x.com"
+    assert "ownership.transferred" in _events(session, "REQ-O-1")
+    assert client.get("/api/requests/REQ-O-1").json()["owner"] == "new@x.com"
+
+
+def test_orphans_lists_departed_owner_environments(poller, monkeypatch):
+    client, session = poller
+    monkeypatch.setenv("DEPARTED_OWNERS", "gone@x.com")
+    _provisioned_owner(session, "REQ-O-2", environment_owner="gone@x.com")
+    _provisioned_owner(session, "REQ-O-3", environment_owner="here@x.com")
+    refs = {o["reference"] for o in client.get("/api/orphans").json()["orphans"]}
+    assert "REQ-O-2" in refs and "REQ-O-3" not in refs
+
+
+def test_orphan_sweep_flags_once_and_transfer_clears(poller, monkeypatch):
+    import api.main as main
+    client, session = poller
+    monkeypatch.setenv("DEPARTED_OWNERS", "gone@x.com")
+    monkeypatch.setattr(main, "add_comment", lambda *a, **k: None)
+    req = _provisioned_owner(session, "REQ-O-4", environment_owner="gone@x.com")
+    main._sweep_orphans(session)
+    session.refresh(req)
+    assert req.orphaned_at is not None and "orphan" in (req.status_detail or "").lower()
+    assert _events(session, "REQ-O-4").count("ownership.orphaned") == 1
+    main._sweep_orphans(session)  # flagged once only
+    assert _events(session, "REQ-O-4").count("ownership.orphaned") == 1
+    # Reassigning to a present owner clears the flag.
+    client.post("/api/requests/REQ-O-4/transfer-owner", json={"new_owner": "new@x.com"})
+    session.refresh(req)
+    assert req.orphaned_at is None
+
+
+def test_owner_and_orphaned_exposed(poller, monkeypatch):
+    client, session = poller
+    monkeypatch.setenv("DEPARTED_OWNERS", "gone@x.com")
+    _provisioned_owner(session, "REQ-O-5", environment_owner="gone@x.com")
+    row = client.get("/api/requests/REQ-O-5").json()
+    assert row["owner"] == "gone@x.com" and row["orphaned"] is True
+
+
+def test_transfer_owner_requires_admin(poller, monkeypatch):
+    client, session = poller
+    _provisioned_owner(session, "REQ-O-6", environment_owner="old@x.com")
+    monkeypatch.setenv("ROLE_MAP", '{"dev@x.com": ["requester"]}')
+    resp = client.post("/api/requests/REQ-O-6/transfer-owner", json={"new_owner": "new@x.com"},
+                       headers={"X-Requester": "dev@x.com"})
+    assert resp.status_code == 403
+
+
+def test_orphans_requires_oversight(client, monkeypatch):
+    monkeypatch.setenv("ROLE_MAP", '{"dev@x.com": ["requester"]}')
+    assert client.get("/api/orphans", headers={"X-Requester": "dev@x.com"}).status_code == 403

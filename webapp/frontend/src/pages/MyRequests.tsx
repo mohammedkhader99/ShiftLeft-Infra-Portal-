@@ -16,9 +16,10 @@ import {
   InlineLoading,
   InlineNotification,
   Button,
+  TextInput,
 } from '@carbon/react'
-import { WarningAltFilled, Renew } from '@carbon/icons-react'
-import { getMe, getRequests, getAudit, renewRequest, type RequestRow } from '../api'
+import { WarningAltFilled, Renew, UserFollow } from '@carbon/icons-react'
+import { getMe, getRequests, getAudit, renewRequest, transferOwner, type RequestRow } from '../api'
 import { workflowSteps, fmtWhen, type WFStep } from '../workflow'
 
 const FILTER_KEYS = ['status', 'request_type', 'technology', 'deployment_target', 'created_week', 'requested_by', 'subsidiary']
@@ -118,11 +119,24 @@ export default function MyRequests({ route }: { route: string }) {
     })
   }
 
-  async function onRenew(ref: string) {
-    await renewRequest(ref)
+  function refresh() {
     if (!me) return
     const params = estate ? { ...filters } : { requester: me.email, ...filters }
     getRequests(params).then(setRows).catch(() => {})
+  }
+
+  async function onRenew(ref: string) {
+    await renewRequest(ref)
+    refresh()
+  }
+
+  const [transferInputs, setTransferInputs] = useState<Record<string, string>>({})
+  async function onTransfer(ref: string) {
+    const newOwner = (transferInputs[ref] || '').trim()
+    if (!newOwner) return
+    await transferOwner(ref, newOwner)
+    setTransferInputs((s) => ({ ...s, [ref]: '' }))
+    refresh()
   }
 
   if (!loaded) return <InlineLoading description="Loading requests…" />
@@ -233,6 +247,13 @@ export default function MyRequests({ route }: { route: string }) {
                             title={`Billed ${Math.round(r.variance.actual)} vs estimate ${Math.round(r.variance.estimate)} AED/mo`}
                           >
                             {r.variance.variance_pct > 0 ? '+' : ''}{Math.round(r.variance.variance_pct)}% vs est
+                          </Tag>
+                        </div>
+                      )}
+                      {r.orphaned && (
+                        <div>
+                          <Tag type="magenta" size="sm" title="No resolvable owner — reassign">
+                            orphaned
                           </Tag>
                         </div>
                       )}
@@ -369,6 +390,32 @@ export default function MyRequests({ route }: { route: string }) {
                             <Button size="sm" kind="tertiary" renderIcon={Renew} onClick={() => onRenew(r.reference)}>
                               Renew ({30} days)
                             </Button>
+                          )}
+                        </div>
+                      )}
+                      {r.status === 'provisioned' && (
+                        <div style={{ marginTop: '1rem', display: 'flex', alignItems: 'flex-end', gap: '1rem', flexWrap: 'wrap' }}>
+                          <span style={{ fontSize: '0.85rem', color: 'var(--cds-text-secondary)' }}>
+                            Owner: {r.owner || '—'}
+                            {r.orphaned && <span style={{ color: 'var(--cds-support-error)' }}> · orphaned</span>}
+                          </span>
+                          {canRenew && (
+                            <>
+                              <TextInput
+                                id={`transfer-${r.reference}`}
+                                labelText=""
+                                size="sm"
+                                placeholder="new owner email"
+                                value={transferInputs[r.reference] || ''}
+                                onChange={(e) => setTransferInputs((s) => ({ ...s, [r.reference]: e.target.value }))}
+                                style={{ maxWidth: '16rem' }}
+                              />
+                              <Button size="sm" kind="tertiary" renderIcon={UserFollow}
+                                disabled={!(transferInputs[r.reference] || '').trim()}
+                                onClick={() => onTransfer(r.reference)}>
+                                Transfer owner
+                              </Button>
+                            </>
                           )}
                         </div>
                       )}

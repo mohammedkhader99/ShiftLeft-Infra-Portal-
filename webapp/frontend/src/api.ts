@@ -95,6 +95,21 @@ export type RequestRow = {
   ttl?: { expiry: string; days_left: number; status: string } | null
   // Cost variance (F-FIN-01): estimate vs actual, when an actual has been recorded.
   variance?: { estimate: number; actual: number; variance_pct: number; status: string } | null
+  // Ownership (F-LCM-10): the resolved owner + whether the environment is orphaned.
+  owner?: string | null
+  orphaned?: boolean
+}
+
+export async function transferOwner(
+  reference: string,
+  newOwner: string,
+): Promise<{ status: number; body: any }> {
+  const r = await fetch(`/api/requests/${reference}/transfer-owner`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ new_owner: newOwner }),
+  })
+  return { status: r.status, body: await r.json().catch(() => ({})) }
 }
 
 export async function renewRequest(

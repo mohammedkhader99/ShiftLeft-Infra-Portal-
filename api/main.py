@@ -575,6 +575,68 @@ def variance_report(session: Session = Depends(get_session),
             "rows": rows}
 
 
+# --- Ownership transfer & orphan detection (E3.7, F-LCM-10) -------------------
+
+OWNER_ROLES = {"environment_owner", "application_owner", "business_owner", "technical_owner"}
+
+
+class TransferOwnerIn(BaseModel):
+    new_owner: str
+    role: str = "environment_owner"
+
+    @field_validator("new_owner")
+    @classmethod
+    def _nonempty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("new_owner is required.")
+        return v.strip()
+
+    @field_validator("role")
+    @classmethod
+    def _valid_role(cls, v: str) -> str:
+        if v not in OWNER_ROLES:
+            raise ValueError(f"role must be one of {sorted(OWNER_ROLES)}.")
+        return v
+
+
+@app.post("/api/requests/{reference}/transfer-owner")
+def transfer_owner(reference: str, body: TransferOwnerIn, session: Session = Depends(get_session),
+                   actor: str = Depends(require_action("execute"))):
+    """Reassign an environment's owner (F-LCM-10). platform_admin.
+
+    Records the change (from -> to) in the tamper-evident trail and clears any
+    orphan flag, so a reassigned environment stops being flagged.
+    """
+    req = _load_request(reference, session)
+    old = getattr(req, body.role, None)
+    setattr(req, body.role, body.new_owner)
+    req.orphaned_at = None  # a fresh owner clears the orphan flag
+    if req.status_detail and "orphan" in req.status_detail.lower():
+        req.status_detail = None
+    append_audit(session, "ownership.transferred", reference=reference, actor=actor,
+                 detail={"role": body.role, "from": old, "to": body.new_owner})
+    session.commit()
+    return {"reference": reference, "role": body.role, "from": old, "to": body.new_owner,
+            "owner": _resolve_owner(req), "orphaned": _is_orphan(req)}
+
+
+@app.get("/api/orphans")
+def orphans(session: Session = Depends(get_session),
+            _auth: str = Depends(require_action("view_overview"))) -> dict:
+    """Provisioned environments with no resolvable owner (F-LCM-10), for
+    reassignment. Oversight-gated."""
+    out = []
+    for req in session.scalars(select(Request).where(Request.status == "provisioned")):
+        if not _is_orphan(req):
+            continue
+        owner = _resolve_owner(req)
+        out.append({"reference": req.reference,
+                    "environment": req.environment_name or req.target_environment,
+                    "owner": owner,
+                    "reason": "no owner assigned" if not owner else f"owner '{owner}' has left"})
+    return {"count": len(out), "orphans": out}
+
+
 @app.get("/health")
 def health() -> dict:
     return {"ok": True, "mock": is_mock_mode()}
@@ -788,6 +850,9 @@ class RequestOut(BaseModel):
     # Cost variance (F-FIN-01): {estimate, actual, variance_pct, status} when an
     # actual has been recorded, else None. Attached by the list/get endpoints.
     variance: dict | None = None
+    # Ownership (F-LCM-10): the resolved environment owner + whether it's orphaned.
+    owner: str | None = None
+    orphaned: bool = False
 
     @computed_field
     @property
@@ -917,6 +982,8 @@ def list_requests(
         out.ttl = _ttl_status(ttl_map.get(r.reference))
         out.variance = _variance_status(r.estimate.monthly if r.estimate else None,
                                         actual_map.get(r.reference))
+        out.owner = _resolve_owner(r)
+        out.orphaned = r.status == "provisioned" and _is_orphan(r)
         outs.append(out)
     return outs
 
@@ -929,6 +996,8 @@ def get_request(reference: str, session: Session = Depends(get_session)) -> Requ
     out.ttl = _ttl_status(_min_active_ttl(session, reference))
     actual = session.scalar(select(ActualCost.billed_monthly).where(ActualCost.reference == reference))
     out.variance = _variance_status(req.estimate.monthly if req.estimate else None, actual)
+    out.owner = _resolve_owner(req)
+    out.orphaned = req.status == "provisioned" and _is_orphan(req)
     return out
 
 
@@ -2077,9 +2146,30 @@ def _escalate_sla(session: Session, req: Request) -> None:
     session.commit()
 
 
+def _resolve_owner(req: Request) -> str | None:
+    """The environment's effective owner (F-LCM-10): the named environment owner,
+    else the application owner, else the requester."""
+    return req.environment_owner or req.application_owner or req.requester or None
+
+
+def _departed_owners() -> set[str]:
+    """People who have left, whose environments should be flagged for reassignment
+    (F-LCM-10). Populated from DEPARTED_OWNERS; a live directory sync fills this later."""
+    return {o.strip().lower() for o in os.getenv("DEPARTED_OWNERS", "").split(",") if o.strip()}
+
+
+def _is_orphan(req: Request) -> bool:
+    """Whether a provisioned environment has no resolvable owner (F-LCM-10): none
+    at all, or the effective owner has left (is in DEPARTED_OWNERS)."""
+    owner = _resolve_owner(req)
+    if not owner:
+        return True
+    return owner.strip().lower() in _departed_owners()
+
+
 def _ttl_contact(req: Request) -> str | None:
     """Best contact for a TTL notice: the environment owner, else the requester."""
-    return req.environment_owner or req.application_owner or req.requester or None
+    return _resolve_owner(req)
 
 
 def _ttl_warn(session: Session, req: Request, expiry: datetime) -> None:
@@ -2185,6 +2275,34 @@ def _sweep_ttls(session: Session) -> None:
             _ttl_warn(session, req, expiry)
 
 
+def _sweep_orphans(session: Session) -> None:
+    """Flag newly-orphaned provisioned environments once (F-LCM-10), and clear the
+    flag when an environment gets an owner again. Best-effort Jira note for ops."""
+    for req in session.scalars(select(Request).where(Request.status == "provisioned")):
+        orphan = _is_orphan(req)
+        if orphan and req.orphaned_at is None:
+            req.orphaned_at = datetime.now(timezone.utc)
+            owner = _resolve_owner(req)
+            reason = "has no assigned owner" if not owner else f"owner '{owner}' has left"
+            req.status_detail = f"Orphaned: {reason}; reassign an owner."
+            if req.approval is not None:
+                try:
+                    add_comment(req.approval.jira_key,
+                                f"👤 Environment {req.reference} is orphaned ({reason}). "
+                                f"Reassign an owner.")
+                except JiraError:
+                    pass
+            append_audit(session, "ownership.orphaned", reference=req.reference,
+                         jira_key=req.approval.jira_key if req.approval else None, actor="poller",
+                         detail={"owner": owner, "reason": reason})
+            session.commit()
+        elif not orphan and req.orphaned_at is not None:
+            req.orphaned_at = None  # owner reassigned / un-departed — clear the flag
+            if req.status_detail and "orphan" in req.status_detail.lower():
+                req.status_detail = None
+            session.commit()
+
+
 def _poll_once() -> None:
     """One sweep: advance every request that isn't finished, each in its own
     session so one bad request can't abort the others."""
@@ -2224,6 +2342,18 @@ def _poll_once() -> None:
         try:
             with SessionLocal() as session:
                 append_audit(session, "ttl.sweep.error", detail={"error": str(exc)})
+                session.commit()
+        except Exception:  # noqa: BLE001
+            pass
+
+    # Orphan sweep (F-LCM-10): flag provisioned environments with no owner.
+    try:
+        with SessionLocal() as session:
+            _sweep_orphans(session)
+    except Exception as exc:  # noqa: BLE001
+        try:
+            with SessionLocal() as session:
+                append_audit(session, "orphan.sweep.error", detail={"error": str(exc)})
                 session.commit()
         except Exception:  # noqa: BLE001
             pass

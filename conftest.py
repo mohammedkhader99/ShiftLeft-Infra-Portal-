@@ -55,3 +55,7 @@ os.environ["TTL_ENFORCE"] = "false"
 # Budget guardrails (F-FIN-02): pin enforcement OFF so an over-budget submit
 # warns rather than blocks; the enforcement test turns it on explicitly.
 os.environ["BUDGET_ENFORCE"] = "false"
+# Ownership orphans (F-LCM-10): pin the departed-owners list empty so a
+# developer's .env can't flag environments in unrelated tests; the orphan tests
+# set DEPARTED_OWNERS explicitly.
+os.environ["DEPARTED_OWNERS"] = ""

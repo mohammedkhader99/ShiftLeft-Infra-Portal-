@@ -238,6 +238,10 @@ class Request(Base):
     # poller warns/flags a non-prod environment's expiry once per TTL cycle;
     # cleared on renewal so a future approach re-warns.
     ttl_notified: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # Ownership orphan flag (F-LCM-10): when the environment was first flagged as
+    # orphaned (no resolvable owner / owner left), so it's flagged once; cleared
+    # on an ownership transfer.
+    orphaned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # Policy waiver (F-GOV-02): a documented, expiring exception that lets a
     # request pass the OPA policy gate despite violations. Holds
     # {reason, granted_by, granted_at, expires_at}. Nullable — most requests have
