@@ -141,6 +141,28 @@ class Budget(Base):
     )
 
 
+class ActualCost(Base):
+    """The actual billed monthly cost for a provisioned request (F-FIN-01, E3.5).
+
+    The 'actual' side of actual-vs-estimate variance. Recorded manually / loaded
+    now; a live cloud-billing sync fills the same slot later. One current row per
+    request (upserted); `alerted` tracks whether a drift alert already fired for
+    the current figure, so re-recording the same value doesn't re-alert.
+    """
+
+    __tablename__ = "actual_cost"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    reference: Mapped[str] = mapped_column(String(20), unique=True, index=True)
+    billed_monthly: Mapped[float] = mapped_column(Numeric(14, 2))
+    period: Mapped[str | None] = mapped_column(String(16), nullable=True)  # e.g. "2026-07"
+    source: Mapped[str] = mapped_column(String(32), default="manual")
+    alerted: Mapped[bool] = mapped_column(Boolean, default=False)
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )
+
+
 class Request(Base):
     """A provisioning request (increment 1.3): the first transactional table.
 

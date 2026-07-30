@@ -225,6 +225,17 @@ export default function MyRequests({ route }: { route: string }) {
                           </Tag>
                         </div>
                       )}
+                      {r.variance && r.variance.status !== 'on-track' && (
+                        <div>
+                          <Tag
+                            type={r.variance.status === 'over' ? 'red' : 'green'}
+                            size="sm"
+                            title={`Billed ${Math.round(r.variance.actual)} vs estimate ${Math.round(r.variance.estimate)} AED/mo`}
+                          >
+                            {r.variance.variance_pct > 0 ? '+' : ''}{Math.round(r.variance.variance_pct)}% vs est
+                          </Tag>
+                        </div>
+                      )}
                       {r.status_detail && (
                         <div
                           style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', marginTop: '0.25rem', maxWidth: '100%', color: 'var(--cds-text-error)', fontSize: '0.75rem' }}

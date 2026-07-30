@@ -44,6 +44,7 @@ from api.sizing import resolve_components
 from api.validation import validate_submission
 from common.signing import sign
 from db.models import (
+    ActualCost,
     Approval,
     AuditLog,
     Budget,
@@ -125,6 +126,33 @@ def _ttl_for(req: Request) -> datetime | None:
     if tier in TTL_NONPROD_TIERS:
         return datetime.now(timezone.utc) + timedelta(days=_ttl_days_nonprod())
     return None
+
+
+def _variance_alert_pct() -> float:
+    try:
+        return max(0.0, float(os.getenv("VARIANCE_ALERT_PCT", "15")))
+    except (ValueError, TypeError):
+        return 15.0
+
+
+def _variance_status(estimate_monthly, actual_monthly) -> dict | None:
+    """Actual-vs-estimate variance (F-FIN-01), computed server-side. None unless
+    both an estimate and a recorded actual exist. status: over / under / on-track
+    against VARIANCE_ALERT_PCT."""
+    if estimate_monthly is None or actual_monthly is None:
+        return None
+    est, act = float(estimate_monthly), float(actual_monthly)
+    variance = round(act - est, 2)
+    pct = round(variance / est * 100.0, 1) if est else 0.0
+    threshold = _variance_alert_pct()
+    if pct > threshold:
+        status = "over"
+    elif pct < -threshold:
+        status = "under"
+    else:
+        status = "on-track"
+    return {"estimate": round(est, 2), "actual": round(act, 2),
+            "variance": variance, "variance_pct": pct, "status": status}
 
 
 def _ttl_status(expiry: datetime | None) -> dict | None:
@@ -455,6 +483,98 @@ def delete_budget(cost_centre_code: str, session: Session = Depends(get_session)
     return {"deleted": True, "cost_centre": cost_centre_code}
 
 
+# --- Actual-vs-estimate variance (E3.5, F-FIN-01) ----------------------------
+
+class ActualIn(BaseModel):
+    billed_monthly: float
+    period: str | None = None
+    source: str = "manual"
+
+    @field_validator("billed_monthly")
+    @classmethod
+    def _nonneg(cls, v: float) -> float:
+        if v < 0:
+            raise ValueError("billed_monthly must be zero or positive.")
+        return v
+
+
+@app.post("/api/requests/{reference}/actual")
+def record_actual(reference: str, body: ActualIn, session: Session = Depends(get_session),
+                  actor: str = Depends(require_action("view_overview"))):
+    """Record the actual billed monthly cost for a request (F-FIN-01).
+
+    Computes variance against the approved estimate and, when the drift exceeds
+    VARIANCE_ALERT_PCT, raises a one-time alert (Jira comment + variance.alert).
+    Oversight-gated (finops/admin/auditor). Re-recording the same figure doesn't
+    re-alert; a changed figure re-arms the alert.
+    """
+    req = _load_request(reference, session)
+    if req.estimate is None:
+        raise HTTPException(status_code=400,
+                            detail="No approved estimate to compare the actual against.")
+    actual = session.scalar(select(ActualCost).where(ActualCost.reference == reference))
+    changed = actual is None or float(actual.billed_monthly) != float(body.billed_monthly)
+    if actual is None:
+        actual = ActualCost(reference=reference)
+        session.add(actual)
+    actual.billed_monthly = body.billed_monthly
+    actual.period = body.period
+    actual.source = body.source
+    if changed:
+        actual.alerted = False
+    append_audit(session, "actual.recorded", reference=reference, actor=actor,
+                 detail={"billed_monthly": body.billed_monthly, "period": body.period,
+                         "source": body.source})
+
+    v = _variance_status(req.estimate.monthly, body.billed_monthly)
+    if v and v["status"] != "on-track" and not actual.alerted:
+        actual.alerted = True
+        req.status_detail = (f"Cost variance {v['variance_pct']:+.0f}% vs estimate "
+                             f"(billed {v['actual']:,.0f} vs {v['estimate']:,.0f} AED/mo).")
+        if req.approval is not None:
+            try:
+                add_comment(req.approval.jira_key,
+                            f"📊 Cost variance alert: {reference} is billing "
+                            f"{v['actual']:,.0f} vs an estimate of {v['estimate']:,.0f} AED/mo "
+                            f"({v['variance_pct']:+.0f}%).")
+            except JiraError:
+                pass
+        append_audit(session, "variance.alert", reference=reference,
+                     jira_key=req.approval.jira_key if req.approval else None, actor=actor,
+                     detail=v)
+    session.commit()
+    return {"reference": reference, **(v or {})}
+
+
+@app.get("/api/variance")
+def variance_report(session: Session = Depends(get_session),
+                    _auth: str = Depends(require_action("view_overview"))) -> dict:
+    """Actual-vs-estimate variance across the estate (F-FIN-01): one row per
+    request that has both an estimate and a recorded actual, biggest drift first,
+    plus estate totals. Oversight-gated."""
+    rows = []
+    tot_est = tot_act = 0.0
+    for req, est, act in session.execute(
+        select(Request, Estimate.monthly, ActualCost.billed_monthly)
+        .join(Estimate, Estimate.request_id == Request.id)
+        .join(ActualCost, ActualCost.reference == Request.reference)
+    ).all():
+        v = _variance_status(est, act)
+        if v is None:
+            continue
+        rows.append({"reference": req.reference, "cost_centre": req.cost_centre_code,
+                     "environment": req.environment_name or req.target_environment, **v})
+        tot_est += v["estimate"]
+        tot_act += v["actual"]
+    rows.sort(key=lambda r: abs(r["variance_pct"]), reverse=True)
+    total_variance = round(tot_act - tot_est, 2)
+    return {"currency": "AED",
+            "total": {"estimate": round(tot_est, 2), "actual": round(tot_act, 2),
+                      "variance": total_variance,
+                      "variance_pct": round(total_variance / tot_est * 100.0, 1) if tot_est else 0.0},
+            "rows": rows}
+
+
 @app.get("/health")
 def health() -> dict:
     return {"ok": True, "mock": is_mock_mode()}
@@ -665,6 +785,9 @@ class RequestOut(BaseModel):
     # Environment TTL (F-FIN-07): {expiry, days_left, status} for a provisioned
     # non-prod environment, else None. Attached by the list/get endpoints.
     ttl: dict | None = None
+    # Cost variance (F-FIN-01): {estimate, actual, variance_pct, status} when an
+    # actual has been recorded, else None. Attached by the list/get endpoints.
+    variance: dict | None = None
 
     @computed_field
     @property
@@ -769,9 +892,10 @@ def list_requests(
             return f"{iso[0]}-W{iso[1]:02d}"
         results = [r for r in results if r.created_at and _week(r.created_at) == created_week]
 
-    # Attach each environment's TTL (F-FIN-07) from its active resources, batched.
+    # Attach each environment's TTL (F-FIN-07) + cost variance (F-FIN-01), batched.
     refs = [r.reference for r in results]
     ttl_map: dict[str, datetime] = {}
+    actual_map: dict[str, float] = {}
     if refs:
         for ref, exp in session.execute(
             select(ProvisionedResource.reference, func.min(ProvisionedResource.ttl_expiry))
@@ -782,10 +906,17 @@ def list_requests(
         ).all():
             if exp is not None:
                 ttl_map[ref] = exp
+        for ref, billed in session.execute(
+            select(ActualCost.reference, ActualCost.billed_monthly)
+            .where(ActualCost.reference.in_(refs))
+        ).all():
+            actual_map[ref] = billed
     outs = []
     for r in results:
         out = RequestOut.model_validate(r)
         out.ttl = _ttl_status(ttl_map.get(r.reference))
+        out.variance = _variance_status(r.estimate.monthly if r.estimate else None,
+                                        actual_map.get(r.reference))
         outs.append(out)
     return outs
 
@@ -793,8 +924,11 @@ def list_requests(
 @app.get("/api/requests/{reference}", response_model=RequestOut)
 def get_request(reference: str, session: Session = Depends(get_session)) -> RequestOut:
     """Load a draft (or submitted request) so it can be resumed/viewed."""
-    out = RequestOut.model_validate(_load_request(reference, session))
+    req = _load_request(reference, session)
+    out = RequestOut.model_validate(req)
     out.ttl = _ttl_status(_min_active_ttl(session, reference))
+    actual = session.scalar(select(ActualCost.billed_monthly).where(ActualCost.reference == reference))
+    out.variance = _variance_status(req.estimate.monthly if req.estimate else None, actual)
     return out
 
 

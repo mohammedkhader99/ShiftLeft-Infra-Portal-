@@ -93,6 +93,8 @@ export type RequestRow = {
   waiver?: { reason: string; granted_by: string; granted_at?: string | null; expires_at?: string | null } | null
   // Environment TTL (F-FIN-07): expiry + ok/expiring/expired, for provisioned non-prod envs.
   ttl?: { expiry: string; days_left: number; status: string } | null
+  // Cost variance (F-FIN-01): estimate vs actual, when an actual has been recorded.
+  variance?: { estimate: number; actual: number; variance_pct: number; status: string } | null
 }
 
 export async function renewRequest(
@@ -173,6 +175,29 @@ export type BudgetRow = {
 
 export async function getBudgets(): Promise<{ currency: string; budgets: BudgetRow[] } | 'forbidden' | null> {
   const r = await fetch('/api/budgets')
+  if (r.status === 403) return 'forbidden'
+  return r.ok ? r.json() : null
+}
+
+// Actual-vs-estimate variance (E3.5, F-FIN-01).
+export type VarianceRow = {
+  reference: string
+  cost_centre?: string | null
+  environment?: string | null
+  estimate: number
+  actual: number
+  variance: number
+  variance_pct: number
+  status: string
+}
+export type Variance = {
+  currency: string
+  total: { estimate: number; actual: number; variance: number; variance_pct: number }
+  rows: VarianceRow[]
+}
+
+export async function getVariance(): Promise<Variance | 'forbidden' | null> {
+  const r = await fetch('/api/variance')
   if (r.status === 403) return 'forbidden'
   return r.ok ? r.json() : null
 }

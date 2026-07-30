@@ -115,6 +115,10 @@ services:
       # no budget defined are ungated.
       BUDGET_ENFORCE: ${BUDGET_ENFORCE:-false}
       BUDGET_WARN_PCT: ${BUDGET_WARN_PCT:-90}
+      # Actual-vs-estimate variance (F-FIN-01): recording a billed actual that
+      # drifts from the estimate by more than this percentage raises a one-time
+      # variance alert (Jira comment + audit).
+      VARIANCE_ALERT_PCT: ${VARIANCE_ALERT_PCT:-15}
       # Change window (F-GOV-05): when enabled, provisioning of approved requests
       # only happens inside the window; outside it they are held until it opens.
       CHANGE_WINDOW_ENABLED: ${CHANGE_WINDOW_ENABLED:-false}

@@ -1885,3 +1885,90 @@ def test_budget_set_requires_admin(client, monkeypatch):
 def test_budgets_list_requires_oversight(client, monkeypatch):
     monkeypatch.setenv("ROLE_MAP", '{"dev@x.com": ["requester"]}')
     assert client.get("/api/budgets", headers={"X-Requester": "dev@x.com"}).status_code == 403
+
+
+# --- Actual-vs-estimate variance (E3.5, F-FIN-01) ----------------------------
+
+def _priced_provisioned(session, ref, *, monthly, cost_centre="CC-V"):
+    import api.main as main
+    req = main.Request(reference=ref, status="provisioned", requester="u@x.com",
+                       requester_name="U", cost_centre_code=cost_centre, environment_name="e1")
+    req.approval = main.Approval(jira_key=f"J-{ref}", status="approved")
+    req.estimate = main.Estimate(deployment_target="onprem", currency="AED", one_time=0,
+                                 monthly=monthly, annual=monthly * 12, breakdown={})
+    session.add(req)
+    session.commit()
+    return req
+
+
+def test_variance_status_helper():
+    import api.main as main
+    assert main._variance_status(100, 120)["status"] == "over"       # +20% > 15
+    assert main._variance_status(100, 80)["status"] == "under"       # -20% < -15
+    assert main._variance_status(100, 105)["status"] == "on-track"   # +5%
+    assert main._variance_status(100, 120)["variance_pct"] == 20.0
+    assert main._variance_status(None, 100) is None
+    assert main._variance_status(100, None) is None
+
+
+def test_record_actual_computes_and_exposes_variance(poller):
+    client, session = poller
+    _priced_provisioned(session, "REQ-V-1", monthly=100)
+    resp = client.post("/api/requests/REQ-V-1/actual", json={"billed_monthly": 110})
+    assert resp.status_code == 200
+    assert resp.json()["variance_pct"] == 10.0 and resp.json()["status"] == "on-track"
+    assert "actual.recorded" in _events(session, "REQ-V-1")
+    v = client.get("/api/requests/REQ-V-1").json()["variance"]
+    assert v["actual"] == 110.0 and v["estimate"] == 100.0
+
+
+def test_variance_alert_fires_once_over_threshold(poller, monkeypatch):
+    import api.main as main
+    client, session = poller
+    monkeypatch.setattr(main, "add_comment", lambda *a, **k: None)
+    _priced_provisioned(session, "REQ-V-2", monthly=100)
+    client.post("/api/requests/REQ-V-2/actual", json={"billed_monthly": 130})  # +30%
+    assert _events(session, "REQ-V-2").count("variance.alert") == 1
+    req = session.scalar(main.select(main.Request).where(main.Request.reference == "REQ-V-2"))
+    assert "variance" in (req.status_detail or "").lower()
+    # Same figure again -> no second alert; a changed figure re-arms it.
+    client.post("/api/requests/REQ-V-2/actual", json={"billed_monthly": 130})
+    assert _events(session, "REQ-V-2").count("variance.alert") == 1
+    client.post("/api/requests/REQ-V-2/actual", json={"billed_monthly": 150})
+    assert _events(session, "REQ-V-2").count("variance.alert") == 2
+
+
+def test_record_actual_under_estimate_is_under(poller, monkeypatch):
+    import api.main as main
+    client, session = poller
+    monkeypatch.setattr(main, "add_comment", lambda *a, **k: None)
+    _priced_provisioned(session, "REQ-V-3", monthly=100)
+    assert client.post("/api/requests/REQ-V-3/actual", json={"billed_monthly": 70}).json()["status"] == "under"
+
+
+def test_variance_report_totals(poller, monkeypatch):
+    import api.main as main
+    client, session = poller
+    monkeypatch.setattr(main, "add_comment", lambda *a, **k: None)
+    _priced_provisioned(session, "REQ-V-4", monthly=100)
+    _priced_provisioned(session, "REQ-V-5", monthly=200)
+    client.post("/api/requests/REQ-V-4/actual", json={"billed_monthly": 150})  # +50%
+    client.post("/api/requests/REQ-V-5/actual", json={"billed_monthly": 210})  # +5%
+    rep = client.get("/api/variance").json()
+    assert rep["total"]["estimate"] == 300.0 and rep["total"]["actual"] == 360.0
+    assert rep["rows"][0]["reference"] == "REQ-V-4"  # biggest drift first (+50%)
+
+
+def test_record_actual_requires_estimate(poller):
+    import api.main as main
+    client, session = poller
+    session.add(main.Request(reference="REQ-V-6", status="provisioned", requester="u@x.com"))
+    session.commit()
+    assert client.post("/api/requests/REQ-V-6/actual", json={"billed_monthly": 10}).status_code == 400
+
+
+def test_variance_endpoints_require_oversight(client, monkeypatch):
+    monkeypatch.setenv("ROLE_MAP", '{"dev@x.com": ["requester"]}')
+    h = {"X-Requester": "dev@x.com"}
+    assert client.get("/api/variance", headers=h).status_code == 403
+    assert client.post("/api/requests/X/actual", json={"billed_monthly": 1}, headers=h).status_code == 403

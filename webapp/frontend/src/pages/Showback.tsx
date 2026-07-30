@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Tile, InlineLoading, Select, SelectItem, ContentSwitcher, Switch } from '@carbon/react'
-import { getShowback, getBudgets, type Showback, type BudgetRow } from '../api'
+import { getShowback, getBudgets, getVariance, type Showback, type BudgetRow, type Variance } from '../api'
 
 // The dimensions cost can be attributed to (must match the API's group_by set).
 const GROUPS: [string, string][] = [
@@ -19,6 +19,7 @@ export default function ShowbackPage() {
   const [scope, setScope] = useState('active')
   const [data, setData] = useState<Showback | null>(null)
   const [budgets, setBudgets] = useState<BudgetRow[]>([])
+  const [variance, setVariance] = useState<Variance | null>(null)
   const [forbidden, setForbidden] = useState(false)
   const [loaded, setLoaded] = useState(false)
 
@@ -44,6 +45,9 @@ export default function ShowbackPage() {
     let active = true
     getBudgets()
       .then((b) => active && b && b !== 'forbidden' && setBudgets(b.budgets))
+      .catch(() => {})
+    getVariance()
+      .then((v) => active && v && v !== 'forbidden' && setVariance(v))
       .catch(() => {})
     return () => {
       active = false
@@ -171,6 +175,45 @@ export default function ShowbackPage() {
               </div>
             )
           })}
+        </Tile>
+      )}
+
+      {variance && variance.rows.length > 0 && (
+        <Tile style={{ marginTop: '1rem' }}>
+          <h4 style={{ fontSize: '0.95rem', fontWeight: 500, marginBottom: '0.75rem' }}>
+            Actual vs estimate (F-FIN-01)
+          </h4>
+          <div style={{ fontSize: '0.85rem', color: 'var(--cds-text-secondary)', marginBottom: '0.75rem' }}>
+            Billed {money(variance.total.actual, variance.currency)} vs estimated{' '}
+            {money(variance.total.estimate, variance.currency)} ·{' '}
+            <span style={{ color: variance.total.variance > 0 ? 'var(--cds-support-error)' : 'var(--cds-support-success)' }}>
+              {variance.total.variance_pct > 0 ? '+' : ''}
+              {variance.total.variance_pct}% overall
+            </span>
+          </div>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
+            <thead>
+              <tr style={{ textAlign: 'left', color: 'var(--cds-text-secondary)', borderBottom: '1px solid var(--cds-border-subtle)' }}>
+                <th style={{ padding: '0.3rem 0.5rem' }}>Request</th>
+                <th style={{ padding: '0.3rem 0.5rem', textAlign: 'right' }}>Estimate</th>
+                <th style={{ padding: '0.3rem 0.5rem', textAlign: 'right' }}>Actual</th>
+                <th style={{ padding: '0.3rem 0.5rem', textAlign: 'right' }}>Variance</th>
+              </tr>
+            </thead>
+            <tbody>
+              {variance.rows.slice(0, 8).map((r) => (
+                <tr key={r.reference} style={{ borderBottom: '1px solid var(--cds-border-subtle-01)' }}>
+                  <td style={{ padding: '0.3rem 0.5rem' }} title={r.environment || undefined}>{r.reference}</td>
+                  <td style={{ padding: '0.3rem 0.5rem', textAlign: 'right' }}>{money(r.estimate, variance.currency)}</td>
+                  <td style={{ padding: '0.3rem 0.5rem', textAlign: 'right' }}>{money(r.actual, variance.currency)}</td>
+                  <td style={{ padding: '0.3rem 0.5rem', textAlign: 'right', fontWeight: 500,
+                    color: r.status === 'over' ? 'var(--cds-support-error)' : r.status === 'under' ? 'var(--cds-support-success)' : 'var(--cds-text-secondary)' }}>
+                    {r.variance_pct > 0 ? '+' : ''}{r.variance_pct}%
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </Tile>
       )}
     </div>
