@@ -160,17 +160,17 @@ export default function MyRequests({ route }: { route: string }) {
       ) : (
         <div style={{ overflowX: 'auto', maxWidth: '100%' }}>
         <TableContainer title={estate ? 'Estate requests' : 'My requests'} description="Live — updates automatically.">
-          <Table size="sm">
+          <Table size="sm" style={{ tableLayout: 'fixed', width: '100%' }}>
             <TableHead>
               <TableRow>
-                <TableExpandHeader aria-label="Expand row" />
-                <TableHeader>Reference</TableHeader>
-                <TableHeader>Status</TableHeader>
-                <TableHeader>Submitted by</TableHeader>
-                <TableHeader>Environment</TableHeader>
-                <TableHeader>Components</TableHeader>
-                <TableHeader>Monthly</TableHeader>
-                <TableHeader>Jira ticket</TableHeader>
+                <TableExpandHeader aria-label="Expand row" style={{ width: '2.5rem' }} />
+                <TableHeader style={{ width: '11%' }}>Reference</TableHeader>
+                <TableHeader style={{ width: '19%' }}>Status</TableHeader>
+                {estate && <TableHeader style={{ width: '13%' }}>Submitted by</TableHeader>}
+                <TableHeader style={{ width: '11%' }}>Environment</TableHeader>
+                <TableHeader style={{ width: '17%' }}>Components</TableHeader>
+                <TableHeader style={{ width: '10%' }}>Monthly</TableHeader>
+                <TableHeader style={{ width: '11%' }}>Jira ticket</TableHeader>
               </TableRow>
             </TableHead>
             <TableBody>
@@ -182,7 +182,7 @@ export default function MyRequests({ route }: { route: string }) {
                     onExpand={() => toggle(r.reference)}
                   >
                     <TableCell>
-                      <strong>{r.reference}</strong>
+                      <strong style={{ whiteSpace: 'nowrap' }}>{r.reference}</strong>
                     </TableCell>
                     <TableCell>
                       <Tag type={badgeType(r.status)} size="sm">
@@ -201,7 +201,7 @@ export default function MyRequests({ route }: { route: string }) {
                       )}
                       {r.status_detail && (
                         <div
-                          style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', marginTop: '0.25rem', maxWidth: '17rem', color: 'var(--cds-text-error)', fontSize: '0.75rem' }}
+                          style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', marginTop: '0.25rem', maxWidth: '100%', color: 'var(--cds-text-error)', fontSize: '0.75rem' }}
                           title={r.status_detail}
                         >
                           <WarningAltFilled size={14} style={{ flexShrink: 0 }} />
@@ -209,27 +209,43 @@ export default function MyRequests({ route }: { route: string }) {
                         </div>
                       )}
                     </TableCell>
-                    <TableCell>{r.requester_name || r.requester}</TableCell>
-                    <TableCell>{r.environment_name || r.target_environment || '—'}</TableCell>
-                    <TableCell>{componentsText(r)}</TableCell>
+                    {estate && (
+                      <TableCell>
+                        <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.requester_name || r.requester}>
+                          {r.requester_name || r.requester}
+                        </div>
+                      </TableCell>
+                    )}
+                    <TableCell>
+                      <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.environment_name || r.target_environment || undefined}>
+                        {r.environment_name || r.target_environment || '—'}
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={componentsText(r)}>
+                        {componentsText(r)}
+                      </div>
+                    </TableCell>
                     <TableCell>
                       {r.estimate ? `${r.estimate.monthly.toFixed(2)} ${r.estimate.currency}` : '—'}
                     </TableCell>
                     <TableCell>
-                      {r.approval?.jira_key ? (
-                        r.approval.ticket_url ? (
-                          <a href={r.approval.ticket_url} target="_blank" rel="noopener noreferrer">
-                            {r.approval.jira_key}
-                          </a>
+                      <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {r.approval?.jira_key ? (
+                          r.approval.ticket_url ? (
+                            <a href={r.approval.ticket_url} target="_blank" rel="noopener noreferrer" title={r.approval.jira_key}>
+                              {r.approval.jira_key}
+                            </a>
+                          ) : (
+                            r.approval.jira_key
+                          )
                         ) : (
-                          r.approval.jira_key
-                        )
-                      ) : (
-                        '—'
-                      )}
+                          '—'
+                        )}
+                      </div>
                     </TableCell>
                   </TableExpandRow>
-                  <TableExpandedRow colSpan={8}>
+                  <TableExpandedRow colSpan={estate ? 8 : 7}>
                     <div style={{ padding: '1rem 0.5rem' }}>
                       {r.status_detail && (
                         <InlineNotification
