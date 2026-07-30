@@ -285,6 +285,8 @@ REQUEST_FIELDS = (
     "business_owner",
     "technical_owner",
     "environment_owner",
+    # Advanced options (6.5).
+    "advanced_options",
 )
 
 
@@ -322,6 +324,7 @@ class DraftIn(BaseModel):
     business_owner: str | None = None
     technical_owner: str | None = None
     environment_owner: str | None = None
+    advanced_options: dict | None = None
     components: list[ComponentIn] | None = None
 
     @field_validator("required_delivery_date", mode="before")
@@ -373,6 +376,7 @@ class RequestOut(BaseModel):
     business_owner: str | None = None
     technical_owner: str | None = None
     environment_owner: str | None = None
+    advanced_options: dict | None = None
     components: list[ComponentOut] = []
     estimate: EstimateOut | None = None
     approval: ApprovalOut | None = None
@@ -534,7 +538,7 @@ def submit_request(
 
     req.status = "submitted"
     # Capture the server-computed estimate as a stored fact at submission (1.6).
-    breakdown = estimate_cost(components_data, req.deployment_target, session)
+    breakdown = estimate_cost(components_data, req.deployment_target, session, req.advanced_options)
     req.estimate = Estimate(
         deployment_target=breakdown["deployment_target"],
         currency=breakdown["currency"],
@@ -598,6 +602,7 @@ def sizing(body: SizingIn, session: Session = Depends(get_session)) -> dict:
 class CostIn(BaseModel):
     deployment_target: str | None = None
     components: list[ComponentIn] = []
+    advanced_options: dict | None = None
 
 
 @app.post("/api/cost")
@@ -606,7 +611,7 @@ def cost(body: CostIn, session: Session = Depends(get_session)) -> dict:
     components = [
         {"technology_code": c.technology_code, "size": c.size} for c in body.components
     ]
-    return estimate_cost(components, body.deployment_target, session)
+    return estimate_cost(components, body.deployment_target, session, body.advanced_options)
 
 
 # --- Approval + signed orchestrator handoff (increment 1.9) -------------------

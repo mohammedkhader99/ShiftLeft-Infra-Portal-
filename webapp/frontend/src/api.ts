@@ -14,7 +14,14 @@ export type Component = { technology_code: string; size: string }
 export type Cost = {
   currency: string
   known_target?: boolean
-  by_category?: { compute: number; storage: number; licence: number }
+  by_category?: {
+    compute: number
+    storage: number
+    licence: number
+    backup: number
+    monitoring: number
+    support: number
+  }
   totals: { one_time: number; monthly: number; annual: number }
 }
 
@@ -29,11 +36,12 @@ export async function getLookups(): Promise<Lookups> {
 export async function getCost(
   deployment_target: string,
   components: Component[],
+  advanced_options?: Record<string, unknown>,
 ): Promise<Cost> {
   const r = await fetch('/api/cost', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ deployment_target, components }),
+    body: JSON.stringify({ deployment_target, components, advanced_options }),
   })
   return json<Cost>(r)
 }
@@ -75,6 +83,7 @@ export type RequestRow = {
   business_owner?: string | null
   technical_owner?: string | null
   environment_owner?: string | null
+  advanced_options?: Record<string, unknown> | null
   components: { technology_code: string | null; size: string | null }[]
   estimate?: { currency: string; monthly: number } | null
   approval?: { jira_key: string; ticket_url?: string | null } | null

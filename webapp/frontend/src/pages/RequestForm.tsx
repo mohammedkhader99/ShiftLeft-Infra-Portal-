@@ -15,6 +15,8 @@ import {
   Tag,
   InlineNotification,
   FormGroup,
+  Accordion,
+  AccordionItem,
 } from '@carbon/react'
 import {
   TrashCan,
@@ -88,6 +90,38 @@ const TECH_ICON_BY_CODE: Record<string, CarbonIconType> = {
 }
 const techIcon = (code: string): CarbonIconType => TECH_ICON_BY_CODE[code] ?? Application
 
+// Advanced options (6.5) — mirrors api/validation.ADVANCED_OPTIONS. The first
+// four drive cost; the rest are captured for the approver.
+type AdvOpt = { key: string; label: string; type: 'toggle' | 'select' | 'text'; options?: [string, string][] }
+// Selects render a leading "—" (value '') meaning unset; cleanAdvanced drops it.
+const ADVANCED_OPTIONS: AdvOpt[] = [
+  { key: 'high_availability', label: 'High availability (×2 compute)', type: 'toggle' },
+  { key: 'backup_retention', label: 'Backup retention', type: 'select', options: [['7', '7 days'], ['30', '30 days'], ['90', '90 days']] },
+  { key: 'monitoring_level', label: 'Monitoring level', type: 'select', options: [['basic', 'Basic'], ['enhanced', 'Enhanced']] },
+  { key: 'support_tier', label: 'Support tier', type: 'select', options: [['standard', 'Standard'], ['business', 'Business'], ['premium', 'Premium']] },
+  { key: 'region', label: 'Region', type: 'select', options: [['uae-north', 'UAE North'], ['uae-central', 'UAE Central'], ['eu-west', 'EU West'], ['us-east', 'US East'], ['ap-south', 'AP South']] },
+  { key: 'availability_zone', label: 'Availability zone', type: 'select', options: [['single', 'Single'], ['az-1', 'AZ-1'], ['az-2', 'AZ-2'], ['az-3', 'AZ-3'], ['multi-az', 'Multi-AZ']] },
+  { key: 'database_version', label: 'Database version', type: 'text' },
+  { key: 'encryption', label: 'Encryption', type: 'select', options: [['at-rest', 'At rest'], ['in-transit', 'In transit'], ['at-rest-and-in-transit', 'At rest & in transit']] },
+  { key: 'disaster_recovery', label: 'Disaster recovery', type: 'select', options: [['backup-restore', 'Backup & restore'], ['warm-standby', 'Warm standby'], ['active-active', 'Active-active']] },
+  { key: 'logging_level', label: 'Logging level', type: 'select', options: [['standard', 'Standard'], ['verbose', 'Verbose']] },
+  { key: 'storage_tier', label: 'Storage tier', type: 'select', options: [['standard', 'Standard'], ['performance', 'Performance'], ['archive', 'Archive']] },
+  { key: 'autoscaling', label: 'Autoscaling', type: 'toggle' },
+  { key: 'network_type', label: 'Network type', type: 'select', options: [['public', 'Public'], ['private', 'Private'], ['isolated', 'Isolated']] },
+  { key: 'firewall_profile', label: 'Firewall profile', type: 'select', options: [['default', 'Default'], ['restricted', 'Restricted'], ['custom', 'Custom']] },
+  { key: 'private_endpoint', label: 'Private endpoint', type: 'toggle' },
+  { key: 'public_endpoint', label: 'Public endpoint', type: 'toggle' },
+  { key: 'dns', label: 'DNS', type: 'select', options: [['internal', 'Internal'], ['external', 'External']] },
+  { key: 'certificates', label: 'Certificates', type: 'select', options: [['self-signed', 'Self-signed'], ['ca-signed', 'CA-signed']] },
+  { key: 'secrets_management', label: 'Secrets management', type: 'select', options: [['vault', 'Vault'], ['cloud-kms', 'Cloud KMS']] },
+  { key: 'compliance_profile', label: 'Compliance profile', type: 'select', options: [['iso-27001', 'ISO 27001'], ['pci-dss', 'PCI-DSS'], ['hipaa', 'HIPAA'], ['uae-ia', 'UAE IA']] },
+]
+// Keep only meaningful selections (drop unset / false) before sending.
+const cleanAdvanced = (a: Record<string, string | boolean>) =>
+  Object.fromEntries(
+    Object.entries(a).filter(([, v]) => v !== '' && v !== false && v != null),
+  )
+
 type Result = { kind: 'success' | 'error'; title: string; subtitle?: string }
 
 const compKey = (c: Component) => `${c.technology_code}:${c.size}`
@@ -140,6 +174,11 @@ export default function RequestForm() {
   const [techOwner, setTechOwner] = useState('')
   const [envOwner, setEnvOwner] = useState('')
 
+  // Advanced options (6.5): a single bag of key -> value|bool.
+  const [advanced, setAdvanced] = useState<Record<string, string | boolean>>({})
+  const setAdvOpt = (key: string, value: string | boolean) =>
+    setAdvanced((a) => ({ ...a, [key]: value }))
+
   // Decommission
   const [provisioned, setProvisioned] = useState<RequestRow[]>([])
   const [sourceRef, setSourceRef] = useState('')
@@ -184,7 +223,8 @@ export default function RequestForm() {
   const pricedComponents = isDecommission
     ? selectedComponents
     : components.filter((c) => c.technology_code && c.size)
-  const pricedKey = JSON.stringify([pricedTarget, pricedComponents])
+  const pricedAdvanced = isDecommission ? undefined : cleanAdvanced(advanced)
+  const pricedKey = JSON.stringify([pricedTarget, pricedComponents, pricedAdvanced])
 
   useEffect(() => {
     if (!pricedTarget || pricedComponents.length === 0) {
@@ -192,7 +232,7 @@ export default function RequestForm() {
       return
     }
     let cancelled = false
-    getCost(pricedTarget, pricedComponents)
+    getCost(pricedTarget, pricedComponents, pricedAdvanced)
       .then((c) => !cancelled && setCost(c))
       .catch(() => !cancelled && setCost(null))
     return () => {
@@ -245,6 +285,7 @@ export default function RequestForm() {
       business_owner: bizOwner || null,
       technical_owner: techOwner || null,
       environment_owner: envOwner || null,
+      advanced_options: cleanAdvanced(advanced),
       components: filledComponents,
     }
     if (isCreate) {
@@ -550,6 +591,57 @@ export default function RequestForm() {
                   </div>
                 </Stack>
               </FormGroup>
+
+              <Accordion>
+                <AccordionItem title="Advanced options (optional)">
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(13rem, 1fr))', gap: '0.75rem 1rem', alignItems: 'end' }}>
+                    {ADVANCED_OPTIONS.map((opt) => {
+                      const err = errors[`advanced.${opt.key}`]
+                      if (opt.type === 'toggle') {
+                        return (
+                          <Checkbox
+                            key={opt.key}
+                            id={`adv-${opt.key}`}
+                            labelText={opt.label}
+                            checked={advanced[opt.key] === true}
+                            onChange={(_e: unknown, data: { checked: boolean }) => setAdvOpt(opt.key, data.checked)}
+                          />
+                        )
+                      }
+                      if (opt.type === 'text') {
+                        return (
+                          <TextInput
+                            key={opt.key}
+                            id={`adv-${opt.key}`}
+                            labelText={opt.label}
+                            placeholder="e.g. latest"
+                            value={(advanced[opt.key] as string) || ''}
+                            onChange={(e) => setAdvOpt(opt.key, e.target.value)}
+                            invalid={!!err}
+                            invalidText={err}
+                          />
+                        )
+                      }
+                      return (
+                        <Select
+                          key={opt.key}
+                          id={`adv-${opt.key}`}
+                          labelText={opt.label}
+                          value={(advanced[opt.key] as string) || ''}
+                          onChange={(e) => setAdvOpt(opt.key, e.target.value)}
+                          invalid={!!err}
+                          invalidText={err}
+                        >
+                          <SelectItem value="" text="—" />
+                          {opt.options!.map(([v, label]) => (
+                            <SelectItem key={v} value={v} text={label} />
+                          ))}
+                        </Select>
+                      )
+                    })}
+                  </div>
+                </AccordionItem>
+              </Accordion>
             </>
           )}
 
@@ -580,6 +672,9 @@ export default function RequestForm() {
                   <div>Compute <span style={{ float: 'right' }}>{cost.by_category.compute.toFixed(2)}</span></div>
                   <div>Storage <span style={{ float: 'right' }}>{cost.by_category.storage.toFixed(2)}</span></div>
                   <div>Licence <span style={{ float: 'right' }}>{cost.by_category.licence.toFixed(2)}</span></div>
+                  {!!cost.by_category.backup && <div>Backup <span style={{ float: 'right' }}>{cost.by_category.backup.toFixed(2)}</span></div>}
+                  {!!cost.by_category.monitoring && <div>Monitoring <span style={{ float: 'right' }}>{cost.by_category.monitoring.toFixed(2)}</span></div>}
+                  {!!cost.by_category.support && <div>Support <span style={{ float: 'right' }}>{cost.by_category.support.toFixed(2)}</span></div>}
                 </div>
               )}
               <div style={{ fontSize: '0.875rem', color: 'var(--cds-text-secondary)', lineHeight: 2, borderTop: '1px solid var(--cds-border-subtle)', paddingTop: '0.5rem', marginTop: '0.5rem' }}>

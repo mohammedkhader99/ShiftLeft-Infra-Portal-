@@ -56,6 +56,15 @@ def build_request_pdf(req, breakdown: dict, sizing: dict) -> bytes:
         _kv(pdf, "Business justification", req.business_justification)
         pdf.ln(2)
 
+    # --- Advanced options (6.5) ---
+    adv = getattr(req, "advanced_options", None) or {}
+    shown = {k: v for k, v in adv.items() if v not in (None, "", "none", False)}
+    if shown:
+        _heading(pdf, "Advanced options", TEAL)
+        for k, v in shown.items():
+            _kv(pdf, k.replace("_", " ").title(), "yes" if v is True else str(v))
+        pdf.ln(2)
+
     # --- Components, sizing & cost ---
     _heading(pdf, "Components, sizing & cost", TEAL)
     cols = [("Technology", 46), ("Size", 18), ("vCPU", 14), ("RAM GB", 18),

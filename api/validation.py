@@ -22,6 +22,36 @@ CLASSIFICATIONS = {"public", "internal", "confidential", "restricted"}
 DEPLOYMENT_TARGETS = {"onprem", "azure", "oci"}
 # Environment tier ladder (increment 6.2, from the UX brief).
 ENV_TIERS = {"dev", "test", "sit", "uat", "preprod", "prod", "dr"}
+
+# Advanced options (6.5, from the UX brief). Value spec per key:
+#   frozenset -> the value must be one of these; "bool" -> a boolean;
+#   None -> free text. Every option is optional. The first four drive cost
+#   (see api/pricing.py); the rest are captured for the approver.
+_BOOL = "bool"
+ADVANCED_OPTIONS: dict[str, object] = {
+    # cost-affecting
+    "high_availability": _BOOL,
+    "backup_retention": frozenset({"none", "7", "30", "90"}),
+    "monitoring_level": frozenset({"none", "basic", "enhanced"}),
+    "support_tier": frozenset({"standard", "business", "premium"}),
+    # capture-only
+    "region": frozenset({"uae-north", "uae-central", "eu-west", "us-east", "ap-south"}),
+    "availability_zone": frozenset({"single", "az-1", "az-2", "az-3", "multi-az"}),
+    "database_version": None,
+    "encryption": frozenset({"none", "at-rest", "in-transit", "at-rest-and-in-transit"}),
+    "disaster_recovery": frozenset({"none", "backup-restore", "warm-standby", "active-active"}),
+    "logging_level": frozenset({"none", "standard", "verbose"}),
+    "storage_tier": frozenset({"standard", "performance", "archive"}),
+    "autoscaling": _BOOL,
+    "network_type": frozenset({"public", "private", "isolated"}),
+    "firewall_profile": frozenset({"default", "restricted", "custom"}),
+    "private_endpoint": _BOOL,
+    "public_endpoint": _BOOL,
+    "dns": frozenset({"none", "internal", "external"}),
+    "certificates": frozenset({"none", "self-signed", "ca-signed"}),
+    "secrets_management": frozenset({"none", "vault", "cloud-kms"}),
+    "compliance_profile": frozenset({"none", "iso-27001", "pci-dss", "hipaa", "uae-ia"}),
+}
 # Governance metadata value sets (increment 6.1, from the UX brief).
 PRIORITIES = {"low", "medium", "high", "critical"}
 CRITICALITIES = {"tier1", "tier2", "tier3", "tier4"}
@@ -94,8 +124,31 @@ def validate_submission(data: dict, session: Session) -> dict[str, str]:
 
     if request_type in METADATA_TYPES:
         _validate_metadata(data, errors)
+        _validate_advanced(data.get("advanced_options"), errors)
 
     return errors
+
+
+def _validate_advanced(options, errors: dict[str, str]) -> None:
+    """Advanced options are optional, but any provided must be known + valid (6.5)."""
+    if not options:
+        return
+    if not isinstance(options, dict):
+        errors["advanced_options"] = "Advanced options must be a set of key/value choices."
+        return
+    for key, value in options.items():
+        if value in (None, "", "none"):
+            continue  # unset / explicit 'none' is always fine
+        spec = ADVANCED_OPTIONS.get(key)
+        if spec is None and key not in ADVANCED_OPTIONS:
+            errors[f"advanced.{key}"] = f"Unknown advanced option '{key}'."
+        elif spec == _BOOL:
+            if not isinstance(value, bool):
+                errors[f"advanced.{key}"] = f"'{key}' must be true or false."
+        elif isinstance(spec, frozenset) and value not in spec:
+            errors[f"advanced.{key}"] = (
+                f"'{value}' is not a valid {key.replace('_', ' ')}."
+            )
 
 
 def _validate_metadata(data: dict, errors: dict[str, str]) -> None:

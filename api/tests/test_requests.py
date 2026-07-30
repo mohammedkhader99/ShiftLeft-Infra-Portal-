@@ -996,10 +996,11 @@ def test_environment_tier_persisted_and_returned(client):
 
 # --- Cost breakdown + Excel cost sheet (increment 6.4) -----------------------
 
-def _cost(client, tech, size="medium", target="onprem"):
+def _cost(client, tech, size="medium", target="onprem", advanced=None):
     return client.post("/api/cost", json={
         "deployment_target": target,
         "components": [{"technology_code": tech, "size": size}],
+        "advanced_options": advanced or {},
     }).json()
 
 
@@ -1014,8 +1015,9 @@ def test_cost_line_splits_compute_and_storage(client):
 def test_cost_by_category_sums_to_monthly(client):
     body = _cost(client, "postgres16")
     cat = body["by_category"]
-    assert cat == {"compute": 372.0, "storage": 300.0, "licence": 0.0}
-    assert round(cat["compute"] + cat["storage"] + cat["licence"], 2) == body["totals"]["monthly"]
+    assert cat == {"compute": 372.0, "storage": 300.0, "licence": 0.0,
+                   "backup": 0.0, "monitoring": 0.0, "support": 0.0}
+    assert round(sum(cat.values()), 2) == body["totals"]["monthly"]
 
 
 def test_cost_by_category_includes_licence(client):
@@ -1039,3 +1041,56 @@ def test_costsheet_works_for_a_draft(client):
     resp = client.get(f"/api/requests/{ref}/costsheet.xlsx")
     assert resp.status_code == 200
     assert resp.content[:2] == b"PK"
+
+
+# --- Advanced options (increment 6.5) ----------------------------------------
+
+def test_defaults_unchanged_without_advanced_options(client):
+    # A request with no advanced options keeps the base total.
+    assert _cost(client, "postgres16")["totals"]["monthly"] == 672.0
+
+
+def test_ha_doubles_compute(client):
+    base = _cost(client, "postgres16")["by_category"]
+    ha = _cost(client, "postgres16", advanced={"high_availability": True})["by_category"]
+    assert ha["compute"] == base["compute"] * 2      # 744
+    assert ha["storage"] == base["storage"]          # unchanged
+
+
+def test_backup_retention_adds_backup_line(client):
+    base = _cost(client, "postgres16")
+    b30 = _cost(client, "postgres16", advanced={"backup_retention": "30"})
+    assert b30["by_category"]["backup"] == round(base["by_category"]["storage"] * 0.30, 2)  # 90.0
+    assert b30["totals"]["monthly"] == round(base["totals"]["monthly"] + 90.0, 2)
+
+
+def test_monitoring_and_support_add_cost(client):
+    cat = _cost(client, "postgres16",
+                advanced={"monitoring_level": "enhanced", "support_tier": "business"})["by_category"]
+    assert cat["monitoring"] == 500.0
+    # support = 10% of (compute 372 + storage 300 + licence 0 + backup 0 + monitoring 500)
+    assert cat["support"] == round((372 + 300 + 500) * 0.10, 2)  # 117.2
+
+
+def test_advanced_options_persist(client):
+    payload = {**VALID_CREATE,
+               "advanced_options": {"high_availability": True, "region": "uae-north", "backup_retention": "30"}}
+    ref = _draft_ref(client, payload)
+    assert client.post(f"/api/requests/{ref}/submit").status_code == 200
+    row = client.get(f"/api/requests/{ref}").json()
+    assert row["advanced_options"]["region"] == "uae-north"
+    assert row["advanced_options"]["high_availability"] is True
+    # The captured estimate reflects the HA + backup add-ons.
+    assert row["estimate"]["monthly"] > 672.0
+
+
+def test_invalid_advanced_option_rejected(client):
+    ref = _draft_ref(client, {**VALID_CREATE, "advanced_options": {"backup_retention": "999"}})
+    errors = client.post(f"/api/requests/{ref}/submit").json()["errors"]
+    assert "advanced.backup_retention" in errors
+
+
+def test_unknown_advanced_option_rejected(client):
+    ref = _draft_ref(client, {**VALID_CREATE, "advanced_options": {"made_up_key": "x"}})
+    errors = client.post(f"/api/requests/{ref}/submit").json()["errors"]
+    assert "advanced.made_up_key" in errors

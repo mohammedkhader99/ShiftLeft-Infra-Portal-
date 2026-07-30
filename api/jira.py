@@ -233,6 +233,14 @@ def build_ticket_body(req: Request, estimate: dict, plan_preview: str) -> str:
         if req.business_justification:
             lines.append(f"  Justification: {req.business_justification}")
 
+    adv = getattr(req, "advanced_options", None) or {}
+    shown = {k: v for k, v in adv.items() if v not in (None, "", "none", False)}
+    if not is_decommission and shown:
+        lines.append("")
+        lines.append("Advanced options:")
+        for k, v in shown.items():
+            lines.append(f"  {k.replace('_', ' ').title()}: {'yes' if v is True else v}")
+
     lines.append("")
     lines.append("Technologies to decommission:" if is_decommission else "Components:")
     for comp in req.components:

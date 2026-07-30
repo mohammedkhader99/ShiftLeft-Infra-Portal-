@@ -36,6 +36,13 @@ TECHNOLOGY_LICENCE = {
     "mssql": "mssql-licence",
 }
 
+# Advanced-option cost modifiers (6.5). Transparent, documented mock/demo
+# constants; an unset option contributes nothing, so base totals are unchanged.
+HA_COMPUTE_MULTIPLIER = 2.0                                # high_availability doubles compute
+BACKUP_FACTOR = {"7": 0.10, "30": 0.30, "90": 0.60}       # x monthly storage cost, by retention days
+MONITORING_MONTHLY = {"basic": 150.0, "enhanced": 500.0}  # flat monthly, by level
+SUPPORT_PCT = {"business": 0.10, "premium": 0.20}         # x infra subtotal, by tier
+
 
 def _rates(session: Session, kind: str) -> dict[str, float]:
     """Return {item: discounted rate} for one rate-card kind."""
@@ -78,12 +85,21 @@ def _component_parts(target: str, resource: dict, vcpu: int, memory_gb: int, sto
     return compute, storage
 
 
-def estimate_cost(components: list[dict], deployment_target: str, session: Session) -> dict:
+def estimate_cost(
+    components: list[dict],
+    deployment_target: str,
+    session: Session,
+    advanced: dict | None = None,
+) -> dict:
     """Return a cost breakdown + one-time/monthly/annual totals for a target.
 
     If the target is unknown, totals are zero and each line is marked so.
+    `advanced` (6.5) may add cost: high_availability doubles compute, and
+    backup_retention / monitoring_level / support_tier add their own lines.
     """
     target = (deployment_target or "").strip()
+    advanced = advanced or {}
+    ha = bool(advanced.get("high_availability"))
     sizing = resolve_components(components, session)
 
     known_target = target in DEPLOYMENT_TARGETS
@@ -139,6 +155,8 @@ def estimate_cost(components: list[dict], deployment_target: str, session: Sessi
                 licence_monthly = licences.get(licence_item, 0.0)
             one_time = setup_fee
 
+        if ha:
+            compute_monthly *= HA_COMPUTE_MULTIPLIER  # redundant nodes (6.5)
         resource_monthly = compute_monthly + storage_monthly
         component_monthly = resource_monthly + licence_monthly
         one_time_total += one_time
@@ -160,19 +178,30 @@ def estimate_cost(components: list[dict], deployment_target: str, session: Sessi
             }
         )
 
+    # Advanced-option add-ons (6.5), driven by the selected options. Each is 0
+    # when its option is unset, so a plain request keeps its base total.
+    backup_total = round(storage_total * BACKUP_FACTOR.get(str(advanced.get("backup_retention")), 0.0), 2)
+    monitoring_total = MONITORING_MONTHLY.get(advanced.get("monitoring_level"), 0.0)
+    support_base = compute_total + storage_total + licence_total + backup_total + monitoring_total
+    support_total = round(support_base * SUPPORT_PCT.get(advanced.get("support_tier"), 0.0), 2)
+    monthly_total += backup_total + monitoring_total + support_total
+
     return {
         "currency": CURRENCY,
         "deployment_target": target or None,
         "known_target": known_target,
         "pricing_source": pricing_source,
         "lines": lines,
-        # Per-category subtotals (6.4). Compute + storage + licence == monthly.
-        # Network/backup/monitoring/support are opt-in Advanced Options (later)
-        # and usage-based, so they are surfaced in the sheet but not priced here.
+        # Per-category subtotals. Compute/storage/licence come from the components
+        # (6.4); backup/monitoring/support are advanced-option add-ons (6.5). The
+        # six sum to the monthly total. Network stays usage-based (not estimated).
         "by_category": {
             "compute": round(compute_total, 2),
             "storage": round(storage_total, 2),
             "licence": round(licence_total, 2),
+            "backup": backup_total,
+            "monitoring": round(monitoring_total, 2),
+            "support": support_total,
         },
         "totals": {
             "one_time": round(one_time_total, 2),

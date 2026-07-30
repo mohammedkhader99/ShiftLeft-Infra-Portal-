@@ -232,6 +232,14 @@ export default function MyRequests({ route }: { route: string }) {
                               {r.business_justification}
                             </div>
                           )}
+                          {r.advanced_options && Object.keys(r.advanced_options).length > 0 && (
+                            <div style={{ gridColumn: '1 / -1' }}>
+                              <span style={{ color: 'var(--cds-text-secondary)' }}>Advanced: </span>
+                              {Object.entries(r.advanced_options)
+                                .map(([k, v]) => `${k.replace(/_/g, ' ')}: ${v === true ? 'yes' : String(v)}`)
+                                .join('  ·  ')}
+                            </div>
+                          )}
                         </div>
                       )}
                       {steps[r.reference] ? (

@@ -157,6 +157,10 @@ class Request(Base):
     target_environment: Mapped[str | None] = mapped_column(String(120), nullable=True)
     # Environment tier/stage for 'create' (dev|test|sit|uat|preprod|prod|dr) — 6.2.
     environment_tier: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # Advanced options (6.5): a flexible JSON bag (region, HA, backup retention,
+    # monitoring level, support tier, encryption, …). A few drive cost; the rest
+    # are captured for the approver. Nullable so existing rows are unaffected.
+    advanced_options: Mapped[dict | None] = mapped_column(JSON, default=dict, nullable=True)
     # For 'decommission': the reference of the previously provisioned request
     # whose resources this request tears down (2.9).
     source_reference: Mapped[str | None] = mapped_column(String(20), nullable=True)
