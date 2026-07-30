@@ -2058,3 +2058,22 @@ def test_transfer_owner_requires_admin(poller, monkeypatch):
 def test_orphans_requires_oversight(client, monkeypatch):
     monkeypatch.setenv("ROLE_MAP", '{"dev@x.com": ["requester"]}')
     assert client.get("/api/orphans", headers={"X-Requester": "dev@x.com"}).status_code == 403
+
+
+# --- Admin console (E1, F-OPS-09) --------------------------------------------
+
+def test_config_returns_posture(client):
+    cfg = client.get("/api/config").json()
+    assert set(cfg) >= {"modes", "governance", "change_window", "finops"}
+    assert cfg["governance"]["approval_quorum"] == 1     # conftest default
+    assert cfg["finops"]["budget_enforce"] is False      # conftest pin
+    assert cfg["finops"]["ttl_enforce"] is False         # conftest pin
+    assert "variance_alert_pct" in cfg["finops"]
+
+
+def test_config_requires_platform_admin(client, monkeypatch):
+    # finops is an oversight role but not platform_admin -> refused.
+    monkeypatch.setenv("ROLE_MAP", '{"fin@x.com": ["finops"]}')
+    assert client.get("/api/config", headers={"X-Requester": "fin@x.com"}).status_code == 403
+    monkeypatch.setenv("ROLE_MAP", '{"ops@x.com": ["platform_admin"]}')
+    assert client.get("/api/config", headers={"X-Requester": "ops@x.com"}).status_code == 200

@@ -217,6 +217,41 @@ export async function getVariance(): Promise<Variance | 'forbidden' | null> {
   return r.ok ? r.json() : null
 }
 
+// Admin console (E1, F-OPS-09).
+export type SystemConfig = {
+  modes: { auth: string; jira: string; auto_provision: boolean; provision_mode: string; use_mock: boolean }
+  governance: { sod_enforced: boolean; four_eyes_enforced: boolean; approval_quorum: number; approval_sla_hours: number; audit_hmac: boolean }
+  change_window: { enabled: boolean; open_now: boolean; days: string; start: string; end: string; tz: string }
+  finops: { ttl_days_nonprod: number; ttl_warn_days: number; ttl_enforce: boolean; budget_enforce: boolean; budget_warn_pct: number; variance_alert_pct: number; departed_owners_count: number }
+}
+
+export async function getConfig(): Promise<SystemConfig | 'forbidden' | null> {
+  const r = await fetch('/api/config')
+  if (r.status === 403) return 'forbidden'
+  return r.ok ? r.json() : null
+}
+
+export async function setBudget(costCentre: string, monthlyLimit: number): Promise<{ status: number; body: any }> {
+  const r = await fetch('/api/budgets', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ cost_centre_code: costCentre, monthly_limit: monthlyLimit }),
+  })
+  return { status: r.status, body: await r.json().catch(() => ({})) }
+}
+
+export async function deleteBudget(costCentre: string): Promise<{ status: number }> {
+  const r = await fetch(`/api/budgets/${costCentre}`, { method: 'DELETE' })
+  return { status: r.status }
+}
+
+export type OrphanRow = { reference: string; environment?: string | null; owner?: string | null; reason: string }
+export async function getOrphans(): Promise<{ count: number; orphans: OrphanRow[] } | 'forbidden' | null> {
+  const r = await fetch('/api/orphans')
+  if (r.status === 403) return 'forbidden'
+  return r.ok ? r.json() : null
+}
+
 export type AuditEntry = { event: string; created_at: string }
 
 export async function getAudit(reference: string): Promise<AuditEntry[]> {

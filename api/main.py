@@ -236,6 +236,49 @@ def whoami(requester: str = Depends(get_requester)) -> dict:
     return {"email": requester, "roles": sorted(roles_mod.resolve_roles(requester))}
 
 
+@app.get("/api/config")
+def system_config(_auth: str = Depends(require_action("execute"))) -> dict:
+    """The effective governance & FinOps posture (F-OPS-09), read server-side.
+
+    Powers the admin console's posture panel — a platform admin can see how every
+    control is currently configured. Read-only; changing it stays a deploy-time
+    concern (env / vault), never a portal write.
+    """
+    return {
+        "modes": {
+            "auth": os.getenv("AUTH_MODE", "mock").strip().lower(),
+            "jira": jira_mode(),
+            "auto_provision": auto_provision_enabled(),
+            "provision_mode": provision_mode(),
+            "use_mock": is_mock_mode(),
+        },
+        "governance": {
+            "sod_enforced": _sod_enforced(),
+            "four_eyes_enforced": _four_eyes_enforced(),
+            "approval_quorum": _approval_quorum(),
+            "approval_sla_hours": float(os.getenv("APPROVAL_SLA_HOURS", "24")),
+            "audit_hmac": bool(os.getenv("AUDIT_HMAC_KEY", "").strip()),
+        },
+        "change_window": {
+            "enabled": _change_window_enabled(),
+            "open_now": change_window_status()["open"],
+            "days": os.getenv("CHANGE_WINDOW_DAYS", "mon-fri"),
+            "start": os.getenv("CHANGE_WINDOW_START", "08:00"),
+            "end": os.getenv("CHANGE_WINDOW_END", "18:00"),
+            "tz": os.getenv("CHANGE_WINDOW_TZ", "UTC"),
+        },
+        "finops": {
+            "ttl_days_nonprod": _ttl_days_nonprod(),
+            "ttl_warn_days": _ttl_warn_days(),
+            "ttl_enforce": _ttl_enforce(),
+            "budget_enforce": _budget_enforce(),
+            "budget_warn_pct": _budget_warn_pct(),
+            "variance_alert_pct": _variance_alert_pct(),
+            "departed_owners_count": len(_departed_owners()),
+        },
+    }
+
+
 @app.get("/api/stats")
 def stats(session: Session = Depends(get_session),
           _auth: str = Depends(require_action("view_overview"))) -> dict:

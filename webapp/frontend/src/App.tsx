@@ -22,11 +22,13 @@ import {
   ListChecked,
   ChartColumn,
   Money,
+  Settings,
 } from '@carbon/icons-react'
 import RequestForm from './pages/RequestForm'
 import MyRequests from './pages/MyRequests'
 import Overview from './pages/Overview'
 import Showback from './pages/Showback'
+import Admin from './pages/Admin'
 
 type Me = { email: string; roles: string[] }
 
@@ -76,7 +78,9 @@ export default function App() {
   const onRequest =
     !route.startsWith('#/requests') &&
     !route.startsWith('#/overview') &&
-    !route.startsWith('#/showback')
+    !route.startsWith('#/showback') &&
+    !route.startsWith('#/admin')
+  const isAdmin = !!me && me.roles.includes('platform_admin')
   let title: string
   let page: JSX.Element
   if (route.startsWith('#/requests')) {
@@ -88,6 +92,9 @@ export default function App() {
   } else if (route.startsWith('#/showback')) {
     title = 'Showback'
     page = <Showback />
+  } else if (route.startsWith('#/admin')) {
+    title = 'Admin console'
+    page = <Admin />
   } else {
     const t = parseRequestType(route)
     title = `New request · ${RT_LABEL[t]}`
@@ -139,6 +146,11 @@ export default function App() {
             <SideNavLink renderIcon={Money} href="#/showback" isActive={route.startsWith('#/showback')}>
               Showback
             </SideNavLink>
+            {isAdmin && (
+              <SideNavLink renderIcon={Settings} href="#/admin" isActive={route.startsWith('#/admin')}>
+                Admin
+              </SideNavLink>
+            )}
           </SideNavItems>
         </SideNav>
 
