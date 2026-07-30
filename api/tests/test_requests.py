@@ -1602,3 +1602,80 @@ def test_submit_without_warnings_returns_empty_list(client):
     resp = client.post(f"/api/requests/{ref}/submit")
     assert resp.status_code == 200
     assert resp.json()["policy_warnings"] == []
+
+
+# --- Showback & chargeback (E3.2, F-FIN-03) ----------------------------------
+
+def _add_priced(session, ref, *, cost_centre, status, monthly, project="EGATE",
+                owner=None, env="env-a"):
+    """Insert a priced request (with its captured estimate) directly, so showback
+    aggregation can be checked against known figures."""
+    import api.main as main
+
+    req = main.Request(reference=ref, status=status, requester="u@x.com",
+                       requester_name="U", cost_centre_code=cost_centre,
+                       project_code=project, environment_name=env,
+                       application_owner=owner)
+    req.estimate = main.Estimate(deployment_target="onprem", currency="AED",
+                                 one_time=0, monthly=monthly, annual=monthly * 12,
+                                 breakdown={})
+    session.add(req)
+    session.commit()
+    return req
+
+
+def test_showback_sums_monthly_by_cost_centre(poller):
+    client, session = poller
+    _add_priced(session, "REQ-SB-1", cost_centre="CC-1", status="provisioned", monthly=100)
+    _add_priced(session, "REQ-SB-2", cost_centre="CC-1", status="provisioned", monthly=50)
+    _add_priced(session, "REQ-SB-3", cost_centre="CC-2", status="provisioned", monthly=200)
+    body = client.get("/api/showback?group_by=cost_centre").json()
+    by_key = {r["key"]: r for r in body["rows"]}
+    assert by_key["CC-1"]["monthly"] == 150.0 and by_key["CC-1"]["count"] == 2
+    assert by_key["CC-2"]["monthly"] == 200.0
+    assert body["total"]["monthly"] == 350.0
+    assert body["rows"][0]["key"] == "CC-2"  # sorted by monthly desc
+
+
+def test_showback_active_excludes_draft_and_decommissioned(poller):
+    client, session = poller
+    _add_priced(session, "REQ-SB-4", cost_centre="CC-1", status="provisioned", monthly=100)
+    _add_priced(session, "REQ-SB-5", cost_centre="CC-1", status="draft", monthly=999)
+    _add_priced(session, "REQ-SB-6", cost_centre="CC-1", status="decommissioned", monthly=999)
+    assert client.get("/api/showback?scope=active").json()["total"]["monthly"] == 100.0
+
+
+def test_showback_committed_includes_in_flight(poller):
+    client, session = poller
+    _add_priced(session, "REQ-SB-7", cost_centre="CC-1", status="provisioned", monthly=100)
+    _add_priced(session, "REQ-SB-8", cost_centre="CC-1", status="submitted", monthly=30)
+    assert client.get("/api/showback?scope=active").json()["total"]["monthly"] == 100.0
+    assert client.get("/api/showback?scope=committed").json()["total"]["monthly"] == 130.0
+
+
+def test_showback_groups_by_owner_falling_back_to_requester(poller):
+    client, session = poller
+    _add_priced(session, "REQ-SB-9", cost_centre="CC-1", status="provisioned", monthly=10, owner="app@x.com")
+    _add_priced(session, "REQ-SB-10", cost_centre="CC-1", status="provisioned", monthly=20, owner=None)
+    keys = {r["key"] for r in client.get("/api/showback?group_by=owner").json()["rows"]}
+    assert "app@x.com" in keys  # application owner used when present
+    assert "U" in keys          # requester_name fallback otherwise
+
+
+def test_showback_reconciles_with_stats_active_cost(poller):
+    client, session = poller
+    _add_priced(session, "REQ-SB-11", cost_centre="CC-1", status="provisioned", monthly=100)
+    _add_priced(session, "REQ-SB-12", cost_centre="CC-2", status="provisioned", monthly=250)
+    stats_cost = client.get("/api/stats").json()["active_monthly_cost"]["amount"]
+    showback_total = client.get("/api/showback?group_by=cost_centre").json()["total"]["monthly"]
+    assert showback_total == stats_cost == 350.0
+
+
+def test_showback_rejects_bad_group_by(poller):
+    client, session = poller
+    assert client.get("/api/showback?group_by=nonsense").status_code == 422
+
+
+def test_showback_requires_oversight_role(client, monkeypatch):
+    monkeypatch.setenv("ROLE_MAP", '{"dev@x.com": ["requester"]}')
+    assert client.get("/api/showback", headers={"X-Requester": "dev@x.com"}).status_code == 403

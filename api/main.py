@@ -220,6 +220,67 @@ def stats(session: Session = Depends(get_session),
     }
 
 
+# --- Showback & chargeback (E3.2, F-FIN-03) ----------------------------------
+
+# The dimensions cost can be attributed to, and the SQL expression for each.
+SHOWBACK_GROUPERS = {
+    "cost_centre": Request.cost_centre_code,
+    "project": Request.project_code,
+    "environment": func.coalesce(Request.environment_name, Request.target_environment),
+    "owner": func.coalesce(Request.application_owner, Request.requester_name, Request.requester),
+}
+# Which requests count as spend. 'active' = running (provisioned) cost, matching
+# the estate KPI; 'committed' also counts in-flight requests. Drafts, rejected
+# and decommissioned never count.
+SHOWBACK_SCOPES = {
+    "active": ["provisioned"],
+    "committed": ["provisioned", "submitted", "planned", "in-progress"],
+}
+
+
+@app.get("/api/showback")
+def showback(group_by: str = "cost_centre", scope: str = "active",
+             session: Session = Depends(get_session),
+             _auth: str = Depends(require_action("view_overview"))) -> dict:
+    """Monthly/annual cost broken down by who consumes it (F-FIN-03).
+
+    Sums the estimate captured at submission (the authoritative cost, 1.6),
+    grouped by cost centre / project / environment / owner. Read-only and
+    role-gated to the oversight roles, like the estate dashboard. Computed
+    server-side (P2); the portal only draws it.
+    """
+    if group_by not in SHOWBACK_GROUPERS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"group_by must be one of {sorted(SHOWBACK_GROUPERS)}.")
+    if scope not in SHOWBACK_SCOPES:
+        raise HTTPException(
+            status_code=422, detail=f"scope must be one of {sorted(SHOWBACK_SCOPES)}.")
+
+    dim = SHOWBACK_GROUPERS[group_by]
+    rows = session.execute(
+        select(dim, func.count(),
+               func.coalesce(func.sum(Estimate.monthly), 0),
+               func.coalesce(func.sum(Estimate.annual), 0))
+        .select_from(Estimate).join(Request, Estimate.request_id == Request.id)
+        .where(Request.status.in_(SHOWBACK_SCOPES[scope]))
+        .group_by(dim)
+    ).all()
+    out = [
+        {"key": k if k is not None else "—", "count": c,
+         "monthly": round(float(m), 2), "annual": round(float(a), 2)}
+        for k, c, m, a in rows
+    ]
+    out.sort(key=lambda r: r["monthly"], reverse=True)
+    total = {
+        "count": sum(r["count"] for r in out),
+        "monthly": round(sum(r["monthly"] for r in out), 2),
+        "annual": round(sum(r["annual"] for r in out), 2),
+    }
+    return {"group_by": group_by, "scope": scope, "currency": "AED",
+            "total": total, "rows": out}
+
+
 @app.get("/health")
 def health() -> dict:
     return {"ok": True, "mock": is_mock_mode()}

@@ -21,10 +21,12 @@ import {
   Add,
   ListChecked,
   ChartColumn,
+  Money,
 } from '@carbon/icons-react'
 import RequestForm from './pages/RequestForm'
 import MyRequests from './pages/MyRequests'
 import Overview from './pages/Overview'
+import Showback from './pages/Showback'
 
 type Me = { email: string; roles: string[] }
 
@@ -71,7 +73,10 @@ export default function App() {
       .catch(() => setMe(null))
   }, [])
 
-  const onRequest = !route.startsWith('#/requests') && !route.startsWith('#/overview')
+  const onRequest =
+    !route.startsWith('#/requests') &&
+    !route.startsWith('#/overview') &&
+    !route.startsWith('#/showback')
   let title: string
   let page: JSX.Element
   if (route.startsWith('#/requests')) {
@@ -80,6 +85,9 @@ export default function App() {
   } else if (route.startsWith('#/overview')) {
     title = 'Estate overview'
     page = <Overview />
+  } else if (route.startsWith('#/showback')) {
+    title = 'Showback'
+    page = <Showback />
   } else {
     const t = parseRequestType(route)
     title = `New request · ${RT_LABEL[t]}`
@@ -127,6 +135,9 @@ export default function App() {
             </SideNavLink>
             <SideNavLink renderIcon={ChartColumn} href="#/overview" isActive={route.startsWith('#/overview')}>
               Estate overview
+            </SideNavLink>
+            <SideNavLink renderIcon={Money} href="#/showback" isActive={route.startsWith('#/showback')}>
+              Showback
             </SideNavLink>
           </SideNavItems>
         </SideNav>

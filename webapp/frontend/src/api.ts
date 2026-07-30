@@ -131,6 +131,25 @@ export async function getStats(): Promise<Stats | 'forbidden' | null> {
   return r.ok ? r.json() : null
 }
 
+// Showback & chargeback (E3.2, F-FIN-03).
+export type ShowbackRow = { key: string; count: number; monthly: number; annual: number }
+export type Showback = {
+  group_by: string
+  scope: string
+  currency: string
+  total: { count: number; monthly: number; annual: number }
+  rows: ShowbackRow[]
+}
+
+export async function getShowback(
+  groupBy: string,
+  scope: string,
+): Promise<Showback | 'forbidden' | null> {
+  const r = await fetch(`/api/showback?group_by=${groupBy}&scope=${scope}`)
+  if (r.status === 403) return 'forbidden'
+  return r.ok ? r.json() : null
+}
+
 export type AuditEntry = { event: string; created_at: string }
 
 export async function getAudit(reference: string): Promise<AuditEntry[]> {
