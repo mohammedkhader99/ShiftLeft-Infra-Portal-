@@ -24,6 +24,7 @@ from api.jira import (
     add_comment,
     build_ticket_body,
     create_issue,
+    get_approval_author,
     get_status,
     inprogress_status,
     jira_mode,
@@ -721,6 +722,55 @@ def _check_sod(session: Session, req: Request, actor: str, action: str) -> None:
         )
 
 
+def _four_eyes_enforced() -> bool:
+    return os.getenv("FOUR_EYES_ENFORCED", "true").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _same_person(approver: dict, requester_email: str) -> bool:
+    """Whether the Jira approver is the requester (F-GOV-08). Matches by email if
+    Jira exposes it, else bridges the email -> Jira-username via the RBAC resolver."""
+    email = (approver.get("email") or "").strip().lower()
+    if email and email == requester_email.strip().lower():
+        return True
+    name = (approver.get("name") or "").strip().lower()
+    if name:
+        bridged = (roles_mod.jira_username(requester_email) or "").strip().lower()
+        if bridged and name == bridged:
+            return True
+    return False
+
+
+def _four_eyes_ok(session: Session, req: Request) -> bool:
+    """Four-eyes gate (F-GOV-08): the Jira approver must differ from the requester.
+    Returns True if it's OK to proceed. Live-only; fails open if the approver
+    can't be determined (a Jira read error) rather than blocking provisioning."""
+    if not _four_eyes_enforced() or jira_mode() != "live" or req.approval is None:
+        return True
+    approver = get_approval_author(req.approval.jira_key)
+    if approver is None or not _same_person(approver, req.requester):
+        return True
+    # Self-approval in Jira — block. Notify + audit once; re-evaluated each cycle
+    # (a genuine re-approval by a different person will pass and unblock).
+    if req.four_eyes_notified_at is None:
+        try:
+            add_comment(
+                req.approval.jira_key,
+                "👥 Four-eyes control: this request was approved by its own requester. "
+                "A different approver must approve it before it can be provisioned.",
+            )
+        except JiraError:
+            pass  # best-effort; the audit + status_detail still record the block
+        req.four_eyes_notified_at = datetime.now(timezone.utc)
+        req.status_detail = ("Blocked (four-eyes): approved by the requester; "
+                             "a different approver is required.")
+        append_audit(session, "four_eyes.blocked", reference=req.reference,
+                     jira_key=req.approval.jira_key, actor="poller",
+                     detail={"approver": approver.get("name") or approver.get("email"),
+                             "requester": req.requester})
+        session.commit()
+    return False
+
+
 @app.post("/api/approvals/{jira_key}/approve")
 def approve(jira_key: str, session: Session = Depends(get_session),
             _auth: str = Depends(require_action("execute"))):
@@ -760,6 +810,12 @@ def approve(jira_key: str, session: Session = Depends(get_session),
                 "provisioned": False,
                 "message": f"Ticket {jira_key} is not approved in Jira (status: {status}).",
             }
+
+    # Four-eyes (F-GOV-08): refuse if the Jira approver is the requester.
+    if not _four_eyes_ok(session, req):
+        return JSONResponse(status_code=409,
+                            content={"approval": "approved", "provisioned": False,
+                                     "error": req.status_detail})
 
     appr.status = "approved"
     append_audit(session, "approval.approved", reference=req.reference, jira_key=jira_key,
@@ -1180,6 +1236,9 @@ def _advance_request(session: Session, req: Request) -> str:
             if appr.status != status:  # reflect 'pending' etc. without audit noise
                 appr.status = status
                 session.commit()
+            return req.status
+        # Four-eyes (F-GOV-08): refuse if the Jira approver is the requester.
+        if not _four_eyes_ok(session, req):
             return req.status
         # Approved — record it once, then run the same signed handoff (plan) the
         # approve button runs. On a retry (a previous plan failed) appr.status is

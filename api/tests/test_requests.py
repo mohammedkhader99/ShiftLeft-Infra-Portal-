@@ -1229,3 +1229,59 @@ def test_sla_escalation_fires_once(poller, monkeypatch):
     # A second sweep must not escalate again.
     main._escalate_sla(session, req)
     assert _events(session, req.reference).count("sla.breached") == 1
+
+
+# --- Four-eyes on the Jira approver (F-GOV-08) -------------------------------
+
+def _simulate_live_approval(main, monkeypatch, author):
+    """Pretend Jira is live and the ticket is approved by `author` ({email,name})."""
+    monkeypatch.setattr(main, "jira_mode", lambda: "live")
+    monkeypatch.setattr(main, "get_status", lambda k: "approved")
+    monkeypatch.setattr(main, "get_approval_author", lambda k: author)
+    monkeypatch.setattr(main, "add_comment", lambda *a, **k: None)  # no real Jira
+    monkeypatch.setattr(main, "_post_to_orchestrator", lambda *a, **k: (_PlanResp(), None))
+    monkeypatch.setattr(main, "provision_mode", lambda: "plan")
+
+
+def test_four_eyes_blocks_self_approval(poller, monkeypatch):
+    import api.main as main
+
+    client, session = poller
+    req, key = _submit_request(client, session)
+    _simulate_live_approval(main, monkeypatch, {"email": req.requester, "name": None})
+    main._advance_request(session, req)
+    session.refresh(req)
+    assert req.status == "submitted"  # blocked — not advanced/provisioned
+    assert "four-eyes" in (req.status_detail or "").lower()
+    events = _events(session, req.reference)
+    assert "four_eyes.blocked" in events and "approval.approved" not in events
+    # Re-evaluated each cycle, but audited/notified only once.
+    main._advance_request(session, req)
+    assert _events(session, req.reference).count("four_eyes.blocked") == 1
+
+
+def test_four_eyes_allows_a_different_approver(poller, monkeypatch):
+    import api.main as main
+
+    client, session = poller
+    req, key = _submit_request(client, session)
+    _simulate_live_approval(main, monkeypatch, {"email": "manager@example.com", "name": None})
+    main._advance_request(session, req)
+    session.refresh(req)
+    assert req.status == "planned"  # a different approver -> proceeds
+    events = _events(session, req.reference)
+    assert "approval.approved" in events and "four_eyes.blocked" not in events
+
+
+def test_four_eyes_skipped_in_mock(poller, monkeypatch):
+    # Mock mode has no changelog author, so four-eyes is not enforced.
+    import api.main as main
+
+    client, session = poller
+    req, key = _submit_request(client, session)
+    monkeypatch.setattr(main, "get_status", lambda k: "approved")
+    monkeypatch.setattr(main, "_post_to_orchestrator", lambda *a, **k: (_PlanResp(), None))
+    monkeypatch.setattr(main, "provision_mode", lambda: "plan")
+    main._advance_request(session, req)
+    session.refresh(req)
+    assert req.status == "planned"

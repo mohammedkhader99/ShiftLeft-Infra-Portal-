@@ -424,6 +424,39 @@ def add_comment(jira_key: str, body: str) -> None:
         pass
 
 
+def get_approval_author(jira_key: str) -> dict | None:
+    """Who approved the request in Jira (F-GOV-08): the author of the last
+    transition into an approved status. Returns {name, email} or None if it
+    can't be determined (live only; mock has no changelog author) — the caller
+    fails open on None rather than blocking provisioning on a read error.
+    """
+    if jira_mode() != "live":
+        return None
+    try:
+        response = httpx.get(
+            f"{_base_url()}/rest/api/2/issue/{jira_key}",
+            params={"expand": "changelog", "fields": "status"},
+            headers=_headers(),
+            timeout=8.0,
+        )
+        response.raise_for_status()
+        histories = response.json().get("changelog", {}).get("histories", [])
+    except Exception:  # noqa: BLE001 — unknown author; caller fails open
+        return None
+    approved = _status_set("JIRA_APPROVED_STATUSES", "Approved,Done")
+    author = None
+    for history in histories:  # chronological — keep the last approval transition
+        for item in history.get("items", []):
+            if item.get("field") == "status" and (item.get("toString") or "").strip() in approved:
+                author = history.get("author") or {}
+    if not author:
+        return None
+    return {
+        "name": author.get("name") or author.get("key"),
+        "email": (author.get("emailAddress") or "").strip() or None,
+    }
+
+
 def get_status(jira_key: str) -> str:
     """Read the live approval status from Jira: pending | approved | rejected."""
     try:

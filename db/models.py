@@ -186,6 +186,8 @@ class Request(Base):
     # clock start), and when a breach was escalated (so we escalate only once).
     submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     sla_escalated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Four-eyes (F-GOV-08): when a self-approval block was notified (once).
+    four_eyes_notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # An environment is made of one or more components, each a technology with
     # its own size (ARCHITECTURE.md §5 — the 'component' model, 1.3a).

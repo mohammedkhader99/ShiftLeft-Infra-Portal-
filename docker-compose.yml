@@ -89,6 +89,10 @@ services:
       # Segregation of duties (E1.2, F-IAM-03): when true (default) a user cannot
       # approve/apply/destroy a request they raised. The poller is exempt.
       SOD_ENFORCED: ${SOD_ENFORCED:-true}
+      # Four-eyes (F-GOV-08): when true (default) the Jira approver must differ
+      # from the requester, else provisioning is blocked. Live only (needs the
+      # Jira changelog author); fails open if the author can't be determined.
+      FOUR_EYES_ENFORCED: ${FOUR_EYES_ENFORCED:-true}
       # Audit hardening (F-SEC-01): set a secret to sign the audit chain with a
       # keyed HMAC (so raw-DB tampering can't forge hashes). Empty = plain SHA-256.
       AUDIT_HMAC_KEY: ${AUDIT_HMAC_KEY:-}

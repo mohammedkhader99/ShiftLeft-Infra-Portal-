@@ -99,6 +99,28 @@ def _jira_groups(email: str) -> list[str]:
     return [g.get("name") for g in items if g.get("name")]
 
 
+def jira_username(email: str) -> str | None:
+    """Resolve an email to its Jira user key/name (email != Jira username here).
+
+    Reuses the same search as _jira_groups. Returns None on any failure or no
+    match — used by four-eyes (F-GOV-08) to compare the requester to the Jira
+    approver; the caller fails open on None.
+    """
+    base = os.getenv("JIRA_BASE_URL", "").rstrip("/")
+    headers = {"Authorization": f"Bearer {os.getenv('JIRA_PAT', '')}"}
+    try:
+        for query in (email, email.split("@")[0]):
+            r = httpx.get(f"{base}/rest/api/2/user/search",
+                          params={"username": query}, headers=headers, timeout=8.0)
+            r.raise_for_status()
+            users = r.json()
+            if users:
+                return users[0].get("key") or users[0].get("name")
+    except Exception:  # noqa: BLE001
+        return None
+    return None
+
+
 def resolve_roles(email: str) -> set[str]:
     """The user's roles. Mock: from ROLE_MAP/default (read fresh, no cache).
     Live: mapped from Jira group membership (cached), read-only on any failure."""
