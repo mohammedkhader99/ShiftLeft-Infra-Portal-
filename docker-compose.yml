@@ -89,6 +89,9 @@ services:
       # Segregation of duties (E1.2, F-IAM-03): when true (default) a user cannot
       # approve/apply/destroy a request they raised. The poller is exempt.
       SOD_ENFORCED: ${SOD_ENFORCED:-true}
+      # Audit hardening (F-SEC-01): set a secret to sign the audit chain with a
+      # keyed HMAC (so raw-DB tampering can't forge hashes). Empty = plain SHA-256.
+      AUDIT_HMAC_KEY: ${AUDIT_HMAC_KEY:-}
     ports:
       - "8081:8081"
     depends_on:

@@ -1174,3 +1174,13 @@ def test_poller_is_exempt_from_sod(poller, monkeypatch):
     monkeypatch.setattr(main, "_post_to_orchestrator", lambda *a, **k: (_PlanResp(), None))
     monkeypatch.setattr(main, "provision_mode", lambda: "plan")
     assert main._advance_request(session, req) == "planned"
+
+
+# --- Audit chain verification (F-SEC-01) -------------------------------------
+
+def test_audit_verify_endpoint_reports_intact(client, monkeypatch):
+    # Provisioning writes several audit events; the chain must verify intact.
+    _provision_a_request(client, monkeypatch)
+    result = client.get("/api/audit/verify").json()
+    assert result["ok"] is True
+    assert result["checked"] >= 3  # approval.approved, orchestrator.handoff, provisioned

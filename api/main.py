@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from api.attachment import build_request_pdf
 from api.costsheet import build_cost_sheet_xlsx
-from api.audit import append_audit
+from api.audit import append_audit, verify_chain
 from api.auth import get_requester, get_requester_name
 from api.jira import (
     JiraError,
@@ -809,6 +809,17 @@ def request_audit(reference: str, session: Session = Depends(get_session),
             for r in rows
         ],
     }
+
+
+@app.get("/api/audit/verify")
+def audit_verify(session: Session = Depends(get_session),
+                 _auth: str = Depends(require_action("view_audit"))) -> dict:
+    """Verify the append-only audit chain is intact (F-SEC-01).
+
+    Recomputes every entry's hash and checks the prev-hash linkage, so any edit,
+    deletion, insertion or reorder is reported with the offending entry.
+    """
+    return verify_chain(session)
 
 
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
