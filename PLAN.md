@@ -150,9 +150,9 @@ Every section of the brief is mapped here so nothing is dropped (traceability pa
 
 **Environment Size (5, cards w/ specs)** — ✅ Small/Medium/Large **+ XLarge (6.2)**, server-side sizing anchors + auto-pricing. ✅ **spec cards delivered in 6.3** (each size card shows vCPU · RAM · storage). ⬜ Custom (user-typed resources) → catalog. ⬜ per-card HA / recommended-use-case hints → later polish.
 
-**Advanced Options (~20)** — ⬜ region, AZ, DB version, HA, backup retention, encryption, DR, monitoring/logging level, storage tier, autoscaling, network type, firewall profile, private/public endpoint, DNS, certificates, secrets management, compliance profile → **catalog expansion (advanced-options increment)**.
+**Advanced Options (~20)** — ✅ **delivered in 6.5** (all 20 in an expandable accordion, stored as an `advanced_options` JSON bag, validated). HA / backup retention / monitoring level / support tier **drive real cost**; region, AZ, DB version, encryption, DR, logging level, storage tier, autoscaling, network type, firewall profile, private/public endpoint, DNS, certificates, secrets management, compliance profile are validated capture-only. *(None provision anything real yet — the deferred technology-to-real-resource boundary.)*
 
-**Live Cost Panel** — ✅ one-time/monthly/annual totals, live update, **+ compute/storage/licence category split (6.4)**. ⬜ network/backup/monitoring/support cost lines (opt-in Advanced Options + usage-based) → later; ⬜ savings recommendation + optimization tips → **AI Copilot (E4)**.
+**Live Cost Panel** — ✅ one-time/monthly/annual totals, live update, **compute/storage/licence split (6.4)**, **+ backup/monitoring/support lines driven by advanced options (6.5)**. ⬜ network (usage-based, not estimated); ⬜ savings recommendation + optimization tips → **AI Copilot (E4)**.
 
 **AI Assistant (8 capabilities)** — ⬜ all (recommend sizing/cloud, explain costs, detect gaps, predict time, compliance) → **E4**, **recommend-only per hard-rule P3** (never decides, executes, or holds credentials).
 
