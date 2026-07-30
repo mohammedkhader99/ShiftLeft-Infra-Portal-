@@ -158,8 +158,9 @@ export default function MyRequests({ route }: { route: string }) {
       {rows.length === 0 ? (
         <p style={{ color: 'var(--cds-text-secondary)' }}>No matching requests.</p>
       ) : (
+        <div style={{ overflowX: 'auto', maxWidth: '100%' }}>
         <TableContainer title={estate ? 'Estate requests' : 'My requests'} description="Live — updates automatically.">
-          <Table>
+          <Table size="sm">
             <TableHead>
               <TableRow>
                 <TableExpandHeader aria-label="Expand row" />
@@ -302,6 +303,7 @@ export default function MyRequests({ route }: { route: string }) {
             </TableBody>
           </Table>
         </TableContainer>
+        </div>
       )}
     </div>
   )
