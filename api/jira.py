@@ -275,12 +275,17 @@ def _upload_attachment(jira_key: str, filename: str, content: bytes) -> None:
 
 
 def create_issue(
-    session: Session, req: Request, body: str, attachment: tuple[str, bytes] | None = None
+    session: Session,
+    req: Request,
+    body: str,
+    attachment: tuple[str, bytes] | None = None,
+    attachments: list[tuple[str, bytes]] | None = None,
 ) -> Approval:
     """Create the Jira issue and return an Approval row (not yet added).
 
-    If `attachment` (filename, bytes) is given, it is uploaded to the issue
-    after creation (live mode only).
+    `attachment` (filename, bytes) and any `attachments` (a list) are uploaded
+    to the issue after creation (live mode only) — e.g. the costing PDF and the
+    Excel cost sheet (6.4).
     """
     if jira_mode() != "live":
         key = _next_mock_key(session)
@@ -319,8 +324,9 @@ def create_issue(
         raise JiraError(f"Jira returned {response.status_code}: {response.text}")
 
     key = response.json()["key"]
-    if attachment is not None:
-        _upload_attachment(key, attachment[0], attachment[1])
+    for att in [attachment, *(attachments or [])]:
+        if att is not None:
+            _upload_attachment(key, att[0], att[1])
     return Approval(
         jira_key=key,
         status="pending",

@@ -250,6 +250,11 @@ export default function MyRequests({ route }: { route: string }) {
                       ) : (
                         <InlineLoading description="Loading workflow…" />
                       )}
+                      <div style={{ marginTop: '1rem', fontSize: '0.85rem' }}>
+                        <a href={`/api/requests/${r.reference}/costsheet.xlsx`}>
+                          ↓ Download cost sheet (Excel)
+                        </a>
+                      </div>
                     </div>
                   </TableExpandedRow>
                 </Fragment>

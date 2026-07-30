@@ -574,7 +574,15 @@ export default function RequestForm() {
               <p style={{ fontSize: '2rem', fontWeight: 300, margin: '0.25rem 0' }}>
                 {cost.totals.monthly.toFixed(2)} <span style={{ fontSize: '0.9rem' }}>{cost.currency}/mo</span>
               </p>
-              <div style={{ fontSize: '0.875rem', color: 'var(--cds-text-secondary)', lineHeight: 2 }}>
+              {cost.by_category && (
+                <div style={{ fontSize: '0.8rem', color: 'var(--cds-text-secondary)', lineHeight: 1.9, borderTop: '1px solid var(--cds-border-subtle)', paddingTop: '0.5rem', marginTop: '0.25rem' }}>
+                  <div style={{ textTransform: 'uppercase', fontSize: '0.68rem', letterSpacing: '0.02em', marginBottom: '0.15rem' }}>Monthly by category</div>
+                  <div>Compute <span style={{ float: 'right' }}>{cost.by_category.compute.toFixed(2)}</span></div>
+                  <div>Storage <span style={{ float: 'right' }}>{cost.by_category.storage.toFixed(2)}</span></div>
+                  <div>Licence <span style={{ float: 'right' }}>{cost.by_category.licence.toFixed(2)}</span></div>
+                </div>
+              )}
+              <div style={{ fontSize: '0.875rem', color: 'var(--cds-text-secondary)', lineHeight: 2, borderTop: '1px solid var(--cds-border-subtle)', paddingTop: '0.5rem', marginTop: '0.5rem' }}>
                 <div>One-time <span style={{ float: 'right' }}>{cost.totals.one_time.toFixed(2)}</span></div>
                 <div>Annual <span style={{ float: 'right' }}>{cost.totals.annual.toFixed(2)}</span></div>
               </div>

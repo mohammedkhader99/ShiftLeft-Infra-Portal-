@@ -14,6 +14,7 @@ export type Component = { technology_code: string; size: string }
 export type Cost = {
   currency: string
   known_target?: boolean
+  by_category?: { compute: number; storage: number; licence: number }
   totals: { one_time: number; monthly: number; annual: number }
 }
 

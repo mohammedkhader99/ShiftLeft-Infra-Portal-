@@ -9,13 +9,14 @@ from datetime import date, datetime, timedelta, timezone
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from api.attachment import build_request_pdf
+from api.costsheet import build_cost_sheet_xlsx
 from api.audit import append_audit
 from api.auth import get_requester, get_requester_name
 from api.jira import (
@@ -548,16 +549,22 @@ def submit_request(
     # than leaving a submitted request with no approval ticket.
     plan_preview = build_plan_preview(req, session)
     ticket_body = build_ticket_body(req, breakdown, plan_preview)
-    # A one-page request + costing PDF for the approver (2.4c).
+    # A one-page request + costing PDF (2.4c) and an Excel cost sheet (6.4) for
+    # the approver — never fail a submit over an attachment.
     attachment = None
+    extra_attachments: list[tuple[str, bytes]] = []
     try:
         sizing = resolve_components(components_data, session)
         pdf = build_request_pdf(req, breakdown, sizing)
         attachment = (f"request-{req.reference}.pdf", pdf)
-    except Exception:  # noqa: BLE001 — never fail a submit over the PDF
-        attachment = None
+        xlsx = build_cost_sheet_xlsx(req, breakdown, sizing)
+        extra_attachments.append((f"cost-{req.reference}.xlsx", xlsx))
+    except Exception:  # noqa: BLE001
+        pass
     try:
-        req.approval = create_issue(session, req, ticket_body, attachment=attachment)
+        req.approval = create_issue(
+            session, req, ticket_body, attachment=attachment, attachments=extra_attachments
+        )
     except JiraError as exc:
         session.rollback()
         return JSONResponse(
@@ -774,6 +781,32 @@ def request_audit(reference: str, session: Session = Depends(get_session),
             for r in rows
         ],
     }
+
+
+XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+@app.get("/api/requests/{reference}/costsheet.xlsx")
+def request_costsheet(reference: str, session: Session = Depends(get_session)) -> Response:
+    """Download the request's cost sheet as an Excel file (6.4).
+
+    Uses the estimate captured at submission when present (the authoritative
+    snapshot), otherwise computes a fresh estimate — so drafts work too. Same
+    open access as GET /api/requests/{reference}, which already exposes the cost.
+    """
+    req = _load_request(reference, session)
+    components = [{"technology_code": c.technology_code, "size": c.size} for c in req.components]
+    if req.estimate and req.estimate.breakdown:
+        breakdown = req.estimate.breakdown
+    else:
+        breakdown = estimate_cost(components, req.deployment_target, session)
+    sizing = resolve_components(components, session)
+    xlsx = build_cost_sheet_xlsx(req, breakdown, sizing)
+    return Response(
+        content=xlsx,
+        media_type=XLSX_MIME,
+        headers={"Content-Disposition": f'attachment; filename="cost-{reference}.xlsx"'},
+    )
 
 
 # --- Real apply / destroy (increment 2.6b) -----------------------------------

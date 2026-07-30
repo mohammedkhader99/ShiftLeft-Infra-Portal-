@@ -992,3 +992,50 @@ def test_environment_tier_persisted_and_returned(client):
     ref = _draft_ref(client, VALID_CREATE)
     assert client.post(f"/api/requests/{ref}/submit").status_code == 200
     assert client.get(f"/api/requests/{ref}").json()["environment_tier"] == "uat"
+
+
+# --- Cost breakdown + Excel cost sheet (increment 6.4) -----------------------
+
+def _cost(client, tech, size="medium", target="onprem"):
+    return client.post("/api/cost", json={
+        "deployment_target": target,
+        "components": [{"technology_code": tech, "size": size}],
+    }).json()
+
+
+def test_cost_line_splits_compute_and_storage(client):
+    # postgres16 medium onprem: compute 4*45 + 16*12 = 372, storage 200*1.5 = 300.
+    line = _cost(client, "postgres16")["lines"][0]
+    assert line["compute_monthly"] == 372.0
+    assert line["storage_monthly"] == 300.0
+    assert line["monthly"] == 672.0  # unchanged total
+
+
+def test_cost_by_category_sums_to_monthly(client):
+    body = _cost(client, "postgres16")
+    cat = body["by_category"]
+    assert cat == {"compute": 372.0, "storage": 300.0, "licence": 0.0}
+    assert round(cat["compute"] + cat["storage"] + cat["licence"], 2) == body["totals"]["monthly"]
+
+
+def test_cost_by_category_includes_licence(client):
+    # Oracle carries a 1800 licence, surfaced in the licence category.
+    assert _cost(client, "oracle-db")["by_category"]["licence"] == 1800.0
+
+
+def test_costsheet_xlsx_downloads(client):
+    ref = _draft_ref(client, VALID_CREATE)
+    client.post(f"/api/requests/{ref}/submit")
+    resp = client.get(f"/api/requests/{ref}/costsheet.xlsx")
+    assert resp.status_code == 200
+    assert resp.content[:2] == b"PK"  # an .xlsx is a zip archive
+    assert "spreadsheetml" in resp.headers["content-type"]
+    assert "cost-" in resp.headers.get("content-disposition", "")
+
+
+def test_costsheet_works_for_a_draft(client):
+    # No estimate yet — the endpoint recomputes so drafts still download.
+    ref = _draft_ref(client, VALID_CREATE)
+    resp = client.get(f"/api/requests/{ref}/costsheet.xlsx")
+    assert resp.status_code == 200
+    assert resp.content[:2] == b"PK"

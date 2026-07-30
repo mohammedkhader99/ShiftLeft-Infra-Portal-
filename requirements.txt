@@ -6,6 +6,7 @@ authlib
 itsdangerous
 pyjwt[crypto]
 fpdf2
+openpyxl
 sqlalchemy
 psycopg[binary]
 pytest

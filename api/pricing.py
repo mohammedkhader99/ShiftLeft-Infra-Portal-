@@ -59,20 +59,23 @@ def _cloud_compute_cached(resource: dict, vcpu: int, memory_gb: int) -> float:
     ) * HOURS_PER_MONTH
 
 
-def _component_monthly(target: str, resource: dict, vcpu: int, memory_gb: int, storage_gb: int) -> float:
-    """Monthly resource cost for one component, per target's rate structure."""
+def _component_parts(target: str, resource: dict, vcpu: int, memory_gb: int, storage_gb: int) -> tuple[float, float]:
+    """(compute_monthly, storage_monthly) for one component, per target's rates.
+
+    Splitting compute from storage lets the breakdown report a per-category
+    cost (6.4); their sum equals the previous single resource figure, so totals
+    are unchanged.
+    """
     if target == "onprem":
-        return (
-            vcpu * resource.get("vcpu", 0)
-            + memory_gb * resource.get("memory-gb", 0)
-            + storage_gb * resource.get("storage-gb", 0)
-        )
-    # Cloud: compute billed per hour, storage per GB/month.
-    return (
-        vcpu * resource.get("vcpu-hour", 0) * HOURS_PER_MONTH
-        + memory_gb * resource.get("memory-gb-hour", 0) * HOURS_PER_MONTH
-        + storage_gb * resource.get("storage-gb-month", 0)
-    )
+        compute = vcpu * resource.get("vcpu", 0) + memory_gb * resource.get("memory-gb", 0)
+        storage = storage_gb * resource.get("storage-gb", 0)
+    else:
+        # Cloud: compute billed per hour, storage per GB/month.
+        compute = (
+            vcpu * resource.get("vcpu-hour", 0) + memory_gb * resource.get("memory-gb-hour", 0)
+        ) * HOURS_PER_MONTH
+        storage = storage_gb * resource.get("storage-gb-month", 0)
+    return compute, storage
 
 
 def estimate_cost(components: list[dict], deployment_target: str, session: Session) -> dict:
@@ -109,23 +112,26 @@ def estimate_cost(components: list[dict], deployment_target: str, session: Sessi
     lines: list[dict] = []
     one_time_total = 0.0
     monthly_total = 0.0
+    compute_total = 0.0
+    storage_total = 0.0
+    licence_total = 0.0
 
     for comp in sizing["components"]:
-        monthly = 0.0
+        compute_monthly = 0.0
+        storage_monthly = 0.0
         licence_monthly = 0.0
         one_time = 0.0
         if comp["resolved"] and known_target:
             if azure_live:
                 storage_monthly = comp["storage_gb"] * resource.get("storage-gb-month", 0)
                 try:
-                    compute = azure_pricing.vm_monthly(comp["size"]) * (1 - azure_discount)
+                    compute_monthly = azure_pricing.vm_monthly(comp["size"]) * (1 - azure_discount)
                 except AzureUnavailable:
                     # Fall back to the cached rate cards, and flag it (§13).
-                    compute = _cloud_compute_cached(resource, comp["vcpu"], comp["memory_gb"])
+                    compute_monthly = _cloud_compute_cached(resource, comp["vcpu"], comp["memory_gb"])
                     pricing_source = "azure-cached"
-                monthly = compute + storage_monthly
             else:
-                monthly = _component_monthly(
+                compute_monthly, storage_monthly = _component_parts(
                     target, resource, comp["vcpu"], comp["memory_gb"], comp["storage_gb"]
                 )
             licence_item = TECHNOLOGY_LICENCE.get(comp["technology_code"])
@@ -133,15 +139,21 @@ def estimate_cost(components: list[dict], deployment_target: str, session: Sessi
                 licence_monthly = licences.get(licence_item, 0.0)
             one_time = setup_fee
 
-        component_monthly = monthly + licence_monthly
+        resource_monthly = compute_monthly + storage_monthly
+        component_monthly = resource_monthly + licence_monthly
         one_time_total += one_time
         monthly_total += component_monthly
+        compute_total += compute_monthly
+        storage_total += storage_monthly
+        licence_total += licence_monthly
         lines.append(
             {
                 "technology_name": comp["technology_name"],
                 "size": comp["size"],
                 "resolved": comp["resolved"] and known_target,
-                "resource_monthly": round(monthly, 2),
+                "compute_monthly": round(compute_monthly, 2),
+                "storage_monthly": round(storage_monthly, 2),
+                "resource_monthly": round(resource_monthly, 2),
                 "licence_monthly": round(licence_monthly, 2),
                 "one_time": round(one_time, 2),
                 "monthly": round(component_monthly, 2),
@@ -154,6 +166,14 @@ def estimate_cost(components: list[dict], deployment_target: str, session: Sessi
         "known_target": known_target,
         "pricing_source": pricing_source,
         "lines": lines,
+        # Per-category subtotals (6.4). Compute + storage + licence == monthly.
+        # Network/backup/monitoring/support are opt-in Advanced Options (later)
+        # and usage-based, so they are surfaced in the sheet but not priced here.
+        "by_category": {
+            "compute": round(compute_total, 2),
+            "storage": round(storage_total, 2),
+            "licence": round(licence_total, 2),
+        },
         "totals": {
             "one_time": round(one_time_total, 2),
             "monthly": round(monthly_total, 2),

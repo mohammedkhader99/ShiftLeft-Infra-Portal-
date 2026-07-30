@@ -104,8 +104,14 @@ async def proxy(path: str, request: Request) -> Response:
         request.method, f"{API_BASE_URL}/api/{path}",
         dict(request.query_params), body, headers,
     )
+    # Forward the download filename for file responses (e.g. the Excel cost sheet).
+    passthrough = {}
+    disposition = upstream.headers.get("content-disposition")
+    if disposition:
+        passthrough["Content-Disposition"] = disposition
     return Response(content=upstream.content, status_code=upstream.status_code,
-                    media_type=upstream.headers.get("content-type", "application/json"))
+                    media_type=upstream.headers.get("content-type", "application/json"),
+                    headers=passthrough)
 
 
 @app.get("/healthz")
