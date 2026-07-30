@@ -6,6 +6,8 @@ from collections import Counter
 from collections.abc import Iterator
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
+from datetime import time as dtime
+from zoneinfo import ZoneInfo
 
 import httpx
 from dotenv import load_dotenv
@@ -1274,6 +1276,9 @@ def _advance_request(session: Session, req: Request) -> str:
             append_audit(session, "approval.approved", reference=req.reference,
                          jira_key=jira_key, actor="poller")
             session.commit()
+        # Change window (F-GOV-05): hold provisioning outside the allowed window.
+        if not _hold_for_change_window(session, req):
+            return req.status
         # Decommission tears down the referenced request instead of provisioning.
         if req.request_type == "decommission":
             _decommission(session, req, actor="poller")
@@ -1315,6 +1320,85 @@ def _advance_request(session: Session, req: Request) -> str:
                                  ttl_expiry.isoformat())
         session.refresh(req)  # pick up 'provisioned' / 'apply-failed' from the apply
     return req.status
+
+
+# --- Change windows (F-GOV-05) -----------------------------------------------
+
+_WEEKDAYS = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
+
+
+def _change_window_enabled() -> bool:
+    return os.getenv("CHANGE_WINDOW_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _parse_days(spec: str) -> set[int]:
+    """Parse 'mon-fri' or 'mon,wed,fri' into weekday numbers (Mon=0 .. Sun=6)."""
+    spec = (spec or "").strip().lower()
+    if not spec:
+        return set(range(7))
+    days: set[int] = set()
+    for token in spec.split(","):
+        token = token.strip()
+        if "-" in token:
+            a, b = (p.strip()[:3] for p in token.split("-", 1))
+            if a in _WEEKDAYS and b in _WEEKDAYS:
+                i = _WEEKDAYS[a]
+                while True:
+                    days.add(i)
+                    if i == _WEEKDAYS[b]:
+                        break
+                    i = (i + 1) % 7
+        elif token[:3] in _WEEKDAYS:
+            days.add(_WEEKDAYS[token[:3]])
+    return days or set(range(7))
+
+
+def _parse_hm(spec: str, default: dtime) -> dtime:
+    try:
+        hh, mm = spec.strip().split(":")
+        return dtime(int(hh), int(mm))
+    except Exception:  # noqa: BLE001
+        return default
+
+
+def change_window_status(now: datetime | None = None) -> dict:
+    """Whether provisioning is allowed right now (F-GOV-05). Returns {open, reason}.
+    Disabled (the default) always returns open, so nothing is ever held."""
+    if not _change_window_enabled():
+        return {"open": True, "reason": ""}
+    tz_name = os.getenv("CHANGE_WINDOW_TZ", "UTC").strip() or "UTC"
+    try:
+        tz = ZoneInfo(tz_name)
+    except Exception:  # noqa: BLE001
+        tz, tz_name = timezone.utc, "UTC"
+    local = (now or datetime.now(timezone.utc)).astimezone(tz)
+    days = _parse_days(os.getenv("CHANGE_WINDOW_DAYS", "mon-fri"))
+    start = _parse_hm(os.getenv("CHANGE_WINDOW_START", "08:00"), dtime(8, 0))
+    end = _parse_hm(os.getenv("CHANGE_WINDOW_END", "18:00"), dtime(18, 0))
+    if local.weekday() in days and start <= local.time() <= end:
+        return {"open": True, "reason": ""}
+    window = (f"{os.getenv('CHANGE_WINDOW_DAYS', 'mon-fri')} "
+              f"{start.strftime('%H:%M')}-{end.strftime('%H:%M')} {tz_name}")
+    return {"open": False, "reason": f"outside the change window (allowed {window})"}
+
+
+def _hold_for_change_window(session: Session, req: Request) -> bool:
+    """Gate provisioning on the change window (F-GOV-05). Returns True if it's OK
+    to proceed. When held, records status_detail + a change_window.held audit
+    (once) and re-checks each poll, so it provisions when the window opens."""
+    status = change_window_status()
+    if status["open"]:
+        if req.status_detail and "change window" in req.status_detail:
+            req.status_detail = None  # window opened — clear the stale hold note
+        return True
+    if req.change_window_held_at is None:
+        req.change_window_held_at = datetime.now(timezone.utc)
+        append_audit(session, "change_window.held", reference=req.reference,
+                     jira_key=req.approval.jira_key if req.approval else None, actor="poller",
+                     detail={"reason": status["reason"]})
+    req.status_detail = f"Held: {status['reason']}; will provision when the window opens."
+    session.commit()
+    return False
 
 
 def _escalate_sla(session: Session, req: Request) -> None:

@@ -1310,3 +1310,79 @@ def test_evidence_pack_works_for_a_draft(client):
     resp = client.get(f"/api/requests/{ref}/evidence.pdf")
     assert resp.status_code == 200
     assert resp.content[:5] == b"%PDF-"
+
+
+# --- Change windows (F-GOV-05) -----------------------------------------------
+
+_DAY = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+
+
+def test_change_window_disabled_is_always_open(monkeypatch):
+    import api.main as main
+    monkeypatch.setenv("CHANGE_WINDOW_ENABLED", "false")
+    assert main.change_window_status()["open"] is True
+
+
+def test_change_window_respects_days(monkeypatch):
+    import api.main as main
+    from datetime import datetime, timezone
+    now = datetime(2026, 7, 30, 12, 0, tzinfo=timezone.utc)  # noon, inside 08-18
+    monkeypatch.setenv("CHANGE_WINDOW_ENABLED", "true")
+    monkeypatch.setenv("CHANGE_WINDOW_TZ", "UTC")
+    monkeypatch.setenv("CHANGE_WINDOW_START", "08:00")
+    monkeypatch.setenv("CHANGE_WINDOW_END", "18:00")
+    monkeypatch.setenv("CHANGE_WINDOW_DAYS", _DAY[now.weekday()])       # today allowed
+    assert main.change_window_status(now)["open"] is True
+    monkeypatch.setenv("CHANGE_WINDOW_DAYS", _DAY[(now.weekday() + 1) % 7])  # not today
+    assert main.change_window_status(now)["open"] is False
+
+
+def test_change_window_respects_hours(monkeypatch):
+    import api.main as main
+    from datetime import datetime, timezone
+    now = datetime(2026, 7, 30, 22, 0, tzinfo=timezone.utc)  # 22:00, after hours
+    monkeypatch.setenv("CHANGE_WINDOW_ENABLED", "true")
+    monkeypatch.setenv("CHANGE_WINDOW_TZ", "UTC")
+    monkeypatch.setenv("CHANGE_WINDOW_DAYS", _DAY[now.weekday()])  # today allowed
+    monkeypatch.setenv("CHANGE_WINDOW_START", "08:00")
+    monkeypatch.setenv("CHANGE_WINDOW_END", "18:00")
+    s = main.change_window_status(now)
+    assert s["open"] is False
+    assert "change window" in s["reason"]
+
+
+def test_advance_held_outside_change_window(poller, monkeypatch):
+    import api.main as main
+    client, session = poller
+    req, key = _submit_request(client, session)
+    monkeypatch.setattr(main, "get_status", lambda k: "approved")
+    monkeypatch.setattr(main, "change_window_status",
+                        lambda now=None: {"open": False, "reason": "outside the change window (allowed mon-fri 08:00-18:00 UTC)"})
+    main._advance_request(session, req)
+    session.refresh(req)
+    assert req.status == "submitted"  # held — not provisioned
+    assert "change window" in (req.status_detail or "")
+    events = _events(session, req.reference)
+    assert "change_window.held" in events and "provisioned" not in events
+    # Re-evaluated each poll, but audited once.
+    main._advance_request(session, req)
+    assert _events(session, req.reference).count("change_window.held") == 1
+
+
+def test_advance_provisions_when_change_window_open(poller, monkeypatch):
+    import api.main as main
+    client, session = poller
+    req, key = _submit_request(client, session)
+    monkeypatch.setattr(main, "get_status", lambda k: "approved")
+    monkeypatch.setattr(main, "change_window_status", lambda now=None: {"open": True, "reason": ""})
+
+    class Resp:
+        status_code = 200
+
+        def json(self):
+            return {"provisioned": True, "reference": req.reference, "verified": {}}
+
+    monkeypatch.setattr(main, "_post_to_orchestrator", lambda *a, **k: (Resp(), None))
+    main._advance_request(session, req)
+    session.refresh(req)
+    assert req.status == "provisioned"

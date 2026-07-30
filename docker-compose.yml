@@ -99,6 +99,13 @@ services:
       # Approval SLA (F-GOV-01): hours a request may await approval before it is
       # flagged breached and the poller escalates (a Jira comment). 0 = always breached.
       APPROVAL_SLA_HOURS: ${APPROVAL_SLA_HOURS:-24}
+      # Change window (F-GOV-05): when enabled, provisioning of approved requests
+      # only happens inside the window; outside it they are held until it opens.
+      CHANGE_WINDOW_ENABLED: ${CHANGE_WINDOW_ENABLED:-false}
+      CHANGE_WINDOW_DAYS: ${CHANGE_WINDOW_DAYS:-mon-fri}
+      CHANGE_WINDOW_START: ${CHANGE_WINDOW_START:-08:00}
+      CHANGE_WINDOW_END: ${CHANGE_WINDOW_END:-18:00}
+      CHANGE_WINDOW_TZ: ${CHANGE_WINDOW_TZ:-UTC}
     ports:
       - "8081:8081"
     depends_on:

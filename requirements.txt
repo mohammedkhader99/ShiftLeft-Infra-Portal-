@@ -7,6 +7,7 @@ itsdangerous
 pyjwt[crypto]
 fpdf2
 openpyxl
+tzdata
 sqlalchemy
 psycopg[binary]
 pytest

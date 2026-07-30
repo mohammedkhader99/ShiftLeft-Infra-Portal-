@@ -43,3 +43,6 @@ os.environ["SOD_ENFORCED"] = "false"
 # Four-eyes (F-GOV-08): pinned OFF in the baseline so the developer's .env (which
 # may disable it) can't leak in; the four-eyes tests turn it on explicitly.
 os.environ["FOUR_EYES_ENFORCED"] = "false"
+# Change window (F-GOV-05): pinned OFF so provisioning tests aren't held; the
+# change-window tests drive it explicitly (or monkeypatch change_window_status).
+os.environ["CHANGE_WINDOW_ENABLED"] = "false"
