@@ -30,6 +30,15 @@ resource "oci_objectstorage_bucket" "env" {
   namespace      = data.oci_objectstorage_namespace.ns.namespace
   name           = var.bucket_name
   freeform_tags  = var.tags
+
+  # Data protection: retain prior object versions (F-SEC-04 hardening) — clears
+  # the scanner's versioning-disabled finding and allows recovery from overwrite.
+  versioning = "Enabled"
+
+  # Customer-managed encryption key when one is configured (OCI_KMS_KEY_OCID),
+  # otherwise Oracle-managed encryption (null = default). Supplying a Vault key
+  # clears the scanner's no-CMK finding for restricted/confidential data.
+  kms_key_id = var.kms_key_id != "" ? var.kms_key_id : null
 }
 
 output "bucket_name" {

@@ -9,3 +9,10 @@ variable "tags" {
   type    = map(string)
   default = {}
 }
+
+# Optional OCI Vault key OCID for customer-managed encryption (F-SEC-04). Empty
+# (the default) uses Oracle-managed encryption.
+variable "kms_key_id" {
+  type    = string
+  default = ""
+}

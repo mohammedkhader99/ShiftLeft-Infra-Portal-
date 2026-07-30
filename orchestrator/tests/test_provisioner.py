@@ -38,3 +38,11 @@ def test_plan_summary_parsing():
     assert provisioner._plan_summary(out) == "Plan: 1 to add, 0 to change, 0 to destroy."
     assert provisioner._plan_summary("No changes. Your infrastructure matches.") == "No changes."
     assert provisioner._plan_summary("nothing recognisable") == "plan generated"
+
+
+def test_oci_vars_carry_kms_key_from_env(monkeypatch):
+    # The KMS key OCID flows from the env into the tfvars (F-SEC-04 hardening).
+    monkeypatch.delenv("OCI_KMS_KEY_OCID", raising=False)
+    assert provisioner._oci_vars("b", {})["kms_key_id"] == ""  # default: Oracle-managed
+    monkeypatch.setenv("OCI_KMS_KEY_OCID", "ocid1.key.oc1..aaaa")
+    assert provisioner._oci_vars("b", {})["kms_key_id"] == "ocid1.key.oc1..aaaa"

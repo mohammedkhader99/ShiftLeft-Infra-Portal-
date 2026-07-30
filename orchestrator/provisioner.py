@@ -52,6 +52,9 @@ def _oci_vars(bucket_name: str, tags: dict) -> dict:
         "compartment_ocid": os.getenv("OCI_COMPARTMENT_OCID", ""),
         "bucket_name": bucket_name,
         "tags": tags,
+        # Customer-managed encryption key for sensitive data (F-SEC-04); empty
+        # falls back to Oracle-managed encryption in the module.
+        "kms_key_id": os.getenv("OCI_KMS_KEY_OCID", ""),
     }
 
 
