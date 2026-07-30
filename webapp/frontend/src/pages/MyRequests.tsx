@@ -14,7 +14,9 @@ import {
   ProgressIndicator,
   ProgressStep,
   InlineLoading,
+  InlineNotification,
 } from '@carbon/react'
+import { WarningAltFilled } from '@carbon/icons-react'
 import { getMe, getRequests, getAudit, type RequestRow } from '../api'
 import { workflowSteps, fmtWhen, type WFStep } from '../workflow'
 
@@ -196,6 +198,15 @@ export default function MyRequests({ route }: { route: string }) {
                           </Tag>
                         </div>
                       )}
+                      {r.status_detail && (
+                        <div
+                          style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', marginTop: '0.25rem', maxWidth: '17rem', color: 'var(--cds-text-error)', fontSize: '0.75rem' }}
+                          title={r.status_detail}
+                        >
+                          <WarningAltFilled size={14} style={{ flexShrink: 0 }} />
+                          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.status_detail}</span>
+                        </div>
+                      )}
                     </TableCell>
                     <TableCell>{r.requester_name || r.requester}</TableCell>
                     <TableCell>{r.environment_name || r.target_environment || '—'}</TableCell>
@@ -219,6 +230,16 @@ export default function MyRequests({ route }: { route: string }) {
                   </TableExpandRow>
                   <TableExpandedRow colSpan={8}>
                     <div style={{ padding: '1rem 0.5rem' }}>
+                      {r.status_detail && (
+                        <InlineNotification
+                          kind={r.status.endsWith('failed') || /blocked|not found|failed/i.test(r.status_detail) ? 'error' : 'warning'}
+                          lowContrast
+                          hideCloseButton
+                          title={r.status.endsWith('failed') ? 'This request failed' : 'This request is held up'}
+                          subtitle={r.status_detail}
+                          style={{ maxWidth: 'none', marginBottom: '1rem' }}
+                        />
+                      )}
                       {(r.priority || r.business_justification) && (
                         <div
                           style={{
