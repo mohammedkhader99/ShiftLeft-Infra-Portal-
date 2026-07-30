@@ -263,6 +263,19 @@ export default function MyRequests({ route }: { route: string }) {
                           style={{ maxWidth: 'none', marginBottom: '1rem' }}
                         />
                       )}
+                      {r.waiver && (
+                        <InlineNotification
+                          kind="info"
+                          lowContrast
+                          hideCloseButton
+                          title="Policy waiver granted (F-GOV-02)"
+                          subtitle={
+                            `${r.waiver.reason} — granted by ${r.waiver.granted_by}` +
+                            (r.waiver.expires_at ? `, expires ${r.waiver.expires_at}` : ', open-ended')
+                          }
+                          style={{ maxWidth: 'none', marginBottom: '1rem' }}
+                        />
+                      )}
                       {(r.priority || r.business_justification) && (
                         <div
                           style={{

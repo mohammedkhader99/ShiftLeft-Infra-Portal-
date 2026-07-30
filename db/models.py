@@ -190,6 +190,11 @@ class Request(Base):
     four_eyes_notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # Change window (F-GOV-05): when provisioning was first held outside the window.
     change_window_held_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Policy waiver (F-GOV-02): a documented, expiring exception that lets a
+    # request pass the OPA policy gate despite violations. Holds
+    # {reason, granted_by, granted_at, expires_at}. Nullable — most requests have
+    # none; only an authorised approver (not the requester) can grant one.
+    waiver: Mapped[dict | None] = mapped_column(JSON, default=None, nullable=True)
 
     # An environment is made of one or more components, each a technology with
     # its own size (ARCHITECTURE.md §5 — the 'component' model, 1.3a).

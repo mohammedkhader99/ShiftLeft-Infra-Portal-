@@ -1386,3 +1386,76 @@ def test_advance_provisions_when_change_window_open(poller, monkeypatch):
     main._advance_request(session, req)
     session.refresh(req)
     assert req.status == "provisioned"
+
+
+# --- Policy waivers (F-GOV-02) -----------------------------------------------
+
+def _deny_policy():
+    return lambda data: {"allow": False, "violations": ["Restricted data must stay on-prem."]}
+
+
+def _audit_events(client, ref):
+    return [e["event"] for e in client.get(f"/api/requests/{ref}/audit", headers=ALICE).json()["entries"]]
+
+
+def test_waiver_lets_a_policy_blocked_request_submit(client):
+    app.dependency_overrides[get_policy_evaluator] = _deny_policy
+    ref = client.post("/api/requests/draft", json=VALID_CREATE, headers=ALICE).json()["reference"]
+    # Without a waiver the request is blocked.
+    assert client.post(f"/api/requests/{ref}/submit", headers=ALICE).status_code == 422
+    # A *different* approver documents the exception...
+    granted = client.post(f"/api/requests/{ref}/waiver", headers=BOB,
+                          json={"reason": "Approved exception CR-1234 for the UAT deadline."})
+    assert granted.status_code == 200
+    # ...and now the same request submits, with the exception audited.
+    resp = client.post(f"/api/requests/{ref}/submit", headers=ALICE)
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "submitted"
+    assert "policy.waived" in _audit_events(client, ref)
+
+
+def test_waiver_self_grant_is_blocked(client):
+    ref = client.post("/api/requests/draft", json=VALID_CREATE, headers=ALICE).json()["reference"]
+    resp = client.post(f"/api/requests/{ref}/waiver", headers=ALICE,
+                       json={"reason": "I promise it is fine, let me through."})
+    assert resp.status_code == 403
+    assert "different approver" in resp.json()["detail"].lower()
+    assert "waiver.blocked" in _audit_events(client, ref)
+
+
+def test_expired_waiver_still_blocks(client):
+    app.dependency_overrides[get_policy_evaluator] = _deny_policy
+    ref = client.post("/api/requests/draft", json=VALID_CREATE, headers=ALICE).json()["reference"]
+    past = (date.today() - timedelta(days=1)).isoformat()
+    granted = client.post(f"/api/requests/{ref}/waiver", headers=BOB,
+                          json={"reason": "Exception that has already lapsed.", "expires_at": past})
+    assert granted.status_code == 200
+    resp = client.post(f"/api/requests/{ref}/submit", headers=ALICE)
+    assert resp.status_code == 422
+    assert "policy_violations" in resp.json()
+
+
+def test_waiver_requires_a_privileged_role(client, monkeypatch):
+    monkeypatch.setenv("ROLE_MAP", '{"ro@x.com": ["read_only"]}')
+    ref = client.post("/api/requests/draft", json=VALID_CREATE, headers=ALICE).json()["reference"]
+    resp = client.post(f"/api/requests/{ref}/waiver", headers={"X-Requester": "ro@x.com"},
+                       json={"reason": "A read-only user should not be able to do this."})
+    assert resp.status_code == 403
+
+
+def test_waiver_requires_a_meaningful_reason(client):
+    ref = client.post("/api/requests/draft", json=VALID_CREATE, headers=ALICE).json()["reference"]
+    resp = client.post(f"/api/requests/{ref}/waiver", headers=BOB, json={"reason": "no"})
+    assert resp.status_code == 422
+
+
+def test_waiver_is_recorded_and_visible_on_the_request(client):
+    ref = client.post("/api/requests/draft", json=VALID_CREATE, headers=ALICE).json()["reference"]
+    client.post(f"/api/requests/{ref}/waiver", headers=BOB,
+                json={"reason": "Documented exception for the audit trail.",
+                      "expires_at": "2026-12-31"})
+    got = client.get(f"/api/requests/{ref}").json()
+    assert got["waiver"]["granted_by"] == "bob@example.com"
+    assert got["waiver"]["reason"] == "Documented exception for the audit trail."
+    assert got["waiver"]["expires_at"] == "2026-12-31"
+    assert "waiver.granted" in _audit_events(client, ref)

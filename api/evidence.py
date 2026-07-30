@@ -73,6 +73,16 @@ def build_evidence_pdf(req, breakdown: dict, sizing: dict, audit: list, integrit
             _kv(pdf, key.replace("_", " ").title(), "yes" if value is True else str(value))
         pdf.ln(2)
 
+    # --- Policy waiver (F-GOV-02) ---
+    waiver = getattr(req, "waiver", None)
+    if waiver:
+        _heading(pdf, "Policy waiver", AMBER)
+        _kv(pdf, "Granted by", waiver.get("granted_by"))
+        _kv(pdf, "Granted at", (waiver.get("granted_at") or "")[:19].replace("T", " "))
+        _kv(pdf, "Expires", waiver.get("expires_at") or "open-ended")
+        _kv(pdf, "Reason", waiver.get("reason"))
+        pdf.ln(2)
+
     # --- Cost ---
     _heading(pdf, "Cost", AMBER)
     for label, key in (("Compute", "compute"), ("Storage", "storage"), ("Licence", "licence"),

@@ -89,6 +89,8 @@ export type RequestRow = {
   components: { technology_code: string | null; size: string | null }[]
   estimate?: { currency: string; monthly: number } | null
   approval?: { jira_key: string; ticket_url?: string | null } | null
+  // Policy waiver (F-GOV-02): a documented exception, if one was granted.
+  waiver?: { reason: string; granted_by: string; granted_at?: string | null; expires_at?: string | null } | null
 }
 
 export async function getMe(): Promise<{ email: string; roles: string[] } | null> {

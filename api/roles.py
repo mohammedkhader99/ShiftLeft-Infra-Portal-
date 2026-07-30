@@ -31,6 +31,7 @@ ALL_ROLES = {REQUESTER, APPROVER, PLATFORM_ADMIN, AUDITOR, FINOPS, READ_ONLY}
 ACTIONS = {
     "create_request": {REQUESTER, PLATFORM_ADMIN},
     "execute": {PLATFORM_ADMIN},          # approve / apply / destroy / decommission
+    "grant_waiver": {PLATFORM_ADMIN, APPROVER},   # F-GOV-02: document a policy exception
     "view_audit": {AUDITOR, PLATFORM_ADMIN, REQUESTER},
     "view_overview": {PLATFORM_ADMIN, AUDITOR, FINOPS},   # whole-estate dashboard
 }

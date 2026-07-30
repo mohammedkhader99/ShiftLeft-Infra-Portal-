@@ -421,6 +421,8 @@ class RequestOut(BaseModel):
     components: list[ComponentOut] = []
     estimate: EstimateOut | None = None
     approval: ApprovalOut | None = None
+    # Policy waiver (F-GOV-02): the documented exception, if one was granted.
+    waiver: dict | None = None
 
     @computed_field
     @property
@@ -533,6 +535,105 @@ def get_request(reference: str, session: Session = Depends(get_session)) -> Requ
     return RequestOut.model_validate(_load_request(reference, session))
 
 
+def _parse_waiver_expiry(expires: str) -> datetime:
+    """Parse a waiver expiry (ISO date or datetime) to an aware UTC datetime.
+    A date-only value (YYYY-MM-DD) expires at the end of that day. Raises
+    ValueError on an unparseable value (F-GOV-02)."""
+    exp = datetime.fromisoformat(expires)
+    if len(expires.strip()) == 10:  # date-only -> valid through end of that day
+        exp = exp.replace(hour=23, minute=59, second=59)
+    if exp.tzinfo is None:
+        exp = exp.replace(tzinfo=timezone.utc)
+    return exp
+
+
+def _waiver_active(req: Request, now: datetime | None = None) -> bool:
+    """Whether the request carries a valid (non-expired) policy waiver (F-GOV-02).
+    A waiver with no expiry is open-ended; an unparseable expiry counts as
+    inactive (fail-closed, so a malformed exception never waves anything through)."""
+    waiver = getattr(req, "waiver", None)
+    if not waiver:
+        return False
+    expires = waiver.get("expires_at")
+    if not expires:
+        return True
+    try:
+        exp = _parse_waiver_expiry(expires)
+    except (ValueError, TypeError):
+        return False
+    return (now or datetime.now(timezone.utc)) < exp
+
+
+class WaiverIn(BaseModel):
+    """A documented policy exception (F-GOV-02). `expires_at` is an ISO date or
+    datetime; omit it for an open-ended waiver."""
+
+    reason: str
+    expires_at: str | None = None
+
+    @field_validator("reason")
+    @classmethod
+    def _reason_meaningful(cls, v: str) -> str:
+        if not v or len(v.strip()) < 10:
+            raise ValueError("A waiver reason of at least 10 characters is required.")
+        return v.strip()
+
+    @field_validator("expires_at", mode="before")
+    @classmethod
+    def _blank_to_none(cls, v):
+        return None if v in ("", None) else v
+
+
+@app.post("/api/requests/{reference}/waiver", response_model=RequestOut)
+def grant_waiver(
+    reference: str,
+    body: WaiverIn,
+    session: Session = Depends(get_session),
+    actor: str = Depends(require_action("grant_waiver")),
+) -> RequestOut:
+    """Grant a documented, expiring exception to the policy gate (F-GOV-02).
+
+    An authorised approver records a waiver so a request the OPA policy gate would
+    block can be submitted. Governance guards: the granter must **not** be the
+    requester (no self-waiver), and the exception is written to the tamper-evident
+    audit trail. Only *policy* violations are waivable — field validation still
+    applies at submit, and the waiver is consumed (logged as `policy.waived`) only
+    if the policy actually blocks.
+    """
+    req = _load_request(reference, session)
+
+    # No self-waiver: you can't wave through your own request's policy violation.
+    if actor and actor == req.requester:
+        append_audit(session, "waiver.blocked", reference=req.reference, actor=actor,
+                     detail={"reason": "self-waiver", "requester": req.requester})
+        session.commit()
+        raise HTTPException(
+            status_code=403,
+            detail=(f"You raised {req.reference}, so you cannot grant its own policy "
+                    "waiver. A different approver must grant it."),
+        )
+
+    if body.expires_at is not None:
+        try:
+            _parse_waiver_expiry(body.expires_at)
+        except (ValueError, TypeError):
+            raise HTTPException(
+                status_code=422,
+                detail="expires_at must be an ISO date (YYYY-MM-DD) or datetime.",
+            )
+
+    req.waiver = {
+        "reason": body.reason,
+        "granted_by": actor,
+        "granted_at": datetime.now(timezone.utc).isoformat(),
+        "expires_at": body.expires_at,
+    }
+    append_audit(session, "waiver.granted", reference=req.reference, actor=actor,
+                 detail={"reason": body.reason, "expires_at": body.expires_at})
+    session.commit()
+    return RequestOut.model_validate(req)
+
+
 @app.post("/api/requests/{reference}/submit")
 def submit_request(
     reference: str,
@@ -578,9 +679,19 @@ def submit_request(
             content={"policy_error": "Policy service unavailable — request not submitted."},
         )
     if not verdict["allow"]:
-        return JSONResponse(
-            status_code=422, content={"policy_violations": verdict["violations"]}
-        )
+        # A documented, non-expired waiver (F-GOV-02) lets the request through
+        # despite the policy violations — recording the exception in the
+        # tamper-evident trail. Without one (or an expired one) it stays blocked.
+        if _waiver_active(req):
+            append_audit(session, "policy.waived", reference=req.reference,
+                         actor=(req.waiver or {}).get("granted_by"),
+                         detail={"violations": verdict["violations"],
+                                 "reason": (req.waiver or {}).get("reason"),
+                                 "expires_at": (req.waiver or {}).get("expires_at")})
+        else:
+            return JSONResponse(
+                status_code=422, content={"policy_violations": verdict["violations"]}
+            )
 
     req.status = "submitted"
     req.submitted_at = req.submitted_at or datetime.now(timezone.utc)  # SLA clock (F-GOV-01)
