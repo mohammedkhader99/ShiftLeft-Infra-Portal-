@@ -99,6 +99,9 @@ services:
       # Approval SLA (F-GOV-01): hours a request may await approval before it is
       # flagged breached and the poller escalates (a Jira comment). 0 = always breached.
       APPROVAL_SLA_HOURS: ${APPROVAL_SLA_HOURS:-24}
+      # Approval quorum (F-GOV-06): distinct Jira approvers (never the requester)
+      # required before provisioning. 1 (default) = single approver. Live only.
+      APPROVAL_QUORUM: ${APPROVAL_QUORUM:-1}
       # Change window (F-GOV-05): when enabled, provisioning of approved requests
       # only happens inside the window; outside it they are held until it opens.
       CHANGE_WINDOW_ENABLED: ${CHANGE_WINDOW_ENABLED:-false}

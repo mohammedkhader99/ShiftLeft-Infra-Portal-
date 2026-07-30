@@ -1459,3 +1459,103 @@ def test_waiver_is_recorded_and_visible_on_the_request(client):
     assert got["waiver"]["reason"] == "Documented exception for the audit trail."
     assert got["waiver"]["expires_at"] == "2026-12-31"
     assert "waiver.granted" in _audit_events(client, ref)
+
+
+# --- Approval quorum (F-GOV-06) ----------------------------------------------
+
+def _simulate_live_quorum(main, monkeypatch, approvers, quorum):
+    """Live + approved in Jira, with `approvers` the distinct people who approved.
+    Four-eyes off so quorum is exercised in isolation; stops at the plan."""
+    monkeypatch.setenv("APPROVAL_QUORUM", str(quorum))
+    monkeypatch.setenv("FOUR_EYES_ENFORCED", "false")
+    monkeypatch.setattr(main, "jira_mode", lambda: "live")
+    monkeypatch.setattr(main, "get_status", lambda k: "approved")
+    monkeypatch.setattr(main, "get_approvers", lambda k: approvers)
+    monkeypatch.setattr(main, "_post_to_orchestrator", lambda *a, **k: (_PlanResp(), None))
+    monkeypatch.setattr(main, "provision_mode", lambda: "plan")
+
+
+def test_quorum_holds_with_too_few_approvers(poller, monkeypatch):
+    import api.main as main
+    client, session = poller
+    req, key = _submit_request(client, session)
+    req.requester = "requester@example.com"
+    session.commit()
+    _simulate_live_quorum(main, monkeypatch,
+                          [{"email": "one@example.com", "name": None}], quorum=2)
+    main._advance_request(session, req)
+    session.refresh(req)
+    assert req.status == "submitted"  # held — only one of two approvers
+    assert "1 of 2" in (req.status_detail or "")
+    events = _events(session, req.reference)
+    assert "quorum.blocked" in events and "provisioned" not in events
+    # Re-checked each poll, but audited only once.
+    main._advance_request(session, req)
+    assert _events(session, req.reference).count("quorum.blocked") == 1
+
+
+def test_quorum_met_with_enough_distinct_approvers(poller, monkeypatch):
+    import api.main as main
+    client, session = poller
+    req, key = _submit_request(client, session)
+    req.requester = "requester@example.com"
+    session.commit()
+    _simulate_live_quorum(
+        main, monkeypatch,
+        [{"email": "one@example.com", "name": None},
+         {"email": "two@example.com", "name": None}], quorum=2)
+    main._advance_request(session, req)
+    session.refresh(req)
+    assert req.status == "planned"  # quorum met -> proceeds
+    assert "approval.approved" in _events(session, req.reference)
+
+
+def test_quorum_ignores_duplicate_and_requester_approvals(poller, monkeypatch):
+    import api.main as main
+    client, session = poller
+    req, key = _submit_request(client, session)
+    req.requester = "requester@example.com"
+    session.commit()
+    # Three rows, one distinct non-requester approver: a duplicate + the
+    # requester's own approval (which never counts toward quorum).
+    _simulate_live_quorum(
+        main, monkeypatch,
+        [{"email": "one@example.com", "name": None},
+         {"email": "one@example.com", "name": None},
+         {"email": "requester@example.com", "name": None}], quorum=2)
+    main._advance_request(session, req)
+    session.refresh(req)
+    assert req.status == "submitted"  # only 1 distinct non-requester approver
+    assert "1 of 2" in (req.status_detail or "")
+
+
+def test_quorum_recovers_when_second_approver_signs(poller, monkeypatch):
+    import api.main as main
+    client, session = poller
+    req, key = _submit_request(client, session)
+    req.requester = "requester@example.com"
+    session.commit()
+    approvers = [{"email": "one@example.com", "name": None}]
+    _simulate_live_quorum(main, monkeypatch, approvers, quorum=2)
+    main._advance_request(session, req)
+    session.refresh(req)
+    assert req.status == "submitted"  # held
+    # A second approver signs off -> the next poll proceeds + records quorum.met.
+    approvers.append({"email": "two@example.com", "name": None})
+    main._advance_request(session, req)
+    session.refresh(req)
+    assert req.status == "planned"
+    assert "quorum.met" in _events(session, req.reference)
+
+
+def test_quorum_default_one_is_unaffected(poller, monkeypatch):
+    import api.main as main
+    client, session = poller
+    req, key = _submit_request(client, session)
+    # Default quorum (1): no Jira approver read, provisions exactly as before.
+    monkeypatch.setattr(main, "get_status", lambda k: "approved")
+    monkeypatch.setattr(main, "_post_to_orchestrator", lambda *a, **k: (_PlanResp(), None))
+    monkeypatch.setattr(main, "provision_mode", lambda: "plan")
+    main._advance_request(session, req)
+    session.refresh(req)
+    assert req.status == "planned"

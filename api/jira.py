@@ -457,6 +457,64 @@ def get_approval_author(jira_key: str) -> dict | None:
     }
 
 
+def get_approvers(jira_key: str) -> list[dict]:
+    """The distinct people who approved the request in Jira (F-GOV-06 quorum).
+
+    Prefers the Jira Service Management approval API (the authoritative
+    multi-approver source: each approval lists its approvers and their decision),
+    falling back to the changelog authors of transitions into an approved status.
+    Returns a list of {name, email} (possibly empty). Live only; on a read error
+    it returns [] and the caller (quorum) fails closed — it holds rather than
+    provisions, and re-checks on the next poll.
+    """
+    if jira_mode() != "live":
+        return []
+    # 1) JSM approval API — each approval carries its approvers + their decision.
+    try:
+        response = httpx.get(
+            f"{_base_url()}/rest/servicedeskapi/request/{jira_key}/approval",
+            headers=_headers(),
+            timeout=8.0,
+        )
+        if response.status_code == 200:
+            people = []
+            for approval in response.json().get("values", []):
+                for a in approval.get("approvers", []):
+                    if (a.get("approverDecision") or "").lower() == "approved":
+                        u = a.get("approver") or {}
+                        people.append({
+                            "name": u.get("name") or u.get("key") or u.get("accountId"),
+                            "email": (u.get("emailAddress") or "").strip() or None,
+                        })
+            if people:
+                return people
+    except Exception:  # noqa: BLE001 — fall back to the changelog
+        pass
+    # 2) Changelog fallback — every author of a transition into an approved status.
+    try:
+        response = httpx.get(
+            f"{_base_url()}/rest/api/2/issue/{jira_key}",
+            params={"expand": "changelog", "fields": "status"},
+            headers=_headers(),
+            timeout=8.0,
+        )
+        response.raise_for_status()
+        histories = response.json().get("changelog", {}).get("histories", [])
+    except Exception:  # noqa: BLE001 — unknown; caller fails closed
+        return []
+    approved = _status_set("JIRA_APPROVED_STATUSES", "Approved,Done")
+    people = []
+    for history in histories:
+        for item in history.get("items", []):
+            if item.get("field") == "status" and (item.get("toString") or "").strip() in approved:
+                author = history.get("author") or {}
+                people.append({
+                    "name": author.get("name") or author.get("key"),
+                    "email": (author.get("emailAddress") or "").strip() or None,
+                })
+    return people
+
+
 def get_status(jira_key: str) -> str:
     """Read the live approval status from Jira: pending | approved | rejected."""
     try:

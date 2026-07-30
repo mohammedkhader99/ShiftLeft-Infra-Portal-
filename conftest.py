@@ -46,3 +46,6 @@ os.environ["FOUR_EYES_ENFORCED"] = "false"
 # Change window (F-GOV-05): pinned OFF so provisioning tests aren't held; the
 # change-window tests drive it explicitly (or monkeypatch change_window_status).
 os.environ["CHANGE_WINDOW_ENABLED"] = "false"
+# Approval quorum (F-GOV-06): pinned to 1 (single approver) so existing
+# provisioning tests aren't held; the quorum tests set it explicitly.
+os.environ["APPROVAL_QUORUM"] = "1"

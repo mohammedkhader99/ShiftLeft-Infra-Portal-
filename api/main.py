@@ -28,6 +28,7 @@ from api.jira import (
     build_ticket_body,
     create_issue,
     get_approval_author,
+    get_approvers,
     get_status,
     inprogress_status,
     jira_mode,
@@ -885,6 +886,59 @@ def _four_eyes_ok(session: Session, req: Request) -> bool:
     return False
 
 
+def _approval_quorum() -> int:
+    """How many distinct approvers a request needs before provisioning (F-GOV-06).
+    Default 1 = today's single-approver behaviour."""
+    try:
+        return max(1, int(os.getenv("APPROVAL_QUORUM", "1")))
+    except (ValueError, TypeError):
+        return 1
+
+
+def _quorum_ok(session: Session, req: Request) -> bool:
+    """Approval quorum gate (F-GOV-06): require N *distinct* Jira approvers, none
+    of them the requester, before provisioning. Returns True if OK to proceed.
+
+    Re-verification, not decision: authority stays in Jira; the portal only counts
+    the approvers Jira records and holds until there are enough. quorum<=1 is the
+    single-approver default (no Jira call). Live only. Fails CLOSED — when the
+    quorum can't be read it holds and re-checks next poll, rather than provisioning
+    on incomplete assurance. Held once (audited once), unblocks when met.
+    """
+    quorum = _approval_quorum()
+    if quorum <= 1 or jira_mode() != "live" or req.approval is None:
+        return True
+    # Distinct approvers, excluding any approval by the requester (reusing the
+    # four-eyes identity match, so it lines up with SoD/four-eyes).
+    distinct: dict[str, dict] = {}
+    for a in get_approvers(req.approval.jira_key):
+        if _same_person(a, req.requester):
+            continue
+        key = (a.get("email") or "").strip().lower() or (a.get("name") or "").strip().lower()
+        if key:
+            distinct[key] = a
+    have = len(distinct)
+    if have >= quorum:
+        if req.quorum_held_at is not None:  # recovered from a hold — record it
+            if req.status_detail and "approvals" in req.status_detail:
+                req.status_detail = None
+            append_audit(session, "quorum.met", reference=req.reference,
+                         jira_key=req.approval.jira_key, actor="poller",
+                         detail={"have": have, "required": quorum})
+            session.commit()
+        return True
+    # Not enough distinct approvers yet — hold, audit once, re-check each poll.
+    if req.quorum_held_at is None:
+        req.quorum_held_at = datetime.now(timezone.utc)
+        append_audit(session, "quorum.blocked", reference=req.reference,
+                     jira_key=req.approval.jira_key, actor="poller",
+                     detail={"have": have, "required": quorum})
+    req.status_detail = (f"Awaiting approvals: {have} of {quorum} approved; "
+                         f"{quorum - have} more required.")
+    session.commit()
+    return False
+
+
 @app.post("/api/approvals/{jira_key}/approve")
 def approve(jira_key: str, session: Session = Depends(get_session),
             _auth: str = Depends(require_action("execute"))):
@@ -927,6 +981,12 @@ def approve(jira_key: str, session: Session = Depends(get_session),
 
     # Four-eyes (F-GOV-08): refuse if the Jira approver is the requester.
     if not _four_eyes_ok(session, req):
+        return JSONResponse(status_code=409,
+                            content={"approval": "approved", "provisioned": False,
+                                     "error": req.status_detail})
+
+    # Approval quorum (F-GOV-06): refuse until enough distinct approvers signed off.
+    if not _quorum_ok(session, req):
         return JSONResponse(status_code=409,
                             content={"approval": "approved", "provisioned": False,
                                      "error": req.status_detail})
@@ -1387,6 +1447,9 @@ def _advance_request(session: Session, req: Request) -> str:
             append_audit(session, "approval.approved", reference=req.reference,
                          jira_key=jira_key, actor="poller")
             session.commit()
+        # Approval quorum (F-GOV-06): require N distinct approvers before handoff.
+        if not _quorum_ok(session, req):
+            return req.status
         # Change window (F-GOV-05): hold provisioning outside the allowed window.
         if not _hold_for_change_window(session, req):
             return req.status

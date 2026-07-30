@@ -190,6 +190,9 @@ class Request(Base):
     four_eyes_notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # Change window (F-GOV-05): when provisioning was first held outside the window.
     change_window_held_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Approval quorum (F-GOV-06): when provisioning was first held awaiting the
+    # required number of distinct Jira approvers (so we audit the hold once).
+    quorum_held_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # Policy waiver (F-GOV-02): a documented, expiring exception that lets a
     # request pass the OPA policy gate despite violations. Holds
     # {reason, granted_by, granted_at, expires_at}. Nullable — most requests have
