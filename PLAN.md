@@ -152,13 +152,13 @@ Every section of the brief is mapped here so nothing is dropped (traceability pa
 
 **Advanced Options (~20)** — ⬜ region, AZ, DB version, HA, backup retention, encryption, DR, monitoring/logging level, storage tier, autoscaling, network type, firewall profile, private/public endpoint, DNS, certificates, secrets management, compliance profile → **catalog expansion (advanced-options increment)**.
 
-**Live Cost Panel** — ✅ one-time/monthly/annual totals, live update. ⬜ per-line compute/storage/network/backup/license/monitoring/support + savings recommendation + optimization tips → **E3**.
+**Live Cost Panel** — ✅ one-time/monthly/annual totals, live update, **+ compute/storage/licence category split (6.4)**. ⬜ network/backup/monitoring/support cost lines (opt-in Advanced Options + usage-based) → later; ⬜ savings recommendation + optimization tips → **AI Copilot (E4)**.
 
 **AI Assistant (8 capabilities)** — ⬜ all (recommend sizing/cloud, explain costs, detect gaps, predict time, compliance) → **E4**, **recommend-only per hard-rule P3** (never decides, executes, or holds credentials).
 
-**Bottom Actions** — ✅ Save Draft · Submit · (Cancel trivial). ◐ Generate Cost Sheet (**PDF exists**; Excel → E3). ⬜ Validate Request · Preview Environment → small increments.
+**Bottom Actions** — ✅ Save Draft · Submit · (Cancel trivial) · **Generate Cost Sheet — PDF and Excel (6.4)**. ⬜ Validate Request · Preview Environment → small increments.
 
-**Submission Flow** — ✅ validate fields · calculate pricing · **create Jira ticket** · **attach costing PDF to the ticket** · plan-preview/blueprint in the ticket body · display tracking ID. ⬜ Excel costing sheet → E3; ⬜ assign approvers · send approval notification → **E2**.
+**Submission Flow** — ✅ validate fields · calculate pricing · **create Jira ticket** · **attach costing PDF + Excel to the ticket (6.4)** · plan-preview/blueprint in the ticket body · display tracking ID. ⬜ assign approvers · send approval notification → **E2**.
 
 **Design-process outputs (Figma mockup, wireframe, component hierarchy, palette, typography, icons, journey, a11y, responsive, mobile/tablet/desktop)** — ✅ satisfied by *building on Carbon* (its design system, palette, typography, icon set, accessibility and responsive grid) instead of separate Figma artefacts. ⬜ standalone mockup/wireframe/user-journey documents were not produced (we built the working UI) — revisit only if a formal design sign-off deliverable is required.
 
