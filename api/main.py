@@ -1431,7 +1431,8 @@ def list_requests(
         for ref, ps in session.execute(
             select(ProvisionedResource.reference, ProvisionedResource.power_state)
             .where(ProvisionedResource.reference.in_(refs),
-                   ProvisionedResource.lifecycle_state == "active")
+                   ProvisionedResource.lifecycle_state == "active",
+                   ProvisionedResource.kind == "oci-instance")
         ).all():
             power_map.setdefault(ref, []).append(ps)
     outs = []
@@ -1479,13 +1480,27 @@ def _derive_power(states: list[str]) -> str | None:
 
 
 def _power_for(session: Session, reference: str) -> str | None:
-    """Power state for a single request (used by the detail endpoint)."""
+    """Power state for a single request (used by the detail endpoint). Only
+    compute instances have a power state — buckets can't be stopped/started."""
     return _derive_power(session.scalars(
         select(ProvisionedResource.power_state).where(
             ProvisionedResource.reference == reference,
             ProvisionedResource.lifecycle_state == "active",
+            ProvisionedResource.kind == "oci-instance",
         )
     ).all())
+
+
+def _environment_resource_kind(session: Session, req: Request) -> str:
+    """The cloud resource this environment provisions, from its components:
+    'oci-instance' if any component is a compute technology, else 'oci-bucket'."""
+    codes = [c.technology_code for c in req.components if c.technology_code]
+    if not codes:
+        return "oci-bucket"
+    kinds = session.scalars(
+        select(Technology.resource_kind).where(Technology.code.in_(codes))
+    ).all()
+    return "oci-instance" if "oci-instance" in kinds else "oci-bucket"
 
 
 @app.get("/api/requests/{reference}", response_model=RequestOut)
@@ -1706,6 +1721,9 @@ def submit_request(
             append_audit(session, "quota.warning", reference=req.reference, detail=qstatus)
 
     req.status = "submitted"
+    # Denormalise the resource kind now that components are final, so the handoff
+    # and orchestrator can branch (bucket vs stoppable compute) without re-deriving.
+    req.resource_kind = _environment_resource_kind(session, req)
     req.submitted_at = req.submitted_at or datetime.now(timezone.utc)  # SLA clock (F-GOV-01)
     # Capture the server-computed estimate as a stored fact at submission (1.6).
     req.estimate = Estimate(
@@ -2381,6 +2399,8 @@ def _handoff_payload(req: Request, *, ttl_expiry: str | None = None,
         "reference": req.reference,
         "policy_input": _policy_input(req),
         "approved_monthly": float(req.estimate.monthly) if req.estimate else None,
+        # Which cloud resource to provision/act on: oci-bucket | oci-instance.
+        "resource_kind": req.resource_kind or "oci-bucket",
     }
     if ttl_expiry:
         payload["ttl_expiry"] = ttl_expiry
@@ -2918,6 +2938,15 @@ def _advance_request(session: Session, req: Request) -> str:
         result = response.json()
         _record_scan(session, req, jira_key, result.get("scan"))  # IaC findings (F-SEC-03/04)
         if result.get("provisioned"):  # mock mode fully provisions on the handoff
+            res = result.get("resource")
+            if res:  # mock now records the resource, so the registry + control plane work
+                ttl_dt = _ttl_for(req)
+                session.add(ProvisionedResource(
+                    reference=req.reference, kind=res.get("kind", "resource"),
+                    name=res.get("name", ""), region=res.get("region"),
+                    details=res.get("outputs", {}) or {}, ttl_expiry=ttl_dt,
+                    lifecycle_state="active",
+                ))
             req.status = "provisioned"
             append_audit(session, "provisioned", reference=req.reference, jira_key=jira_key,
                          detail=result)

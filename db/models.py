@@ -66,6 +66,11 @@ class Technology(Base):
     name: Mapped[str] = mapped_column(String(120))
     # certified | preview | deprecated | eol  (deprecated warns, eol blocks)
     lifecycle_state: Mapped[str] = mapped_column(String(16), default="certified")
+    # The cloud resource a request for this technology provisions: oci-bucket
+    # (object storage, the default) or oci-instance (a stoppable compute VM).
+    # Drives the orchestrator's provisioning branch and whether the control plane
+    # offers stop/start.
+    resource_kind: Mapped[str] = mapped_column(String(16), default="oci-bucket")
 
     sizing_anchors: Mapped[list["SizingAnchor"]] = relationship(
         back_populates="technology"
@@ -269,6 +274,10 @@ class Request(Base):
     # reconciled. `state_synced_at` is the last reconciliation time.
     state_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
     state_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Denormalised at submit from the components: the cloud resource this
+    # environment provisions (oci-bucket | oci-instance). Lets the handoff and
+    # orchestrator branch without re-deriving from the catalogue. Null = bucket.
+    resource_kind: Mapped[str | None] = mapped_column(String(16), nullable=True)
     # Policy waiver (F-GOV-02): a documented, expiring exception that lets a
     # request pass the OPA policy gate despite violations. Holds
     # {reason, granted_by, granted_at, expires_at}. Nullable — most requests have

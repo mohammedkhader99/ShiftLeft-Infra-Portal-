@@ -42,7 +42,25 @@ def _require_oci() -> None:
         raise ProvisionError(f"OCI not configured: missing {', '.join(missing)}")
 
 
-def _oci_vars(bucket_name: str, tags: dict) -> dict:
+# Compute provisioning needs an existing subnet, an OS image, and an SSH key. They
+# are the customer's to supply (via .env / a vault) — never held in code or git.
+_COMPUTE_VARS = ("OCI_COMPUTE_SUBNET_OCID", "OCI_COMPUTE_IMAGE_OCID",
+                 "OCI_COMPUTE_SSH_AUTHORIZED_KEY")
+
+
+def _require_compute() -> None:
+    missing = [k for k in _COMPUTE_VARS if not os.getenv(k)]
+    if missing:
+        raise ProvisionError(
+            "Compute (VM) provisioning is not configured: set "
+            + ", ".join(missing)
+            + " — an existing subnet OCID, an OS image OCID, and an SSH public key."
+        )
+
+
+def _oci_vars(name: str, tags: dict, resource_kind: str = "oci-bucket",
+              sizing: dict | None = None) -> dict:
+    sizing = sizing or {}
     return {
         "tenancy_ocid": os.getenv("OCI_TENANCY_OCID", ""),
         "user_ocid": os.getenv("OCI_USER_OCID", ""),
@@ -50,7 +68,17 @@ def _oci_vars(bucket_name: str, tags: dict) -> dict:
         "private_key_path": os.getenv("OCI_PRIVATE_KEY_PATH", "/secrets/oci_api_key.pem"),
         "region": os.getenv("OCI_REGION", ""),
         "compartment_ocid": os.getenv("OCI_COMPARTMENT_OCID", ""),
-        "bucket_name": bucket_name,
+        # The module branches on resource_kind: a bucket uses bucket_name, an
+        # instance uses instance_name + the compute vars below. The unused set is
+        # ignored (count = 0), so empty strings are fine.
+        "resource_kind": resource_kind,
+        "bucket_name": name if resource_kind == "oci-bucket" else "",
+        "instance_name": name if resource_kind == "oci-instance" else "",
+        "instance_ocpus": int(sizing.get("ocpus", 1)),
+        "instance_memory_gb": int(sizing.get("memory_gb", 8)),
+        "subnet_ocid": os.getenv("OCI_COMPUTE_SUBNET_OCID", ""),
+        "image_ocid": os.getenv("OCI_COMPUTE_IMAGE_OCID", ""),
+        "ssh_authorized_key": os.getenv("OCI_COMPUTE_SSH_AUTHORIZED_KEY", ""),
         "tags": tags,
         # Customer-managed encryption key for sensitive data (F-SEC-04); empty
         # falls back to Oracle-managed encryption in the module.
@@ -97,11 +125,14 @@ def _summary(stdout: str, pattern: str, fallback: str) -> str:
     return match.group(0) if match else fallback
 
 
-def terraform_plan(reference: str, bucket_name: str, tags: dict) -> dict:
+def terraform_plan(reference: str, name: str, tags: dict,
+                   resource_kind: str = "oci-bucket", sizing: dict | None = None) -> dict:
     """Init + plan in the request's workspace, saving the plan. Creates nothing."""
     _require_oci()
+    if resource_kind == "oci-instance":
+        _require_compute()
     workdir = _workdir(reference)
-    _write_tfvars(workdir, _oci_vars(bucket_name, tags))
+    _write_tfvars(workdir, _oci_vars(name, tags, resource_kind, sizing))
 
     init = _run(["init", "-input=false", "-no-color"], workdir)
     if init.returncode != 0:
@@ -131,11 +162,14 @@ def _scan_saved_plan(workdir: Path, classification: str | None) -> dict:
         return {**_EMPTY_SCAN, "error": str(exc)}
 
 
-def terraform_apply(reference: str, bucket_name: str, tags: dict) -> dict:
+def terraform_apply(reference: str, name: str, tags: dict,
+                    resource_kind: str = "oci-bucket", sizing: dict | None = None) -> dict:
     """Apply the EXACT saved plan for this request. CREATES the resource."""
     if provision_mode() != "apply":
         raise ProvisionError("apply is not enabled (PROVISION_MODE is not 'apply')")
     _require_oci()
+    if resource_kind == "oci-instance":
+        _require_compute()
     workdir = _workdir(reference)
     if not (workdir / PLAN_FILE).exists():
         raise ProvisionError("no saved plan for this request — approve (plan) it first")
@@ -163,12 +197,15 @@ def terraform_apply(reference: str, bucket_name: str, tags: dict) -> dict:
     }
 
 
-def terraform_drift(reference: str, bucket_name: str, tags: dict) -> dict:
+def terraform_drift(reference: str, name: str, tags: dict,
+                    resource_kind: str = "oci-bucket", sizing: dict | None = None) -> dict:
     """Re-plan a provisioned request's existing workspace and detect drift from
     the applied state (F-LCM-09). Read-only — a plan creates nothing."""
     _require_oci()
+    if resource_kind == "oci-instance":
+        _require_compute()
     workdir = _workdir(reference)
-    _write_tfvars(workdir, _oci_vars(bucket_name, tags))
+    _write_tfvars(workdir, _oci_vars(name, tags, resource_kind, sizing))
 
     init = _run(["init", "-input=false", "-no-color"], workdir)
     if init.returncode != 0:
@@ -186,11 +223,12 @@ def terraform_drift(reference: str, bucket_name: str, tags: dict) -> dict:
             "summary": _plan_summary(plan.stdout)}
 
 
-def terraform_destroy(reference: str, bucket_name: str, tags: dict) -> dict:
+def terraform_destroy(reference: str, name: str, tags: dict,
+                      resource_kind: str = "oci-bucket", sizing: dict | None = None) -> dict:
     """Destroy the resources for this request from its own state."""
     _require_oci()
     workdir = _workdir(reference)
-    _write_tfvars(workdir, _oci_vars(bucket_name, tags))
+    _write_tfvars(workdir, _oci_vars(name, tags, resource_kind, sizing))
 
     _run(["init", "-input=false", "-no-color"], workdir)
     destroy = _run(["destroy", "-input=false", "-no-color", "-auto-approve"], workdir)

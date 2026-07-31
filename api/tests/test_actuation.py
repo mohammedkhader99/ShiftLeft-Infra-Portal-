@@ -79,7 +79,8 @@ def _prov(session, reference="REQ-A", bucket="b1", power="running"):
                   request_type="create", environment_name=reference.lower())
     session.add(req)
     session.add(Approval(jira_key="INFRA-1", status="approved", request=req))
-    session.add(ProvisionedResource(reference=reference, kind="oci-bucket", name=bucket,
+    # Actuation targets compute instances (buckets can't be stopped/started).
+    session.add(ProvisionedResource(reference=reference, kind="oci-instance", name=bucket,
                                     lifecycle_state="active", power_state=power))
     session.commit()
     return req

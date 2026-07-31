@@ -11,7 +11,7 @@ All data here is mock/demo reference data — no real systems are touched.
 
 from datetime import date
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from db.models import (
@@ -70,7 +70,14 @@ TECHNOLOGIES = [
     {"code": "openshift", "name": "OpenShift", "lifecycle_state": "preview"},
     {"code": "vault", "name": "HashiCorp Vault", "lifecycle_state": "certified"},
     {"code": "keycloak", "name": "Keycloak", "lifecycle_state": "certified"},
+    # A first-class compute (VM) type — a stoppable OCI Compute instance, which
+    # the control plane can stop/start. See COMPUTE_CODES below.
+    {"code": "compute-vm", "name": "Compute Instance (VM)", "lifecycle_state": "certified"},
 ]
+
+# Technologies that provision a stoppable OCI Compute instance (oci-instance)
+# rather than the default object-storage bucket. RHEL/Windows are already VMs.
+COMPUTE_CODES = {"compute-vm", "rhel9", "win2019"}
 
 # size -> (vcpu, memory_gb, storage_gb), applied to every technology.
 SIZES = {
@@ -125,6 +132,15 @@ def seed(session: Session) -> None:
     _upsert_by(session, CostCentre, "code", COST_CENTRES)
     _upsert_by(session, Subsidiary, "code", SUBSIDIARIES)
     _upsert_by(session, Technology, "code", TECHNOLOGIES)
+    session.flush()  # flush new technologies (e.g. compute-vm) BEFORE the update
+    # below, so a freshly-inserted compute type is classified too (the app session
+    # has autoflush off, so the Core UPDATE wouldn't see the pending insert).
+    # Classify the compute (VM) technologies so they provision a stoppable
+    # instance. An update (not just insert) so existing rows are corrected too.
+    session.execute(
+        update(Technology).where(Technology.code.in_(COMPUTE_CODES))
+        .values(resource_kind="oci-instance")
+    )
     session.flush()  # projects & technologies now have ids
 
     # Existing environments (need a project id).

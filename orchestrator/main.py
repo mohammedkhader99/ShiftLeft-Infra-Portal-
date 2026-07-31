@@ -127,6 +127,26 @@ def _bucket_and_tags(payload: dict) -> tuple[str, dict]:
     return bucket, tags
 
 
+# size -> (vcpu, memory_gb), mirroring db.seed.SIZES; used to size the compute
+# flex shape when a request provisions an oci-instance.
+_SIZES = {"small": (2, 4), "medium": (4, 16), "large": (8, 64), "xlarge": (16, 128)}
+
+
+def _resource_kind(payload: dict) -> str:
+    """oci-bucket (default) | oci-instance — what this request provisions/acts on."""
+    return payload.get("resource_kind", "oci-bucket")
+
+
+def _instance_sizing(payload: dict) -> dict:
+    """OCI flex-shape sizing (ocpus, memory_gb) from the largest component size."""
+    best = (1, 8)  # a safe minimum
+    for c in payload.get("policy_input", {}).get("components", []):
+        vcpu, mem = _SIZES.get((c.get("size") or "").lower(), (0, 0))
+        if mem > best[1]:
+            best = (max(1, round(vcpu / 2)), mem)  # 1 OCPU ~ 2 vCPUs on x86 flex
+    return {"ocpus": best[0], "memory_gb": best[1]}
+
+
 @app.post("/provision")
 async def provision(request: Request) -> dict:
     """Approve handoff: plan only (mock returns a mock result). Creates nothing."""
@@ -140,11 +160,13 @@ async def provision(request: Request) -> dict:
 
     mode = provisioner.provision_mode()
     verified = {"approval": True, "policy": True, "cost": True}
+    name, tags = _bucket_and_tags(payload)
+    rkind = _resource_kind(payload)
+    sizing = _instance_sizing(payload)
 
     if mode in ("plan", "apply"):
-        bucket, tags = _bucket_and_tags(payload)
         try:
-            plan = provisioner.terraform_plan(reference, bucket, tags)
+            plan = provisioner.terraform_plan(reference, name, tags, rkind, sizing)
         except provisioner.ProvisionError as exc:
             raise HTTPException(status_code=400, detail=f"Terraform plan failed: {exc}")
         scan = plan.get("scan", {})
@@ -167,6 +189,9 @@ async def provision(request: Request) -> dict:
         "verified": verified,
         "message": f"Mock-provisioned {reference} (no real resources created).",
     }
+    if rkind == "oci-instance":  # record a mock instance so the control plane can act
+        provisioned["resource"] = {"kind": "oci-instance", "name": name,
+                                   "region": os.getenv("OCI_REGION"), "outputs": {}}
     _provisioned[key] = provisioned
     return provisioned
 
@@ -185,16 +210,17 @@ async def apply(request: Request) -> dict:
     if key in _provisioned:  # already created — do not create twice (F-ORC-01)
         return {**_provisioned[key], "idempotent": True}
 
-    bucket, tags = _bucket_and_tags(payload)
+    name, tags = _bucket_and_tags(payload)
+    rkind = _resource_kind(payload)
     try:
-        result = provisioner.terraform_apply(reference, bucket, tags)
+        result = provisioner.terraform_apply(reference, name, tags, rkind, _instance_sizing(payload))
     except provisioner.ProvisionError as exc:
         raise HTTPException(status_code=400, detail=f"Terraform apply failed: {exc}")
 
     provisioned = {
         "provisioned": True, "reference": reference, "jira_key": jira_key,
         "verified": {"approval": True, "policy": True, "cost": True},
-        "resource": {"kind": "oci-bucket", "name": bucket,
+        "resource": {"kind": rkind, "name": name,
                      "region": os.getenv("OCI_REGION"), "outputs": result["outputs"]},
         "summary": result["summary"],
         "message": f"Provisioned {reference}: {result['summary']}",
@@ -214,9 +240,10 @@ async def drift(request: Request) -> dict:
     body = await request.body()
     payload = _authorise(body, request.headers.get("X-Signature", ""))
     reference = payload["reference"]
-    bucket, tags = _bucket_and_tags(payload)
+    name, tags = _bucket_and_tags(payload)
     try:
-        result = provisioner.terraform_drift(reference, bucket, tags)
+        result = provisioner.terraform_drift(reference, name, tags, _resource_kind(payload),
+                                             _instance_sizing(payload))
     except provisioner.ProvisionError as exc:
         raise HTTPException(status_code=400, detail=f"Drift check failed: {exc}")
     return {"reference": reference, **result}
@@ -232,9 +259,9 @@ async def state(request: Request) -> dict:
         raise HTTPException(status_code=401, detail="Invalid webhook signature.")
     payload = json.loads(body)
     reference = payload["reference"]
-    bucket, _ = _bucket_and_tags(payload)
+    name, _ = _bucket_and_tags(payload)
     try:
-        actual = cloud_state.describe(reference, [{"kind": "oci-bucket", "name": bucket}])
+        actual = cloud_state.describe(reference, [{"kind": _resource_kind(payload), "name": name}])
     except cloud_state.CloudStateUnavailable as exc:
         raise HTTPException(status_code=501, detail=str(exc))
     return {"reference": reference, "resources": actual, "mode": cloud_state.mode()}
@@ -257,9 +284,9 @@ async def actuate(request: Request) -> dict:
     if action not in ("stop", "start"):
         raise HTTPException(status_code=400, detail="action must be 'stop' or 'start'.")
     reference = payload["reference"]
-    bucket, _ = _bucket_and_tags(payload)
+    name, _ = _bucket_and_tags(payload)
     try:
-        result = cloud_state.actuate(reference, [{"kind": "oci-bucket", "name": bucket}], action)
+        result = cloud_state.actuate(reference, [{"kind": _resource_kind(payload), "name": name}], action)
     except cloud_state.CloudStateUnavailable as exc:
         raise HTTPException(status_code=501, detail=str(exc))
     return {"reference": reference, "action": action, "resources": result,
@@ -275,9 +302,10 @@ async def destroy(request: Request) -> dict:
     if not verify(WEBHOOK_SECRET, body, request.headers.get("X-Signature", "")):
         raise HTTPException(status_code=401, detail="Invalid webhook signature.")
     payload = json.loads(body)
-    bucket, tags = _bucket_and_tags(payload)
+    name, tags = _bucket_and_tags(payload)
     try:
-        result = provisioner.terraform_destroy(payload["reference"], bucket, tags)
+        result = provisioner.terraform_destroy(payload["reference"], name, tags,
+                                               _resource_kind(payload), _instance_sizing(payload))
     except provisioner.ProvisionError as exc:
         raise HTTPException(status_code=400, detail=f"Terraform destroy failed: {exc}")
     _provisioned.pop(payload.get("idempotency_key", ""), None)
