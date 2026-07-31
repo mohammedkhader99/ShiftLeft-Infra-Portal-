@@ -257,6 +257,17 @@ export default function MyRequests({ route }: { route: string }) {
                           </Tag>
                         </div>
                       )}
+                      {r.health && (
+                        <div>
+                          <Tag
+                            type={r.health.grade <= 'B' ? 'green' : r.health.grade === 'C' ? 'teal' : 'red'}
+                            size="sm"
+                            title={`Environment health ${r.health.score}/100`}
+                          >
+                            health {r.health.grade} ({r.health.score})
+                          </Tag>
+                        </div>
+                      )}
                       {r.status_detail && (
                         <div
                           style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', marginTop: '0.25rem', maxWidth: '100%', color: 'var(--cds-text-error)', fontSize: '0.75rem' }}
@@ -417,6 +428,20 @@ export default function MyRequests({ route }: { route: string }) {
                               </Button>
                             </>
                           )}
+                        </div>
+                      )}
+                      {r.health && r.health.factors.length > 0 && (
+                        <div style={{ marginTop: '1rem', fontSize: '0.85rem' }}>
+                          <span style={{ color: 'var(--cds-text-secondary)' }}>
+                            Health {r.health.grade} ({r.health.score}/100) — lowered by:
+                          </span>
+                          <ul style={{ margin: '0.3rem 0 0 1.1rem', padding: 0 }}>
+                            {r.health.factors.map((f) => (
+                              <li key={f.signal} style={{ color: 'var(--cds-text-secondary)' }}>
+                                {f.detail} <span style={{ color: 'var(--cds-support-error)' }}>({f.impact})</span>
+                              </li>
+                            ))}
+                          </ul>
                         </div>
                       )}
                       <div style={{ marginTop: '1rem', fontSize: '0.85rem', display: 'flex', gap: '1.5rem', flexWrap: 'wrap' }}>

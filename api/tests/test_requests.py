@@ -2077,3 +2077,101 @@ def test_config_requires_platform_admin(client, monkeypatch):
     assert client.get("/api/config", headers={"X-Requester": "fin@x.com"}).status_code == 403
     monkeypatch.setenv("ROLE_MAP", '{"ops@x.com": ["platform_admin"]}')
     assert client.get("/api/config", headers={"X-Requester": "ops@x.com"}).status_code == 200
+
+
+# --- Environment health score (E3.8, F-LCM-08) -------------------------------
+
+def _prov_health(session, ref, *, application_owner="app@x.com", advanced_options=None,
+                 requester="req@x.com"):
+    import api.main as main
+    req = main.Request(reference=ref, status="provisioned", requester=requester,
+                       application_owner=application_owner, environment_name="e1",
+                       advanced_options=advanced_options or {})
+    session.add(req)
+    session.commit()
+    return req
+
+
+_GOVERNED = {"backup_retention": "30", "monitoring_level": "enhanced"}
+
+
+def test_health_clean_env_scores_a(poller):
+    client, session = poller
+    _prov_health(session, "REQ-H-1", advanced_options=_GOVERNED)
+    h = client.get("/api/requests/REQ-H-1").json()["health"]
+    assert h["score"] == 100 and h["grade"] == "A" and h["factors"] == []
+
+
+def test_health_deducts_for_governance_gaps(poller):
+    client, session = poller
+    _prov_health(session, "REQ-H-2", application_owner=None, advanced_options={})
+    h = client.get("/api/requests/REQ-H-2").json()["health"]
+    signals = {f["signal"] for f in h["factors"]}
+    assert signals >= {"no-backup", "weak-monitoring", "no-owner-named"}
+    assert h["score"] == 80 and h["grade"] == "B"  # -10 -5 -5
+
+
+def test_health_orphan_and_expired_ttl(poller, monkeypatch):
+    import api.main as main
+    from datetime import datetime, timezone, timedelta
+    client, session = poller
+    monkeypatch.setenv("DEPARTED_OWNERS", "gone@x.com")
+    req = main.Request(reference="REQ-H-3", status="provisioned", requester="req@x.com",
+                       environment_owner="gone@x.com", application_owner="app@x.com",
+                       environment_name="e1", advanced_options=_GOVERNED)
+    session.add(req)
+    session.add(main.ProvisionedResource(reference="REQ-H-3", kind="b", name="b",
+        ttl_expiry=datetime.now(timezone.utc) - timedelta(days=1), lifecycle_state="active"))
+    session.commit()
+    h = client.get("/api/requests/REQ-H-3").json()["health"]
+    signals = {f["signal"] for f in h["factors"]}
+    assert "orphaned" in signals and "ttl-expired" in signals
+    assert h["score"] == 55 and h["grade"] == "D"  # -20 -25
+
+
+def test_health_deducts_for_high_iac_findings(poller):
+    import api.main as main
+    client, session = poller
+    _prov_health(session, "REQ-H-4", advanced_options=_GOVERNED)
+    main.append_audit(session, "scan.findings", reference="REQ-H-4",
+                      detail={"counts": {"high": 2, "medium": 0, "low": 0}})
+    session.commit()
+    h = client.get("/api/requests/REQ-H-4").json()["health"]
+    assert any(f["signal"] == "iac-high" for f in h["factors"]) and h["score"] == 80
+
+
+def test_health_deducts_for_cost_overrun(poller):
+    import api.main as main
+    client, session = poller
+    req = main.Request(reference="REQ-H-5", status="provisioned", requester="req@x.com",
+                       application_owner="app@x.com", environment_name="e1",
+                       advanced_options=_GOVERNED)
+    req.estimate = main.Estimate(deployment_target="onprem", currency="AED", one_time=0,
+                                 monthly=100, annual=1200, breakdown={})
+    session.add(req)
+    session.add(main.ActualCost(reference="REQ-H-5", billed_monthly=150))  # +50%
+    session.commit()
+    h = client.get("/api/requests/REQ-H-5").json()["health"]
+    assert any(f["signal"] == "cost-over" for f in h["factors"]) and h["score"] == 90
+
+
+def test_health_scores_endpoint_orders_worst_first(poller):
+    client, session = poller
+    _prov_health(session, "REQ-H-6", advanced_options=_GOVERNED)               # 100
+    _prov_health(session, "REQ-H-7", application_owner=None, advanced_options={})  # 80
+    rep = client.get("/api/health-scores").json()
+    assert rep["count"] == 2 and rep["average"] == 90.0
+    assert rep["scores"][0]["reference"] == "REQ-H-7"  # worst first
+
+
+def test_health_none_for_non_provisioned(poller):
+    import api.main as main
+    client, session = poller
+    session.add(main.Request(reference="REQ-H-8", status="draft", requester="req@x.com"))
+    session.commit()
+    assert client.get("/api/requests/REQ-H-8").json()["health"] is None
+
+
+def test_health_scores_requires_oversight(client, monkeypatch):
+    monkeypatch.setenv("ROLE_MAP", '{"dev@x.com": ["requester"]}')
+    assert client.get("/api/health-scores", headers={"X-Requester": "dev@x.com"}).status_code == 403

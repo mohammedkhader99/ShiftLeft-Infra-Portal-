@@ -98,6 +98,8 @@ export type RequestRow = {
   // Ownership (F-LCM-10): the resolved owner + whether the environment is orphaned.
   owner?: string | null
   orphaned?: boolean
+  // Environment health (F-LCM-08): score + grade + the factors that lowered it.
+  health?: { score: number; grade: string; factors: { signal: string; impact: number; detail: string }[] } | null
 }
 
 export async function transferOwner(

@@ -155,6 +155,60 @@ def _variance_status(estimate_monthly, actual_monthly) -> dict | None:
             "variance": variance, "variance_pct": pct, "status": status}
 
 
+def _health_for(session: Session, req: Request, actual=None) -> dict | None:
+    """Environment health score (F-LCM-08): 0-100 + grade A-E, from governance and
+    ops signals. Provisioned environments only (else None). Computed server-side.
+    Signals that don't apply (no recorded actual, no scan yet) simply don't deduct.
+    `actual` may be passed in to avoid a per-row query when scoring a list."""
+    if req.status != "provisioned":
+        return None
+    score = 100
+    factors: list[dict] = []
+
+    def ding(points: int, signal: str, detail: str) -> None:
+        nonlocal score
+        score -= points
+        factors.append({"signal": signal, "impact": -points, "detail": detail})
+
+    ttl = _ttl_status(_min_active_ttl(session, req.reference))
+    if ttl and ttl["status"] == "expired":
+        ding(25, "ttl-expired", "environment is past its TTL")
+    elif ttl and ttl["status"] == "expiring":
+        ding(5, "ttl-expiring", f"expires in {ttl['days_left']} day(s)")
+
+    if _is_orphan(req):
+        ding(20, "orphaned", "no resolvable owner")
+
+    scan = session.scalar(
+        select(AuditLog).where(AuditLog.reference == req.reference,
+                               AuditLog.event == "scan.findings").order_by(AuditLog.id.desc()))
+    counts = (scan.detail or {}).get("counts", {}) if scan else {}
+    if counts.get("high"):
+        ding(20, "iac-high", f"{counts['high']} high-severity IaC finding(s)")
+    elif counts.get("medium"):
+        ding(8, "iac-medium", f"{counts['medium']} medium-severity IaC finding(s)")
+
+    if actual is None:
+        actual = session.scalar(
+            select(ActualCost.billed_monthly).where(ActualCost.reference == req.reference))
+    variance = _variance_status(req.estimate.monthly if req.estimate else None, actual)
+    if variance and variance["status"] == "over":
+        ding(10, "cost-over", f"billed {variance['variance_pct']}% over estimate")
+
+    adv = req.advanced_options or {}
+    if str(adv.get("backup_retention") or "none") == "none":
+        ding(10, "no-backup", "no backup retention configured")
+    if str(adv.get("monitoring_level") or "none") in ("none", "basic"):
+        ding(5, "weak-monitoring", "monitoring is none or basic")
+    if not (req.application_owner or req.technical_owner):
+        ding(5, "no-owner-named", "no application/technical owner named")
+
+    score = max(0, score)
+    grade = ("A" if score >= 90 else "B" if score >= 75 else "C" if score >= 60
+             else "D" if score >= 40 else "E")
+    return {"score": score, "grade": grade, "factors": factors}
+
+
 def _ttl_status(expiry: datetime | None) -> dict | None:
     """TTL state for the portal (F-FIN-07), computed server-side: ok / expiring /
     expired plus days remaining. None when the environment has no expiry."""
@@ -680,6 +734,27 @@ def orphans(session: Session = Depends(get_session),
     return {"count": len(out), "orphans": out}
 
 
+@app.get("/api/health-scores")
+def health_scores(session: Session = Depends(get_session),
+                  _auth: str = Depends(require_action("view_overview"))) -> dict:
+    """Environment health across the estate (F-LCM-08): a score per provisioned
+    environment, worst first, plus the average. Oversight-gated."""
+    rows = []
+    total = 0
+    for req in session.scalars(select(Request).where(Request.status == "provisioned")):
+        h = _health_for(session, req)
+        if h is None:
+            continue
+        rows.append({"reference": req.reference,
+                     "environment": req.environment_name or req.target_environment,
+                     "owner": _resolve_owner(req), **h})
+        total += h["score"]
+    rows.sort(key=lambda r: r["score"])  # worst first
+    return {"count": len(rows),
+            "average": round(total / len(rows), 1) if rows else None,
+            "scores": rows}
+
+
 @app.get("/health")
 def health() -> dict:
     return {"ok": True, "mock": is_mock_mode()}
@@ -896,6 +971,8 @@ class RequestOut(BaseModel):
     # Ownership (F-LCM-10): the resolved environment owner + whether it's orphaned.
     owner: str | None = None
     orphaned: bool = False
+    # Environment health (F-LCM-08): {score, grade, factors} for a provisioned env.
+    health: dict | None = None
 
     @computed_field
     @property
@@ -1027,6 +1104,7 @@ def list_requests(
                                         actual_map.get(r.reference))
         out.owner = _resolve_owner(r)
         out.orphaned = r.status == "provisioned" and _is_orphan(r)
+        out.health = _health_for(session, r, actual=actual_map.get(r.reference))
         outs.append(out)
     return outs
 
@@ -1041,6 +1119,7 @@ def get_request(reference: str, session: Session = Depends(get_session)) -> Requ
     out.variance = _variance_status(req.estimate.monthly if req.estimate else None, actual)
     out.owner = _resolve_owner(req)
     out.orphaned = req.status == "provisioned" and _is_orphan(req)
+    out.health = _health_for(session, req, actual=actual)
     return out
 
 
