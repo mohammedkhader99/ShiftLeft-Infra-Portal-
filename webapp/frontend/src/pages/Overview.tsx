@@ -1,6 +1,10 @@
 import { useEffect, useState } from 'react'
-import { Tile, InlineLoading } from '@carbon/react'
-import { getStats, type Stats, type Breakdown } from '../api'
+import { Tile, InlineLoading, Tag } from '@carbon/react'
+import { getStats, getAnomalies, type Stats, type Breakdown, type Anomalies } from '../api'
+
+function sevColor(sev: string): 'red' | 'purple' | 'gray' {
+  return sev === 'high' ? 'red' : sev === 'medium' ? 'purple' : 'gray'
+}
 
 function drill(params: Record<string, string>): string {
   const qs = new URLSearchParams({ scope: 'all', ...params }).toString()
@@ -57,12 +61,13 @@ function Bars({ title, items, param }: { title: string; items: Breakdown[]; para
 
 export default function Overview() {
   const [stats, setStats] = useState<Stats | null>(null)
+  const [anomalies, setAnomalies] = useState<Anomalies | null>(null)
   const [forbidden, setForbidden] = useState(false)
   const [loaded, setLoaded] = useState(false)
 
   useEffect(() => {
     let active = true
-    const load = () =>
+    const load = () => {
       getStats()
         .then((s) => {
           if (!active) return
@@ -71,6 +76,10 @@ export default function Overview() {
         })
         .catch(() => {})
         .finally(() => active && setLoaded(true))
+      getAnomalies()
+        .then((a) => active && a && a !== 'forbidden' && setAnomalies(a))
+        .catch(() => {})
+    }
     load()
     const id = setInterval(load, 10000)
     return () => {
@@ -105,6 +114,33 @@ export default function Overview() {
         <Kpi value={String(k.decommissioned)} label="Decommissioned" href={drill({ status: 'decommissioned' })} />
         <Kpi value={`${stats.active_monthly_cost.amount.toFixed(0)} ${stats.active_monthly_cost.currency}`} label="Active monthly cost" href={drill({ status: 'provisioned' })} />
       </div>
+
+      {anomalies && anomalies.count > 0 && (
+        <Tile style={{ marginBottom: '1rem', borderLeft: '3px solid var(--cds-support-error)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '0.6rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+            <h4 style={{ fontSize: '0.95rem', fontWeight: 500 }}>Anomalies to review (F-FIN-09 / F-RPT-10)</h4>
+            <span style={{ fontSize: '0.8rem', color: 'var(--cds-text-secondary)' }}>
+              {anomalies.by_severity.high} high · {anomalies.by_severity.medium} medium · {anomalies.by_severity.low} low
+            </span>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+            {anomalies.anomalies.slice(0, 12).map((a, i) => (
+              <div key={i} style={{ display: 'flex', gap: '0.6rem', alignItems: 'baseline', fontSize: '0.85rem' }}>
+                <Tag type={sevColor(a.severity)} size="sm" style={{ flexShrink: 0 }}>{a.severity}</Tag>
+                <span style={{ flex: '0 0 9rem', color: 'var(--cds-text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={a.reference || a.subject}>
+                  {a.reference || a.subject}
+                </span>
+                <span style={{ flex: 1 }}>{a.signal}</span>
+              </div>
+            ))}
+          </div>
+          {anomalies.count > 12 && (
+            <p style={{ fontSize: '0.78rem', color: 'var(--cds-text-secondary)', marginTop: '0.5rem' }}>
+              …and {anomalies.count - 12} more.
+            </p>
+          )}
+        </Tile>
+      )}
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(20rem, 1fr))', gap: '1rem' }}>
         <Bars title="By requester" items={stats.by_requester} param="requested_by" />

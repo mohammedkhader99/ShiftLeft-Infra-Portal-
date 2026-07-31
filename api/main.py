@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 from api import ai_drafter
 from api import ai_explainer
 from api import ai_triage
+from api import anomalies as anomaly_detect
 from api import apikeys
 from api import chatbot
 from api import eventstream
@@ -558,6 +559,19 @@ def spend_forecast(months: int = 6, session: Session = Depends(get_session),
     their TTL expires. Read-only; reconciles with Showback's committed scope.
     """
     return forecast.spend_forecast(session, months)
+
+
+@app.get("/api/anomalies")
+def anomalies(session: Session = Depends(get_session),
+              _auth: str = Depends(require_action("view_overview"))) -> dict:
+    """Cost + request anomalies for review (F-FIN-09 / F-RPT-10).
+
+    Deterministic detectors over the estate — outlier spend, cost overruns,
+    budget breaches, requester bursts, sensitive-data exposure, high-impact
+    in-flight requests. Read-only and advisory: it flags signals only, never
+    blocks or acts.
+    """
+    return anomaly_detect.detect_anomalies(session)
 
 
 # --- Budget guardrails (E3.3, F-FIN-02) --------------------------------------

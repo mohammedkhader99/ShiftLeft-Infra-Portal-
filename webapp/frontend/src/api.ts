@@ -329,6 +329,29 @@ export async function getForecast(months = 6): Promise<Forecast | 'forbidden' | 
   return r.ok ? r.json() : null
 }
 
+// Anomaly detection (E4, F-FIN-09 cost + F-RPT-10 request).
+export type Anomaly = {
+  kind: string
+  type: string
+  severity: 'high' | 'medium' | 'low'
+  subject: string
+  reference?: string | null
+  signal: string
+  detail?: Record<string, unknown>
+}
+export type Anomalies = {
+  generated_at: string
+  count: number
+  by_severity: { high: number; medium: number; low: number }
+  anomalies: Anomaly[]
+}
+
+export async function getAnomalies(): Promise<Anomalies | 'forbidden' | null> {
+  const r = await fetch('/api/anomalies')
+  if (r.status === 403) return 'forbidden'
+  return r.ok ? r.json() : null
+}
+
 // Admin console (E1, F-OPS-09).
 export type SystemConfig = {
   modes: { auth: string; jira: string; auto_provision: boolean; provision_mode: string; use_mock: boolean }
