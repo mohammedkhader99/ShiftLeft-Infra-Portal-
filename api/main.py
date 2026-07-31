@@ -1078,6 +1078,8 @@ class RequestOut(BaseModel):
     orphaned: bool = False
     # Environment health (F-LCM-08): {score, grade, factors} for a provisioned env.
     health: dict | None = None
+    # Drift (F-LCM-09): {detected, checked_at} from the last drift check, else None.
+    drift: dict | None = None
 
     @computed_field
     @property
@@ -1210,8 +1212,16 @@ def list_requests(
         out.owner = _resolve_owner(r)
         out.orphaned = r.status == "provisioned" and _is_orphan(r)
         out.health = _health_for(session, r, actual=actual_map.get(r.reference))
+        out.drift = _drift_out(r)
         outs.append(out)
     return outs
+
+
+def _drift_out(req: Request) -> dict | None:
+    """The last drift-check result for the portal (F-LCM-09), else None."""
+    if req.drift_checked_at is None:
+        return None
+    return {"detected": bool(req.drift_detected), "checked_at": req.drift_checked_at.isoformat()}
 
 
 @app.get("/api/requests/{reference}", response_model=RequestOut)
@@ -1225,6 +1235,7 @@ def get_request(reference: str, session: Session = Depends(get_session)) -> Requ
     out.owner = _resolve_owner(req)
     out.orphaned = req.status == "provisioned" and _is_orphan(req)
     out.health = _health_for(session, req, actual=actual)
+    out.drift = _drift_out(req)
     return out
 
 
@@ -2095,6 +2106,41 @@ def renew_request(reference: str, days: int | None = None,
     session.commit()
     return {"renewed": True, "reference": reference,
             "new_expiry": new_expiry.isoformat(), "days": extend}
+
+
+@app.post("/api/requests/{reference}/drift-check")
+def drift_check(reference: str, session: Session = Depends(get_session),
+                actor: str = Depends(require_action("view_overview"))):
+    """Check a provisioned environment for drift from its applied state (F-LCM-09).
+
+    Posts a signed handoff to the orchestrator, which re-plans and reports any
+    changes (read-only — creates nothing). Records the result + a drift.detected /
+    drift.none audit on the request. Oversight-gated.
+    """
+    req = _load_request(reference, session)
+    if req.status != "provisioned" or req.approval is None:
+        raise HTTPException(status_code=400, detail="Drift checks apply to provisioned requests.")
+    body, signature = _handoff_payload(req)
+    response, error = _post_to_orchestrator(body, signature, path="/drift")
+    if response is None or response.status_code != 200:
+        raw = error or (response.text if response else "")
+        return JSONResponse(status_code=502,
+                            content={"error": f"Drift check failed: {_short_reason(raw)}"})
+    result = response.json()
+    drifted = bool(result.get("drift"))
+    req.drift_detected = drifted
+    req.drift_checked_at = datetime.now(timezone.utc)
+    if drifted:
+        req.status_detail = (f"Drift detected: {result.get('count', 0)} resource change(s) "
+                             f"vs the approved state.")
+    elif req.status_detail and "drift" in req.status_detail.lower():
+        req.status_detail = None
+    append_audit(session, "drift.detected" if drifted else "drift.none",
+                 reference=reference, jira_key=req.approval.jira_key, actor=actor,
+                 detail={"changes": result.get("changes", []), "summary": result.get("summary")})
+    session.commit()
+    return {"reference": reference, "drift": drifted,
+            "changes": result.get("changes", []), "summary": result.get("summary")}
 
 
 def _decommission(session: Session, req: Request, actor: str) -> dict:

@@ -20,7 +20,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from orchestrator import scanner
+from orchestrator import drift, scanner
 
 MODULE_DIR = Path(__file__).resolve().parent / "terraform"
 STATE_ROOT = Path(os.getenv("TF_STATE_DIR", "/tfstate"))
@@ -161,6 +161,29 @@ def terraform_apply(reference: str, bucket_name: str, tags: dict) -> dict:
         "outputs": outputs,
         "output": apply.stdout[-4000:],
     }
+
+
+def terraform_drift(reference: str, bucket_name: str, tags: dict) -> dict:
+    """Re-plan a provisioned request's existing workspace and detect drift from
+    the applied state (F-LCM-09). Read-only — a plan creates nothing."""
+    _require_oci()
+    workdir = _workdir(reference)
+    _write_tfvars(workdir, _oci_vars(bucket_name, tags))
+
+    init = _run(["init", "-input=false", "-no-color"], workdir)
+    if init.returncode != 0:
+        raise ProvisionError(f"terraform init failed: {init.stderr[-800:]}")
+
+    plan = _run(["plan", "-input=false", "-no-color", f"-out={PLAN_FILE}"], workdir)
+    if plan.returncode != 0:
+        raise ProvisionError(f"terraform plan failed: {plan.stderr[-800:]}")
+
+    show = _run(["show", "-json", PLAN_FILE], workdir)
+    if show.returncode != 0:
+        raise ProvisionError(f"terraform show failed: {show.stderr[-800:]}")
+
+    return {**drift.detect_drift(json.loads(show.stdout)),
+            "summary": _plan_summary(plan.stdout)}
 
 
 def terraform_destroy(reference: str, bucket_name: str, tags: dict) -> dict:

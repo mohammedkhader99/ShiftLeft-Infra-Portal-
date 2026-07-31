@@ -260,6 +260,10 @@ class Request(Base):
     # orphaned (no resolvable owner / owner left), so it's flagged once; cleared
     # on an ownership transfer.
     orphaned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Drift detection (F-LCM-09): the result + time of the last drift check
+    # (terraform plan vs the applied state). Null until first checked.
+    drift_detected: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    drift_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # Policy waiver (F-GOV-02): a documented, expiring exception that lets a
     # request pass the OPA policy gate despite violations. Holds
     # {reason, granted_by, granted_at, expires_at}. Nullable — most requests have

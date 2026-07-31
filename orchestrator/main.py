@@ -203,6 +203,25 @@ async def apply(request: Request) -> dict:
     return provisioned
 
 
+@app.post("/drift")
+async def drift(request: Request) -> dict:
+    """Detect drift for a provisioned request (F-LCM-09): re-plan its workspace
+    and report changes vs the applied state. Signed + re-verified; read-only
+    (runs `terraform plan`, creates nothing). Real terraform only (apply mode)."""
+    if provisioner.provision_mode() != "apply":
+        raise HTTPException(status_code=501,
+                            detail="Drift detection needs apply mode (real terraform).")
+    body = await request.body()
+    payload = _authorise(body, request.headers.get("X-Signature", ""))
+    reference = payload["reference"]
+    bucket, tags = _bucket_and_tags(payload)
+    try:
+        result = provisioner.terraform_drift(reference, bucket, tags)
+    except provisioner.ProvisionError as exc:
+        raise HTTPException(status_code=400, detail=f"Drift check failed: {exc}")
+    return {"reference": reference, **result}
+
+
 @app.post("/destroy")
 async def destroy(request: Request) -> dict:
     """Destroy the resource (rollback / cleanup). Signed, and apply mode only."""

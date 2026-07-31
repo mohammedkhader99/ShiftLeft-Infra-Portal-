@@ -100,6 +100,13 @@ export type RequestRow = {
   orphaned?: boolean
   // Environment health (F-LCM-08): score + grade + the factors that lowered it.
   health?: { score: number; grade: string; factors: { signal: string; impact: number; detail: string }[] } | null
+  // Drift (F-LCM-09): result of the last drift check, if one has run.
+  drift?: { detected: boolean; checked_at: string } | null
+}
+
+export async function checkDrift(reference: string): Promise<{ status: number; body: any }> {
+  const r = await fetch(`/api/requests/${reference}/drift-check`, { method: 'POST' })
+  return { status: r.status, body: await r.json().catch(() => ({})) }
 }
 
 export async function transferOwner(

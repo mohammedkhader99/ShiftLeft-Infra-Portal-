@@ -18,8 +18,8 @@ import {
   Button,
   TextInput,
 } from '@carbon/react'
-import { WarningAltFilled, Renew, UserFollow } from '@carbon/icons-react'
-import { getMe, getRequests, getAudit, renewRequest, transferOwner, type RequestRow } from '../api'
+import { WarningAltFilled, Renew, UserFollow, Search } from '@carbon/icons-react'
+import { getMe, getRequests, getAudit, renewRequest, transferOwner, checkDrift, type RequestRow } from '../api'
 import { workflowSteps, fmtWhen, type WFStep } from '../workflow'
 
 const FILTER_KEYS = ['status', 'request_type', 'technology', 'deployment_target', 'created_week', 'requested_by', 'subsidiary']
@@ -137,6 +137,21 @@ export default function MyRequests({ route }: { route: string }) {
     await transferOwner(ref, newOwner)
     setTransferInputs((s) => ({ ...s, [ref]: '' }))
     refresh()
+  }
+
+  const [driftChecking, setDriftChecking] = useState<Set<string>>(new Set())
+  async function onCheckDrift(ref: string) {
+    setDriftChecking((s) => new Set(s).add(ref))
+    try {
+      await checkDrift(ref)
+      refresh()
+    } finally {
+      setDriftChecking((s) => {
+        const next = new Set(s)
+        next.delete(ref)
+        return next
+      })
+    }
   }
 
   if (!loaded) return <InlineLoading description="Loading requests…" />
@@ -265,6 +280,13 @@ export default function MyRequests({ route }: { route: string }) {
                             title={`Environment health ${r.health.score}/100`}
                           >
                             health {r.health.grade} ({r.health.score})
+                          </Tag>
+                        </div>
+                      )}
+                      {r.drift?.detected && (
+                        <div>
+                          <Tag type="red" size="sm" title={`Drift detected · checked ${r.drift.checked_at.slice(0, 16).replace('T', ' ')}`}>
+                            drift
                           </Tag>
                         </div>
                       )}
@@ -427,6 +449,18 @@ export default function MyRequests({ route }: { route: string }) {
                                 Transfer owner
                               </Button>
                             </>
+                          )}
+                          {oversight && (
+                            <Button size="sm" kind="ghost" renderIcon={Search}
+                              disabled={driftChecking.has(r.reference)}
+                              onClick={() => onCheckDrift(r.reference)}>
+                              {driftChecking.has(r.reference) ? 'Checking drift…' : 'Check drift'}
+                            </Button>
+                          )}
+                          {r.drift && (
+                            <span style={{ fontSize: '0.8rem', color: r.drift.detected ? 'var(--cds-support-error)' : 'var(--cds-text-secondary)' }}>
+                              {r.drift.detected ? 'drift detected' : 'no drift'} · checked {r.drift.checked_at.slice(0, 10)}
+                            </span>
                           )}
                         </div>
                       )}

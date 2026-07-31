@@ -2262,3 +2262,68 @@ def test_health_none_for_non_provisioned(poller):
 def test_health_scores_requires_oversight(client, monkeypatch):
     monkeypatch.setenv("ROLE_MAP", '{"dev@x.com": ["requester"]}')
     assert client.get("/api/health-scores", headers={"X-Requester": "dev@x.com"}).status_code == 403
+
+
+# --- Drift detection (E3.10, F-LCM-09) ---------------------------------------
+
+def _provisioned_for_drift(session, ref):
+    import api.main as main
+    req = main.Request(reference=ref, status="provisioned", requester="u@x.com",
+                       project_code="EGATE", environment_name="e1")
+    req.approval = main.Approval(jira_key=f"J-{ref}", status="approved")
+    req.estimate = main.Estimate(deployment_target="onprem", currency="AED", one_time=0,
+                                 monthly=10, annual=120, breakdown={})
+    session.add(req)
+    session.commit()
+    return req
+
+
+class _DriftResp:
+    status_code = 200
+
+    def __init__(self, drift):
+        self._drift = drift
+
+    def json(self):
+        if self._drift:
+            return {"drift": True, "count": 1, "summary": "Plan: 0 to add, 1 to change, 0 to destroy.",
+                    "changes": [{"address": "oci_objectstorage_bucket.env", "actions": ["update"]}]}
+        return {"drift": False, "count": 0, "changes": [], "summary": "No changes."}
+
+
+def test_drift_check_detects_and_exposes(poller, monkeypatch):
+    import api.main as main
+    client, session = poller
+    _provisioned_for_drift(session, "REQ-D-1")
+    monkeypatch.setattr(main, "_post_to_orchestrator", lambda *a, **k: (_DriftResp(True), None))
+    resp = client.post("/api/requests/REQ-D-1/drift-check")
+    assert resp.status_code == 200 and resp.json()["drift"] is True
+    assert "drift.detected" in _events(session, "REQ-D-1")
+    got = client.get("/api/requests/REQ-D-1").json()
+    assert got["drift"]["detected"] is True and got["drift"]["checked_at"]
+    assert "drift" in (got["status_detail"] or "").lower()
+
+
+def test_drift_check_none(poller, monkeypatch):
+    import api.main as main
+    client, session = poller
+    _provisioned_for_drift(session, "REQ-D-2")
+    monkeypatch.setattr(main, "_post_to_orchestrator", lambda *a, **k: (_DriftResp(False), None))
+    resp = client.post("/api/requests/REQ-D-2/drift-check")
+    assert resp.status_code == 200 and resp.json()["drift"] is False
+    assert "drift.none" in _events(session, "REQ-D-2")
+    assert client.get("/api/requests/REQ-D-2").json()["drift"]["detected"] is False
+
+
+def test_drift_check_requires_provisioned(poller):
+    import api.main as main
+    client, session = poller
+    session.add(main.Request(reference="REQ-D-3", status="draft", requester="u@x.com"))
+    session.commit()
+    assert client.post("/api/requests/REQ-D-3/drift-check").status_code == 400
+
+
+def test_drift_check_requires_oversight(client, monkeypatch):
+    monkeypatch.setenv("ROLE_MAP", '{"dev@x.com": ["requester"]}')
+    assert client.post("/api/requests/X/drift-check",
+                       headers={"X-Requester": "dev@x.com"}).status_code == 403
