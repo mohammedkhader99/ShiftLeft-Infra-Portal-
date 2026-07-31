@@ -59,6 +59,26 @@ def ai_model() -> str:
     return os.getenv("AI_MODEL", "claude-opus-5").strip() or "claude-opus-5"
 
 
+def anthropic_client():
+    """A configured Anthropic client, or AiUnavailable with a clear message if the
+    SDK isn't installed or the key isn't set. Shared by the live AI features
+    (drafting, cost explanation); anthropic is lazy-imported so mock mode and the
+    test suite never need it."""
+    try:
+        import anthropic
+    except ImportError as exc:
+        raise AiUnavailable(
+            "The 'anthropic' package isn't installed on the API. Rebuild the image "
+            "with it, or set AI_MODE=mock."
+        ) from exc
+    if not (os.getenv("ANTHROPIC_API_KEY") or "").strip():
+        raise AiUnavailable(
+            "ANTHROPIC_API_KEY isn't set. Add it to the API environment "
+            "(via .env or a vault), or set AI_MODE=mock."
+        )
+    return anthropic.Anthropic()
+
+
 # --- The approved catalogue the draft must stay inside -----------------------
 
 def _load_catalog(session: Session) -> dict:
@@ -332,23 +352,9 @@ def _draft_live(description: str, catalog: dict) -> tuple[dict, list[str]]:
     Raises AiUnavailable (never crashes the request) if the SDK isn't installed,
     the key is missing, or the API call fails.
     """
-    try:
-        import anthropic  # lazy: mock mode and the test suite never import it
-    except ImportError as exc:
-        raise AiUnavailable(
-            "The 'anthropic' package isn't installed on the API. Rebuild the image "
-            "with it, or set AI_MODE=mock."
-        ) from exc
-
-    if not (os.getenv("ANTHROPIC_API_KEY") or "").strip():
-        raise AiUnavailable(
-            "ANTHROPIC_API_KEY isn't set. Add it to the API environment "
-            "(via .env or a vault), or set AI_MODE=mock."
-        )
-
+    client = anthropic_client()
     catalog_json = json.dumps(catalog, indent=2)
     try:
-        client = anthropic.Anthropic()
         resp = client.messages.create(
             model=ai_model(),
             max_tokens=4000,
@@ -362,8 +368,6 @@ def _draft_live(description: str, catalog: dict) -> tuple[dict, list[str]]:
                 "content": f"Catalog:\n{catalog_json}\n\nDescription:\n{description.strip()}",
             }],
         )
-    except AiUnavailable:
-        raise
     except Exception as exc:  # noqa: BLE001 — surface any SDK/transport/API error cleanly
         raise AiUnavailable(f"The AI service call failed: {exc}") from exc
 

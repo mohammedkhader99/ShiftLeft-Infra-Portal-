@@ -18,6 +18,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from api import ai_drafter
+from api import ai_explainer
 from api import apikeys
 from api.attachment import build_request_pdf
 from api.costsheet import build_cost_sheet_xlsx
@@ -1668,6 +1669,40 @@ def cost(body: CostIn, session: Session = Depends(get_session)) -> dict:
         {"technology_code": c.technology_code, "size": c.size} for c in body.components
     ]
     return estimate_cost(components, body.deployment_target, session, body.advanced_options)
+
+
+@app.post("/api/cost/explain")
+def explain_cost(
+    body: CostIn,
+    session: Session = Depends(get_session),
+    requester: str = Depends(_authed_requester),
+) -> dict:
+    """Plain-English explanation of a request's cost (F-RPT-07).
+
+    The AI **explains and suggests only** (ARCHITECTURE.md §7): it narrates the
+    authoritative server-computed breakdown and offers advisory tips, but never
+    changes the request, re-prices, submits, or provisions. Audited (ai.explained).
+    """
+    payload = {
+        "deployment_target": body.deployment_target,
+        "components": [
+            {"technology_code": c.technology_code, "size": c.size} for c in body.components
+        ],
+        "advanced_options": body.advanced_options,
+    }
+    try:
+        result = ai_explainer.explain_cost(payload, session)
+    except ai_drafter.AiUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    append_audit(
+        session,
+        "ai.explained",
+        actor=requester,
+        detail={"mode": result["mode"], "monthly": result["monthly"],
+                "target": body.deployment_target},
+    )
+    session.commit()
+    return result
 
 
 # --- Approval + signed orchestrator handoff (increment 1.9) -------------------

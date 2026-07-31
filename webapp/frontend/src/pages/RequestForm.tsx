@@ -33,6 +33,7 @@ import {
   getMe,
   getRequests,
   getCost,
+  explainCost,
   saveDraft,
   submitRequest,
   draftWithAI,
@@ -200,6 +201,10 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
     { kind: 'success' | 'warning' | 'error'; title: string; subtitle?: string } | null
   >(null)
 
+  // AI cost explanation (F-RPT-07): explain the live cost breakdown on demand.
+  const [explain, setExplain] = useState<{ summary: string; tips: string[]; mode?: string } | null>(null)
+  const [explainBusy, setExplainBusy] = useState(false)
+
   useEffect(() => {
     getLookups().then(setLookups).catch(() => setLookups(null))
     getMe().then((m) => setEmail(m?.email ?? null))
@@ -238,6 +243,7 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
   const pricedKey = JSON.stringify([pricedTarget, pricedComponents, pricedAdvanced])
 
   useEffect(() => {
+    setExplain(null)  // a changed config invalidates any prior explanation
     if (!pricedTarget || pricedComponents.length === 0) {
       setCost(null)
       return
@@ -343,6 +349,16 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
       title: `Draft ready${body.mode ? ` · ${body.mode}` : ''} — review the fields below`,
       subtitle: bits.join('  ·  ') || 'Fields filled in from your description.',
     })
+  }
+
+  // Ask the assistant to explain the live cost breakdown (recommend-only).
+  async function onExplainCost() {
+    setExplainBusy(true)
+    setExplain(null)
+    const { status, body } = await explainCost(pricedTarget, pricedComponents, pricedAdvanced)
+    setExplainBusy(false)
+    if (status === 200) setExplain({ summary: body.summary, tips: body.tips || [], mode: body.mode })
+    else setExplain({ summary: body?.detail || 'Could not explain the cost.', tips: [] })
   }
 
   async function onSaveDraft() {
@@ -736,6 +752,26 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
                 ? 'Pick a provisioned request and tick technologies to see the monthly cost freed.'
                 : 'Choose a deployment target and add a component to see the cost.'}
             </p>
+          )}
+
+          {cost && !isDecommission && (
+            <div style={{ marginTop: '1rem', borderTop: '1px solid var(--cds-border-subtle)', paddingTop: '0.6rem' }}>
+              <Button kind="ghost" size="sm" onClick={onExplainCost} disabled={explainBusy}>
+                {explainBusy ? 'Explaining…' : 'Explain this cost'}
+              </Button>
+              {explain && (
+                <div style={{ marginTop: '0.5rem', fontSize: '0.82rem', lineHeight: 1.5 }}>
+                  <p style={{ margin: '0 0 0.4rem' }}>{explain.summary}</p>
+                  {explain.tips.length > 0 && (
+                    <ul style={{ margin: 0, paddingLeft: '1.1rem', color: 'var(--cds-text-secondary)' }}>
+                      {explain.tips.map((t, i) => (
+                        <li key={i} style={{ marginBottom: '0.25rem' }}>{t}</li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
+            </div>
           )}
         </Tile>
 

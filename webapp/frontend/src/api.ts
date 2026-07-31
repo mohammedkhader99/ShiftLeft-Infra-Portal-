@@ -46,6 +46,31 @@ export async function getCost(
   return json<Cost>(r)
 }
 
+// AI cost explanation (F-RPT-07). Explains the authoritative cost breakdown and
+// suggests advisory tips — it never changes the request or provisions anything.
+export type CostExplanation = {
+  mode: string
+  currency: string
+  monthly: number
+  known_target: boolean
+  drivers: { category: string; label: string; amount: number; pct: number }[]
+  summary: string
+  tips: string[]
+}
+
+export async function explainCost(
+  deployment_target: string,
+  components: Component[],
+  advanced_options?: Record<string, unknown>,
+): Promise<{ status: number; body: any }> {
+  const r = await fetch('/api/cost/explain', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ deployment_target, components, advanced_options }),
+  })
+  return { status: r.status, body: await r.json().catch(() => ({})) }
+}
+
 export async function saveDraft(
   payload: Record<string, unknown>,
 ): Promise<{ status: number; body: any }> {
