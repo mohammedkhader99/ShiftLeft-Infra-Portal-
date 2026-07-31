@@ -2327,3 +2327,47 @@ def test_drift_check_requires_oversight(client, monkeypatch):
     monkeypatch.setenv("ROLE_MAP", '{"dev@x.com": ["requester"]}')
     assert client.post("/api/requests/X/drift-check",
                        headers={"X-Requester": "dev@x.com"}).status_code == 403
+
+
+# --- API keys / programmatic access (E1, F-INT-01) ---------------------------
+
+def test_api_key_authenticates_as_issuer(client):
+    created = client.post("/api/api-keys", json={"label": "ci"}, headers=ALICE)
+    assert created.status_code == 200
+    key = created.json()["key"]
+    assert key.startswith("sk-infra-")
+    # Using the key (no X-Requester) authenticates as alice.
+    me = client.get("/api/me", headers={"X-API-Key": key})
+    assert me.status_code == 200 and me.json()["email"] == "alice@example.com"
+
+
+def test_api_key_listing_never_shows_the_secret(client):
+    client.post("/api/api-keys", json={"label": "x"}, headers=ALICE)
+    listing = client.get("/api/api-keys", headers=ALICE).json()["keys"]
+    assert listing and all("key" not in k for k in listing)
+
+
+def test_api_key_inherits_owner_rbac(client, monkeypatch):
+    monkeypatch.setenv("ROLE_MAP", '{"ro@x.com": ["read_only"]}')
+    ro = {"X-Requester": "ro@x.com"}
+    key = client.post("/api/api-keys", json={"label": "ro"}, headers=ro).json()["key"]
+    # The key acts as a read-only user -> can't view the estate overview.
+    assert client.get("/api/stats", headers={"X-API-Key": key}).status_code == 403
+
+
+def test_invalid_api_key_is_rejected(client):
+    assert client.get("/api/me", headers={"X-API-Key": "sk-infra-nope"}).status_code == 401
+
+
+def test_revoked_api_key_is_rejected(client):
+    created = client.post("/api/api-keys", json={"label": "x"}, headers=ALICE).json()
+    assert client.delete(f"/api/api-keys/{created['id']}", headers=ALICE).status_code == 200
+    assert client.get("/api/me", headers={"X-API-Key": created["key"]}).status_code == 401
+
+
+def test_api_keys_scoped_to_owner(client):
+    kid = client.post("/api/api-keys", json={"label": "a"}, headers=ALICE).json()["id"]
+    # Bob can neither revoke nor see Alice's key.
+    assert client.delete(f"/api/api-keys/{kid}", headers=BOB).status_code == 404
+    assert all(k["identity"] == "bob@example.com"
+               for k in client.get("/api/api-keys", headers=BOB).json()["keys"])

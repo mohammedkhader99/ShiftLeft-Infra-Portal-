@@ -281,6 +281,25 @@ export async function deleteQuota(projectCode: string): Promise<{ status: number
   return { status: r.status }
 }
 
+// API keys (E1, F-INT-01).
+export type ApiKeyRow = { id: number; label: string; identity: string; active: boolean; created_at?: string | null; last_used_at?: string | null }
+export async function getApiKeys(): Promise<{ keys: ApiKeyRow[] } | null> {
+  const r = await fetch('/api/api-keys')
+  return r.ok ? r.json() : null
+}
+export async function createApiKey(label: string): Promise<{ status: number; body: any }> {
+  const r = await fetch('/api/api-keys', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ label }),
+  })
+  return { status: r.status, body: await r.json().catch(() => ({})) }
+}
+export async function revokeApiKey(id: number): Promise<{ status: number }> {
+  const r = await fetch(`/api/api-keys/${id}`, { method: 'DELETE' })
+  return { status: r.status }
+}
+
 export type AuditEntry = { event: string; created_at: string }
 
 export async function getAudit(reference: string): Promise<AuditEntry[]> {

@@ -11,12 +11,13 @@ from zoneinfo import ZoneInfo
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Response
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, computed_field, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from api import apikeys
 from api.attachment import build_request_pdf
 from api.costsheet import build_cost_sheet_xlsx
 from api.evidence import build_evidence_pdf
@@ -45,6 +46,7 @@ from api.validation import validate_submission
 from common.signing import sign
 from db.models import (
     ActualCost,
+    ApiKey,
     Approval,
     AuditLog,
     Budget,
@@ -265,13 +267,30 @@ def get_session() -> Iterator[Session]:
         yield session
 
 
+def _authed_requester(
+    session: Session = Depends(get_session),
+    x_api_key: str | None = Header(default=None),
+    authorization: str | None = Header(default=None),
+    x_requester: str | None = Header(default=None),
+) -> str:
+    """The authenticated requester (F-INT-01). A valid X-API-Key authenticates as
+    the identity the key was issued for; otherwise the normal Entra/mock auth,
+    byte-for-byte unchanged. An unknown or revoked key is refused."""
+    if x_api_key:
+        identity = apikeys.resolve_api_key(session, x_api_key)
+        if identity is None:
+            raise HTTPException(status_code=401, detail="Invalid or revoked API key.")
+        return identity
+    return get_requester(authorization=authorization, x_requester=x_requester)
+
+
 def require_action(action: str):
     """FastAPI dependency: authorise the signed-in user for a guarded action.
 
     Resolves the user's roles server-side (F-IAM-01) and refuses with 403 if none
     of them permit the action. Returns the requester so endpoints can also use it.
     """
-    def _dep(requester: str = Depends(get_requester)) -> str:
+    def _dep(requester: str = Depends(_authed_requester)) -> str:
         user_roles = roles_mod.resolve_roles(requester)
         if not roles_mod.can(user_roles, action):
             have = ", ".join(sorted(user_roles)) or "none"
@@ -285,10 +304,63 @@ def require_action(action: str):
 
 
 @app.get("/api/me")
-def whoami(requester: str = Depends(get_requester)) -> dict:
+def whoami(requester: str = Depends(_authed_requester)) -> dict:
     """The signed-in user's identity and resolved roles (for the portal to
     show the role and hide actions it can't take — the API stays the gate)."""
     return {"email": requester, "roles": sorted(roles_mod.resolve_roles(requester))}
+
+
+# --- API keys / programmatic access (E1, F-INT-01) ---------------------------
+
+class ApiKeyIn(BaseModel):
+    label: str = "api key"
+
+    @field_validator("label")
+    @classmethod
+    def _clean(cls, v: str) -> str:
+        return (v or "").strip()[:120] or "api key"
+
+
+@app.post("/api/api-keys")
+def create_api_key(body: ApiKeyIn, requester: str = Depends(_authed_requester),
+                   session: Session = Depends(get_session)) -> dict:
+    """Issue an API key bound to the caller (F-INT-01). The plaintext key is
+    returned ONCE — only its hash is stored — and it acts as the caller, so it
+    can never exceed the caller's roles."""
+    key = apikeys.generate_key()
+    row = ApiKey(key_hash=apikeys.hash_key(key), identity=requester, label=body.label)
+    session.add(row)
+    append_audit(session, "apikey.created", actor=requester, detail={"label": row.label})
+    session.commit()
+    return {"id": row.id, "label": row.label, "identity": requester, "key": key,
+            "note": "Store this key now — it will not be shown again."}
+
+
+@app.get("/api/api-keys")
+def list_api_keys(requester: str = Depends(_authed_requester),
+                  session: Session = Depends(get_session)) -> dict:
+    """The caller's own API keys — never the secret (F-INT-01)."""
+    rows = session.scalars(
+        select(ApiKey).where(ApiKey.identity == requester).order_by(ApiKey.id.desc()))
+    return {"keys": [{"id": r.id, "label": r.label, "identity": r.identity, "active": r.active,
+                      "created_at": r.created_at.isoformat() if r.created_at else None,
+                      "last_used_at": r.last_used_at.isoformat() if r.last_used_at else None}
+                     for r in rows]}
+
+
+@app.delete("/api/api-keys/{key_id}")
+def revoke_api_key(key_id: int, requester: str = Depends(_authed_requester),
+                   session: Session = Depends(get_session)) -> dict:
+    """Revoke one of the caller's API keys (F-INT-01)."""
+    row = session.scalar(
+        select(ApiKey).where(ApiKey.id == key_id, ApiKey.identity == requester))
+    if row is None:
+        raise HTTPException(status_code=404, detail="API key not found.")
+    row.active = False
+    append_audit(session, "apikey.revoked", actor=requester,
+                 detail={"id": key_id, "label": row.label})
+    session.commit()
+    return {"revoked": True, "id": key_id}
 
 
 @app.get("/api/config")

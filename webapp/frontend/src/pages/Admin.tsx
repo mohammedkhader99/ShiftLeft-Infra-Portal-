@@ -1,10 +1,11 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import { Tile, Tag, TextInput, Select, SelectItem, Button, InlineLoading } from '@carbon/react'
-import { TrashCan, Add } from '@carbon/icons-react'
+import { Tile, Tag, TextInput, Select, SelectItem, Button, InlineLoading, InlineNotification } from '@carbon/react'
+import { TrashCan, Add, Password } from '@carbon/icons-react'
 import {
   getConfig, getBudgets, getLookups, setBudget, deleteBudget, getOrphans,
   getQuotas, setQuota, deleteQuota,
-  type SystemConfig, type BudgetRow, type Lookups, type OrphanRow, type QuotaRow,
+  getApiKeys, createApiKey, revokeApiKey,
+  type SystemConfig, type BudgetRow, type Lookups, type OrphanRow, type QuotaRow, type ApiKeyRow,
 } from '../api'
 
 function Flag({ on, onLabel, offLabel }: { on: boolean; onLabel?: string; offLabel?: string }) {
@@ -47,12 +48,18 @@ export default function Admin() {
   const [quotas, setQuotas] = useState<QuotaRow[]>([])
   const [newProject, setNewProject] = useState('')
   const [newMax, setNewMax] = useState('')
+  const [apiKeys, setApiKeys] = useState<ApiKeyRow[]>([])
+  const [newKeyLabel, setNewKeyLabel] = useState('')
+  const [issuedKey, setIssuedKey] = useState<string | null>(null)
 
   function reloadBudgets() {
     getBudgets().then((b) => b && b !== 'forbidden' && setBudgets(b.budgets)).catch(() => {})
   }
   function reloadQuotas() {
     getQuotas().then((q) => q && q !== 'forbidden' && setQuotas(q.quotas)).catch(() => {})
+  }
+  function reloadApiKeys() {
+    getApiKeys().then((k) => k && setApiKeys(k.keys)).catch(() => {})
   }
 
   useEffect(() => {
@@ -66,8 +73,22 @@ export default function Admin() {
     getLookups().then(setLookups).catch(() => {})
     reloadBudgets()
     reloadQuotas()
+    reloadApiKeys()
     getOrphans().then((o) => o && o !== 'forbidden' && setOrphans(o.orphans)).catch(() => {})
   }, [])
+
+  async function onCreateKey() {
+    const label = newKeyLabel.trim() || 'api key'
+    const res = await createApiKey(label)
+    if (res.status === 200 && res.body?.key) setIssuedKey(res.body.key)
+    setNewKeyLabel('')
+    reloadApiKeys()
+  }
+
+  async function onRevokeKey(id: number) {
+    await revokeApiKey(id)
+    reloadApiKeys()
+  }
 
   async function onAddBudget() {
     const limit = parseFloat(newLimit)
@@ -267,6 +288,54 @@ export default function Admin() {
         ) : (
           <p style={{ color: 'var(--cds-text-secondary)', fontSize: '0.85rem' }}>No orphaned environments.</p>
         )}
+      </Tile>
+
+      <Tile>
+        <h4 style={{ fontSize: '0.95rem', fontWeight: 500, marginBottom: '0.75rem' }}>
+          API keys <span style={{ fontWeight: 400, color: 'var(--cds-text-secondary)' }}>— programmatic access as you</span>
+        </h4>
+        {issuedKey && (
+          <InlineNotification
+            kind="success"
+            lowContrast
+            title="New API key — copy it now, it won't be shown again"
+            subtitle={issuedKey}
+            onCloseButtonClick={() => setIssuedKey(null)}
+            style={{ maxWidth: 'none', marginBottom: '0.75rem' }}
+          />
+        )}
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
+          <thead>
+            <tr style={{ textAlign: 'left', color: 'var(--cds-text-secondary)', borderBottom: '1px solid var(--cds-border-subtle)' }}>
+              <th style={{ padding: '0.3rem 0.5rem' }}>Label</th>
+              <th style={{ padding: '0.3rem 0.5rem' }}>Created</th>
+              <th style={{ padding: '0.3rem 0.5rem' }}>Last used</th>
+              <th style={{ padding: '0.3rem 0.5rem' }} />
+            </tr>
+          </thead>
+          <tbody>
+            {apiKeys.filter((k) => k.active).map((k) => (
+              <tr key={k.id} style={{ borderBottom: '1px solid var(--cds-border-subtle-01)' }}>
+                <td style={{ padding: '0.3rem 0.5rem', fontWeight: 500 }}>{k.label}</td>
+                <td style={{ padding: '0.3rem 0.5rem', color: 'var(--cds-text-secondary)' }}>{k.created_at?.slice(0, 10) || '—'}</td>
+                <td style={{ padding: '0.3rem 0.5rem', color: 'var(--cds-text-secondary)' }}>{k.last_used_at ? k.last_used_at.slice(0, 16).replace('T', ' ') : 'never'}</td>
+                <td style={{ padding: '0.3rem 0.5rem', textAlign: 'right' }}>
+                  <Button hasIconOnly kind="ghost" size="sm" renderIcon={TrashCan} iconDescription={`Revoke ${k.label}`} onClick={() => onRevokeKey(k.id)} />
+                </td>
+              </tr>
+            ))}
+            {apiKeys.filter((k) => k.active).length === 0 && (
+              <tr><td colSpan={4} style={{ padding: '0.5rem', color: 'var(--cds-text-secondary)' }}>No API keys.</td></tr>
+            )}
+          </tbody>
+        </table>
+        <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'flex-end', marginTop: '0.75rem', flexWrap: 'wrap' }}>
+          <TextInput id="new-key-label" labelText="Label" size="sm" placeholder="e.g. ci-pipeline" value={newKeyLabel} onChange={(e) => setNewKeyLabel(e.target.value)} style={{ maxWidth: '16rem' }} />
+          <Button size="sm" renderIcon={Password} onClick={onCreateKey}>Issue key</Button>
+        </div>
+        <p style={{ fontSize: '0.78rem', color: 'var(--cds-text-secondary)', marginTop: '0.5rem' }}>
+          Use it with the <code>X-API-Key</code> header; it acts as you and inherits your roles.
+        </p>
       </Tile>
     </div>
   )

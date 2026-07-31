@@ -386,3 +386,22 @@ class AuditLog(Base):
     prev_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     entry_hash: Mapped[str] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class ApiKey(Base):
+    """A programmatic access credential (F-INT-01, E1).
+
+    Only the SHA-256 hash of the key is stored — the plaintext key is shown once
+    at creation and never again. The key authenticates as `identity`, so it
+    inherits that user's roles and can never exceed them.
+    """
+
+    __tablename__ = "api_key"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    key_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    identity: Mapped[str] = mapped_column(String(120), index=True)
+    label: Mapped[str] = mapped_column(String(120), default="api key")
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
