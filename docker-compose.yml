@@ -83,6 +83,16 @@ services:
       JIRA_SUBSIDIARY_FIELD: ${JIRA_SUBSIDIARY_FIELD:-customfield_36200}
       SUBSIDIARY_SYNC_ENABLED: ${SUBSIDIARY_SYNC_ENABLED:-true}
       SUBSIDIARY_SYNC_INTERVAL_SECONDS: ${SUBSIDIARY_SYNC_INTERVAL_SECONDS:-3600}
+      # ChatOps approvals bot (F-INT-08). The in-portal Assistant console works
+      # out of the box; the Slack slash-command adapter turns on only when
+      # SLACK_SIGNING_SECRET is set (secret via .env, never committed).
+      # CHATOPS_SLACK_MAP is JSON {slack_user_id_or_name: portal_email}. Approve/
+      # reject transition Jira to these statuses (default: the first configured
+      # approved/rejected status).
+      SLACK_SIGNING_SECRET: ${SLACK_SIGNING_SECRET:-}
+      CHATOPS_SLACK_MAP: ${CHATOPS_SLACK_MAP:-}
+      CHATOPS_APPROVE_STATUS: ${CHATOPS_APPROVE_STATUS:-}
+      CHATOPS_REJECT_STATUS: ${CHATOPS_REJECT_STATUS:-}
       # Automatic Jira-status poller (2.7). When AUTO_PROVISION=true a background
       # thread pulls the live Jira status every POLL_INTERVAL_SECONDS and advances
       # approved requests on its own. The API reads PROVISION_MODE too, so it only

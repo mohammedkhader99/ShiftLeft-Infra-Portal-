@@ -401,6 +401,16 @@ export async function getEvents(
   return r.ok ? r.json() : null
 }
 
+// ChatOps approvals bot (F-INT-08). Runs a command as the signed-in user.
+export async function chatops(command: string): Promise<{ status: number; body: any }> {
+  const r = await fetch('/api/chatops', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ command }),
+  })
+  return { status: r.status, body: await r.json().catch(() => ({})) }
+}
+
 export type AuditEntry = { event: string; created_at: string }
 
 export async function getAudit(reference: string): Promise<AuditEntry[]> {

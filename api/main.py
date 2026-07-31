@@ -9,6 +9,8 @@ from datetime import date, datetime, timedelta, timezone
 from datetime import time as dtime
 from zoneinfo import ZoneInfo
 
+import urllib.parse
+
 import anyio
 import httpx
 from dotenv import load_dotenv
@@ -24,6 +26,7 @@ from api import ai_drafter
 from api import ai_explainer
 from api import ai_triage
 from api import apikeys
+from api import chatbot
 from api import eventstream
 from api.attachment import build_request_pdf
 from api.costsheet import build_cost_sheet_xlsx
@@ -2136,6 +2139,47 @@ async def events_stream(
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+# --- ChatOps approvals bot (F-INT-08) ----------------------------------------
+
+class ChatOpsIn(BaseModel):
+    command: str
+
+
+@app.post("/api/chatops")
+def chatops(
+    body: ChatOpsIn,
+    session: Session = Depends(get_session),
+    requester: str = Depends(_authed_requester),
+) -> dict:
+    """Run a ChatOps command as the signed-in user (F-INT-08).
+
+    Powers the in-portal Assistant console and any authenticated API caller. The
+    bot holds no authority — it runs as the caller's identity/roles; approve and
+    reject record the decision in Jira and are audited (see api/chatbot.py).
+    """
+    return chatbot.handle_command(body.command, requester, session)
+
+
+@app.post("/api/chatops/slack")
+async def chatops_slack(http_request: HTTPRequest, session: Session = Depends(get_session)) -> dict:
+    """Slack slash-command adapter (F-INT-08), live only.
+
+    Verifies the Slack signing secret, maps the Slack user to a portal identity
+    (CHATOPS_SLACK_MAP), then runs the same command engine. Replies ephemerally.
+    """
+    raw = await http_request.body()
+    if not chatbot.verify_slack(raw, http_request.headers):
+        raise HTTPException(status_code=401, detail="Invalid or unconfigured Slack signature.")
+    form = urllib.parse.parse_qs(raw.decode("utf-8", "ignore"))
+    text = (form.get("text", [""])[0]).strip()
+    identity = chatbot.slack_identity(form.get("user_id", [""])[0], form.get("user_name", [""])[0])
+    if identity is None:
+        return {"response_type": "ephemeral",
+                "text": "Your Slack account isn't linked to a portal identity. Ask an admin to map it."}
+    result = chatbot.handle_command(text, identity, session)
+    return {"response_type": "ephemeral", "text": result["response"]}
 
 
 @app.get("/api/requests/{reference}/evidence.pdf")

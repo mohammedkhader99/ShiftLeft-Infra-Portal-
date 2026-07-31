@@ -24,6 +24,7 @@ import {
   Money,
   Settings,
   Activity as ActivityIcon,
+  Chat,
 } from '@carbon/icons-react'
 import RequestForm from './pages/RequestForm'
 import MyRequests from './pages/MyRequests'
@@ -31,6 +32,7 @@ import Overview from './pages/Overview'
 import Showback from './pages/Showback'
 import Admin from './pages/Admin'
 import Activity from './pages/Activity'
+import Assistant from './pages/Assistant'
 
 type Me = { email: string; roles: string[] }
 
@@ -82,6 +84,7 @@ export default function App() {
     !route.startsWith('#/overview') &&
     !route.startsWith('#/showback') &&
     !route.startsWith('#/activity') &&
+    !route.startsWith('#/assistant') &&
     !route.startsWith('#/admin')
   const isAdmin = !!me && me.roles.includes('platform_admin')
   const oversight = !!me && me.roles.some((r) => ['platform_admin', 'auditor', 'finops'].includes(r))
@@ -99,6 +102,9 @@ export default function App() {
   } else if (route.startsWith('#/activity')) {
     title = 'Activity'
     page = <Activity />
+  } else if (route.startsWith('#/assistant')) {
+    title = 'Assistant'
+    page = <Assistant />
   } else if (route.startsWith('#/admin')) {
     title = 'Admin console'
     page = <Admin />
@@ -158,6 +164,9 @@ export default function App() {
                 Activity
               </SideNavLink>
             )}
+            <SideNavLink renderIcon={Chat} href="#/assistant" isActive={route.startsWith('#/assistant')}>
+              Assistant
+            </SideNavLink>
             {isAdmin && (
               <SideNavLink renderIcon={Settings} href="#/admin" isActive={route.startsWith('#/admin')}>
                 Admin
