@@ -1301,6 +1301,9 @@ class RequestOut(BaseModel):
     drift: dict | None = None
     # Cloud state sync: {status, synced_at} from the last reconciliation, else None.
     state: dict | None = None
+    # Operational power state (cloud-sync increment 2): 'running' | 'stopped' |
+    # 'partial' for a provisioned environment's resources, else None.
+    power: str | None = None
 
     @computed_field
     @property
@@ -1409,6 +1412,7 @@ def list_requests(
     refs = [r.reference for r in results]
     ttl_map: dict[str, datetime] = {}
     actual_map: dict[str, float] = {}
+    power_map: dict[str, list[str]] = {}
     if refs:
         for ref, exp in session.execute(
             select(ProvisionedResource.reference, func.min(ProvisionedResource.ttl_expiry))
@@ -1424,6 +1428,12 @@ def list_requests(
             .where(ActualCost.reference.in_(refs))
         ).all():
             actual_map[ref] = billed
+        for ref, ps in session.execute(
+            select(ProvisionedResource.reference, ProvisionedResource.power_state)
+            .where(ProvisionedResource.reference.in_(refs),
+                   ProvisionedResource.lifecycle_state == "active")
+        ).all():
+            power_map.setdefault(ref, []).append(ps)
     outs = []
     for r in results:
         out = RequestOut.model_validate(r)
@@ -1435,6 +1445,7 @@ def list_requests(
         out.health = _health_for(session, r, actual=actual_map.get(r.reference))
         out.drift = _drift_out(r)
         out.state = _state_out(r)
+        out.power = _derive_power(power_map.get(r.reference, []))
         outs.append(out)
     return outs
 
@@ -1453,6 +1464,30 @@ def _state_out(req: Request) -> dict | None:
     return {"status": req.state_status or "unknown", "synced_at": req.state_synced_at.isoformat()}
 
 
+def _derive_power(states: list[str]) -> str | None:
+    """The environment's power state from its active resources' power states:
+    'running' if all running, 'stopped' if all stopped, 'partial' if mixed, None
+    if it has no active resources."""
+    states = [s or "running" for s in states]
+    if not states:
+        return None
+    if all(s == "running" for s in states):
+        return "running"
+    if all(s == "stopped" for s in states):
+        return "stopped"
+    return "partial"
+
+
+def _power_for(session: Session, reference: str) -> str | None:
+    """Power state for a single request (used by the detail endpoint)."""
+    return _derive_power(session.scalars(
+        select(ProvisionedResource.power_state).where(
+            ProvisionedResource.reference == reference,
+            ProvisionedResource.lifecycle_state == "active",
+        )
+    ).all())
+
+
 @app.get("/api/requests/{reference}", response_model=RequestOut)
 def get_request(reference: str, session: Session = Depends(get_session)) -> RequestOut:
     """Load a draft (or submitted request) so it can be resumed/viewed."""
@@ -1466,6 +1501,7 @@ def get_request(reference: str, session: Session = Depends(get_session)) -> Requ
     out.health = _health_for(session, req, actual=actual)
     out.drift = _drift_out(req)
     out.state = _state_out(req)
+    out.power = _power_for(session, reference)
     return out
 
 
@@ -2334,7 +2370,8 @@ def _short_reason(text: str, limit: int = 300) -> str:
     return " ".join(text.split())[:limit]
 
 
-def _handoff_payload(req: Request, *, ttl_expiry: str | None = None) -> tuple[bytes, str]:
+def _handoff_payload(req: Request, *, ttl_expiry: str | None = None,
+                     action: str | None = None) -> tuple[bytes, str]:
     """Build and sign the orchestrator handoff for a request."""
     payload = {
         "contract_version": CONTRACT_VERSION,
@@ -2347,6 +2384,8 @@ def _handoff_payload(req: Request, *, ttl_expiry: str | None = None) -> tuple[by
     }
     if ttl_expiry:
         payload["ttl_expiry"] = ttl_expiry
+    if action:  # operational actuation (stop/start), cloud-sync increment 2
+        payload["action"] = action
     body = json.dumps(payload, sort_keys=True).encode()
     return body, sign(WEBHOOK_SECRET, body)
 
@@ -2649,6 +2688,59 @@ def state_overview(session: Session = Depends(get_session),
         "by_status": counts,
         "environments": envs,
     }
+
+
+class ActuateIn(BaseModel):
+    action: str  # stop | start
+
+
+@app.post("/api/requests/{reference}/actuate")
+def actuate_request(reference: str, body: ActuateIn,
+                    session: Session = Depends(get_session),
+                    actor: str = Depends(require_action("execute"))) -> dict:
+    """Stop or start a provisioned environment's resources from the portal
+    (cloud-sync increment 2 — actuation). A reversible operational action, gated to
+    platform_admin under a standing operational policy (no per-action Jira ticket)
+    and fully audited. It goes through the orchestrator (signed handoff) — the
+    execute layer that holds the cloud credentials and re-verifies — never the API
+    directly. Mock models the action and changes no real cloud; live calls the
+    provider APIs. Idempotent: acting when already in the target state is a no-op."""
+    req = _load_request(reference, session)
+    if req.status != "provisioned" or req.approval is None:
+        raise HTTPException(status_code=400,
+                            detail="Only provisioned environments can be stopped or started.")
+    action = (body.action or "").strip().lower()
+    if action not in ("stop", "start"):
+        raise HTTPException(status_code=422, detail="action must be 'stop' or 'start'.")
+    resources = session.scalars(
+        select(ProvisionedResource).where(
+            ProvisionedResource.reference == reference,
+            ProvisionedResource.lifecycle_state == "active",
+        )
+    ).all()
+    if not resources:
+        raise HTTPException(status_code=400, detail="No active resources to actuate.")
+    target = "stopped" if action == "stop" else "running"
+    if all((r.power_state or "running") == target for r in resources):
+        return {"reference": reference, "action": action, "power": target,
+                "idempotent": True, "message": f"{reference} is already {target}."}
+
+    sig_body, signature = _handoff_payload(req, action=action)
+    response, error = _post_to_orchestrator(sig_body, signature, path="/actuate")
+    if response is None or response.status_code != 200:
+        raw = error or (response.text if response else "")
+        return JSONResponse(status_code=502,
+                            content={"error": f"{action.title()} failed: {_short_reason(raw)}"})
+
+    reported = {r.get("name"): r.get("power_state") for r in response.json().get("resources", [])}
+    for r in resources:
+        r.power_state = reported.get(r.name, target)
+    append_audit(session, "resource.stopped" if action == "stop" else "resource.started",
+                 reference=reference, jira_key=req.approval.jira_key, actor=actor,
+                 detail={"resources": [r.name for r in resources], "power_state": target})
+    session.commit()
+    return {"reference": reference, "action": action,
+            "power": _derive_power([r.power_state for r in resources])}
 
 
 def _decommission(session: Session, req: Request, actor: str) -> dict:

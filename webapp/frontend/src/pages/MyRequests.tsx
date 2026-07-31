@@ -18,8 +18,8 @@ import {
   Button,
   TextInput,
 } from '@carbon/react'
-import { WarningAltFilled, Renew, UserFollow, Search } from '@carbon/icons-react'
-import { getMe, getRequests, getAudit, renewRequest, transferOwner, checkDrift, reconcileState, triageFailure, type RequestRow } from '../api'
+import { WarningAltFilled, Renew, UserFollow, Search, Pause, Play } from '@carbon/icons-react'
+import { getMe, getRequests, getAudit, renewRequest, transferOwner, checkDrift, reconcileState, triageFailure, actuate, type RequestRow } from '../api'
 import { workflowSteps, fmtWhen, type WFStep } from '../workflow'
 
 const FILTER_KEYS = ['status', 'request_type', 'technology', 'deployment_target', 'created_week', 'requested_by', 'subsidiary']
@@ -72,6 +72,7 @@ export default function MyRequests({ route }: { route: string }) {
   const oversight = !!me && me.roles.some((r) => OVERSIGHT.includes(r))
   const canRenew = !!me && me.roles.includes('platform_admin')  // matches the API gate
   const canDiagnose = canRenew  // triage endpoint is platform-admin only too
+  const canActuate = canRenew   // stop/start is the 'execute' gate = platform_admin
   const estate = query.scope === 'all' && oversight
   const filterActive = estate || Object.keys(filters).length > 0
 
@@ -184,6 +185,25 @@ export default function MyRequests({ route }: { route: string }) {
       refresh()
     } finally {
       setReconciling((s) => {
+        const next = new Set(s)
+        next.delete(ref)
+        return next
+      })
+    }
+  }
+
+  // Actuation (cloud-sync increment 2): stop/start a provisioned environment.
+  const [actuating, setActuating] = useState<Set<string>>(new Set())
+  async function onActuate(ref: string, action: 'stop' | 'start') {
+    const verb = action === 'stop' ? 'Stop' : 'Start'
+    if (!window.confirm(`${verb} the resources for ${ref}? This is an audited operational action.`)) return
+    setActuating((s) => new Set(s).add(ref))
+    try {
+      const { status, body } = await actuate(ref, action)
+      if (status !== 200) window.alert(body?.error || body?.detail || `${verb} failed.`)
+      refresh()
+    } finally {
+      setActuating((s) => {
         const next = new Set(s)
         next.delete(ref)
         return next
@@ -331,6 +351,13 @@ export default function MyRequests({ route }: { route: string }) {
                         <div>
                           <Tag type="red" size="sm" title={`Cloud state drift · synced ${r.state.synced_at.slice(0, 16).replace('T', ' ')}`}>
                             cloud drift
+                          </Tag>
+                        </div>
+                      )}
+                      {r.power && r.power !== 'running' && (
+                        <div>
+                          <Tag type="warm-gray" size="sm" title="Resources stopped from the portal">
+                            {r.power === 'stopped' ? 'stopped' : 'partly stopped'}
                           </Tag>
                         </div>
                       )}
@@ -550,6 +577,29 @@ export default function MyRequests({ route }: { route: string }) {
                           {r.state && (
                             <span style={{ fontSize: '0.8rem', color: r.state.status === 'drifted' ? 'var(--cds-support-error)' : 'var(--cds-text-secondary)' }}>
                               cloud {r.state.status} · synced {r.state.synced_at.slice(0, 10)}
+                            </span>
+                          )}
+                          {canActuate && r.power && (
+                            <>
+                              {r.power !== 'stopped' && (
+                                <Button size="sm" kind="ghost" renderIcon={Pause}
+                                  disabled={actuating.has(r.reference)}
+                                  onClick={() => onActuate(r.reference, 'stop')}>
+                                  {actuating.has(r.reference) ? 'Working…' : 'Stop'}
+                                </Button>
+                              )}
+                              {r.power !== 'running' && (
+                                <Button size="sm" kind="ghost" renderIcon={Play}
+                                  disabled={actuating.has(r.reference)}
+                                  onClick={() => onActuate(r.reference, 'start')}>
+                                  {actuating.has(r.reference) ? 'Working…' : 'Start'}
+                                </Button>
+                              )}
+                            </>
+                          )}
+                          {r.power && (
+                            <span style={{ fontSize: '0.8rem', color: r.power === 'running' ? 'var(--cds-text-secondary)' : 'var(--cds-support-warning)' }}>
+                              power: {r.power}
                             </span>
                           )}
                         </div>

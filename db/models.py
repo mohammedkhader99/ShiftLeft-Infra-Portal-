@@ -369,6 +369,11 @@ class ProvisionedResource(Base):
     ttl_expiry: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # active | decommissioned
     lifecycle_state: Mapped[str] = mapped_column(String(16), default="active")
+    # running | stopped — operational power state, actuated from the portal
+    # (cloud-sync increment 2). Kept separate from lifecycle_state so stopping a
+    # resource doesn't drop it from the TTL / health / billing queries that filter
+    # on active resources.
+    power_state: Mapped[str] = mapped_column(String(16), default="running")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 

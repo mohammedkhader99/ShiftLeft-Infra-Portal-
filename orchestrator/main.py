@@ -240,6 +240,32 @@ async def state(request: Request) -> dict:
     return {"reference": reference, "resources": actual, "mode": cloud_state.mode()}
 
 
+@app.post("/actuate")
+async def actuate(request: Request) -> dict:
+    """Stop or start a request's resources (cloud-sync increment 2 — actuation).
+
+    Signature-verified. The API has already RBAC-gated the operator, so the
+    re-verification here is the signature (like /state and /destroy) — a full
+    approval re-check would be wrong for a reversible operational action. Mock
+    models the action and changes no real cloud; live calls the provider APIs, so
+    it works in any provision mode."""
+    body = await request.body()
+    if not verify(WEBHOOK_SECRET, body, request.headers.get("X-Signature", "")):
+        raise HTTPException(status_code=401, detail="Invalid webhook signature.")
+    payload = json.loads(body)
+    action = str(payload.get("action", "")).strip().lower()
+    if action not in ("stop", "start"):
+        raise HTTPException(status_code=400, detail="action must be 'stop' or 'start'.")
+    reference = payload["reference"]
+    bucket, _ = _bucket_and_tags(payload)
+    try:
+        result = cloud_state.actuate(reference, [{"kind": "oci-bucket", "name": bucket}], action)
+    except cloud_state.CloudStateUnavailable as exc:
+        raise HTTPException(status_code=501, detail=str(exc))
+    return {"reference": reference, "action": action, "resources": result,
+            "mode": cloud_state.mode()}
+
+
 @app.post("/destroy")
 async def destroy(request: Request) -> dict:
     """Destroy the resource (rollback / cleanup). Signed, and apply mode only."""

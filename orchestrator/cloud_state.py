@@ -62,3 +62,41 @@ def _describe_live(reference: str, resources: list[dict]) -> list[dict]:
         "Live cloud-state adapter not configured. Provide OCI/Azure credentials via a "
         "vault and implement the SDK query in orchestrator/cloud_state._describe_live."
     )
+
+
+# --- Actuation (increment 2 of cloud sync) -----------------------------------
+# Unlike describe(), actuate() CHANGES resource state (stop/start). It is the one
+# write path in this adapter; it is still driven only from the orchestrator, and
+# only after the API has RBAC-gated the operator and the signed handoff verified.
+
+def actuate(reference: str, resources: list[dict], action: str) -> list[dict]:
+    """Stop or start a request's resources; report the resulting power state:
+    [{kind, name, power_state, source}].
+
+    `action` is 'stop' or 'start'. Idempotent — stopping a stopped resource is a
+    no-op. Mock models the action (echoes the target power state) and touches no
+    real cloud; live calls the provider APIs (an extension point needing creds).
+    """
+    if action not in ("stop", "start"):
+        raise ValueError(f"Unsupported actuation action: {action!r}")
+    if mode() == "live":
+        return _actuate_live(reference, resources, action)
+    return _actuate_mock(reference, resources, action)
+
+
+def _actuate_mock(reference: str, resources: list[dict], action: str) -> list[dict]:
+    power = "stopped" if action == "stop" else "running"
+    return [
+        {"kind": r.get("kind"), "name": r.get("name"), "power_state": power, "source": "mock"}
+        for r in resources
+    ]
+
+
+def _actuate_live(reference: str, resources: list[dict], action: str) -> list[dict]:
+    # Extension point. A real implementation calls the provider APIs (OCI SDK /
+    # Azure SDK) to stop/start each resource, with credentials supplied via a
+    # vault, then returns the resulting power state.
+    raise CloudStateUnavailable(
+        "Live cloud actuation not configured. Provide OCI/Azure credentials via a "
+        "vault and implement the SDK stop/start in orchestrator/cloud_state._actuate_live."
+    )

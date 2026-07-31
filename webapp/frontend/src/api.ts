@@ -161,6 +161,8 @@ export type RequestRow = {
   drift?: { detected: boolean; checked_at: string } | null
   // Cloud state sync: result of the last reconciliation, if one has run.
   state?: { status: string; synced_at: string } | null
+  // Operational power state (cloud-sync increment 2): 'running' | 'stopped' | 'partial'.
+  power?: string | null
 }
 
 export async function checkDrift(reference: string): Promise<{ status: number; body: any }> {
@@ -172,6 +174,21 @@ export async function checkDrift(reference: string): Promise<{ status: number; b
 // observes only and never changes cloud state.
 export async function reconcileState(reference: string): Promise<{ status: number; body: any }> {
   const r = await fetch(`/api/requests/${reference}/reconcile`, { method: 'POST' })
+  return { status: r.status, body: await r.json().catch(() => ({})) }
+}
+
+// Actuation (cloud-sync increment 2): stop/start a provisioned environment from
+// the portal. Platform-admin only + audited; the actual cloud change runs through
+// the orchestrator (mock changes nothing real until live credentials are wired).
+export async function actuate(
+  reference: string,
+  action: 'stop' | 'start',
+): Promise<{ status: number; body: any }> {
+  const r = await fetch(`/api/requests/${reference}/actuate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action }),
+  })
   return { status: r.status, body: await r.json().catch(() => ({})) }
 }
 
