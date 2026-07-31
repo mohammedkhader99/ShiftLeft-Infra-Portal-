@@ -274,16 +274,23 @@ export default function ShowbackPage() {
         </Tile>
       )}
 
-      {optim && optim.total_saving > 0 && (
+      {optim && (
         <Tile style={{ marginTop: '1rem' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '0.75rem', flexWrap: 'wrap', gap: '0.5rem' }}>
             <h4 style={{ fontSize: '0.95rem', fontWeight: 500 }}>Optimisation digest (F-FIN-12)</h4>
-            <span style={{ fontSize: '0.85rem' }}>
-              Potential saving{' '}
-              <strong style={{ color: 'var(--cds-support-success)' }}>{money(optim.total_saving, optim.currency)}/mo</strong>
-              <span style={{ color: 'var(--cds-text-secondary)' }}> · {optim.environment_count} env(s) · {optim.owner_count} owner(s)</span>
-            </span>
+            {optim.total_saving > 0 && (
+              <span style={{ fontSize: '0.85rem' }}>
+                Potential saving{' '}
+                <strong style={{ color: 'var(--cds-support-success)' }}>{money(optim.total_saving, optim.currency)}/mo</strong>
+                <span style={{ color: 'var(--cds-text-secondary)' }}> · {optim.environment_count} env(s) · {optim.owner_count} owner(s)</span>
+              </span>
+            )}
           </div>
+          {optim.owners.length === 0 && (
+            <p style={{ fontSize: '0.85rem', color: 'var(--cds-text-secondary)' }}>
+              No savings opportunities — your non-prod environments are well-sized 👍
+            </p>
+          )}
           {optim.owners.map((o) => (
             <div key={o.owner} style={{ marginBottom: '0.9rem' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', fontWeight: 500, marginBottom: '0.25rem' }}>
@@ -307,9 +314,11 @@ export default function ShowbackPage() {
               ))}
             </div>
           ))}
-          <p style={{ fontSize: '0.72rem', color: 'var(--cds-text-secondary)', marginTop: '0.25rem' }}>
-            Recommendations only — nothing changes automatically. Savings are re-priced estimates for non-prod environments.
-          </p>
+          {optim.owners.length > 0 && (
+            <p style={{ fontSize: '0.72rem', color: 'var(--cds-text-secondary)', marginTop: '0.25rem' }}>
+              Recommendations only — nothing changes automatically. Savings are re-priced estimates for non-prod environments.
+            </p>
+          )}
         </Tile>
       )}
     </div>
