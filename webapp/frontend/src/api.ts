@@ -302,6 +302,33 @@ export async function getVariance(): Promise<Variance | 'forbidden' | null> {
   return r.ok ? r.json() : null
 }
 
+// Spend forecast (E4, F-RPT-05).
+export type ForecastMonth = {
+  month: number
+  label: string
+  projected_monthly: number
+  projected_annual: number
+  added: number
+  removed: number
+}
+export type ForecastDriver = { reference: string; environment?: string | null; monthly: number; month: number }
+export type Forecast = {
+  currency: string
+  horizon_months: number
+  current_monthly: number
+  pipeline_monthly: number
+  expiring_monthly: number
+  projected_monthly: number
+  months: ForecastMonth[]
+  drivers: { pipeline: ForecastDriver[]; expiring: ForecastDriver[] }
+}
+
+export async function getForecast(months = 6): Promise<Forecast | 'forbidden' | null> {
+  const r = await fetch(`/api/forecast?months=${months}`)
+  if (r.status === 403) return 'forbidden'
+  return r.ok ? r.json() : null
+}
+
 // Admin console (E1, F-OPS-09).
 export type SystemConfig = {
   modes: { auth: string; jira: string; auto_provision: boolean; provision_mode: string; use_mock: boolean }

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Tile, InlineLoading, Select, SelectItem, ContentSwitcher, Switch } from '@carbon/react'
-import { getShowback, getBudgets, getVariance, type Showback, type BudgetRow, type Variance } from '../api'
+import { getShowback, getBudgets, getVariance, getForecast, type Showback, type BudgetRow, type Variance, type Forecast } from '../api'
 
 // The dimensions cost can be attributed to (must match the API's group_by set).
 const GROUPS: [string, string][] = [
@@ -20,6 +20,7 @@ export default function ShowbackPage() {
   const [data, setData] = useState<Showback | null>(null)
   const [budgets, setBudgets] = useState<BudgetRow[]>([])
   const [variance, setVariance] = useState<Variance | null>(null)
+  const [forecast, setForecast] = useState<Forecast | null>(null)
   const [forbidden, setForbidden] = useState(false)
   const [loaded, setLoaded] = useState(false)
 
@@ -49,6 +50,9 @@ export default function ShowbackPage() {
     getVariance()
       .then((v) => active && v && v !== 'forbidden' && setVariance(v))
       .catch(() => {})
+    getForecast(6)
+      .then((f) => active && f && f !== 'forbidden' && setForecast(f))
+      .catch(() => {})
     return () => {
       active = false
     }
@@ -66,6 +70,7 @@ export default function ShowbackPage() {
 
   const groupLabel = GROUPS.find(([v]) => v === (data?.group_by || groupBy))?.[1]
   const maxMonthly = Math.max(1, ...(data?.rows.map((r) => r.monthly) || [1]))
+  const forecastMax = Math.max(1, ...(forecast?.months.map((m) => m.projected_monthly) || [1]))
 
   return (
     <div>
@@ -214,6 +219,54 @@ export default function ShowbackPage() {
               ))}
             </tbody>
           </table>
+        </Tile>
+      )}
+
+      {forecast && (
+        <Tile style={{ marginTop: '1rem' }}>
+          <h4 style={{ fontSize: '0.95rem', fontWeight: 500, marginBottom: '0.25rem' }}>
+            Spend forecast — next {forecast.horizon_months} months (F-RPT-05)
+          </h4>
+          <div style={{ fontSize: '0.85rem', color: 'var(--cds-text-secondary)', marginBottom: '0.75rem' }}>
+            Now {money(forecast.current_monthly, forecast.currency)}/mo → projected{' '}
+            {money(forecast.projected_monthly, forecast.currency)}/mo ·{' '}
+            <span style={{ color: 'var(--cds-support-success)' }}>+{money(forecast.pipeline_monthly, forecast.currency)} pipeline</span>{' '}
+            ·{' '}
+            <span style={{ color: 'var(--cds-support-warning)' }}>−{money(forecast.expiring_monthly, forecast.currency)} expiring</span>
+          </div>
+          {forecast.months.map((m) => (
+            <div key={m.month} style={{ display: 'grid', gridTemplateColumns: '5.5rem 1fr 7rem', gap: '0.5rem', alignItems: 'center', fontSize: '0.8rem', marginBottom: '0.25rem' }}>
+              <span style={{ color: 'var(--cds-text-secondary)' }}>{m.label}{m.month === 0 ? ' · now' : ''}</span>
+              <span style={{ display: 'block', background: 'var(--cds-layer-accent)', height: '0.8rem' }}>
+                <span style={{ display: 'block', width: `${(m.projected_monthly / forecastMax) * 100}%`, height: '100%', background: 'var(--cds-interactive)' }} />
+              </span>
+              <span style={{ textAlign: 'right', fontWeight: 500 }}>{money(m.projected_monthly, forecast.currency)}</span>
+            </div>
+          ))}
+          {(forecast.drivers.pipeline.length > 0 || forecast.drivers.expiring.length > 0) && (
+            <div style={{ marginTop: '0.85rem', fontSize: '0.78rem', color: 'var(--cds-text-secondary)', display: 'flex', gap: '2.5rem', flexWrap: 'wrap' }}>
+              {forecast.drivers.pipeline.length > 0 && (
+                <div>
+                  <div style={{ fontWeight: 500, color: 'var(--cds-text-primary)', marginBottom: '0.2rem' }}>Landing (pipeline)</div>
+                  {forecast.drivers.pipeline.map((d) => (
+                    <div key={d.reference}>{d.reference} +{money(d.monthly, forecast.currency)} · month {d.month}</div>
+                  ))}
+                </div>
+              )}
+              {forecast.drivers.expiring.length > 0 && (
+                <div>
+                  <div style={{ fontWeight: 500, color: 'var(--cds-text-primary)', marginBottom: '0.2rem' }}>Expiring (TTL)</div>
+                  {forecast.drivers.expiring.map((d) => (
+                    <div key={d.reference}>{d.reference} −{money(d.monthly, forecast.currency)} · month {d.month}</div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+          <p style={{ fontSize: '0.72rem', color: 'var(--cds-text-secondary)', marginTop: '0.75rem' }}>
+            A projection from the estate + pipeline, not a guarantee: today's run-rate, plus in-flight
+            requests as they provision, minus non-prod environments as their TTL expires.
+          </p>
         </Tile>
       )}
     </div>

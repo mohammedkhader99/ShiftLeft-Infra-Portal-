@@ -28,6 +28,7 @@ from api import ai_triage
 from api import apikeys
 from api import chatbot
 from api import eventstream
+from api import forecast
 from api.attachment import build_request_pdf
 from api.costsheet import build_cost_sheet_xlsx
 from api.evidence import build_evidence_pdf
@@ -545,6 +546,18 @@ def showback(group_by: str = "cost_centre", scope: str = "active",
     }
     return {"group_by": group_by, "scope": scope, "currency": "AED",
             "total": total, "rows": out}
+
+
+@app.get("/api/forecast")
+def spend_forecast(months: int = 6, session: Session = Depends(get_session),
+                   _auth: str = Depends(require_action("view_overview"))) -> dict:
+    """Projected monthly spend over the next `months` (F-RPT-05).
+
+    A deterministic pipeline-plus-estate projection: today's provisioned run-rate,
+    plus in-flight requests as they provision, minus non-prod environments as
+    their TTL expires. Read-only; reconciles with Showback's committed scope.
+    """
+    return forecast.spend_forecast(session, months)
 
 
 # --- Budget guardrails (E3.3, F-FIN-02) --------------------------------------
