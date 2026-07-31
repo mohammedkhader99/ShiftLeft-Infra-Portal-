@@ -9,10 +9,13 @@ from datetime import date, datetime, timedelta, timezone
 from datetime import time as dtime
 from zoneinfo import ZoneInfo
 
+import anyio
 import httpx
 from dotenv import load_dotenv
-from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Response
-from fastapi.responses import JSONResponse
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
+from fastapi import Request as HTTPRequest
+from fastapi import Response
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, computed_field, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -21,6 +24,7 @@ from api import ai_drafter
 from api import ai_explainer
 from api import ai_triage
 from api import apikeys
+from api import eventstream
 from api.attachment import build_request_pdf
 from api.costsheet import build_cost_sheet_xlsx
 from api.evidence import build_evidence_pdf
@@ -2056,6 +2060,82 @@ def audit_verify(session: Session = Depends(get_session),
     deletion, insertion or reorder is reported with the offending entry.
     """
     return verify_chain(session)
+
+
+# --- Lifecycle event stream (F-INT-02) ---------------------------------------
+
+@app.get("/api/events")
+def events_feed(
+    since: int = 0,
+    limit: int = 100,
+    tail: int | None = None,
+    reference: str | None = None,
+    types: str | None = None,
+    all: bool = False,
+    session: Session = Depends(get_session),
+    _auth: str = Depends(require_action("view_overview")),
+) -> dict:
+    """Curated request/environment lifecycle events (F-INT-02), read-only.
+
+    Consumers tail the monotonic `cursor` (`?since=`) for gap-free, at-least-once
+    delivery; `?tail=N` returns the most recent N for an initial load. Filter with
+    `?reference=`, `?types=a,b`, or `?all=true`. Sourced from the tamper-evident
+    audit log — this exposes events already recorded and changes nothing.
+    """
+    type_list = types.split(",") if types else None
+    events, cursor = eventstream.lifecycle_events(
+        session, since=since, limit=limit, reference=reference,
+        types=type_list, include_all=all, tail=tail,
+    )
+    return {"events": events, "cursor": cursor}
+
+
+def _fetch_events(cursor: int, type_list: list[str] | None, reference: str | None) -> tuple[list[dict], int]:
+    """One poll for the SSE stream, in its own session (runs off the event loop)."""
+    with SessionLocal() as session:
+        return eventstream.lifecycle_events(
+            session, since=cursor, limit=eventstream.MAX_LIMIT,
+            reference=reference, types=type_list,
+        )
+
+
+@app.get("/api/events/stream")
+async def events_stream(
+    http_request: HTTPRequest,
+    since: int = 0,
+    reference: str | None = None,
+    types: str | None = None,
+    last_event_id: str | None = Header(default=None),
+    _auth: str = Depends(require_action("view_overview")),
+):
+    """Real-time Server-Sent Events of the lifecycle feed (F-INT-02).
+
+    Resumes from `Last-Event-ID` (or `?since=`); each frame's `id:` is the cursor.
+    Heartbeats keep the connection alive; it exits cleanly on client disconnect.
+    """
+    type_list = types.split(",") if types else None
+    start = int(last_event_id) if (last_event_id or "").isdigit() else since
+
+    async def gen():
+        cursor = start
+        yield ": connected\n\n"
+        while True:
+            if await http_request.is_disconnected():
+                break
+            events, cursor = await anyio.to_thread.run_sync(
+                _fetch_events, cursor, type_list, reference
+            )
+            for event in events:
+                yield eventstream.sse_frame(event)
+            if not events:
+                yield ": ping\n\n"  # heartbeat
+            await anyio.sleep(2.0)
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.get("/api/requests/{reference}/evidence.pdf")

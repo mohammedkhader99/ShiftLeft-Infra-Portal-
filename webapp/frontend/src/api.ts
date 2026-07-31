@@ -376,6 +376,31 @@ export async function revokeApiKey(id: number): Promise<{ status: number }> {
   return { status: r.status }
 }
 
+// Lifecycle event stream (F-INT-02). A curated, read-only feed of request/
+// environment events, tailed by a monotonic cursor.
+export type LifecycleEvent = {
+  id: number
+  type: string
+  reference?: string | null
+  actor?: string | null
+  detail?: Record<string, unknown> | null
+  at?: string | null
+}
+
+export async function getEvents(
+  since = 0,
+  params: { tail?: number; limit?: number; reference?: string; types?: string } = {},
+): Promise<{ events: LifecycleEvent[]; cursor: number } | 'forbidden' | null> {
+  const qs = new URLSearchParams({ since: String(since) })
+  if (params.tail) qs.set('tail', String(params.tail))
+  if (params.limit) qs.set('limit', String(params.limit))
+  if (params.reference) qs.set('reference', params.reference)
+  if (params.types) qs.set('types', params.types)
+  const r = await fetch(`/api/events?${qs}`)
+  if (r.status === 403) return 'forbidden'
+  return r.ok ? r.json() : null
+}
+
 export type AuditEntry = { event: string; created_at: string }
 
 export async function getAudit(reference: string): Promise<AuditEntry[]> {
