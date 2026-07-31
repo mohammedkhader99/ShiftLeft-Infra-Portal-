@@ -93,6 +93,14 @@ services:
       CHATOPS_SLACK_MAP: ${CHATOPS_SLACK_MAP:-}
       CHATOPS_APPROVE_STATUS: ${CHATOPS_APPROVE_STATUS:-}
       CHATOPS_REJECT_STATUS: ${CHATOPS_REJECT_STATUS:-}
+      # Sustainability estimate (F-FIN-13): indicative energy/carbon per
+      # environment from its sizing. Coefficients are configurable — the power
+      # draw per unit below, plus per-target PUE (SUSTAIN_PUE_ONPREM/AZURE/OCI)
+      # and grid carbon intensity in gCO2e/kWh (SUSTAIN_CARBON_ONPREM/AZURE/OCI).
+      # Sensible defaults ship in code; override with your real figures.
+      SUSTAIN_W_PER_VCPU: ${SUSTAIN_W_PER_VCPU:-12}
+      SUSTAIN_W_PER_GB_RAM: ${SUSTAIN_W_PER_GB_RAM:-0.4}
+      SUSTAIN_W_PER_GB_STORAGE: ${SUSTAIN_W_PER_GB_STORAGE:-0.005}
       # Automatic Jira-status poller (2.7). When AUTO_PROVISION=true a background
       # thread pulls the live Jira status every POLL_INTERVAL_SECONDS and advances
       # approved requests on its own. The API reads PROVISION_MODE too, so it only

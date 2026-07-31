@@ -377,6 +377,33 @@ export async function getOptimisation(): Promise<Optimisation | 'forbidden' | nu
   return r.ok ? r.json() : null
 }
 
+// Sustainability estimate (E4, F-FIN-13).
+export type SustainEnv = {
+  reference: string
+  environment?: string | null
+  deployment_target?: string | null
+  vcpu: number
+  memory_gb: number
+  storage_gb: number
+  energy_kwh_month: number
+  carbon_kg_month: number
+}
+export type Sustainability = {
+  generated_at: string
+  total_energy_kwh_month: number
+  total_carbon_kg_month: number
+  equivalents: { car_km: number; trees_year: number }
+  environment_count: number
+  environments: SustainEnv[]
+  note: string
+}
+
+export async function getSustainability(): Promise<Sustainability | 'forbidden' | null> {
+  const r = await fetch('/api/sustainability')
+  if (r.status === 403) return 'forbidden'
+  return r.ok ? r.json() : null
+}
+
 // Admin console (E1, F-OPS-09).
 export type SystemConfig = {
   modes: { auth: string; jira: string; auto_provision: boolean; provision_mode: string; use_mock: boolean }

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Tile, InlineLoading, Select, SelectItem, ContentSwitcher, Switch } from '@carbon/react'
-import { getShowback, getBudgets, getVariance, getForecast, getOptimisation, type Showback, type BudgetRow, type Variance, type Forecast, type Optimisation } from '../api'
+import { getShowback, getBudgets, getVariance, getForecast, getOptimisation, getSustainability, type Showback, type BudgetRow, type Variance, type Forecast, type Optimisation, type Sustainability } from '../api'
 
 // The dimensions cost can be attributed to (must match the API's group_by set).
 const GROUPS: [string, string][] = [
@@ -22,6 +22,7 @@ export default function ShowbackPage() {
   const [variance, setVariance] = useState<Variance | null>(null)
   const [forecast, setForecast] = useState<Forecast | null>(null)
   const [optim, setOptim] = useState<Optimisation | null>(null)
+  const [sustain, setSustain] = useState<Sustainability | null>(null)
   const [forbidden, setForbidden] = useState(false)
   const [loaded, setLoaded] = useState(false)
 
@@ -56,6 +57,9 @@ export default function ShowbackPage() {
       .catch(() => {})
     getOptimisation()
       .then((o) => active && o && o !== 'forbidden' && setOptim(o))
+      .catch(() => {})
+    getSustainability()
+      .then((s) => active && s && s !== 'forbidden' && setSustain(s))
       .catch(() => {})
     return () => {
       active = false
@@ -319,6 +323,50 @@ export default function ShowbackPage() {
               Recommendations only — nothing changes automatically. Savings are re-priced estimates for non-prod environments.
             </p>
           )}
+        </Tile>
+      )}
+
+      {sustain && (
+        <Tile style={{ marginTop: '1rem' }}>
+          <h4 style={{ fontSize: '0.95rem', fontWeight: 500, marginBottom: '0.5rem' }}>Sustainability estimate (F-FIN-13)</h4>
+          {sustain.environment_count === 0 ? (
+            <p style={{ fontSize: '0.85rem', color: 'var(--cds-text-secondary)' }}>No provisioned environments to estimate yet.</p>
+          ) : (
+            <>
+              <div style={{ fontSize: '0.85rem', marginBottom: '0.75rem' }}>
+                Estate:{' '}
+                <strong>{sustain.total_energy_kwh_month.toLocaleString(undefined, { maximumFractionDigits: 0 })} kWh/mo</strong>
+                {' · '}
+                <strong>{sustain.total_carbon_kg_month.toLocaleString(undefined, { maximumFractionDigits: 0 })} kg CO₂e/mo</strong>
+                <span style={{ color: 'var(--cds-text-secondary)' }}>
+                  {' '}— ≈ {sustain.equivalents.car_km.toLocaleString()} km driven, or {sustain.equivalents.trees_year} trees/year to offset
+                </span>
+              </div>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
+                <thead>
+                  <tr style={{ textAlign: 'left', color: 'var(--cds-text-secondary)', borderBottom: '1px solid var(--cds-border-subtle)' }}>
+                    <th style={{ padding: '0.3rem 0.5rem' }}>Environment</th>
+                    <th style={{ padding: '0.3rem 0.5rem' }}>Target</th>
+                    <th style={{ padding: '0.3rem 0.5rem', textAlign: 'right' }}>kWh/mo</th>
+                    <th style={{ padding: '0.3rem 0.5rem', textAlign: 'right' }}>kg CO₂e/mo</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sustain.environments.map((e) => (
+                    <tr key={e.reference} style={{ borderBottom: '1px solid var(--cds-border-subtle-01)' }}>
+                      <td style={{ padding: '0.3rem 0.5rem' }} title={e.environment || undefined}>
+                        {e.reference}{e.environment ? ` · ${e.environment}` : ''}
+                      </td>
+                      <td style={{ padding: '0.3rem 0.5rem', color: 'var(--cds-text-secondary)' }}>{e.deployment_target || '—'}</td>
+                      <td style={{ padding: '0.3rem 0.5rem', textAlign: 'right' }}>{e.energy_kwh_month.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
+                      <td style={{ padding: '0.3rem 0.5rem', textAlign: 'right', fontWeight: 500 }}>{e.carbon_kg_month.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </>
+          )}
+          <p style={{ fontSize: '0.72rem', color: 'var(--cds-text-secondary)', marginTop: '0.5rem' }}>{sustain.note}</p>
         </Tile>
       )}
     </div>

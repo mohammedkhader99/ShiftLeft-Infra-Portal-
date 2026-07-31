@@ -31,6 +31,7 @@ from api import chatbot
 from api import eventstream
 from api import forecast
 from api import optimisation as optim
+from api import sustainability as sustainability_mod
 from api.attachment import build_request_pdf
 from api.costsheet import build_cost_sheet_xlsx
 from api.evidence import build_evidence_pdf
@@ -586,6 +587,18 @@ def optimisation_digest(owner: str | None = None, session: Session = Depends(get
     it recommends only, it never changes a request. Optional `?owner=` filter.
     """
     return optim.optimisation_digest(session, owner)
+
+
+@app.get("/api/sustainability")
+def sustainability(session: Session = Depends(get_session),
+                   _auth: str = Depends(require_action("view_overview"))) -> dict:
+    """Indicative energy + carbon footprint per environment (F-FIN-13).
+
+    Estimated from each environment's sizing times documented power/PUE/grid
+    coefficients (configurable via SUSTAIN_* env). A directional green-IT signal,
+    not a metered value; read-only.
+    """
+    return sustainability_mod.estate_footprint(session)
 
 
 # --- Budget guardrails (E3.3, F-FIN-02) --------------------------------------
