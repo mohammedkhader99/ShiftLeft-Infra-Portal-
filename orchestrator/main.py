@@ -17,7 +17,7 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request
 
 from common.signing import verify
-from orchestrator import provisioner
+from orchestrator import cloud_state, provisioner
 
 API_URL = os.getenv("API_URL", "http://localhost:8081")
 OPA_URL = os.getenv("OPA_URL", "http://localhost:8181")
@@ -220,6 +220,24 @@ async def drift(request: Request) -> dict:
     except provisioner.ProvisionError as exc:
         raise HTTPException(status_code=400, detail=f"Drift check failed: {exc}")
     return {"reference": reference, **result}
+
+
+@app.post("/state")
+async def state(request: Request) -> dict:
+    """Report the actual cloud state of a request's resources (read-only cloud
+    sync). Signature-verified; observes only, changes nothing — so it works in any
+    provision mode (mock reflects the registry; live queries the provider APIs)."""
+    body = await request.body()
+    if not verify(WEBHOOK_SECRET, body, request.headers.get("X-Signature", "")):
+        raise HTTPException(status_code=401, detail="Invalid webhook signature.")
+    payload = json.loads(body)
+    reference = payload["reference"]
+    bucket, _ = _bucket_and_tags(payload)
+    try:
+        actual = cloud_state.describe(reference, [{"kind": "oci-bucket", "name": bucket}])
+    except cloud_state.CloudStateUnavailable as exc:
+        raise HTTPException(status_code=501, detail=str(exc))
+    return {"reference": reference, "resources": actual, "mode": cloud_state.mode()}
 
 
 @app.post("/destroy")

@@ -264,6 +264,11 @@ class Request(Base):
     # (terraform plan vs the applied state). Null until first checked.
     drift_detected: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     drift_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Cloud state sync (read-only reconciliation): does the portal's registry match
+    # the actual cloud state? 'in-sync' | 'drifted' | 'unknown'. Null until first
+    # reconciled. `state_synced_at` is the last reconciliation time.
+    state_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    state_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # Policy waiver (F-GOV-02): a documented, expiring exception that lets a
     # request pass the OPA policy gate despite violations. Holds
     # {reason, granted_by, granted_at, expires_at}. Nullable — most requests have

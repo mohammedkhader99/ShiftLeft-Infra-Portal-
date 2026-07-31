@@ -19,7 +19,7 @@ import {
   TextInput,
 } from '@carbon/react'
 import { WarningAltFilled, Renew, UserFollow, Search } from '@carbon/icons-react'
-import { getMe, getRequests, getAudit, renewRequest, transferOwner, checkDrift, triageFailure, type RequestRow } from '../api'
+import { getMe, getRequests, getAudit, renewRequest, transferOwner, checkDrift, reconcileState, triageFailure, type RequestRow } from '../api'
 import { workflowSteps, fmtWhen, type WFStep } from '../workflow'
 
 const FILTER_KEYS = ['status', 'request_type', 'technology', 'deployment_target', 'created_week', 'requested_by', 'subsidiary']
@@ -175,6 +175,22 @@ export default function MyRequests({ route }: { route: string }) {
     }
   }
 
+  // Read-only cloud state sync: reconcile the portal's view against the cloud.
+  const [reconciling, setReconciling] = useState<Set<string>>(new Set())
+  async function onReconcile(ref: string) {
+    setReconciling((s) => new Set(s).add(ref))
+    try {
+      await reconcileState(ref)
+      refresh()
+    } finally {
+      setReconciling((s) => {
+        const next = new Set(s)
+        next.delete(ref)
+        return next
+      })
+    }
+  }
+
   if (!loaded) return <InlineLoading description="Loading requests…" />
 
   const banner = filterActive && (
@@ -308,6 +324,13 @@ export default function MyRequests({ route }: { route: string }) {
                         <div>
                           <Tag type="red" size="sm" title={`Drift detected · checked ${r.drift.checked_at.slice(0, 16).replace('T', ' ')}`}>
                             drift
+                          </Tag>
+                        </div>
+                      )}
+                      {r.state?.status === 'drifted' && (
+                        <div>
+                          <Tag type="red" size="sm" title={`Cloud state drift · synced ${r.state.synced_at.slice(0, 16).replace('T', ' ')}`}>
+                            cloud drift
                           </Tag>
                         </div>
                       )}
@@ -515,6 +538,18 @@ export default function MyRequests({ route }: { route: string }) {
                           {r.drift && (
                             <span style={{ fontSize: '0.8rem', color: r.drift.detected ? 'var(--cds-support-error)' : 'var(--cds-text-secondary)' }}>
                               {r.drift.detected ? 'drift detected' : 'no drift'} · checked {r.drift.checked_at.slice(0, 10)}
+                            </span>
+                          )}
+                          {oversight && (
+                            <Button size="sm" kind="ghost" renderIcon={Search}
+                              disabled={reconciling.has(r.reference)}
+                              onClick={() => onReconcile(r.reference)}>
+                              {reconciling.has(r.reference) ? 'Reconciling…' : 'Reconcile cloud state'}
+                            </Button>
+                          )}
+                          {r.state && (
+                            <span style={{ fontSize: '0.8rem', color: r.state.status === 'drifted' ? 'var(--cds-support-error)' : 'var(--cds-text-secondary)' }}>
+                              cloud {r.state.status} · synced {r.state.synced_at.slice(0, 10)}
                             </span>
                           )}
                         </div>

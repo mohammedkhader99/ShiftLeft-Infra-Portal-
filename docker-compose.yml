@@ -110,6 +110,12 @@ services:
       SHUTDOWN_START: ${SHUTDOWN_START:-08:00}
       SHUTDOWN_END: ${SHUTDOWN_END:-20:00}
       SHUTDOWN_TZ: ${SHUTDOWN_TZ:-UTC}
+      # Read-only cloud state sync (reconciliation). The on-demand Reconcile action
+      # + estate view work out of the box; CLOUD_STATE_SYNC_ENABLED=true runs the
+      # background reconciliation sweep. CLOUD_STATE_MODE=live queries the real
+      # OCI/Azure APIs (needs cloud creds via a vault — extension point). Read-only.
+      CLOUD_STATE_MODE: ${CLOUD_STATE_MODE:-mock}
+      CLOUD_STATE_SYNC_ENABLED: ${CLOUD_STATE_SYNC_ENABLED:-false}
       # Automatic Jira-status poller (2.7). When AUTO_PROVISION=true a background
       # thread pulls the live Jira status every POLL_INTERVAL_SECONDS and advances
       # approved requests on its own. The API reads PROVISION_MODE too, so it only
@@ -216,6 +222,13 @@ services:
       # apply. When true, a HIGH-severity finding blocks the handoff; default off
       # = scan + report only (the API audits the findings either way).
       IAC_SCAN_ENFORCE: ${IAC_SCAN_ENFORCE:-false}
+      # Read-only cloud state sync: the orchestrator's cloud_state adapter reports
+      # the actual state of a request's resources. mock (default) reflects the
+      # registry; live queries OCI/Azure (extension point — needs creds).
+      # CLOUD_STATE_SIMULATE_MISSING is a demo hook: comma-separated references
+      # whose resources are reported missing, to show a divergence offline.
+      CLOUD_STATE_MODE: ${CLOUD_STATE_MODE:-mock}
+      CLOUD_STATE_SIMULATE_MISSING: ${CLOUD_STATE_SIMULATE_MISSING:-}
     ports:
       - "9091:9091"
     volumes:

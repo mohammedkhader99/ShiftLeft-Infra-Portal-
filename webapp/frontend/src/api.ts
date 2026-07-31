@@ -159,10 +159,19 @@ export type RequestRow = {
   health?: { score: number; grade: string; factors: { signal: string; impact: number; detail: string }[] } | null
   // Drift (F-LCM-09): result of the last drift check, if one has run.
   drift?: { detected: boolean; checked_at: string } | null
+  // Cloud state sync: result of the last reconciliation, if one has run.
+  state?: { status: string; synced_at: string } | null
 }
 
 export async function checkDrift(reference: string): Promise<{ status: number; body: any }> {
   const r = await fetch(`/api/requests/${reference}/drift-check`, { method: 'POST' })
+  return { status: r.status, body: await r.json().catch(() => ({})) }
+}
+
+// Read-only cloud state sync (reconciliation). Flags out-of-band changes; it
+// observes only and never changes cloud state.
+export async function reconcileState(reference: string): Promise<{ status: number; body: any }> {
+  const r = await fetch(`/api/requests/${reference}/reconcile`, { method: 'POST' })
   return { status: r.status, body: await r.json().catch(() => ({})) }
 }
 

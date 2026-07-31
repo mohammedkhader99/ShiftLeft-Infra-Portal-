@@ -1299,6 +1299,8 @@ class RequestOut(BaseModel):
     health: dict | None = None
     # Drift (F-LCM-09): {detected, checked_at} from the last drift check, else None.
     drift: dict | None = None
+    # Cloud state sync: {status, synced_at} from the last reconciliation, else None.
+    state: dict | None = None
 
     @computed_field
     @property
@@ -1432,6 +1434,7 @@ def list_requests(
         out.orphaned = r.status == "provisioned" and _is_orphan(r)
         out.health = _health_for(session, r, actual=actual_map.get(r.reference))
         out.drift = _drift_out(r)
+        out.state = _state_out(r)
         outs.append(out)
     return outs
 
@@ -1441,6 +1444,13 @@ def _drift_out(req: Request) -> dict | None:
     if req.drift_checked_at is None:
         return None
     return {"detected": bool(req.drift_detected), "checked_at": req.drift_checked_at.isoformat()}
+
+
+def _state_out(req: Request) -> dict | None:
+    """The last cloud-state reconciliation result for the portal, else None."""
+    if req.state_synced_at is None:
+        return None
+    return {"status": req.state_status or "unknown", "synced_at": req.state_synced_at.isoformat()}
 
 
 @app.get("/api/requests/{reference}", response_model=RequestOut)
@@ -1455,6 +1465,7 @@ def get_request(reference: str, session: Session = Depends(get_session)) -> Requ
     out.orphaned = req.status == "provisioned" and _is_orphan(req)
     out.health = _health_for(session, req, actual=actual)
     out.drift = _drift_out(req)
+    out.state = _state_out(req)
     return out
 
 
@@ -2543,6 +2554,103 @@ def drift_check(reference: str, session: Session = Depends(get_session),
             "changes": result.get("changes", []), "summary": result.get("summary")}
 
 
+# --- Read-only cloud state sync (reconciliation) -----------------------------
+
+def _reconcile(session: Session, req: Request) -> dict:
+    """Compare the portal's registry against the actual cloud state (read-only).
+
+    Asks the orchestrator (signed handoff) for the real state of the request's
+    resources and diffs it against the active ProvisionedResource rows. Returns
+    {in_sync, resources, divergences} or {error}. Observes only — changes nothing.
+    """
+    registry = session.scalars(
+        select(ProvisionedResource).where(
+            ProvisionedResource.reference == req.reference,
+            ProvisionedResource.lifecycle_state == "active",
+        )
+    ).all()
+    body, signature = _handoff_payload(req)
+    response, error = _post_to_orchestrator(body, signature, path="/state")
+    if response is None or response.status_code != 200:
+        raw = error or (response.text if response else "")
+        return {"error": _short_reason(raw)}
+    actual = response.json().get("resources", [])
+    by_name = {a.get("name"): a for a in actual}
+    divergences = []
+    for res in registry:
+        found = by_name.get(res.name)
+        if found is None or not found.get("exists", True):
+            divergences.append({"resource": res.name, "issue": "missing",
+                                "detail": "not found in the cloud (deleted out-of-band?)"})
+        elif found.get("status") not in ("active", None):
+            divergences.append({"resource": res.name, "issue": str(found.get("status")),
+                                "detail": f"cloud reports '{found.get('status')}'"})
+    return {"in_sync": not divergences, "resources": actual, "divergences": divergences}
+
+
+def _apply_reconcile(session: Session, req: Request, result: dict, actor: str) -> None:
+    """Persist a reconcile result on the request + audit a change of state."""
+    drifted = not result["in_sync"]
+    was = req.state_status
+    req.state_status = "drifted" if drifted else "in-sync"
+    req.state_synced_at = datetime.now(timezone.utc)
+    if drifted:
+        req.status_detail = (f"Cloud state drift: {len(result['divergences'])} resource(s) "
+                             "diverged from the registry.")
+    elif req.status_detail and "cloud state" in req.status_detail.lower():
+        req.status_detail = None
+    if was != req.state_status:  # audit only on a change, to avoid per-cycle noise
+        append_audit(session, "state.drift" if drifted else "state.reconciled",
+                     reference=req.reference,
+                     jira_key=req.approval.jira_key if req.approval else None, actor=actor,
+                     detail={"divergences": result["divergences"]})
+
+
+@app.post("/api/requests/{reference}/reconcile")
+def reconcile_state(reference: str, session: Session = Depends(get_session),
+                    actor: str = Depends(require_action("view_overview"))):
+    """Reconcile a provisioned environment against actual cloud state (read-only).
+
+    Flags any out-of-band change (a resource stopped, resized, or deleted directly
+    in OCI/Azure). Records the result + a state.reconciled / state.drift audit.
+    Oversight-gated. Observes only — it never changes cloud state.
+    """
+    req = _load_request(reference, session)
+    if req.status != "provisioned" or req.approval is None:
+        raise HTTPException(status_code=400, detail="Reconciliation applies to provisioned requests.")
+    result = _reconcile(session, req)
+    if "error" in result:
+        return JSONResponse(status_code=502, content={"error": f"State sync failed: {result['error']}"})
+    _apply_reconcile(session, req, result, actor)
+    session.commit()
+    return {"reference": reference, **result}
+
+
+@app.get("/api/state")
+def state_overview(session: Session = Depends(get_session),
+                   _auth: str = Depends(require_action("view_overview"))) -> dict:
+    """Cloud-state sync status across the estate (read-only). Each provisioned
+    environment's last reconciliation result + the estate roll-up."""
+    envs = []
+    counts: dict[str, int] = {}
+    for req in session.scalars(select(Request).where(Request.status == "provisioned").order_by(Request.id)):
+        st = req.state_status or "unknown"
+        counts[st] = counts.get(st, 0) + 1
+        envs.append({
+            "reference": req.reference,
+            "environment": req.environment_name or req.target_environment,
+            "state_status": st,
+            "synced_at": req.state_synced_at.isoformat() if req.state_synced_at else None,
+        })
+    return {
+        "sync_enabled": _cloud_state_sync_enabled(),
+        "mode": os.getenv("CLOUD_STATE_MODE", "mock"),
+        "count": len(envs),
+        "by_status": counts,
+        "environments": envs,
+    }
+
+
 def _decommission(session: Session, req: Request, actor: str) -> dict:
     """Tear down the resources of the provisioned request this decommission
     request targets, then mark both decommissioned.
@@ -2981,6 +3089,30 @@ def _sweep_shutdowns(session: Session) -> None:
     session.commit()
 
 
+def _cloud_state_sync_enabled() -> bool:
+    """Whether the reconciliation sweep runs. Off by default — the on-demand
+    reconcile endpoint + saving view still work."""
+    return os.getenv("CLOUD_STATE_SYNC_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _sweep_state(session: Session) -> None:
+    """Reconcile provisioned environments against actual cloud state (read-only).
+
+    Opt-in (CLOUD_STATE_SYNC_ENABLED). Records each request's sync status and
+    audits a *change* of state (drift detected / recovered). No-op when disabled;
+    a transient orchestrator error skips that request and retries next cycle."""
+    if not _cloud_state_sync_enabled():
+        return
+    for req in session.scalars(select(Request).where(Request.status == "provisioned")):
+        if req.approval is None:
+            continue
+        result = _reconcile(session, req)
+        if "error" in result:
+            continue  # transient — try again next cycle
+        _apply_reconcile(session, req, result, actor="state-sync")
+        session.commit()
+
+
 def _sweep_ttls(session: Session) -> None:
     """One TTL pass (F-FIN-07): warn owners of non-prod environments nearing
     expiry, flag expired ones, and — only when TTL_ENFORCE is on — reclaim them.
@@ -3100,6 +3232,19 @@ def _poll_once() -> None:
         try:
             with SessionLocal() as session:
                 append_audit(session, "shutdown.sweep.error", detail={"error": str(exc)})
+                session.commit()
+        except Exception:  # noqa: BLE001
+            pass
+
+    # Cloud state reconciliation sweep: opt-in; syncs the registry against actual
+    # cloud state. No-op unless CLOUD_STATE_SYNC_ENABLED. Read-only.
+    try:
+        with SessionLocal() as session:
+            _sweep_state(session)
+    except Exception as exc:  # noqa: BLE001
+        try:
+            with SessionLocal() as session:
+                append_audit(session, "state.sweep.error", detail={"error": str(exc)})
                 session.commit()
         except Exception:  # noqa: BLE001
             pass
