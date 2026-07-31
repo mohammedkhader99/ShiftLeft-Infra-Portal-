@@ -13,3 +13,6 @@ psycopg[binary]
 pytest
 httpx
 python-dotenv
+# AI request drafting (F-RPT-06), live mode only. Lazy-imported in api/ai_drafter
+# so mock mode and the test suite run without it; a rebuild enables AI_MODE=live.
+anthropic

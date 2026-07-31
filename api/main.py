@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, computed_field, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from api import ai_drafter
 from api import apikeys
 from api.attachment import build_request_pdf
 from api.costsheet import build_cost_sheet_xlsx
@@ -984,6 +985,50 @@ def lookups(session: Session = Depends(get_session)) -> LookupsResponse:
         technologies=session.scalars(select(Technology).order_by(Technology.name)).all(),
         environments=session.scalars(select(Environment).order_by(Environment.name)).all(),
     )
+
+
+# --- AI request drafting (F-RPT-06) ------------------------------------------
+
+class AiDraftIn(BaseModel):
+    description: str
+
+
+@app.post("/api/ai/draft")
+def ai_draft(
+    body: AiDraftIn,
+    session: Session = Depends(get_session),
+    requester: str = Depends(require_action("create_request")),
+) -> dict:
+    """Draft a provisioning request from a plain-English description (F-RPT-06).
+
+    The AI **recommends a draft only** (ARCHITECTURE.md §7): it fills the form
+    fields, constrained to the approved catalogue, but never submits, approves,
+    prices, or provisions. The requester reviews, edits, and submits through the
+    normal path, where validate_submission re-checks everything (P2). Every draft
+    is audited so the AI's involvement is on the record.
+    """
+    description = (body.description or "").strip()
+    if len(description) < 8:
+        raise HTTPException(
+            status_code=422,
+            detail="Describe what you need in a sentence or two (at least 8 characters).",
+        )
+    try:
+        result = ai_drafter.draft_request(description, session)
+    except ai_drafter.AiUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    append_audit(
+        session,
+        "ai.drafted",
+        actor=requester,
+        detail={
+            "mode": result["mode"],
+            "description": description[:500],
+            "warnings": result["warnings"],
+        },
+    )
+    session.commit()
+    return result
 
 
 # --- Requests: drafts + submission (increment 1.3) ---------------------------

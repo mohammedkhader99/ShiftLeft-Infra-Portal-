@@ -86,6 +86,15 @@ services:
       ROLE_SOURCE: ${ROLE_SOURCE:-mock}
       ROLE_MAP: ${ROLE_MAP:-}
       JIRA_ROLE_MAP: ${JIRA_ROLE_MAP:-}
+      # AI request drafting (F-RPT-06): AI_MODE=live turns a plain-English
+      # description into a DRAFT request via the Claude API. The AI recommends a
+      # draft only — it never submits, approves, prices, or provisions
+      # (ARCHITECTURE.md §7). Default "mock" is a deterministic offline drafter
+      # (no key needed). Live needs ANTHROPIC_API_KEY — add it to .env yourself;
+      # never commit a key.
+      AI_MODE: ${AI_MODE:-mock}
+      AI_MODEL: ${AI_MODEL:-claude-opus-5}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       # Segregation of duties (E1.2, F-IAM-03): when true (default) a user cannot
       # approve/apply/destroy a request they raised. The poller is exempt.
       SOD_ENFORCED: ${SOD_ENFORCED:-true}

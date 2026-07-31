@@ -35,6 +35,7 @@ import {
   getCost,
   saveDraft,
   submitRequest,
+  draftWithAI,
   type Lookups,
   type Component,
   type Cost,
@@ -191,6 +192,14 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
   const [warnings, setWarnings] = useState<string[]>([])
   const [busy, setBusy] = useState(false)
 
+  // AI request drafting (F-RPT-06): a plain-English description pre-fills the
+  // form. The AI recommends a draft only; the user reviews, edits, and submits.
+  const [aiText, setAiText] = useState('')
+  const [aiBusy, setAiBusy] = useState(false)
+  const [aiMsg, setAiMsg] = useState<
+    { kind: 'success' | 'warning' | 'error'; title: string; subtitle?: string } | null
+  >(null)
+
   useEffect(() => {
     getLookups().then(setLookups).catch(() => setLookups(null))
     getMe().then((m) => setEmail(m?.email ?? null))
@@ -298,6 +307,42 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
       p.target_environment = targetEnv || null
     }
     return p
+  }
+
+  // Ask the assistant to draft the request, then pre-fill the form fields from
+  // its suggestion. Nothing is submitted — the user reviews and edits below.
+  async function onDraftWithAI() {
+    setAiBusy(true)
+    setAiMsg(null)
+    const { status, body } = await draftWithAI(aiText.trim())
+    setAiBusy(false)
+    if (status !== 200) {
+      setAiMsg({ kind: 'error', title: 'Could not draft', subtitle: body?.detail || 'Please try again.' })
+      return
+    }
+    const d = body.draft
+    if (d.project_code) setProjectCode(d.project_code)
+    if (d.cost_centre_code) setCostCentre(d.cost_centre_code)
+    if (d.deployment_target) setTarget(d.deployment_target)
+    if (d.environment_name) setEnvName(d.environment_name)
+    if (d.environment_tier) setEnvTier(d.environment_tier)
+    if (d.data_classification) setClassification(d.data_classification)
+    if (d.priority) setPriority(d.priority)
+    if (d.business_criticality) setCriticality(d.business_criticality)
+    if (d.business_justification) setJustification(d.business_justification)
+    if (d.components?.length)
+      setComponents(
+        d.components.map((c: { technology_code: string; size: string | null }) => ({
+          technology_code: c.technology_code,
+          size: c.size || 'medium',
+        })),
+      )
+    const bits = [...(body.notes || []), ...(body.warnings || [])]
+    setAiMsg({
+      kind: (body.warnings || []).length ? 'warning' : 'success',
+      title: `Draft ready${body.mode ? ` · ${body.mode}` : ''} — review the fields below`,
+      subtitle: bits.join('  ·  ') || 'Fields filled in from your description.',
+    })
   }
 
   async function onSaveDraft() {
@@ -417,6 +462,37 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
             </>
           ) : (
             <>
+              <Tile style={{ borderLeft: '3px solid var(--cds-border-interactive)' }}>
+                <p style={{ fontWeight: 600, margin: '0 0 0.25rem' }}>Draft with AI</p>
+                <p style={{ fontSize: '0.8rem', color: 'var(--cds-text-secondary)', margin: '0 0 0.6rem' }}>
+                  Describe what you need in plain English — the assistant fills the form in for you to
+                  review. It only suggests a draft; it never submits, prices, or provisions.
+                </p>
+                <TextArea
+                  id="ai-description"
+                  labelText="Describe your request"
+                  placeholder="e.g. a medium Postgres database for the eGate UAT environment, on-prem, internal data"
+                  rows={2}
+                  value={aiText}
+                  onChange={(e) => setAiText(e.target.value)}
+                />
+                <div style={{ marginTop: '0.5rem' }}>
+                  <Button size="sm" onClick={onDraftWithAI} disabled={aiBusy || aiText.trim().length < 8}>
+                    {aiBusy ? 'Drafting…' : 'Draft with AI'}
+                  </Button>
+                </div>
+                {aiMsg && (
+                  <InlineNotification
+                    kind={aiMsg.kind}
+                    lowContrast
+                    title={aiMsg.title}
+                    subtitle={aiMsg.subtitle}
+                    onCloseButtonClick={() => setAiMsg(null)}
+                    style={{ marginTop: '0.75rem', maxWidth: 'none' }}
+                  />
+                )}
+              </Tile>
+
               {isCreate && (
                 <Select id="project_code" labelText="Project" value={projectCode} onChange={(e) => setProjectCode(e.target.value)} invalid={!!errors.project_code} invalidText={errors.project_code}>
                   <SelectItem value="" text="— select —" />

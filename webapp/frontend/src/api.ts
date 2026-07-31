@@ -64,6 +64,38 @@ export async function submitRequest(
   return { status: r.status, body: await r.json().catch(() => ({})) }
 }
 
+// AI request drafting (F-RPT-06). The AI recommends a DRAFT only — the browser
+// pre-fills the form with it and the user reviews, edits, and submits as normal.
+export type AiDraft = {
+  mode: string
+  draft: {
+    request_type: string
+    project_code: string | null
+    cost_centre_code: string | null
+    deployment_target: string | null
+    environment_name: string | null
+    environment_tier: string | null
+    data_classification: string | null
+    priority: string | null
+    business_criticality: string | null
+    business_justification: string | null
+    components: { technology_code: string; size: string | null }[]
+  }
+  notes: string[]
+  warnings: string[]
+}
+
+export async function draftWithAI(
+  description: string,
+): Promise<{ status: number; body: any }> {
+  const r = await fetch('/api/ai/draft', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ description }),
+  })
+  return { status: r.status, body: await r.json().catch(() => ({})) }
+}
+
 export type RequestRow = {
   reference: string
   status: string
