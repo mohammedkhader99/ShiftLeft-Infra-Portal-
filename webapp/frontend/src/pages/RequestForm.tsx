@@ -704,7 +704,7 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
         </Stack>
       </div>
 
-      <div style={{ flex: '0 0 16rem' }}>
+      <div style={{ flex: '0 0 20rem' }}>
         <Tile style={{ borderTop: '3px solid var(--cds-border-interactive)' }}>
           <p style={{ fontSize: '0.75rem', color: 'var(--cds-text-secondary)', textTransform: 'uppercase', letterSpacing: '0.02em' }}>
             {isDecommission ? 'Monthly cost to free' : 'Live cost'}
