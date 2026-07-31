@@ -254,6 +254,26 @@ export async function getOrphans(): Promise<{ count: number; orphans: OrphanRow[
   return r.ok ? r.json() : null
 }
 
+// Quota management (E3.9, F-FIN-08).
+export type QuotaRow = { project: string; limit: number; current: number; remaining: number; status: string }
+export async function getQuotas(): Promise<{ quotas: QuotaRow[] } | 'forbidden' | null> {
+  const r = await fetch('/api/quotas')
+  if (r.status === 403) return 'forbidden'
+  return r.ok ? r.json() : null
+}
+export async function setQuota(projectCode: string, maxEnvironments: number): Promise<{ status: number; body: any }> {
+  const r = await fetch('/api/quotas', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ project_code: projectCode, max_environments: maxEnvironments }),
+  })
+  return { status: r.status, body: await r.json().catch(() => ({})) }
+}
+export async function deleteQuota(projectCode: string): Promise<{ status: number }> {
+  const r = await fetch(`/api/quotas/${projectCode}`, { method: 'DELETE' })
+  return { status: r.status }
+}
+
 export type AuditEntry = { event: string; created_at: string }
 
 export async function getAudit(reference: string): Promise<AuditEntry[]> {

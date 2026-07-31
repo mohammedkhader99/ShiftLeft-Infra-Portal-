@@ -163,6 +163,24 @@ class ActualCost(Base):
     )
 
 
+class Quota(Base):
+    """A cap on the number of environments a project may have (F-FIN-08, E3.9).
+
+    Optional per project — a project with no row here is ungated. The submit-time
+    guardrail (create requests only) compares the project's active environment
+    count against max_environments.
+    """
+
+    __tablename__ = "quota"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_code: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    max_environments: Mapped[int] = mapped_column()
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )
+
+
 class Request(Base):
     """A provisioning request (increment 1.3): the first transactional table.
 

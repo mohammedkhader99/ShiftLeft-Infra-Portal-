@@ -1887,6 +1887,93 @@ def test_budgets_list_requires_oversight(client, monkeypatch):
     assert client.get("/api/budgets", headers={"X-Requester": "dev@x.com"}).status_code == 403
 
 
+# --- Quota management (E3.9, F-FIN-08) ----------------------------------------
+
+def _create_env(session, ref, *, project, status="provisioned", request_type="create"):
+    import api.main as main
+    req = main.Request(reference=ref, status=status, requester="u@x.com",
+                       request_type=request_type, project_code=project,
+                       environment_name=ref.lower())
+    session.add(req)
+    session.commit()
+    return req
+
+
+def test_quota_status_thresholds(poller):
+    import api.main as main
+    from db.models import Quota
+    client, session = poller
+    session.add(Quota(project_code="P1", max_environments=2))
+    session.commit()
+    assert main._quota_status(session, "P1", 1)["status"] == "ok"
+    assert main._quota_status(session, "P1", 2)["status"] == "near"
+    over = main._quota_status(session, "P1", 3)
+    assert over["status"] == "over" and over["remaining"] == -1
+    assert main._quota_status(session, "NOPE", 5) is None  # ungated
+
+
+def test_environment_count_create_committed_only(poller):
+    import api.main as main
+    client, session = poller
+    _create_env(session, "E1", project="P1", status="provisioned")
+    _create_env(session, "E2", project="P1", status="submitted")
+    _create_env(session, "E3", project="P1", status="draft")            # not committed
+    _create_env(session, "E4", project="P1", status="decommissioned")   # not committed
+    _create_env(session, "E5", project="P1", status="provisioned", request_type="add")  # not create
+    assert main._environment_count(session, "P1") == 2
+
+
+def test_quota_set_list_delete(client):
+    assert client.post("/api/quotas",
+                       json={"project_code": "EGATE", "max_environments": 5}).status_code == 200
+    row = next(q for q in client.get("/api/quotas").json()["quotas"] if q["project"] == "EGATE")
+    assert row["limit"] == 5 and row["current"] == 0 and row["remaining"] == 5
+    assert client.delete("/api/quotas/EGATE").status_code == 200
+    assert client.get("/api/quotas").json()["quotas"] == []
+    assert client.delete("/api/quotas/EGATE").status_code == 404
+
+
+def test_quota_over_blocks_when_enforced(poller, monkeypatch):
+    client, session = poller
+    monkeypatch.setenv("QUOTA_ENFORCE", "true")
+    client.post("/api/quotas", json={"project_code": "EGATE", "max_environments": 1})
+    _create_env(session, "EX-1", project="EGATE", status="provisioned")  # fills the quota
+    ref = client.post("/api/requests/draft", json=VALID_CREATE).json()["reference"]
+    resp = client.post(f"/api/requests/{ref}/submit")
+    assert resp.status_code == 422 and "quota" in resp.json()["quota_error"].lower()
+    assert client.get(f"/api/requests/{ref}").json()["status"] == "draft"
+
+
+def test_quota_over_warns_when_not_enforced(poller, monkeypatch):
+    client, session = poller
+    monkeypatch.setenv("QUOTA_ENFORCE", "false")
+    client.post("/api/quotas", json={"project_code": "EGATE", "max_environments": 1})
+    _create_env(session, "EX-2", project="EGATE", status="provisioned")
+    ref = client.post("/api/requests/draft", json=VALID_CREATE).json()["reference"]
+    resp = client.post(f"/api/requests/{ref}/submit")
+    assert resp.status_code == 200
+    assert any("quota" in w.lower() for w in resp.json()["policy_warnings"])
+
+
+def test_quota_undefined_project_ungated(poller):
+    client, session = poller
+    ref = client.post("/api/requests/draft", json=VALID_CREATE).json()["reference"]  # EGATE, no quota
+    resp = client.post(f"/api/requests/{ref}/submit")
+    assert resp.status_code == 200
+    assert not any("quota" in w.lower() for w in resp.json()["policy_warnings"])
+
+
+def test_quota_set_requires_admin(client, monkeypatch):
+    monkeypatch.setenv("ROLE_MAP", '{"dev@x.com": ["requester"]}')
+    assert client.post("/api/quotas", json={"project_code": "X", "max_environments": 1},
+                       headers={"X-Requester": "dev@x.com"}).status_code == 403
+
+
+def test_quotas_list_requires_oversight(client, monkeypatch):
+    monkeypatch.setenv("ROLE_MAP", '{"dev@x.com": ["requester"]}')
+    assert client.get("/api/quotas", headers={"X-Requester": "dev@x.com"}).status_code == 403
+
+
 # --- Actual-vs-estimate variance (E3.5, F-FIN-01) ----------------------------
 
 def _priced_provisioned(session, ref, *, monthly, cost_centre="CC-V"):

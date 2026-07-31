@@ -49,6 +49,7 @@ from db.models import (
     AuditLog,
     Budget,
     CostCentre,
+    Quota,
     Environment,
     Estimate,
     Project,
@@ -578,6 +579,110 @@ def delete_budget(cost_centre_code: str, session: Session = Depends(get_session)
     append_audit(session, "budget.deleted", actor=_auth, detail={"cost_centre": cost_centre_code})
     session.commit()
     return {"deleted": True, "cost_centre": cost_centre_code}
+
+
+# --- Quota management (E3.9, F-FIN-08) ---------------------------------------
+
+def _quota_enforce() -> bool:
+    """Whether an over-quota create is a hard block. Off by default: over quota
+    warns until an operator turns enforcement on."""
+    return os.getenv("QUOTA_ENFORCE", "false").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _environment_count(session: Session, project_code: str | None,
+                       exclude_ref: str | None = None) -> int:
+    """A project's active environments: committed (provisioned + in-flight)
+    'create' requests, optionally excluding one."""
+    if not project_code:
+        return 0
+    stmt = (select(func.count()).select_from(Request)
+            .where(Request.project_code == project_code,
+                   Request.request_type == "create",
+                   Request.status.in_(SHOWBACK_SCOPES["committed"])))
+    if exclude_ref:
+        stmt = stmt.where(Request.reference != exclude_ref)
+    return int(session.scalar(stmt) or 0)
+
+
+def _quota_status(session: Session, project_code: str | None, projected: int) -> dict | None:
+    """Quota standing for a project at a projected environment count (F-FIN-08).
+    None when the project has no quota defined (ungated)."""
+    if not project_code:
+        return None
+    quota = session.scalar(select(Quota).where(Quota.project_code == project_code))
+    if quota is None:
+        return None
+    limit = int(quota.max_environments)
+    if projected > limit:
+        status = "over"
+    elif projected == limit:
+        status = "near"
+    else:
+        status = "ok"
+    return {"project": project_code, "limit": limit, "projected": projected,
+            "remaining": limit - projected, "status": status}
+
+
+def _quota_message(q: dict) -> str:
+    p = q["project"]
+    if q["status"] == "over":
+        return (f"Project {p} would exceed its environment quota: {q['projected']} "
+                f"vs a limit of {q['limit']}.")
+    return f"Project {p} is now at its environment quota: {q['projected']} of {q['limit']}."
+
+
+class QuotaIn(BaseModel):
+    project_code: str
+    max_environments: int
+
+    @field_validator("max_environments")
+    @classmethod
+    def _positive(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("max_environments must be positive.")
+        return v
+
+
+@app.get("/api/quotas")
+def list_quotas(session: Session = Depends(get_session),
+                _auth: str = Depends(require_action("view_overview"))) -> dict:
+    """Every project quota with its current environment count + remaining (F-FIN-08)."""
+    out = []
+    for q in session.scalars(select(Quota).order_by(Quota.project_code)):
+        current = _environment_count(session, q.project_code)
+        limit = int(q.max_environments)
+        out.append({"project": q.project_code, "limit": limit, "current": current,
+                    "remaining": limit - current,
+                    "status": "over" if current > limit else "near" if current == limit else "ok"})
+    return {"quotas": out}
+
+
+@app.post("/api/quotas")
+def set_quota(body: QuotaIn, session: Session = Depends(get_session),
+              _auth: str = Depends(require_action("execute"))) -> dict:
+    """Set or update a project's environment quota (F-FIN-08). platform_admin."""
+    quota = session.scalar(select(Quota).where(Quota.project_code == body.project_code))
+    if quota is None:
+        quota = Quota(project_code=body.project_code)
+        session.add(quota)
+    quota.max_environments = body.max_environments
+    append_audit(session, "quota.set", actor=_auth,
+                 detail={"project": body.project_code, "max_environments": body.max_environments})
+    session.commit()
+    return {"project": body.project_code, "max_environments": body.max_environments}
+
+
+@app.delete("/api/quotas/{project_code}")
+def delete_quota(project_code: str, session: Session = Depends(get_session),
+                 _auth: str = Depends(require_action("execute"))) -> dict:
+    """Remove a project's quota (F-FIN-08). platform_admin."""
+    quota = session.scalar(select(Quota).where(Quota.project_code == project_code))
+    if quota is None:
+        raise HTTPException(status_code=404, detail=f"No quota defined for {project_code}.")
+    session.delete(quota)
+    append_audit(session, "quota.deleted", actor=_auth, detail={"project": project_code})
+    session.commit()
+    return {"deleted": True, "project": project_code}
 
 
 # --- Actual-vs-estimate variance (E3.5, F-FIN-01) ----------------------------
@@ -1309,6 +1414,19 @@ def submit_request(
     if bstatus is not None and bstatus["status"] in ("over", "near"):
         budget_warnings.append(_budget_message(bstatus))
         append_audit(session, "budget.warning", reference=req.reference, detail=bstatus)
+
+    # Quota guardrail (F-FIN-08): cap environments per project — create requests
+    # only (add/resize/decommission don't create a new environment).
+    if req.request_type == "create":
+        qcount = _environment_count(session, req.project_code, exclude_ref=req.reference)
+        qstatus = _quota_status(session, req.project_code, qcount + 1)
+        if qstatus is not None and qstatus["status"] == "over" and _quota_enforce():
+            append_audit(session, "quota.blocked", reference=req.reference, detail=qstatus)
+            session.commit()
+            return JSONResponse(status_code=422, content={"quota_error": _quota_message(qstatus)})
+        if qstatus is not None and qstatus["status"] in ("over", "near"):
+            budget_warnings.append(_quota_message(qstatus))
+            append_audit(session, "quota.warning", reference=req.reference, detail=qstatus)
 
     req.status = "submitted"
     req.submitted_at = req.submitted_at or datetime.now(timezone.utc)  # SLA clock (F-GOV-01)

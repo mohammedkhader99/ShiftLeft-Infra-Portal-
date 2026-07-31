@@ -3,7 +3,8 @@ import { Tile, Tag, TextInput, Select, SelectItem, Button, InlineLoading } from 
 import { TrashCan, Add } from '@carbon/icons-react'
 import {
   getConfig, getBudgets, getLookups, setBudget, deleteBudget, getOrphans,
-  type SystemConfig, type BudgetRow, type Lookups, type OrphanRow,
+  getQuotas, setQuota, deleteQuota,
+  type SystemConfig, type BudgetRow, type Lookups, type OrphanRow, type QuotaRow,
 } from '../api'
 
 function Flag({ on, onLabel, offLabel }: { on: boolean; onLabel?: string; offLabel?: string }) {
@@ -43,9 +44,15 @@ export default function Admin() {
   const [loaded, setLoaded] = useState(false)
   const [newCC, setNewCC] = useState('')
   const [newLimit, setNewLimit] = useState('')
+  const [quotas, setQuotas] = useState<QuotaRow[]>([])
+  const [newProject, setNewProject] = useState('')
+  const [newMax, setNewMax] = useState('')
 
   function reloadBudgets() {
     getBudgets().then((b) => b && b !== 'forbidden' && setBudgets(b.budgets)).catch(() => {})
+  }
+  function reloadQuotas() {
+    getQuotas().then((q) => q && q !== 'forbidden' && setQuotas(q.quotas)).catch(() => {})
   }
 
   useEffect(() => {
@@ -58,6 +65,7 @@ export default function Admin() {
       .finally(() => setLoaded(true))
     getLookups().then(setLookups).catch(() => {})
     reloadBudgets()
+    reloadQuotas()
     getOrphans().then((o) => o && o !== 'forbidden' && setOrphans(o.orphans)).catch(() => {})
   }, [])
 
@@ -73,6 +81,20 @@ export default function Admin() {
   async function onDeleteBudget(cc: string) {
     await deleteBudget(cc)
     reloadBudgets()
+  }
+
+  async function onAddQuota() {
+    const max = parseInt(newMax, 10)
+    if (!newProject || !(max > 0)) return
+    await setQuota(newProject, max)
+    setNewProject('')
+    setNewMax('')
+    reloadQuotas()
+  }
+
+  async function onDeleteQuota(project: string) {
+    await deleteQuota(project)
+    reloadQuotas()
   }
 
   if (!loaded) return <InlineLoading description="Loading admin console…" />
@@ -166,6 +188,51 @@ export default function Admin() {
           <TextInput id="new-limit" labelText="Monthly limit (AED)" size="sm" type="number" value={newLimit} onChange={(e) => setNewLimit(e.target.value)} style={{ maxWidth: '12rem' }} />
           <Button size="sm" renderIcon={Add} disabled={!newCC || !(parseFloat(newLimit) > 0)} onClick={onAddBudget}>
             Set budget
+          </Button>
+        </div>
+      </Tile>
+
+      <Tile>
+        <h4 style={{ fontSize: '0.95rem', fontWeight: 500, marginBottom: '0.75rem' }}>Project quotas</h4>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
+          <thead>
+            <tr style={{ textAlign: 'left', color: 'var(--cds-text-secondary)', borderBottom: '1px solid var(--cds-border-subtle)' }}>
+              <th style={{ padding: '0.3rem 0.5rem' }}>Project</th>
+              <th style={{ padding: '0.3rem 0.5rem', textAlign: 'right' }}>Environments</th>
+              <th style={{ padding: '0.3rem 0.5rem', textAlign: 'right' }}>Limit</th>
+              <th style={{ padding: '0.3rem 0.5rem', textAlign: 'right' }}>Remaining</th>
+              <th style={{ padding: '0.3rem 0.5rem' }} />
+            </tr>
+          </thead>
+          <tbody>
+            {quotas.map((q) => (
+              <tr key={q.project} style={{ borderBottom: '1px solid var(--cds-border-subtle-01)' }}>
+                <td style={{ padding: '0.3rem 0.5rem', fontWeight: 500 }}>{q.project}</td>
+                <td style={{ padding: '0.3rem 0.5rem', textAlign: 'right' }}>{q.current}</td>
+                <td style={{ padding: '0.3rem 0.5rem', textAlign: 'right' }}>{q.limit}</td>
+                <td style={{ padding: '0.3rem 0.5rem', textAlign: 'right', color: q.status === 'over' ? 'var(--cds-support-error)' : q.status === 'near' ? 'var(--cds-support-warning)' : 'var(--cds-support-success)' }}>
+                  {q.remaining}
+                </td>
+                <td style={{ padding: '0.3rem 0.5rem', textAlign: 'right' }}>
+                  <Button hasIconOnly kind="ghost" size="sm" renderIcon={TrashCan} iconDescription={`Delete ${q.project} quota`} onClick={() => onDeleteQuota(q.project)} />
+                </td>
+              </tr>
+            ))}
+            {quotas.length === 0 && (
+              <tr><td colSpan={5} style={{ padding: '0.5rem', color: 'var(--cds-text-secondary)' }}>No quotas set.</td></tr>
+            )}
+          </tbody>
+        </table>
+        <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'flex-end', marginTop: '0.75rem', flexWrap: 'wrap' }}>
+          <Select id="new-project" labelText="Project" size="sm" value={newProject} onChange={(e) => setNewProject(e.target.value)} style={{ minWidth: '14rem' }}>
+            <SelectItem value="" text="— select —" />
+            {lookups?.projects.map((p) => (
+              <SelectItem key={p.code} value={p.code} text={`${p.code} — ${p.name}`} />
+            ))}
+          </Select>
+          <TextInput id="new-max" labelText="Max environments" size="sm" type="number" value={newMax} onChange={(e) => setNewMax(e.target.value)} style={{ maxWidth: '12rem' }} />
+          <Button size="sm" renderIcon={Add} disabled={!newProject || !(parseInt(newMax, 10) > 0)} onClick={onAddQuota}>
+            Set quota
           </Button>
         </div>
       </Tile>

@@ -115,6 +115,10 @@ services:
       # no budget defined are ungated.
       BUDGET_ENFORCE: ${BUDGET_ENFORCE:-false}
       BUDGET_WARN_PCT: ${BUDGET_WARN_PCT:-90}
+      # Quota guardrails (F-FIN-08): a create whose project would exceed its
+      # environment quota warns, and hard-blocks only when QUOTA_ENFORCE=true
+      # (default off). Projects with no quota defined are ungated.
+      QUOTA_ENFORCE: ${QUOTA_ENFORCE:-false}
       # Actual-vs-estimate variance (F-FIN-01): recording a billed actual that
       # drifts from the estimate by more than this percentage raises a one-time
       # variance alert (Jira comment + audit).
