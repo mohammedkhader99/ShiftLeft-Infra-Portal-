@@ -16,8 +16,9 @@ RUN apt-get update \
     && apt-get purge -y unzip \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements.txt ./requirements.txt
+COPY orchestrator/requirements.txt ./orchestrator-requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt -r orchestrator-requirements.txt
 
 # The orchestrator app plus the shared signing helper.
 COPY orchestrator ./orchestrator

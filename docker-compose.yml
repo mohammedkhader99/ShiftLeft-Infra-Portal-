@@ -222,13 +222,18 @@ services:
       # apply. When true, a HIGH-severity finding blocks the handoff; default off
       # = scan + report only (the API audits the findings either way).
       IAC_SCAN_ENFORCE: ${IAC_SCAN_ENFORCE:-false}
-      # Read-only cloud state sync: the orchestrator's cloud_state adapter reports
-      # the actual state of a request's resources. mock (default) reflects the
-      # registry; live queries OCI/Azure (extension point — needs creds).
-      # CLOUD_STATE_SIMULATE_MISSING is a demo hook: comma-separated references
-      # whose resources are reported missing, to show a divergence offline.
+      # Cloud state sync: the orchestrator's cloud_state adapter reports (describe)
+      # and, for compute, changes (actuate) the actual state of a request's
+      # resources. mock (default) reflects the registry and changes no real cloud;
+      # live uses the real OCI SDK, reusing the OCI_* creds above.
+      # CLOUD_STATE_SIMULATE_MISSING is a mock demo hook: comma-separated
+      # references whose resources are reported missing, to show a divergence
+      # offline. OCI_ACTUATE_ENABLED is a SECOND explicit opt-in for real
+      # stop/start (default off) — so live reconciliation (read) never by itself
+      # enables live actuation (write).
       CLOUD_STATE_MODE: ${CLOUD_STATE_MODE:-mock}
       CLOUD_STATE_SIMULATE_MISSING: ${CLOUD_STATE_SIMULATE_MISSING:-}
+      OCI_ACTUATE_ENABLED: ${OCI_ACTUATE_ENABLED:-false}
     ports:
       - "9091:9091"
     volumes:

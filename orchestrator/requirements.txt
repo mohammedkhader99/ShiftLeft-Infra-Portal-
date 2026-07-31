@@ -1,0 +1,6 @@
+# Orchestrator-only dependencies, installed on top of the shared requirements.txt.
+# The OCI Python SDK powers the live cloud-state adapter (read-only describe +
+# compute stop/start) in orchestrator/cloud_state. It is lazy-imported there, so
+# mock mode and the whole test suite run without it; a rebuild plus
+# CLOUD_STATE_MODE=live (and OCI credentials) turns the live path on.
+oci

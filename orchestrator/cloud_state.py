@@ -1,17 +1,25 @@
-"""Cloud state adapter — read-only reconciliation (increment 1 of cloud sync).
+"""Cloud state adapter — the portal's window onto (and hands on) real cloud state.
 
-Reports the ACTUAL state of a request's cloud resources so the portal can
-reconcile its registry against reality — e.g. a resource stopped, resized, or
-deleted directly in OCI/Azure. **Read-only:** it observes, it never changes
-cloud state.
+Two operations:
+  - describe() — reports the ACTUAL state of a request's resources so the portal
+    can reconcile its registry against reality (increment 1). **Read-only.**
+  - actuate() — stops/starts a request's resources (increment 2). The one write
+    path; only ever driven from the orchestrator, after the API RBAC-gated the
+    operator and the signed handoff verified.
 
 Modes (CLOUD_STATE_MODE), mirroring the other adapters:
-  - mock (default): reflects the registry (reports in-sync). A demo/test hook,
+  - mock (default): describe reflects the registry; actuate echoes the target
+    power state. Changes NO real cloud. A demo/test hook,
     CLOUD_STATE_SIMULATE_MISSING (comma-separated references), reports those
     resources as missing so a divergence can be shown offline.
-  - live: the OCI/Azure SDK path — an extension point that needs the customer's
-    cloud credentials (via a vault). Not wired to a real tenancy yet; it raises a
-    clear message until implemented.
+  - live: the real OCI SDK path. describe queries Object Storage (bucket exists?)
+    and Compute (instance running/stopped?); actuate stops/starts compute
+    instances (buckets have no power state). It reuses the SAME credentials the
+    orchestrator already uses for Terraform (OCI_* env + the private key mounted
+    from ./secrets) — no new secret. If those aren't configured it raises a clear
+    message. Real stop/start additionally requires an explicit opt-in
+    (OCI_ACTUATE_ENABLED=true), so turning on live reconciliation (read) never by
+    itself enables live actuation (write).
 """
 
 import os
@@ -54,14 +62,113 @@ def _describe_mock(reference: str, resources: list[dict]) -> list[dict]:
     ]
 
 
+# --- Live OCI adapter --------------------------------------------------------
+# Reuses the SAME credentials the orchestrator already uses for Terraform: the
+# OCI_* env vars plus the API private key mounted read-only from ./secrets. The
+# `oci` SDK is lazy-imported (only the two client builders below), so mock mode
+# and the test suite never need it installed.
+
+_REQUIRED_OCI = ("OCI_TENANCY_OCID", "OCI_USER_OCID", "OCI_FINGERPRINT",
+                 "OCI_REGION", "OCI_COMPARTMENT_OCID")
+
+# OCI compute lifecycle_state -> our power_state. RUNNING/STARTING count as
+# running; STOPPED/STOPPING as stopped; TERMINATED/TERMINATING as gone.
+_OCI_POWER = {"RUNNING": "running", "STARTING": "running",
+              "STOPPED": "stopped", "STOPPING": "stopped"}
+
+
+def _key_path() -> str:
+    return os.getenv("OCI_PRIVATE_KEY_PATH", "/secrets/oci_api_key.pem")
+
+
+def _require_oci_creds() -> None:
+    """Raise a clear, actionable error if the live OCI adapter isn't configured."""
+    missing = [k for k in _REQUIRED_OCI if not os.getenv(k)]
+    if missing or not os.path.exists(_key_path()):
+        raise CloudStateUnavailable(
+            "Live OCI adapter selected (CLOUD_STATE_MODE=live) but not configured. Set "
+            + ", ".join(_REQUIRED_OCI)
+            + f" and mount the API signing key at {_key_path()} (see ./secrets). These are "
+            "the same credentials the orchestrator uses for Terraform."
+        )
+
+
+def _oci_config() -> dict:
+    return {
+        "user": os.getenv("OCI_USER_OCID"),
+        "fingerprint": os.getenv("OCI_FINGERPRINT"),
+        "tenancy": os.getenv("OCI_TENANCY_OCID"),
+        "region": os.getenv("OCI_REGION"),
+        "key_file": _key_path(),
+    }
+
+
+def _object_storage_client():  # pragma: no cover - thin SDK seam (mocked in tests)
+    import oci
+    return oci.object_storage.ObjectStorageClient(_oci_config())
+
+
+def _compute_client():  # pragma: no cover - thin SDK seam (mocked in tests)
+    import oci
+    return oci.core.ComputeClient(_oci_config())
+
+
+def _is_compute(kind: str) -> bool:
+    k = (kind or "").lower()
+    return "instance" in k or "compute" in k or k in ("vm", "oci-vm")
+
+
+def _bucket_state(client, namespace: str, name: str) -> tuple[str, bool]:
+    """('active', True) if the bucket exists, ('missing', False) on a 404."""
+    try:
+        client.get_bucket(namespace, name)
+        return "active", True
+    except Exception as exc:  # oci.exceptions.ServiceError carries .status
+        if getattr(exc, "status", None) == 404:
+            return "missing", False
+        raise
+
+
+def _find_instance(client, compartment: str, name: str):
+    """Locate a compute instance by OCID (if `name` is one) or by display name."""
+    if name and name.startswith("ocid1.instance"):
+        return client.get_instance(name).data
+    resp = client.list_instances(compartment_id=compartment, display_name=name)
+    live = [i for i in (resp.data or [])
+            if getattr(i, "lifecycle_state", "") not in ("TERMINATED", "TERMINATING")]
+    return live[0] if live else None
+
+
+def _instance_state(instance) -> tuple[bool, str]:
+    """(exists, power_state) for a compute instance from its lifecycle_state."""
+    state = (getattr(instance, "lifecycle_state", "") or "").upper()
+    if state in ("TERMINATED", "TERMINATING"):
+        return False, "stopped"
+    return True, _OCI_POWER.get(state, "running")
+
+
 def _describe_live(reference: str, resources: list[dict]) -> list[dict]:
-    # Extension point. A real implementation queries the provider APIs (OCI SDK /
-    # Azure SDK) with credentials supplied via a vault, and maps each resource to
-    # its live status (running/stopped/missing). It stays read-only.
-    raise CloudStateUnavailable(
-        "Live cloud-state adapter not configured. Provide OCI/Azure credentials via a "
-        "vault and implement the SDK query in orchestrator/cloud_state._describe_live."
-    )
+    """Query OCI for the real state of each resource. Read-only."""
+    _require_oci_creds()
+    compartment = os.getenv("OCI_COMPARTMENT_OCID", "")
+    os_client = namespace = compute = None
+    out = []
+    for r in resources:
+        kind, name = (r.get("kind") or ""), r.get("name")
+        entry = {"kind": kind, "name": name, "source": "oci"}
+        if _is_compute(kind):
+            compute = compute or _compute_client()
+            inst = _find_instance(compute, compartment, name)
+            exists, power = _instance_state(inst) if inst is not None else (False, "stopped")
+            entry.update(status="active" if exists else "missing", exists=exists, power_state=power)
+        else:  # object-storage bucket (the only catalogue resource today)
+            if os_client is None:
+                os_client = _object_storage_client()
+                namespace = os_client.get_namespace().data
+            status, exists = _bucket_state(os_client, namespace, name)
+            entry.update(status=status, exists=exists)
+        out.append(entry)
+    return out
 
 
 # --- Actuation (increment 2 of cloud sync) -----------------------------------
@@ -92,11 +199,41 @@ def _actuate_mock(reference: str, resources: list[dict], action: str) -> list[di
     ]
 
 
+def _actuate_enabled() -> bool:
+    """Real stop/start is a SECOND, explicit opt-in beyond CLOUD_STATE_MODE=live,
+    so enabling live reconciliation (read) never by itself enables live writes."""
+    return os.getenv("OCI_ACTUATE_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _instance_action(client, instance_id: str, action: str) -> None:  # pragma: no cover - SDK seam
+    client.instance_action(instance_id, action)
+
+
 def _actuate_live(reference: str, resources: list[dict], action: str) -> list[dict]:
-    # Extension point. A real implementation calls the provider APIs (OCI SDK /
-    # Azure SDK) to stop/start each resource, with credentials supplied via a
-    # vault, then returns the resulting power state.
-    raise CloudStateUnavailable(
-        "Live cloud actuation not configured. Provide OCI/Azure credentials via a "
-        "vault and implement the SDK stop/start in orchestrator/cloud_state._actuate_live."
-    )
+    """Stop/start real OCI compute instances. Buckets have no power state, so a
+    non-compute resource is refused rather than silently ignored."""
+    if not _actuate_enabled():
+        raise CloudStateUnavailable(
+            "Live OCI actuation is not enabled. Set OCI_ACTUATE_ENABLED=true to allow real "
+            "stop/start (read-only reconciliation works without it)."
+        )
+    _require_oci_creds()
+    compartment = os.getenv("OCI_COMPARTMENT_OCID", "")
+    compute = _compute_client()
+    # SOFTSTOP = graceful ACPI shutdown; START powers a stopped instance back on.
+    oci_action = "SOFTSTOP" if action == "stop" else "START"
+    power = "stopped" if action == "stop" else "running"
+    out = []
+    for r in resources:
+        kind, name = (r.get("kind") or ""), r.get("name")
+        if not _is_compute(kind):
+            raise CloudStateUnavailable(
+                f"Cannot {action} '{name}': only compute instances can be stopped or started "
+                f"(resource kind is '{kind}')."
+            )
+        inst = _find_instance(compute, compartment, name)
+        if inst is None:
+            raise CloudStateUnavailable(f"Cannot {action} '{name}': no matching OCI instance found.")
+        _instance_action(compute, inst.id, oci_action)
+        out.append({"kind": kind, "name": name, "power_state": power, "source": "oci"})
+    return out
