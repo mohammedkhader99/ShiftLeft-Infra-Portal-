@@ -74,6 +74,15 @@ services:
       JIRA_TEMPLATE_ISSUE: ${JIRA_TEMPLATE_ISSUE:-}
       # JSON overrides applied on top of the template (rarely needed).
       JIRA_EXTRA_FIELDS: ${JIRA_EXTRA_FIELDS:-}
+      # Subsidiary master data: in live Jira mode a background thread syncs the
+      # subsidiary dropdown from a Jira create-screen field (customfield_36200 by
+      # default) into our DB every SUBSIDIARY_SYNC_INTERVAL_SECONDS, reconciling
+      # add/rename/remove (removed = deactivated, never deleted). The read path
+      # (lookups + validation) stays on the DB. Off in mock mode. A failed/empty
+      # fetch is a no-op, so a Jira blip can't wipe the list.
+      JIRA_SUBSIDIARY_FIELD: ${JIRA_SUBSIDIARY_FIELD:-customfield_36200}
+      SUBSIDIARY_SYNC_ENABLED: ${SUBSIDIARY_SYNC_ENABLED:-true}
+      SUBSIDIARY_SYNC_INTERVAL_SECONDS: ${SUBSIDIARY_SYNC_INTERVAL_SECONDS:-3600}
       # Automatic Jira-status poller (2.7). When AUTO_PROVISION=true a background
       # thread pulls the live Jira status every POLL_INTERVAL_SECONDS and advances
       # approved requests on its own. The API reads PROVISION_MODE too, so it only

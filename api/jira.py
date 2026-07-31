@@ -20,7 +20,7 @@ import httpx
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from db.models import Approval, Request
+from db.models import Approval, Request, Subsidiary
 
 # Cache of template fields (Jira config is stable; fetched once per process).
 _template_cache: dict | None = None
@@ -159,6 +159,116 @@ def _template_fields() -> dict:
             fields[fid] = written
     _template_cache = fields
     return fields
+
+
+# --- Subsidiary master data synced from Jira (customfield_36200) -------------
+
+def subsidiary_field() -> str:
+    """The Jira create-screen field whose options are the subsidiary list."""
+    return os.getenv("JIRA_SUBSIDIARY_FIELD", "customfield_36200").strip() or "customfield_36200"
+
+
+def _option_to_row(option) -> dict | None:
+    """Map one Jira allowedValue to a {code, name} subsidiary row.
+
+    Handles a normal select option ({id, value}) and a JSM Assets/Insight object
+    ({objectId/objectKey, label/name}). Returns None if it carries no name. Codes
+    and names are capped to the DB column widths (32 / 120)."""
+    if not isinstance(option, dict):
+        return None
+    name = option.get("value") or option.get("name") or option.get("label")
+    code = option.get("id") or option.get("objectKey") or option.get("key") or name
+    if not name:
+        return None
+    return {"code": str(code).strip()[:32], "name": str(name).strip()[:120]}
+
+
+def fetch_subsidiary_options() -> list[dict]:
+    """Read the subsidiary field's allowed values from Jira's create screen.
+
+    Returns a de-duplicated list of {code, name}. Live only — raises JiraError on
+    any failure (unreachable, field not on the create screen, etc.). Reuses the
+    same createmeta endpoints as the template-field replication above."""
+    base, h = _base_url(), _headers()
+    project, issue_type = _project_key(), _issue_type()
+    field_id = subsidiary_field()
+    try:
+        its = httpx.get(f"{base}/rest/api/2/issue/createmeta/{project}/issuetypes",
+                        headers=h, timeout=15.0).json()
+        values = its.get("values", its if isinstance(its, list) else [])
+        match = [v for v in values if v.get("name") == issue_type]
+        if not match:
+            raise JiraError(f"issue type '{issue_type}' not available on {project}")
+        tid = match[0]["id"]
+        meta = httpx.get(f"{base}/rest/api/2/issue/createmeta/{project}/issuetypes/{tid}",
+                         headers=h, timeout=15.0).json().get("values", [])
+    except JiraError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise JiraError(f"could not read Jira create metadata: {exc}") from exc
+
+    field = next((f for f in meta if f.get("fieldId") == field_id), None)
+    if field is None:
+        raise JiraError(
+            f"field '{field_id}' is not on the {project}/{issue_type} create screen"
+        )
+    rows: list[dict] = []
+    seen: set[str] = set()
+    for option in field.get("allowedValues", []):
+        row = _option_to_row(option)
+        if row and row["code"] not in seen:
+            seen.add(row["code"])
+            rows.append(row)
+    return rows
+
+
+def sync_subsidiaries(session: Session) -> dict:
+    """Sync the Subsidiary table from Jira's subsidiary field (live only).
+
+    Upserts each Jira option (adds new, renames changed, reactivates) and marks
+    any active subsidiary Jira no longer offers as inactive — without deleting
+    it, so historical requests keep working. **Guardrail:** a failed or empty
+    fetch is a no-op, so a Jira blip can never wipe the list. Does NOT commit —
+    the caller owns the transaction (and writes the audit entry). Returns a
+    summary including a `changed` count."""
+    if jira_mode() != "live":
+        return {"synced": False, "changed": 0, "reason": "jira mode is not live"}
+    try:
+        options = fetch_subsidiary_options()
+    except JiraError as exc:
+        return {"synced": False, "changed": 0, "reason": str(exc)}
+    if not options:
+        return {"synced": False, "changed": 0, "reason": "Jira returned no options"}
+
+    existing = {s.code: s for s in session.scalars(select(Subsidiary)).all()}
+    live_codes = {opt["code"] for opt in options}
+    added = updated = reactivated = deactivated = 0
+    for opt in options:
+        row = existing.get(opt["code"])
+        if row is None:
+            session.add(Subsidiary(code=opt["code"], name=opt["name"], active=True))
+            added += 1
+            continue
+        if row.name != opt["name"]:
+            row.name = opt["name"]
+            updated += 1
+        if not row.active:
+            row.active = True
+            reactivated += 1
+    for code, row in existing.items():
+        if code not in live_codes and row.active:
+            row.active = False
+            deactivated += 1
+    return {
+        "synced": True,
+        "field": subsidiary_field(),
+        "total": len(options),
+        "added": added,
+        "updated": updated,
+        "reactivated": reactivated,
+        "deactivated": deactivated,
+        "changed": added + updated + reactivated + deactivated,
+    }
 
 
 def _status_set(env_var: str, default: str) -> set[str]:

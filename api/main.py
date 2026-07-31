@@ -36,6 +36,7 @@ from api.jira import (
     jira_mode,
     resolve_fields,
     resolved_status,
+    sync_subsidiaries,
     transition_issue,
 )
 from api.plan_preview import build_plan_preview
@@ -70,16 +71,19 @@ load_dotenv()
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    """Start the background Jira poller on startup, stop it on shutdown.
+    """Start the background workers on startup, stop them on shutdown.
 
-    The functions are defined further down; they run only when AUTO_PROVISION
-    is on, so nothing polls by default.
+    The functions are defined further down. The Jira poller runs only when
+    AUTO_PROVISION is on; the subsidiary sync runs only against live Jira. So
+    nothing runs by default (mock mode / dev / tests).
     """
     _start_poller()
+    _start_subsync()
     try:
         yield
     finally:
         _stop_poller()
+        _stop_subsync()
 
 
 app = FastAPI(title="Infra Portal API", lifespan=_lifespan)
@@ -981,10 +985,31 @@ def lookups(session: Session = Depends(get_session)) -> LookupsResponse:
     return LookupsResponse(
         projects=session.scalars(select(Project).order_by(Project.name)).all(),
         cost_centres=session.scalars(select(CostCentre).order_by(CostCentre.name)).all(),
-        subsidiaries=session.scalars(select(Subsidiary).order_by(Subsidiary.name)).all(),
+        # Subsidiaries are synced from Jira (customfield_36200) in live mode; show
+        # only the active ones (Jira-removed ones are deactivated, not deleted).
+        subsidiaries=session.scalars(
+            select(Subsidiary).where(Subsidiary.active.is_(True)).order_by(Subsidiary.name)
+        ).all(),
         technologies=session.scalars(select(Technology).order_by(Technology.name)).all(),
         environments=session.scalars(select(Environment).order_by(Environment.name)).all(),
     )
+
+
+@app.post("/api/lookups/subsidiaries/sync")
+def sync_subsidiaries_now(requester: str = Depends(_authed_requester)) -> dict:
+    """Trigger an immediate subsidiary sync from Jira (customfield_36200).
+
+    In live mode a background thread already syncs on an interval; this is the
+    "sync now" for a platform admin (and how we verify the integration). Reads
+    Jira's field options and reconciles the Subsidiary table (add/rename/
+    reactivate/deactivate) — never deletes, and a failed/empty fetch is a no-op.
+    """
+    if roles_mod.PLATFORM_ADMIN not in roles_mod.resolve_roles(requester):
+        raise HTTPException(
+            status_code=403,
+            detail="Only a platform administrator can sync subsidiaries.",
+        )
+    return _sync_subsidiaries_once()
 
 
 # --- AI request drafting (F-RPT-06) ------------------------------------------
@@ -2803,3 +2828,55 @@ def _start_poller() -> None:
 def _stop_poller() -> None:
     """Signal the poller loop to exit (called on shutdown)."""
     _poller_stop.set()
+
+
+# --- Subsidiary master data synced from Jira (customfield_36200) --------------
+
+_subsync_stop = threading.Event()
+_subsync_thread: threading.Thread | None = None
+
+
+def subsidiary_sync_enabled() -> bool:
+    """The subsidiary sync runs only against live Jira, and can be turned off."""
+    return (
+        jira_mode() == "live"
+        and os.getenv("SUBSIDIARY_SYNC_ENABLED", "true").strip().lower() == "true"
+    )
+
+
+def _sync_subsidiaries_once() -> dict:
+    """One sync sweep in its own session: reconcile the Subsidiary table from
+    Jira (customfield_36200) and audit it if anything actually changed. Never
+    raises — a bad sync must not crash a request or the loop."""
+    try:
+        with SessionLocal() as session:
+            summary = sync_subsidiaries(session)
+            if summary.get("changed"):
+                append_audit(session, "subsidiaries.synced", actor="jira-sync", detail=summary)
+            session.commit()
+        return summary
+    except Exception as exc:  # noqa: BLE001
+        return {"synced": False, "changed": 0, "reason": str(exc)}
+
+
+def _subsync_loop() -> None:
+    interval = int(os.getenv("SUBSIDIARY_SYNC_INTERVAL_SECONDS", "3600"))
+    while not _subsync_stop.is_set():
+        _sync_subsidiaries_once()  # syncs once immediately, then every interval
+        _subsync_stop.wait(interval)
+
+
+def _start_subsync() -> None:
+    """Start the subsidiary-sync thread (live Jira mode only; called on startup)."""
+    global _subsync_thread
+    if subsidiary_sync_enabled() and (_subsync_thread is None or not _subsync_thread.is_alive()):
+        _subsync_stop.clear()
+        _subsync_thread = threading.Thread(
+            target=_subsync_loop, name="subsidiary-sync", daemon=True
+        )
+        _subsync_thread.start()
+
+
+def _stop_subsync() -> None:
+    """Signal the subsidiary-sync loop to exit (called on shutdown)."""
+    _subsync_stop.set()
