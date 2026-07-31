@@ -462,37 +462,6 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
             </>
           ) : (
             <>
-              <Tile style={{ borderLeft: '3px solid var(--cds-border-interactive)' }}>
-                <p style={{ fontWeight: 600, margin: '0 0 0.25rem' }}>Draft with AI</p>
-                <p style={{ fontSize: '0.8rem', color: 'var(--cds-text-secondary)', margin: '0 0 0.6rem' }}>
-                  Describe what you need in plain English — the assistant fills the form in for you to
-                  review. It only suggests a draft; it never submits, prices, or provisions.
-                </p>
-                <TextArea
-                  id="ai-description"
-                  labelText="Describe your request"
-                  placeholder="e.g. a medium Postgres database for the eGate UAT environment, on-prem, internal data"
-                  rows={2}
-                  value={aiText}
-                  onChange={(e) => setAiText(e.target.value)}
-                />
-                <div style={{ marginTop: '0.5rem' }}>
-                  <Button size="sm" onClick={onDraftWithAI} disabled={aiBusy || aiText.trim().length < 8}>
-                    {aiBusy ? 'Drafting…' : 'Draft with AI'}
-                  </Button>
-                </div>
-                {aiMsg && (
-                  <InlineNotification
-                    kind={aiMsg.kind}
-                    lowContrast
-                    title={aiMsg.title}
-                    subtitle={aiMsg.subtitle}
-                    onCloseButtonClick={() => setAiMsg(null)}
-                    style={{ marginTop: '0.75rem', maxWidth: 'none' }}
-                  />
-                )}
-              </Tile>
-
               {isCreate && (
                 <Select id="project_code" labelText="Project" value={projectCode} onChange={(e) => setProjectCode(e.target.value)} invalid={!!errors.project_code} invalidText={errors.project_code}>
                   <SelectItem value="" text="— select —" />
@@ -769,6 +738,39 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
             </p>
           )}
         </Tile>
+
+        {!isDecommission && (
+          <Tile style={{ marginTop: '1rem', borderTop: '3px solid var(--cds-border-interactive)' }}>
+            <p style={{ fontWeight: 600, margin: '0 0 0.25rem' }}>Draft with AI</p>
+            <p style={{ fontSize: '0.8rem', color: 'var(--cds-text-secondary)', margin: '0 0 0.6rem' }}>
+              Describe what you need in plain English — the assistant fills the form in for you to
+              review. It only suggests a draft; it never submits, prices, or provisions.
+            </p>
+            <TextArea
+              id="ai-description"
+              labelText="Describe your request"
+              placeholder="e.g. a medium Postgres database for the eGate UAT environment, on-prem, internal data"
+              rows={3}
+              value={aiText}
+              onChange={(e) => setAiText(e.target.value)}
+            />
+            <div style={{ marginTop: '0.5rem' }}>
+              <Button size="sm" onClick={onDraftWithAI} disabled={aiBusy || aiText.trim().length < 8}>
+                {aiBusy ? 'Drafting…' : 'Draft with AI'}
+              </Button>
+            </div>
+            {aiMsg && (
+              <InlineNotification
+                kind={aiMsg.kind}
+                lowContrast
+                title={aiMsg.title}
+                subtitle={aiMsg.subtitle}
+                onCloseButtonClick={() => setAiMsg(null)}
+                style={{ marginTop: '0.75rem', maxWidth: 'none' }}
+              />
+            )}
+          </Tile>
+        )}
       </div>
     </div>
   )
