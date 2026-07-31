@@ -166,6 +166,25 @@ export async function checkDrift(reference: string): Promise<{ status: number; b
   return { status: r.status, body: await r.json().catch(() => ({})) }
 }
 
+// AI failure triage (F-RPT-08). Diagnoses a failed/blocked request from its real
+// signals — advisory only; it never retries, applies, or changes the request.
+export type Triage = {
+  mode: string
+  reference: string
+  status: string
+  status_detail?: string | null
+  failing: boolean
+  summary: string
+  likely_causes: string[]
+  next_steps: string[]
+  signals: { event: string; detail: unknown; created_at?: string | null }[]
+}
+
+export async function triageFailure(reference: string): Promise<{ status: number; body: any }> {
+  const r = await fetch(`/api/requests/${reference}/triage`, { method: 'POST' })
+  return { status: r.status, body: await r.json().catch(() => ({})) }
+}
+
 export async function transferOwner(
   reference: string,
   newOwner: string,

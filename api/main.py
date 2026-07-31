@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 
 from api import ai_drafter
 from api import ai_explainer
+from api import ai_triage
 from api import apikeys
 from api.attachment import build_request_pdf
 from api.costsheet import build_cost_sheet_xlsx
@@ -2014,6 +2015,36 @@ def request_audit(reference: str, session: Session = Depends(get_session),
             for r in rows
         ],
     }
+
+
+@app.post("/api/requests/{reference}/triage")
+def triage_failure(
+    reference: str,
+    session: Session = Depends(get_session),
+    requester: str = Depends(_authed_requester),
+) -> dict:
+    """AI failure triage for a request (F-RPT-08). Platform-admin only.
+
+    Reads the request's real failure signals (status, status_detail, and its
+    failure audit events) and returns a plain-English diagnosis + next steps. The
+    AI **diagnoses and advises only** (ARCHITECTURE.md §7) — it never retries,
+    applies, re-provisions, or changes the request. Audited (ai.triaged).
+    """
+    if roles_mod.PLATFORM_ADMIN not in roles_mod.resolve_roles(requester):
+        raise HTTPException(
+            status_code=403, detail="Only a platform administrator can triage failures."
+        )
+    req = _load_request(reference, session)
+    try:
+        result = ai_triage.triage_request(req, session)
+    except ai_drafter.AiUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    append_audit(
+        session, "ai.triaged", reference=reference, actor=requester,
+        detail={"mode": result["mode"], "status": req.status, "failing": result["failing"]},
+    )
+    session.commit()
+    return result
 
 
 @app.get("/api/audit/verify")

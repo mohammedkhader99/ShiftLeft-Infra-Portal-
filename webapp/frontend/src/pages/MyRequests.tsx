@@ -19,7 +19,7 @@ import {
   TextInput,
 } from '@carbon/react'
 import { WarningAltFilled, Renew, UserFollow, Search } from '@carbon/icons-react'
-import { getMe, getRequests, getAudit, renewRequest, transferOwner, checkDrift, type RequestRow } from '../api'
+import { getMe, getRequests, getAudit, renewRequest, transferOwner, checkDrift, triageFailure, type RequestRow } from '../api'
 import { workflowSteps, fmtWhen, type WFStep } from '../workflow'
 
 const FILTER_KEYS = ['status', 'request_type', 'technology', 'deployment_target', 'created_week', 'requested_by', 'subsidiary']
@@ -71,6 +71,7 @@ export default function MyRequests({ route }: { route: string }) {
   for (const k of FILTER_KEYS) if (query[k]) filters[k] = query[k]
   const oversight = !!me && me.roles.some((r) => OVERSIGHT.includes(r))
   const canRenew = !!me && me.roles.includes('platform_admin')  // matches the API gate
+  const canDiagnose = canRenew  // triage endpoint is platform-admin only too
   const estate = query.scope === 'all' && oversight
   const filterActive = estate || Object.keys(filters).length > 0
 
@@ -137,6 +138,26 @@ export default function MyRequests({ route }: { route: string }) {
     await transferOwner(ref, newOwner)
     setTransferInputs((s) => ({ ...s, [ref]: '' }))
     refresh()
+  }
+
+  // AI failure triage (F-RPT-08): diagnose a failed/blocked request on demand.
+  const [triage, setTriage] = useState<Record<string, { summary: string; likely_causes?: string[]; next_steps?: string[] }>>({})
+  const [triageBusy, setTriageBusy] = useState<Set<string>>(new Set())
+  async function onDiagnose(ref: string) {
+    setTriageBusy((s) => new Set(s).add(ref))
+    try {
+      const { status, body } = await triageFailure(ref)
+      setTriage((t) => ({
+        ...t,
+        [ref]: status === 200 ? body : { summary: body?.detail || 'Could not diagnose.', likely_causes: [], next_steps: [] },
+      }))
+    } finally {
+      setTriageBusy((s) => {
+        const next = new Set(s)
+        next.delete(ref)
+        return next
+      })
+    }
   }
 
   const [driftChecking, setDriftChecking] = useState<Set<string>>(new Set())
@@ -347,6 +368,40 @@ export default function MyRequests({ route }: { route: string }) {
                           subtitle={r.status_detail}
                           style={{ maxWidth: 'none', marginBottom: '1rem' }}
                         />
+                      )}
+                      {canDiagnose && (r.status.endsWith('failed') || r.status === 'rejected' || !!r.status_detail) && (
+                        <div style={{ marginBottom: '1.25rem' }}>
+                          <Button
+                            size="sm"
+                            kind="tertiary"
+                            renderIcon={WarningAltFilled}
+                            disabled={triageBusy.has(r.reference)}
+                            onClick={() => onDiagnose(r.reference)}
+                          >
+                            {triageBusy.has(r.reference) ? 'Diagnosing…' : 'Diagnose failure'}
+                          </Button>
+                          {triage[r.reference] && (
+                            <div style={{ marginTop: '0.6rem', fontSize: '0.85rem', lineHeight: 1.5 }}>
+                              <p style={{ margin: '0 0 0.4rem', fontWeight: 500 }}>{triage[r.reference].summary}</p>
+                              {(triage[r.reference].likely_causes?.length ?? 0) > 0 && (
+                                <>
+                                  <span style={{ color: 'var(--cds-text-secondary)' }}>Likely cause(s):</span>
+                                  <ul style={{ margin: '0.2rem 0 0.5rem 1.1rem', padding: 0 }}>
+                                    {triage[r.reference].likely_causes!.map((c, i) => <li key={i}>{c}</li>)}
+                                  </ul>
+                                </>
+                              )}
+                              {(triage[r.reference].next_steps?.length ?? 0) > 0 && (
+                                <>
+                                  <span style={{ color: 'var(--cds-text-secondary)' }}>Next steps:</span>
+                                  <ul style={{ margin: '0.2rem 0 0 1.1rem', padding: 0 }}>
+                                    {triage[r.reference].next_steps!.map((s, i) => <li key={i}>{s}</li>)}
+                                  </ul>
+                                </>
+                              )}
+                            </div>
+                          )}
+                        </div>
                       )}
                       {r.waiver && (
                         <InlineNotification
