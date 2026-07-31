@@ -31,6 +31,7 @@ from api import chatbot
 from api import eventstream
 from api import forecast
 from api import optimisation as optim
+from api import shutdown as autoshutdown
 from api import sustainability as sustainability_mod
 from api.attachment import build_request_pdf
 from api.costsheet import build_cost_sheet_xlsx
@@ -599,6 +600,19 @@ def sustainability(session: Session = Depends(get_session),
     not a metered value; read-only.
     """
     return sustainability_mod.estate_footprint(session)
+
+
+@app.get("/api/shutdown")
+def shutdown_status(session: Session = Depends(get_session),
+                    _auth: str = Depends(require_action("view_overview"))) -> dict:
+    """Scheduled auto-shutdown status + quantified saving (F-FIN-06).
+
+    The business-hours schedule, whether we're off-hours now, the off-hours
+    fraction, and the potential monthly saving per non-prod environment + estate
+    total. Pausing is opt-in (SHUTDOWN_ENABLED) and portal-side; this view is
+    read-only.
+    """
+    return autoshutdown.status(session)
 
 
 # --- Budget guardrails (E3.3, F-FIN-02) --------------------------------------
@@ -2939,6 +2953,34 @@ def _ttl_expired(session: Session, req: Request, expiry: datetime) -> None:
         _ttl_decommission(session, req)
 
 
+# Scheduled auto-shutdown (F-FIN-06): remembers the last off/in-hours state so a
+# pause/resume is recorded once per boundary, not every poll cycle.
+_shutdown_last_off: bool | None = None
+
+
+def _sweep_shutdowns(session: Session) -> None:
+    """Record the scheduled pause/resume of non-prod environments (F-FIN-06).
+
+    Opt-in (SHUTDOWN_ENABLED); portal-side — it audits the off-hours ⇄ business-
+    hours boundary with the affected environment count + saving, and never stops
+    real cloud resources. No-op when disabled or when no boundary was crossed."""
+    global _shutdown_last_off
+    if not autoshutdown.enabled():
+        _shutdown_last_off = None
+        return
+    off = autoshutdown.is_off_hours()
+    if off == _shutdown_last_off:
+        return  # no boundary crossed since the last sweep
+    _shutdown_last_off = off
+    savings = autoshutdown.shutdown_savings(session)
+    if not savings["environments"]:
+        return  # nothing non-prod to pause
+    append_audit(session, "shutdown.paused" if off else "shutdown.resumed", actor="shutdown",
+                 detail={"environments": len(savings["environments"]),
+                         "saving": savings["total_saving"], "off_hours": off})
+    session.commit()
+
+
 def _sweep_ttls(session: Session) -> None:
     """One TTL pass (F-FIN-07): warn owners of non-prod environments nearing
     expiry, flag expired ones, and — only when TTL_ENFORCE is on — reclaim them.
@@ -3045,6 +3087,19 @@ def _poll_once() -> None:
         try:
             with SessionLocal() as session:
                 append_audit(session, "orphan.sweep.error", detail={"error": str(exc)})
+                session.commit()
+        except Exception:  # noqa: BLE001
+            pass
+
+    # Scheduled auto-shutdown sweep (F-FIN-06): opt-in; records pause/resume at the
+    # business-hours boundary. No-op unless SHUTDOWN_ENABLED.
+    try:
+        with SessionLocal() as session:
+            _sweep_shutdowns(session)
+    except Exception as exc:  # noqa: BLE001
+        try:
+            with SessionLocal() as session:
+                append_audit(session, "shutdown.sweep.error", detail={"error": str(exc)})
                 session.commit()
         except Exception:  # noqa: BLE001
             pass

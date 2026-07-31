@@ -404,6 +404,33 @@ export async function getSustainability(): Promise<Sustainability | 'forbidden' 
   return r.ok ? r.json() : null
 }
 
+// Scheduled auto-shutdown (E3, F-FIN-06).
+export type ShutdownEnv = {
+  reference: string
+  environment?: string | null
+  tier?: string | null
+  compute_monthly: number
+  monthly_saving: number
+  paused: boolean
+}
+export type Shutdown = {
+  enabled: boolean
+  schedule: { days: string; start: string; end: string; tz: string }
+  off_hours_now: boolean
+  off_hours_fraction: number
+  currency: string
+  total_saving: number
+  environment_count: number
+  environments: ShutdownEnv[]
+  note: string
+}
+
+export async function getShutdown(): Promise<Shutdown | 'forbidden' | null> {
+  const r = await fetch('/api/shutdown')
+  if (r.status === 403) return 'forbidden'
+  return r.ok ? r.json() : null
+}
+
 // Admin console (E1, F-OPS-09).
 export type SystemConfig = {
   modes: { auth: string; jira: string; auto_provision: boolean; provision_mode: string; use_mock: boolean }

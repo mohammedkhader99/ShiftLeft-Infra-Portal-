@@ -101,6 +101,15 @@ services:
       SUSTAIN_W_PER_VCPU: ${SUSTAIN_W_PER_VCPU:-12}
       SUSTAIN_W_PER_GB_RAM: ${SUSTAIN_W_PER_GB_RAM:-0.4}
       SUSTAIN_W_PER_GB_STORAGE: ${SUSTAIN_W_PER_GB_STORAGE:-0.005}
+      # Scheduled auto-shutdown (F-FIN-06): the business-hours window for non-prod
+      # environments (outside it = shut-down hours). The saving view is always on;
+      # SHUTDOWN_ENABLED=true additionally records scheduled pause/resume in the
+      # audit trail (portal-side — it never stops real cloud resources). Off by default.
+      SHUTDOWN_ENABLED: ${SHUTDOWN_ENABLED:-false}
+      SHUTDOWN_DAYS: ${SHUTDOWN_DAYS:-mon-fri}
+      SHUTDOWN_START: ${SHUTDOWN_START:-08:00}
+      SHUTDOWN_END: ${SHUTDOWN_END:-20:00}
+      SHUTDOWN_TZ: ${SHUTDOWN_TZ:-UTC}
       # Automatic Jira-status poller (2.7). When AUTO_PROVISION=true a background
       # thread pulls the live Jira status every POLL_INTERVAL_SECONDS and advances
       # approved requests on its own. The API reads PROVISION_MODE too, so it only

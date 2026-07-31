@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import { Tile, InlineLoading, Select, SelectItem, ContentSwitcher, Switch } from '@carbon/react'
-import { getShowback, getBudgets, getVariance, getForecast, getOptimisation, getSustainability, type Showback, type BudgetRow, type Variance, type Forecast, type Optimisation, type Sustainability } from '../api'
+import { Tile, InlineLoading, Select, SelectItem, ContentSwitcher, Switch, Tag } from '@carbon/react'
+import { getShowback, getBudgets, getVariance, getForecast, getOptimisation, getSustainability, getShutdown, type Showback, type BudgetRow, type Variance, type Forecast, type Optimisation, type Sustainability, type Shutdown } from '../api'
 
 // The dimensions cost can be attributed to (must match the API's group_by set).
 const GROUPS: [string, string][] = [
@@ -23,6 +23,7 @@ export default function ShowbackPage() {
   const [forecast, setForecast] = useState<Forecast | null>(null)
   const [optim, setOptim] = useState<Optimisation | null>(null)
   const [sustain, setSustain] = useState<Sustainability | null>(null)
+  const [sd, setSd] = useState<Shutdown | null>(null)
   const [forbidden, setForbidden] = useState(false)
   const [loaded, setLoaded] = useState(false)
 
@@ -60,6 +61,9 @@ export default function ShowbackPage() {
       .catch(() => {})
     getSustainability()
       .then((s) => active && s && s !== 'forbidden' && setSustain(s))
+      .catch(() => {})
+    getShutdown()
+      .then((s) => active && s && s !== 'forbidden' && setSd(s))
       .catch(() => {})
     return () => {
       active = false
@@ -367,6 +371,56 @@ export default function ShowbackPage() {
             </>
           )}
           <p style={{ fontSize: '0.72rem', color: 'var(--cds-text-secondary)', marginTop: '0.5rem' }}>{sustain.note}</p>
+        </Tile>
+      )}
+
+      {sd && (
+        <Tile style={{ marginTop: '1rem' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '0.5rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+            <h4 style={{ fontSize: '0.95rem', fontWeight: 500 }}>Scheduled auto-shutdown (F-FIN-06)</h4>
+            <span style={{ fontSize: '0.8rem', color: 'var(--cds-text-secondary)' }}>
+              {sd.schedule.days} {sd.schedule.start}–{sd.schedule.end} {sd.schedule.tz}
+              {' · '}
+              {sd.enabled ? (sd.off_hours_now ? 'off-hours now' : 'business hours now') : 'auto-pause off'}
+            </span>
+          </div>
+          {sd.environment_count === 0 ? (
+            <p style={{ fontSize: '0.85rem', color: 'var(--cds-text-secondary)' }}>No non-prod environments to shut down.</p>
+          ) : (
+            <>
+              <div style={{ fontSize: '0.85rem', marginBottom: '0.75rem' }}>
+                Potential saving{' '}
+                <strong style={{ color: 'var(--cds-support-success)' }}>{money(sd.total_saving, sd.currency)}/mo</strong>
+                <span style={{ color: 'var(--cds-text-secondary)' }}>
+                  {' '}from powering non-prod down out-of-hours (≈ {Math.round(sd.off_hours_fraction * 100)}% of the week)
+                </span>
+              </div>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
+                <thead>
+                  <tr style={{ textAlign: 'left', color: 'var(--cds-text-secondary)', borderBottom: '1px solid var(--cds-border-subtle)' }}>
+                    <th style={{ padding: '0.3rem 0.5rem' }}>Environment</th>
+                    <th style={{ padding: '0.3rem 0.5rem' }}>Tier</th>
+                    <th style={{ padding: '0.3rem 0.5rem', textAlign: 'right' }}>Compute/mo</th>
+                    <th style={{ padding: '0.3rem 0.5rem', textAlign: 'right' }}>Saving/mo</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sd.environments.map((e) => (
+                    <tr key={e.reference} style={{ borderBottom: '1px solid var(--cds-border-subtle-01)' }}>
+                      <td style={{ padding: '0.3rem 0.5rem' }} title={e.environment || undefined}>
+                        {e.reference}{e.environment ? ` · ${e.environment}` : ''}
+                        {e.paused && <Tag type="cool-gray" size="sm" style={{ marginLeft: '0.4rem' }}>paused</Tag>}
+                      </td>
+                      <td style={{ padding: '0.3rem 0.5rem', color: 'var(--cds-text-secondary)' }}>{e.tier}</td>
+                      <td style={{ padding: '0.3rem 0.5rem', textAlign: 'right' }}>{money(e.compute_monthly, sd.currency)}</td>
+                      <td style={{ padding: '0.3rem 0.5rem', textAlign: 'right', fontWeight: 500, color: 'var(--cds-support-success)' }}>{money(e.monthly_saving, sd.currency)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </>
+          )}
+          <p style={{ fontSize: '0.72rem', color: 'var(--cds-text-secondary)', marginTop: '0.5rem' }}>{sd.note}</p>
         </Tile>
       )}
     </div>
