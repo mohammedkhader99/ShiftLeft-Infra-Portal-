@@ -30,6 +30,7 @@ from api import apikeys
 from api import chatbot
 from api import eventstream
 from api import forecast
+from api import optimisation as optim
 from api.attachment import build_request_pdf
 from api.costsheet import build_cost_sheet_xlsx
 from api.evidence import build_evidence_pdf
@@ -572,6 +573,19 @@ def anomalies(session: Session = Depends(get_session),
     blocks or acts.
     """
     return anomaly_detect.detect_anomalies(session)
+
+
+@app.get("/api/optimisation")
+def optimisation_digest(owner: str | None = None, session: Session = Depends(get_session),
+                        _auth: str = Depends(require_action("view_overview"))) -> dict:
+    """Per-owner cost-optimisation digest (F-FIN-12).
+
+    Concrete, non-prod-focused savings opportunities across provisioned
+    environments — rightsizing, disabling HA, downgrading over-spec monitoring/
+    support — each with a re-priced monthly saving. Read-only and advisory:
+    it recommends only, it never changes a request. Optional `?owner=` filter.
+    """
+    return optim.optimisation_digest(session, owner)
 
 
 # --- Budget guardrails (E3.3, F-FIN-02) --------------------------------------

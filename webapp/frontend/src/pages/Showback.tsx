@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Tile, InlineLoading, Select, SelectItem, ContentSwitcher, Switch } from '@carbon/react'
-import { getShowback, getBudgets, getVariance, getForecast, type Showback, type BudgetRow, type Variance, type Forecast } from '../api'
+import { getShowback, getBudgets, getVariance, getForecast, getOptimisation, type Showback, type BudgetRow, type Variance, type Forecast, type Optimisation } from '../api'
 
 // The dimensions cost can be attributed to (must match the API's group_by set).
 const GROUPS: [string, string][] = [
@@ -21,6 +21,7 @@ export default function ShowbackPage() {
   const [budgets, setBudgets] = useState<BudgetRow[]>([])
   const [variance, setVariance] = useState<Variance | null>(null)
   const [forecast, setForecast] = useState<Forecast | null>(null)
+  const [optim, setOptim] = useState<Optimisation | null>(null)
   const [forbidden, setForbidden] = useState(false)
   const [loaded, setLoaded] = useState(false)
 
@@ -52,6 +53,9 @@ export default function ShowbackPage() {
       .catch(() => {})
     getForecast(6)
       .then((f) => active && f && f !== 'forbidden' && setForecast(f))
+      .catch(() => {})
+    getOptimisation()
+      .then((o) => active && o && o !== 'forbidden' && setOptim(o))
       .catch(() => {})
     return () => {
       active = false
@@ -266,6 +270,45 @@ export default function ShowbackPage() {
           <p style={{ fontSize: '0.72rem', color: 'var(--cds-text-secondary)', marginTop: '0.75rem' }}>
             A projection from the estate + pipeline, not a guarantee: today's run-rate, plus in-flight
             requests as they provision, minus non-prod environments as their TTL expires.
+          </p>
+        </Tile>
+      )}
+
+      {optim && optim.total_saving > 0 && (
+        <Tile style={{ marginTop: '1rem' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '0.75rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+            <h4 style={{ fontSize: '0.95rem', fontWeight: 500 }}>Optimisation digest (F-FIN-12)</h4>
+            <span style={{ fontSize: '0.85rem' }}>
+              Potential saving{' '}
+              <strong style={{ color: 'var(--cds-support-success)' }}>{money(optim.total_saving, optim.currency)}/mo</strong>
+              <span style={{ color: 'var(--cds-text-secondary)' }}> · {optim.environment_count} env(s) · {optim.owner_count} owner(s)</span>
+            </span>
+          </div>
+          {optim.owners.map((o) => (
+            <div key={o.owner} style={{ marginBottom: '0.9rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', fontWeight: 500, marginBottom: '0.25rem' }}>
+                <span>{o.owner}</span>
+                <span style={{ color: 'var(--cds-support-success)' }}>−{money(o.saving, optim.currency)}/mo</span>
+              </div>
+              {o.environments.map((e) => (
+                <div key={e.reference} style={{ marginLeft: '0.5rem', marginBottom: '0.35rem', fontSize: '0.8rem' }}>
+                  <span style={{ color: 'var(--cds-text-secondary)' }}>
+                    {e.reference}{e.environment ? ` · ${e.environment}` : ''}{e.tier ? ` (${e.tier})` : ''}
+                  </span>
+                  <ul style={{ margin: '0.15rem 0 0 1.1rem', padding: 0 }}>
+                    {e.recommendations.map((r, i) => (
+                      <li key={i}>
+                        {r.detail}{' '}
+                        <span style={{ color: 'var(--cds-support-success)' }}>(−{money(r.monthly_saving, optim.currency)}/mo)</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ))}
+            </div>
+          ))}
+          <p style={{ fontSize: '0.72rem', color: 'var(--cds-text-secondary)', marginTop: '0.25rem' }}>
+            Recommendations only — nothing changes automatically. Savings are re-priced estimates for non-prod environments.
           </p>
         </Tile>
       )}

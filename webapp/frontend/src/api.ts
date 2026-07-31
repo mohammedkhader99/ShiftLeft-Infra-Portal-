@@ -352,6 +352,31 @@ export async function getAnomalies(): Promise<Anomalies | 'forbidden' | null> {
   return r.ok ? r.json() : null
 }
 
+// Optimisation digest (E4, F-FIN-12).
+export type OptRecommendation = { type: string; detail: string; monthly_saving: number }
+export type OptEnvironment = {
+  reference: string
+  environment?: string | null
+  tier?: string | null
+  recommendations: OptRecommendation[]
+  saving: number
+}
+export type OptOwner = { owner: string; environments: OptEnvironment[]; saving: number }
+export type Optimisation = {
+  currency: string
+  generated_at: string
+  total_saving: number
+  environment_count: number
+  owner_count: number
+  owners: OptOwner[]
+}
+
+export async function getOptimisation(): Promise<Optimisation | 'forbidden' | null> {
+  const r = await fetch('/api/optimisation')
+  if (r.status === 403) return 'forbidden'
+  return r.ok ? r.json() : null
+}
+
 // Admin console (E1, F-OPS-09).
 export type SystemConfig = {
   modes: { auth: string; jira: string; auto_provision: boolean; provision_mode: string; use_mock: boolean }
