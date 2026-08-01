@@ -266,6 +266,10 @@ class Request(Base):
     business_owner: Mapped[str | None] = mapped_column(String(160), nullable=True)
     technical_owner: Mapped[str | None] = mapped_column(String(160), nullable=True)
     environment_owner: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    # Group-based ownership (F-IAM-09): the directory/Jira group that owns this
+    # environment. Durable — it survives an individual owner leaving, and its
+    # members can manage the environment. Null = individual ownership only.
+    owner_group: Mapped[str | None] = mapped_column(String(120), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(

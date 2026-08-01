@@ -1045,6 +1045,33 @@ def transfer_owner(reference: str, body: TransferOwnerIn, session: Session = Dep
             "owner": _resolve_owner(req), "orphaned": _is_orphan(req)}
 
 
+class OwnerGroupIn(BaseModel):
+    group: str | None = None  # empty/None clears — back to individual ownership
+
+
+@app.put("/api/requests/{reference}/owner-group")
+def set_owner_group(reference: str, body: OwnerGroupIn, session: Session = Depends(get_session),
+                    actor: str = Depends(_authed_requester)) -> dict:
+    """Set or clear an environment's owning directory group (F-IAM-09) — the owner
+    or a platform_admin. A group owner survives an individual leaving, and its
+    members can manage the environment. Audited."""
+    req = _load_request(reference, session)
+    if not _owner_or_admin(req, actor):
+        raise HTTPException(status_code=403, detail=("Only the environment owner or a platform "
+                            "administrator can set its owning group."))
+    grp = (body.group or "").strip() or None
+    old = req.owner_group
+    req.owner_group = grp
+    if grp:  # a group now owns it — clear any orphan flag
+        req.orphaned_at = None
+        if req.status_detail and "orphan" in req.status_detail.lower():
+            req.status_detail = None
+    append_audit(session, "ownership.group_set", reference=reference, actor=actor,
+                 detail={"from": old, "to": grp})
+    session.commit()
+    return {"reference": reference, "owner_group": grp, "orphaned": _is_orphan(req)}
+
+
 @app.get("/api/orphans")
 def orphans(session: Session = Depends(get_session),
             _auth: str = Depends(require_action("view_overview"))) -> dict:
@@ -1228,6 +1255,7 @@ REQUEST_FIELDS = (
     "business_owner",
     "technical_owner",
     "environment_owner",
+    "owner_group",
     # Advanced options (6.5).
     "advanced_options",
 )
@@ -1269,6 +1297,7 @@ class DraftIn(BaseModel):
     business_owner: str | None = None
     technical_owner: str | None = None
     environment_owner: str | None = None
+    owner_group: str | None = None
     advanced_options: dict | None = None
     components: list[ComponentIn] | None = None
 
@@ -1350,6 +1379,7 @@ class RequestOut(BaseModel):
     business_owner: str | None = None
     technical_owner: str | None = None
     environment_owner: str | None = None
+    owner_group: str | None = None
     advanced_options: dict | None = None
     submitted_at: datetime | None = None
     created_at: datetime | None = None
@@ -3002,9 +3032,11 @@ def set_request_shutdown(reference: str, body: RequestShutdownIn,
 # --- Backup & restore (F-LCM-06) ---------------------------------------------
 
 def _owner_or_admin(req: Request, actor: str) -> bool:
-    """Owner self-service: the environment owner (any of the named owners /
-    requester) or a platform_admin."""
+    """Owner self-service: a platform_admin, a member of the owning GROUP
+    (F-IAM-09), or a named individual owner / the requester."""
     if roles_mod.can(roles_mod.resolve_roles(actor), "execute"):
+        return True
+    if _in_owner_group(actor, req):
         return True
     owners = {req.requester, _resolve_owner(req), req.environment_owner,
               req.application_owner, req.technical_owner, req.business_owner}
@@ -3755,11 +3787,21 @@ def _departed_owners() -> set[str]:
 
 def _is_orphan(req: Request) -> bool:
     """Whether a provisioned environment has no resolvable owner (F-LCM-10): none
-    at all, or the effective owner has left (is in DEPARTED_OWNERS)."""
+    at all, or the effective owner has left (is in DEPARTED_OWNERS). An environment
+    with an owning GROUP is never orphaned — group ownership survives an individual
+    leaving (F-IAM-09)."""
+    if (req.owner_group or "").strip():
+        return False
     owner = _resolve_owner(req)
     if not owner:
         return True
     return owner.strip().lower() in _departed_owners()
+
+
+def _in_owner_group(actor: str, req: Request) -> bool:
+    """Whether `actor` is a member of the environment's owning group (F-IAM-09)."""
+    group = (req.owner_group or "").strip()
+    return bool(group) and group in roles_mod.user_groups(actor)
 
 
 def _ttl_contact(req: Request) -> str | None:

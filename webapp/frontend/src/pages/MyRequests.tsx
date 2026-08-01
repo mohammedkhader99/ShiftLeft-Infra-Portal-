@@ -20,7 +20,7 @@ import {
   Toggle,
 } from '@carbon/react'
 import { WarningAltFilled, Renew, UserFollow, Search, Pause, Play } from '@carbon/icons-react'
-import { getMe, getRequests, getAudit, renewRequest, transferOwner, checkDrift, reconcileState, triageFailure, actuate, setRequestShutdown, createBackup, grantAccess, revokeAccess, type RequestRow, type ShutdownPolicy } from '../api'
+import { getMe, getRequests, getAudit, renewRequest, transferOwner, checkDrift, reconcileState, triageFailure, actuate, setRequestShutdown, createBackup, grantAccess, revokeAccess, setOwnerGroup, type RequestRow, type ShutdownPolicy } from '../api'
 import { workflowSteps, fmtWhen, type WFStep } from '../workflow'
 
 const FILTER_KEYS = ['status', 'request_type', 'technology', 'deployment_target', 'created_week', 'requested_by', 'subsidiary']
@@ -60,6 +60,26 @@ function MetaField({ label, value }: { label: string; value?: string | null }) {
 function parseQuery(route: string): Record<string, string> {
   const i = route.indexOf('?')
   return i < 0 ? {} : Object.fromEntries(new URLSearchParams(route.slice(i + 1)))
+}
+
+// Group-based ownership (F-IAM-09): set/clear the owning directory group, which
+// survives an individual owner leaving and lets its members manage the env.
+function GroupControl({ r, onChange }: { r: RequestRow; onChange: () => void }) {
+  const [group, setGroup] = useState(r.owner_group ?? '')
+  const [busy, setBusy] = useState(false)
+  async function save(value: string | null) {
+    setBusy(true)
+    try { await setOwnerGroup(r.reference, value); onChange() } finally { setBusy(false) }
+  }
+  return (
+    <div style={{ marginTop: '0.5rem', fontSize: '0.82rem', display: 'flex', gap: '0.5rem', alignItems: 'flex-end', flexWrap: 'wrap' }}>
+      <span style={{ color: 'var(--cds-text-secondary)' }}>Owning group: {r.owner_group || 'none'}</span>
+      <TextInput id={`og-${r.reference}`} size="sm" labelText="" placeholder="directory/Jira group"
+        value={group} onChange={(e) => setGroup(e.target.value)} style={{ maxWidth: '14rem' }} />
+      <Button size="sm" kind="tertiary" disabled={busy || !group.trim()} onClick={() => save(group.trim())}>Set group</Button>
+      {r.owner_group && <Button size="sm" kind="ghost" disabled={busy} onClick={() => { setGroup(''); save(null) }}>Clear</Button>}
+    </div>
+  )
 }
 
 // Backup restore-points (F-LCM-06): list the environment's backups and take a new
@@ -676,6 +696,7 @@ export default function MyRequests({ route }: { route: string }) {
                         <div style={{ marginTop: '1rem', display: 'flex', alignItems: 'flex-end', gap: '1rem', flexWrap: 'wrap' }}>
                           <span style={{ fontSize: '0.85rem', color: 'var(--cds-text-secondary)' }}>
                             Owner: {r.owner || '—'}
+                            {r.owner_group && <span> · group: <strong>{r.owner_group}</strong></span>}
                             {r.orphaned && <span style={{ color: 'var(--cds-support-error)' }}> · orphaned</span>}
                           </span>
                           {canRenew && (
@@ -744,6 +765,7 @@ export default function MyRequests({ route }: { route: string }) {
                             </span>
                           )}
                         </div>
+                        <GroupControl r={r} onChange={refresh} />
                         <BackupControl r={r} onChange={refresh} />
                         {canGrantAccess && <AccessControl r={r} onChange={refresh} />}
                         {canActuate && r.power && <ShutdownControl r={r} onChange={refresh} />}

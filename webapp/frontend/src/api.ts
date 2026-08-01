@@ -155,6 +155,8 @@ export type RequestRow = {
   // Ownership (F-LCM-10): the resolved owner + whether the environment is orphaned.
   owner?: string | null
   orphaned?: boolean
+  // Group ownership (F-IAM-09): the owning directory group, if set.
+  owner_group?: string | null
   // Environment health (F-LCM-08): score + grade + the factors that lowered it.
   health?: { score: number; grade: string; factors: { signal: string; impact: number; detail: string }[] } | null
   // Drift (F-LCM-09): result of the last drift check, if one has run.
@@ -272,6 +274,17 @@ export type Triage = {
 
 export async function triageFailure(reference: string): Promise<{ status: number; body: any }> {
   const r = await fetch(`/api/requests/${reference}/triage`, { method: 'POST' })
+  return { status: r.status, body: await r.json().catch(() => ({})) }
+}
+
+// Set or clear an environment's owning directory group (F-IAM-09). Owner or admin.
+export async function setOwnerGroup(
+  reference: string, group: string | null,
+): Promise<{ status: number; body: any }> {
+  const r = await fetch(`/api/requests/${reference}/owner-group`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ group }),
+  })
   return { status: r.status, body: await r.json().catch(() => ({})) }
 }
 

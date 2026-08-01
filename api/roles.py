@@ -101,6 +101,23 @@ def _jira_groups(email: str) -> list[str]:
     return [g.get("name") for g in items if g.get("name")]
 
 
+def user_groups(email: str) -> list[str]:
+    """The user's directory groups (F-IAM-09). Live: the Jira groups (read-only
+    fail-safe = [] on any error). Mock: a GROUP_MAP JSON (email -> [group names]).
+    Used to let a member of an environment's owning group act on it."""
+    if not email:
+        return []
+    if role_source() == "jira":
+        try:
+            return _jira_groups(email)
+        except Exception:  # noqa: BLE001 — never let a directory hiccup grant/deny wrongly
+            return []
+    try:
+        return json.loads(os.getenv("GROUP_MAP", "") or "{}").get(email, [])
+    except (ValueError, TypeError, AttributeError):
+        return []
+
+
 def jira_username(email: str) -> str | None:
     """Resolve an email to its Jira user key/name (email != Jira username here).
 

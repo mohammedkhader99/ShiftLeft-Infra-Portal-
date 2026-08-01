@@ -175,6 +175,7 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
   const [bizOwner, setBizOwner] = useState('')
   const [techOwner, setTechOwner] = useState('')
   const [envOwner, setEnvOwner] = useState('')
+  const [ownerGroup, setOwnerGroup] = useState('')  // F-IAM-09: durable group owner
 
   // Advanced options (6.5): a single bag of key -> value|bool.
   const [advanced, setAdvanced] = useState<Record<string, string | boolean>>({})
@@ -321,6 +322,7 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
       business_criticality: criticality || null,
       required_delivery_date: deliveryDate || null,
       application_owner: appOwner || null,
+      owner_group: ownerGroup || null,
       business_owner: bizOwner || null,
       technical_owner: techOwner || null,
       environment_owner: envOwner || null,
@@ -761,6 +763,7 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
                     <TextInput id="technical_owner" labelText="Technical owner" placeholder="name or email" value={techOwner} onChange={(e) => setTechOwner(e.target.value)} />
                     <TextInput id="environment_owner" labelText="Environment owner" placeholder="name or email" value={envOwner} onChange={(e) => setEnvOwner(e.target.value)} />
                   </div>
+                  <TextInput id="owner_group" labelText="Owning group (F-IAM-09)" placeholder="directory/Jira group — survives staff movement" value={ownerGroup} onChange={(e) => setOwnerGroup(e.target.value)} />
                 </Stack>
               </FormGroup>
 
