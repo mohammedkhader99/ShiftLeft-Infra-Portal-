@@ -32,6 +32,7 @@ from api import eventstream
 from api import forecast
 from api import optimisation as optim
 from api import leader
+from api import ratelimit
 from api import reports
 from api import shutdown as autoshutdown
 from api import sustainability as sustainability_mod
@@ -118,7 +119,13 @@ app = FastAPI(title="Infra Portal API", lifespan=_lifespan)
 # down) + a per-client rate limit. The API sits behind the BFF; these are defence
 # in depth. SSE + health are exempt from the rate limit.
 install_security_headers(app, csp="default-src 'none'; frame-ancestors 'none'; base-uri 'none'")
-install_rate_limit(app, exempt_prefixes=("/health", "/api/events/stream"))
+# RATE_LIMIT_BACKEND=shared counts in the DB so the limit is global across replicas
+# (F-OPS-01). Default is the in-memory limiter — single-instance behaviour unchanged.
+_rate_exempt = ("/health", "/api/events/stream")
+if ratelimit.shared_enabled():
+    ratelimit.install_shared_rate_limit(app, exempt_prefixes=_rate_exempt)
+else:
+    install_rate_limit(app, exempt_prefixes=_rate_exempt)
 # Distributed tracing (F-OPS-04): installed last, so it is the OUTERMOST middleware
 # — it sets the request's trace id before anything else runs (so every audit entry
 # is stamped) and echoes X-Trace-Id on the way out.
@@ -4298,6 +4305,15 @@ def _poll_once() -> None:
                 append_audit(session, "report.sweep.error", detail={"error": str(exc)})
                 session.commit()
         except Exception:  # noqa: BLE001
+            pass
+
+    # Shared rate-limit housekeeping (F-OPS-01): prune expired counter windows.
+    # No-op unless the shared backend is on; leader-only (runs in _poll_once).
+    if ratelimit.shared_enabled():
+        try:
+            with SessionLocal() as session:
+                ratelimit.prune(session)
+        except Exception:  # noqa: BLE001 — housekeeping must never crash the loop
             pass
 
 

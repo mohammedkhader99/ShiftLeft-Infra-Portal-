@@ -469,6 +469,18 @@ class LeaderLease(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 
+class RateLimitCounter(Base):
+    """A shared fixed-window rate-limit counter (F-OPS-01 / F-SEC-09). One row per
+    (client, minute), incremented atomically so the per-minute limit is global
+    across API replicas instead of per-process. Pruned periodically."""
+
+    __tablename__ = "rate_limit_counter"
+
+    key: Mapped[str] = mapped_column(String(180), primary_key=True)   # "<identity>:<window_epoch>"
+    window_epoch: Mapped[int] = mapped_column(index=True)             # unix minute bucket
+    count: Mapped[int] = mapped_column(default=0)
+
+
 class WebhookSubscription(Base):
     """An admin-configured outbound webhook endpoint (F-INT-10). Lifecycle events
     are delivered here, HMAC-signed. `secret` is a shared HMAC key the admin sets
