@@ -160,6 +160,26 @@ def test_apply_creates_resource(monkeypatch):
     assert resp.json()["resource"]["name"]
 
 
+def test_refresh_mock_records_and_masks(monkeypatch):
+    body = _body(operation="refresh",
+                 target={"reference": "REQ-UAT"}, source={"reference": "REQ-PROD"}, mask=True)
+    resp = client.post("/refresh", content=body, headers=_signed(body))
+    assert resp.status_code == 200
+    assert resp.json()["refreshed"] is True and resp.json()["masked"] is True
+    assert "masked" in resp.json()["summary"]
+
+
+def test_refresh_rejects_bad_signature():
+    body = _body(operation="refresh")
+    assert client.post("/refresh", content=body, headers={"X-Signature": "bad"}).status_code == 401
+
+
+def test_refresh_live_is_unconfigured(monkeypatch):
+    monkeypatch.setenv("REFRESH_MODE", "live")
+    body = _body(operation="refresh", target={"reference": "T"}, source={"reference": "S"})
+    assert client.post("/refresh", content=body, headers=_signed(body)).status_code == 501
+
+
 def test_apply_refused_when_not_apply_mode(monkeypatch):
     _patch(monkeypatch)
     monkeypatch.setattr(orch.provisioner, "provision_mode", lambda: "plan")

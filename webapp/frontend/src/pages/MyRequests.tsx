@@ -30,6 +30,7 @@ type BadgeType = 'green' | 'teal' | 'blue' | 'cyan' | 'red' | 'gray' | 'cool-gra
 
 function badgeType(status: string): BadgeType {
   if (status === 'provisioned') return 'green'
+  if (status === 'refreshed') return 'green'
   if (status === 'in-progress') return 'teal'
   if (status === 'planned') return 'blue'
   if (status === 'submitted') return 'cyan'

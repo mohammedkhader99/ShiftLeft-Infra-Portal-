@@ -42,12 +42,13 @@ const REQUEST_TYPES: [string, string][] = [
   ['create', 'Create environment'],
   ['add', 'Add component'],
   ['resize', 'Resize component'],
+  ['refresh', 'Refresh environment'],
   ['decommission', 'Decommission'],
 ]
 const RT_LABEL = Object.fromEntries(REQUEST_TYPES) as Record<string, string>
 
 function parseRequestType(route: string): string {
-  const m = route.match(/^#\/request\/new\/(create|add|resize|decommission)/)
+  const m = route.match(/^#\/request\/new\/(create|add|resize|refresh|decommission)/)
   return m ? m[1] : 'create'
 }
 

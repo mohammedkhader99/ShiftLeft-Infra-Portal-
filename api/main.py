@@ -1194,6 +1194,7 @@ REQUEST_FIELDS = (
     "target_environment",
     "environment_tier",
     "source_reference",
+    "refresh_from_reference",
     "data_classification",
     # Governance metadata (increment 6.1).
     "business_justification",
@@ -1233,6 +1234,7 @@ class DraftIn(BaseModel):
     target_environment: str | None = None
     environment_tier: str | None = None
     source_reference: str | None = None
+    refresh_from_reference: str | None = None
     data_classification: str | None = None
     # Governance metadata (increment 6.1). All optional at draft time.
     business_justification: str | None = None
@@ -1312,6 +1314,7 @@ class RequestOut(BaseModel):
     target_environment: str | None = None
     environment_tier: str | None = None
     source_reference: str | None = None
+    refresh_from_reference: str | None = None
     data_classification: str | None = None
     # Governance metadata (increment 6.1).
     business_justification: str | None = None
@@ -1717,6 +1720,19 @@ def submit_request(
             req.cost_centre_code = req.cost_centre_code or source.cost_centre_code
             req.subsidiary = req.subsidiary or source.subsidiary
             req.environment_name = req.environment_name or source.environment_name
+
+    # Refresh inherits context from the TARGET env it refreshes (F-LCM-03), so the
+    # ticket + guardrails have full context (tier drives the non-prod check).
+    if req.request_type == "refresh" and req.source_reference:
+        target = session.scalar(select(Request).where(Request.reference == req.source_reference))
+        if target is not None:
+            req.deployment_target = req.deployment_target or target.deployment_target
+            req.project_code = req.project_code or target.project_code
+            req.cost_centre_code = req.cost_centre_code or target.cost_centre_code
+            req.subsidiary = req.subsidiary or target.subsidiary
+            req.environment_name = req.environment_name or target.environment_name
+            req.environment_tier = req.environment_tier or target.environment_tier
+            req.data_classification = req.data_classification or target.data_classification
 
     components_data = [
         {"technology_code": c.technology_code, "size": c.size} for c in req.components
@@ -2134,6 +2150,10 @@ def approve(jira_key: str, session: Session = Depends(get_session),
     # provisioning new ones (2.9).
     if req.request_type == "decommission":
         return _decommission(session, req, actor="approver")
+
+    # Refresh copies data from a higher env into the target (F-LCM-03).
+    if req.request_type == "refresh":
+        return _refresh(session, req, actor="approver")
 
     # Signed, versioned handoff. The signature is authenticity; the orchestrator
     # re-checks authority (approval + policy) and re-validates cost itself.
@@ -2979,6 +2999,82 @@ def _decommission(session: Session, req: Request, actor: str) -> dict:
             "message": f"Decommissioned {source.reference}: {summary}"}
 
 
+_SENSITIVE = {"restricted", "confidential"}
+
+
+def _refresh_handoff(req: Request, target: Request, src: Request, mask: bool) -> tuple[bytes, str]:
+    """Build + sign the refresh handoff — the target, the copy-from source, and
+    whether sensitive data must be masked."""
+    payload = {
+        "contract_version": CONTRACT_VERSION,
+        "idempotency_key": req.approval.jira_key,
+        "issued_at": datetime.now(timezone.utc).isoformat(),
+        "jira_key": req.approval.jira_key,
+        "reference": req.reference,
+        "operation": "refresh",
+        "target": {"reference": target.reference, "policy_input": _policy_input(target)},
+        "source": {"reference": src.reference, "policy_input": _policy_input(src)},
+        "mask": mask,
+    }
+    body = json.dumps(payload, sort_keys=True).encode()
+    return body, sign(WEBHOOK_SECRET, body)
+
+
+def _refresh(session: Session, req: Request, actor: str) -> dict:
+    """Refresh the target non-prod env (source_reference) from a higher source
+    (refresh_from_reference), masking sensitive source data (F-LCM-03). Governed +
+    orchestrator-executed, mirroring decommission. Mock records it; live is a
+    data-copy + masking extension point. The target stays provisioned."""
+    target = session.scalar(select(Request).where(Request.reference == req.source_reference))
+    src = session.scalar(select(Request).where(Request.reference == req.refresh_from_reference))
+    if target is None or src is None:
+        missing = req.source_reference if target is None else req.refresh_from_reference
+        req.status = "refresh-failed"
+        req.status_detail = f"Refresh target/source {missing} not found."
+        append_audit(session, "refresh.source_missing", reference=req.reference,
+                     jira_key=req.approval.jira_key,
+                     detail={"target": req.source_reference, "from": req.refresh_from_reference})
+        session.commit()
+        return {"approval": "approved", "refreshed": False, "error": req.status_detail}
+
+    mask = (src.data_classification or "").strip().lower() in _SENSITIVE
+    _transition_jira(session, req, inprogress_status(), "jira.in_progress")
+    session.commit()
+
+    body, signature = _refresh_handoff(req, target, src, mask)
+    append_audit(session, "refresh.handoff", reference=req.reference,
+                 jira_key=req.approval.jira_key, actor=actor,
+                 detail={"target": target.reference, "from": src.reference, "mask": mask})
+    session.commit()
+
+    response, error = _post_to_orchestrator(body, signature, path="/refresh")
+    if response is None or response.status_code != 200:
+        raw = error or (response.text if response else "")
+        reason = _short_reason(raw)
+        req.status = "refresh-failed"
+        req.status_detail = reason
+        append_audit(session, "refresh.failed", reference=req.reference,
+                     jira_key=req.approval.jira_key,
+                     detail={"target": target.reference, "from": src.reference, "error": raw})
+        add_comment(req.approval.jira_key, "⚠️ Automated refresh failed; no data was "
+                                           f"copied.\n\n{reason}")
+        session.commit()
+        return {"approval": "approved", "refreshed": False, "error": reason}
+
+    summary = response.json().get("summary")
+    req.status = "refreshed"
+    req.status_detail = None
+    _transition_jira(session, req, resolved_status(), "jira.resolved")
+    append_audit(session, "refresh.performed", reference=req.reference,
+                 jira_key=req.approval.jira_key,
+                 detail={"target": target.reference, "from": src.reference, "mask": mask,
+                         "summary": summary})
+    session.commit()
+    return {"approval": "approved", "refreshed": True, "target": target.reference,
+            "source": src.reference, "masked": mask,
+            "message": f"Refreshed {target.reference} from {src.reference}: {summary}"}
+
+
 # --- Automatic Jira-status poller (increment 2.7) ----------------------------
 # A background thread that pulls the live Jira status on a timer and advances
 # approved requests automatically — the same steps the portal's buttons run,
@@ -3071,6 +3167,10 @@ def _advance_request(session: Session, req: Request) -> str:
         # Decommission tears down the referenced request instead of provisioning.
         if req.request_type == "decommission":
             _decommission(session, req, actor="poller")
+            return req.status
+        # Refresh copies data from a higher env into the target (F-LCM-03).
+        if req.request_type == "refresh":
+            _refresh(session, req, actor="poller")
             return req.status
         body, signature = _handoff_payload(req)
         append_audit(session, "orchestrator.handoff", reference=req.reference,

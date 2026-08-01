@@ -181,10 +181,11 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
   const setAdvOpt = (key: string, value: string | boolean) =>
     setAdvanced((a) => ({ ...a, [key]: value }))
 
-  // Decommission
+  // Decommission + refresh both operate on the user's provisioned environments.
   const [provisioned, setProvisioned] = useState<RequestRow[]>([])
-  const [sourceRef, setSourceRef] = useState('')
+  const [sourceRef, setSourceRef] = useState('')   // decommission source / refresh target
   const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [refreshFrom, setRefreshFrom] = useState('')  // refresh copy-from (higher env)
 
   const [cost, setCost] = useState<Cost | null>(null)
   const [errors, setErrors] = useState<Record<string, string>>({})
@@ -212,15 +213,17 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
 
   const isCreate = requestType === 'create'
   const isDecommission = requestType === 'decommission'
+  const isRefresh = requestType === 'refresh'
+  const NONPROD_TIERS = ['dev', 'test', 'sit', 'uat', 'preprod']
 
-  // Load the user's provisioned requests once decommission is chosen.
+  // Load the user's provisioned requests once decommission or refresh is chosen.
   useEffect(() => {
-    if (isDecommission && email) {
+    if ((isDecommission || isRefresh) && email) {
       getRequests({ requester: email, status: 'provisioned' })
         .then(setProvisioned)
         .catch(() => setProvisioned([]))
     }
-  }, [isDecommission, email])
+  }, [isDecommission, isRefresh, email])
 
   const sourceObj = provisioned.find((p) => p.reference === sourceRef)
   const sourceComponents: Component[] = (sourceObj?.components ?? [])
@@ -235,7 +238,7 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
 
   // What we price: the chosen stack (create/add/resize) or the selected
   // technologies being torn down (decommission, at the source's target).
-  const pricedTarget = isDecommission ? sourceObj?.deployment_target ?? '' : target
+  const pricedTarget = isRefresh ? '' : isDecommission ? sourceObj?.deployment_target ?? '' : target
   const pricedComponents = isDecommission
     ? selectedComponents
     : components.filter((c) => c.technology_code && c.size)
@@ -281,6 +284,13 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
   }
 
   function buildPayload(): Record<string, unknown> {
+    if (isRefresh) {
+      return {
+        request_type: 'refresh',
+        source_reference: sourceRef || null,             // target being refreshed
+        refresh_from_reference: refreshFrom || null,     // higher source to copy from
+      }
+    }
     if (isDecommission) {
       return {
         request_type: 'decommission',
@@ -475,6 +485,51 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
                   ))}
                 </FormGroup>
               )}
+            </>
+          ) : isRefresh ? (
+            <>
+              <Select
+                id="refresh_target"
+                labelText="Environment to refresh (non-prod)"
+                value={sourceRef}
+                onChange={(e) => setSourceRef(e.target.value)}
+                invalid={!!errors.source_reference}
+                invalidText={errors.source_reference}
+              >
+                <SelectItem value="" text="— select a non-prod environment —" />
+                {provisioned
+                  .filter((p) => NONPROD_TIERS.includes((p.environment_tier || '').toLowerCase()))
+                  .map((p) => (
+                    <SelectItem key={p.reference} value={p.reference}
+                      text={`${p.reference} — ${p.environment_name || 'env'} (${p.environment_tier || '?'})`} />
+                  ))}
+              </Select>
+              <Select
+                id="refresh_from"
+                labelText="Refresh from (a higher environment)"
+                value={refreshFrom}
+                onChange={(e) => setRefreshFrom(e.target.value)}
+                invalid={!!errors.refresh_from_reference}
+                invalidText={errors.refresh_from_reference}
+              >
+                <SelectItem value="" text="— select the source environment —" />
+                {provisioned
+                  .filter((p) => p.reference !== sourceRef)
+                  .map((p) => (
+                    <SelectItem key={p.reference} value={p.reference}
+                      text={`${p.reference} — ${p.environment_name || 'env'} (${p.environment_tier || '?'})`} />
+                  ))}
+              </Select>
+              {provisioned.length === 0 && (
+                <p style={{ color: 'var(--cds-text-secondary)', fontSize: '0.85rem' }}>
+                  You have no provisioned environments to refresh.
+                </p>
+              )}
+              <p style={{ color: 'var(--cds-text-secondary)', fontSize: '0.8rem' }}>
+                Copies data from the source down into the target. Sensitive source data
+                (restricted/confidential) is masked automatically. Requires approval; nothing is
+                copied in mock mode.
+              </p>
             </>
           ) : (
             <>
@@ -714,7 +769,7 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
               Save draft
             </Button>
             <Button onClick={onSubmit} disabled={busy}>
-              {isDecommission ? 'Submit decommission' : 'Submit request'}
+              {isDecommission ? 'Submit decommission' : isRefresh ? 'Submit refresh' : 'Submit request'}
             </Button>
           </div>
         </Stack>
@@ -723,7 +778,7 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
       <div style={{ flex: '0 0 20rem' }}>
         <Tile style={{ borderTop: '3px solid var(--cds-border-interactive)' }}>
           <p style={{ fontSize: '0.75rem', color: 'var(--cds-text-secondary)', textTransform: 'uppercase', letterSpacing: '0.02em' }}>
-            {isDecommission ? 'Monthly cost to free' : 'Live cost'}
+            {isDecommission ? 'Monthly cost to free' : isRefresh ? 'Environment refresh' : 'Live cost'}
           </p>
           {cost ? (
             <>
@@ -750,6 +805,8 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
             <p style={{ color: 'var(--cds-text-secondary)', fontSize: '0.875rem', marginTop: '0.5rem' }}>
               {isDecommission
                 ? 'Pick a provisioned request and tick technologies to see the monthly cost freed.'
+                : isRefresh
+                ? 'Refresh reuses the target environment — no new monthly cost. It copies data from a higher environment down, masking sensitive data.'
                 : 'Choose a deployment target and add a component to see the cost.'}
             </p>
           )}

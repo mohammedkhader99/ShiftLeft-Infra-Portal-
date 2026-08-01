@@ -16,12 +16,17 @@ from sqlalchemy.orm import Session
 
 from db.models import CostCentre, Environment, Project, Request, Subsidiary, Technology
 
-REQUEST_TYPES = {"create", "add", "resize", "decommission"}
+REQUEST_TYPES = {"create", "add", "resize", "decommission", "refresh"}
 SIZES = {"small", "medium", "large", "xlarge"}
 CLASSIFICATIONS = {"public", "internal", "confidential", "restricted"}
+SENSITIVE_CLASSIFICATIONS = {"restricted", "confidential"}  # a refresh must mask these
 DEPLOYMENT_TARGETS = {"onprem", "azure", "oci"}
 # Environment tier ladder (increment 6.2, from the UX brief).
 ENV_TIERS = {"dev", "test", "sit", "uat", "preprod", "prod", "dr"}
+NONPROD_TIERS = {"dev", "test", "sit", "uat", "preprod"}
+# Ordered ladder for "refresh a lower env from a higher one" (F-LCM-03). DR sits
+# with prod (it mirrors prod).
+TIER_ORDER = {"dev": 0, "test": 1, "sit": 2, "uat": 3, "preprod": 4, "prod": 5, "dr": 5}
 
 # Advanced options (6.5, from the UX brief). Value spec per key:
 #   frozenset -> the value must be one of these; "bool" -> a boolean;
@@ -77,13 +82,13 @@ def validate_submission(data: dict, session: Session) -> dict[str, str]:
 
     request_type = (data.get("request_type") or "").strip()
     if request_type not in REQUEST_TYPES:
-        errors["request_type"] = "Choose a request type (create, add, resize or decommission)."
+        errors["request_type"] = "Choose a request type (create, add, resize, decommission or refresh)."
         # Without a valid type we can't check type-specific rules.
         return errors
 
-    # Cost centre is required for every type except decommission, which inherits
-    # it from the provisioned request it tears down.
-    if request_type != "decommission":
+    # Cost centre is required for every type except decommission and refresh, which
+    # inherit their context from the provisioned request they operate on.
+    if request_type not in ("decommission", "refresh"):
         cost_centre = (data.get("cost_centre_code") or "").strip()
         if not cost_centre:
             errors["cost_centre_code"] = (
@@ -103,6 +108,8 @@ def validate_submission(data: dict, session: Session) -> dict[str, str]:
         _validate_create_fields(data, session, errors)
     elif request_type == "decommission":
         _validate_decommission_fields(data, session, errors)
+    elif request_type == "refresh":
+        _validate_refresh_fields(data, session, errors)
     else:  # add | resize
         target = (data.get("target_environment") or "").strip()
         if not target:
@@ -228,6 +235,47 @@ def _validate_decommission_fields(data: dict, session: Session, errors: dict[str
                 f"'{tech}' is not part of {source_ref}; choose from its technology stack."
             )
             break
+
+
+def _validate_refresh_fields(data: dict, session: Session, errors: dict[str, str]) -> None:
+    """Refresh (F-LCM-03) copies data from a higher environment down into a lower
+    one. Guardrails: the target is a provisioned NON-PROD env; the source is a
+    provisioned env NOT LOWER than the target; the two differ. Masking of sensitive
+    source data is enforced downstream (auto)."""
+    target_ref = (data.get("source_reference") or "").strip()          # env being refreshed
+    from_ref = (data.get("refresh_from_reference") or "").strip()      # copy-from (higher)
+
+    if not target_ref:
+        errors["source_reference"] = "Select the environment to refresh."
+    else:
+        target = session.scalar(select(Request).where(Request.reference == target_ref))
+        if target is None:
+            errors["source_reference"] = f"Unknown request '{target_ref}'."
+        elif target.status != "provisioned":
+            errors["source_reference"] = (
+                f"{target_ref} is not provisioned (status: {target.status}); only a "
+                "provisioned environment can be refreshed.")
+        elif (target.environment_tier or "").strip().lower() not in NONPROD_TIERS:
+            errors["source_reference"] = "Only non-production environments can be refreshed (never prod/DR)."
+
+    if not from_ref:
+        errors["refresh_from_reference"] = "Select the source environment to refresh from."
+    elif from_ref == target_ref:
+        errors["refresh_from_reference"] = "The source and target must be different environments."
+    else:
+        src = session.scalar(select(Request).where(Request.reference == from_ref))
+        if src is None:
+            errors["refresh_from_reference"] = f"Unknown request '{from_ref}'."
+        elif src.status != "provisioned":
+            errors["refresh_from_reference"] = f"The source {from_ref} must be a provisioned environment."
+        elif "source_reference" not in errors:  # only compare tiers if the target is valid
+            target = session.scalar(select(Request).where(Request.reference == target_ref))
+            stier = (src.environment_tier or "").strip().lower()
+            ttier = (target.environment_tier or "").strip().lower() if target else ""
+            if TIER_ORDER.get(stier, 0) < TIER_ORDER.get(ttier, 0):
+                errors["refresh_from_reference"] = (
+                    f"Refresh only from a higher or equal environment — {stier or '?'} is lower "
+                    f"than {ttier or '?'}.")
 
 
 def _validate_create_fields(data: dict, session: Session, errors: dict[str, str]) -> None:

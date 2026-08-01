@@ -244,8 +244,12 @@ class Request(Base):
     # are captured for the approver. Nullable so existing rows are unaffected.
     advanced_options: Mapped[dict | None] = mapped_column(JSON, default=dict, nullable=True)
     # For 'decommission': the reference of the previously provisioned request
-    # whose resources this request tears down (2.9).
+    # whose resources this request tears down (2.9). For 'refresh': the TARGET
+    # environment being refreshed (the one whose data is replaced).
     source_reference: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # For 'refresh' (F-LCM-03): the higher environment whose data is copied down
+    # into the target (source_reference). Null for other request types.
+    refresh_from_reference: Mapped[str | None] = mapped_column(String(20), nullable=True)
     data_classification: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
     # Governance metadata captured on the form (increment 6.1, from the UX

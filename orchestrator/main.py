@@ -314,6 +314,28 @@ async def actuate(request: Request) -> dict:
             "mode": cloud_state.mode()}
 
 
+@app.post("/refresh")
+async def refresh(request: Request) -> dict:
+    """Refresh a lower environment from a higher one, masking sensitive source data
+    (F-LCM-03). Signature-verified. Mock records the refresh (copies nothing); live
+    (REFRESH_MODE=live) is an extension point — a real data-copy + masking job
+    (Ansible/scripts + the source/target data plumbing)."""
+    body = await request.body()
+    if not verify(WEBHOOK_SECRET, body, request.headers.get("X-Signature", "")):
+        raise HTTPException(status_code=401, detail="Invalid webhook signature.")
+    payload = json.loads(body)
+    if os.getenv("REFRESH_MODE", "mock").strip().lower() == "live":
+        raise HTTPException(status_code=501, detail=(
+            "Live environment refresh is not configured. Wire the data-copy + masking "
+            "job (Ansible/scripts) in orchestrator/main.refresh to enable it."))
+    tgt = (payload.get("target") or {}).get("reference")
+    src = (payload.get("source") or {}).get("reference")
+    masked = bool(payload.get("mask"))
+    return {"refreshed": True, "masked": masked,
+            "summary": (f"Mock-refreshed {tgt} from {src}"
+                        + (" (sensitive data masked)" if masked else "") + " — no data copied.")}
+
+
 @app.post("/destroy")
 async def destroy(request: Request) -> dict:
     """Destroy the resource (rollback / cleanup). Signed, and apply mode only."""
