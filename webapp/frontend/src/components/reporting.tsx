@@ -2,6 +2,7 @@
 // subscriptions manager, used by both the Reports page and (formerly) Showback.
 import { Fragment, useEffect, useState } from 'react'
 import { Tile, InlineLoading, Select, SelectItem, Tag, Button, TextInput } from '@carbon/react'
+import { Download, Printer } from '@carbon/icons-react'
 import {
   getReportSubscriptions,
   createReportSubscription,
@@ -11,6 +12,7 @@ import {
   type ReportSubRow,
   type ReportRunRow,
 } from '../api'
+import { reportToCsv, printReport, downloadFile, dateStamp } from './reportExport'
 
 // The report kinds + cadences the API accepts.
 export const REPORT_KINDS: [string, string][] = [
@@ -325,6 +327,12 @@ export function ReportSubscriptions() {
                               {fmtWhen(run.generated_at)} · {REPORT_KINDS.find(([v]) => v === run.report)?.[1] || run.report} {deliveredTag(run.delivered)}
                             </summary>
                             <div style={{ margin: '0.5rem 0 0', padding: '0.65rem', background: 'var(--cds-layer)' }}>
+                              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem', marginBottom: '0.4rem' }}>
+                                <Button kind="ghost" size="sm" renderIcon={Download}
+                                  onClick={() => downloadFile(`report-${run.report}-run${run.id}.csv`, reportToCsv(run.report, run.summary, run.generated_at), 'text/csv;charset=utf-8')}>CSV</Button>
+                                <Button kind="ghost" size="sm" renderIcon={Printer}
+                                  onClick={() => { if (!printReport(run.report, run.summary, run.generated_at)) alert('Please allow pop-ups for this site to export the report as PDF.') }}>PDF</Button>
+                              </div>
                               <ReportView report={run.report} summary={run.summary} />
                             </div>
                           </details>
