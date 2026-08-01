@@ -58,8 +58,15 @@ variable "image_ocid" {
   default = ""
 }
 
-# The SSH public key authorised for access.
+# The SSH public key authorised for access (optional).
 variable "ssh_authorized_key" {
+  type    = string
+  default = ""
+}
+
+# Optional cloud-init user-data (plain text; base64-encoded by the module). Use
+# it to set a password / enable password auth when the image needs it.
+variable "user_data" {
   type    = string
   default = ""
 }

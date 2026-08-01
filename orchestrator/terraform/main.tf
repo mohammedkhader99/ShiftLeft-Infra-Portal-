@@ -78,9 +78,13 @@ resource "oci_core_instance" "env" {
     source_id   = var.image_ocid
   }
 
-  metadata = {
-    ssh_authorized_keys = var.ssh_authorized_key
-  }
+  # Access is image-dependent, so include only what's supplied: an SSH key and/or
+  # cloud-init user-data (base64-encoded). A custom image with a baked-in password
+  # can need neither.
+  metadata = merge(
+    var.ssh_authorized_key != "" ? { ssh_authorized_keys = var.ssh_authorized_key } : {},
+    var.user_data != "" ? { user_data = base64encode(var.user_data) } : {},
+  )
 
   freeform_tags = var.tags
 }

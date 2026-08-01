@@ -31,7 +31,8 @@ def test_instance_sizing_has_a_safe_minimum():
 # --- Compute-config gate -----------------------------------------------------
 
 def _clear_compute_env(monkeypatch):
-    for k in provisioner._COMPUTE_VARS:
+    for k in ("OCI_COMPUTE_SUBNET_OCID", "OCI_COMPUTE_IMAGE_OCID",
+              "OCI_COMPUTE_SSH_AUTHORIZED_KEY", "OCI_COMPUTE_USER_DATA"):
         monkeypatch.delenv(k, raising=False)
 
 
@@ -41,11 +42,12 @@ def test_require_compute_raises_without_config(monkeypatch):
         provisioner._require_compute()
 
 
-def test_require_compute_passes_when_configured(monkeypatch):
+def test_require_compute_passes_with_subnet_and_image_only(monkeypatch):
+    # SSH key + user-data are optional (e.g. a custom image with a password).
+    _clear_compute_env(monkeypatch)
     monkeypatch.setenv("OCI_COMPUTE_SUBNET_OCID", "ocid1.subnet..s")
     monkeypatch.setenv("OCI_COMPUTE_IMAGE_OCID", "ocid1.image..i")
-    monkeypatch.setenv("OCI_COMPUTE_SSH_AUTHORIZED_KEY", "ssh-rsa AAAA")
-    provisioner._require_compute()  # no raise
+    provisioner._require_compute()  # no raise, even with no SSH key
 
 
 # --- tfvars the module receives ----------------------------------------------
@@ -53,7 +55,8 @@ def test_require_compute_passes_when_configured(monkeypatch):
 def test_oci_vars_compute_shape(monkeypatch):
     monkeypatch.setenv("OCI_COMPUTE_SUBNET_OCID", "ocid1.subnet..s")
     monkeypatch.setenv("OCI_COMPUTE_IMAGE_OCID", "ocid1.image..i")
-    monkeypatch.setenv("OCI_COMPUTE_SSH_AUTHORIZED_KEY", "ssh-rsa AAAA")
+    monkeypatch.delenv("OCI_COMPUTE_SSH_AUTHORIZED_KEY", raising=False)
+    monkeypatch.setenv("OCI_COMPUTE_USER_DATA", "#cloud-config\npassword: x")
     v = provisioner._oci_vars("web-req-1", {"reference": "REQ-1"},
                               "oci-instance", {"ocpus": 4, "memory_gb": 64})
     assert v["resource_kind"] == "oci-instance"
@@ -61,7 +64,8 @@ def test_oci_vars_compute_shape(monkeypatch):
     assert v["instance_ocpus"] == 4 and v["instance_memory_gb"] == 64
     assert v["subnet_ocid"] == "ocid1.subnet..s"
     assert v["image_ocid"] == "ocid1.image..i"
-    assert v["ssh_authorized_key"] == "ssh-rsa AAAA"
+    assert v["ssh_authorized_key"] == ""  # optional — not set here
+    assert v["user_data"] == "#cloud-config\npassword: x"
 
 
 def test_oci_vars_bucket_default():

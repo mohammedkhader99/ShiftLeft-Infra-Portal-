@@ -218,14 +218,17 @@ services:
       # (F-SEC-04). Empty uses Oracle-managed encryption; set it to clear the
       # IaC scanner's no-CMK finding for restricted/confidential data.
       OCI_KMS_KEY_OCID: ${OCI_KMS_KEY_OCID:-}
-      # Compute (VM) provisioning inputs — required only to really provision an
-      # oci-instance in apply mode: an existing subnet (private-only), an OS image,
-      # and an SSH public key. All customer-supplied; empty = a compute apply
-      # refuses with a clear message rather than creating the wrong thing. Never
+      # Compute (VM) provisioning inputs, to really provision an oci-instance in
+      # apply mode. REQUIRED: an existing subnet (private-only) + an OS image (a
+      # custom image OCID is fine). OPTIONAL access: an SSH public key and/or
+      # cloud-init user-data (e.g. to set a password on a custom image) — supply
+      # neither for an image with a baked-in password. Missing a REQUIRED one =
+      # a compute apply refuses with a clear message. All customer-supplied; never
       # commit these.
       OCI_COMPUTE_SUBNET_OCID: ${OCI_COMPUTE_SUBNET_OCID:-}
       OCI_COMPUTE_IMAGE_OCID: ${OCI_COMPUTE_IMAGE_OCID:-}
       OCI_COMPUTE_SSH_AUTHORIZED_KEY: ${OCI_COMPUTE_SSH_AUTHORIZED_KEY:-}
+      OCI_COMPUTE_USER_DATA: ${OCI_COMPUTE_USER_DATA:-}
       # IaC security scanning (F-SEC-03/04): the terraform plan is scanned before
       # apply. When true, a HIGH-severity finding blocks the handoff; default off
       # = scan + report only (the API audits the findings either way).

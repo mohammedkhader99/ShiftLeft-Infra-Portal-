@@ -42,19 +42,21 @@ def _require_oci() -> None:
         raise ProvisionError(f"OCI not configured: missing {', '.join(missing)}")
 
 
-# Compute provisioning needs an existing subnet, an OS image, and an SSH key. They
-# are the customer's to supply (via .env / a vault) — never held in code or git.
-_COMPUTE_VARS = ("OCI_COMPUTE_SUBNET_OCID", "OCI_COMPUTE_IMAGE_OCID",
-                 "OCI_COMPUTE_SSH_AUTHORIZED_KEY")
+# Compute provisioning genuinely needs only an existing subnet and an OS image.
+# Access is image-dependent: an SSH public key (OCI_COMPUTE_SSH_AUTHORIZED_KEY)
+# and/or cloud-init user-data (OCI_COMPUTE_USER_DATA, e.g. to set a password on a
+# custom image) are BOTH optional. All are the customer's to supply via .env / a
+# vault — never held in code or git.
+_REQUIRED_COMPUTE_VARS = ("OCI_COMPUTE_SUBNET_OCID", "OCI_COMPUTE_IMAGE_OCID")
 
 
 def _require_compute() -> None:
-    missing = [k for k in _COMPUTE_VARS if not os.getenv(k)]
+    missing = [k for k in _REQUIRED_COMPUTE_VARS if not os.getenv(k)]
     if missing:
         raise ProvisionError(
             "Compute (VM) provisioning is not configured: set "
             + ", ".join(missing)
-            + " — an existing subnet OCID, an OS image OCID, and an SSH public key."
+            + " — an existing subnet OCID and an OS image OCID."
         )
 
 
@@ -78,7 +80,10 @@ def _oci_vars(name: str, tags: dict, resource_kind: str = "oci-bucket",
         "instance_memory_gb": int(sizing.get("memory_gb", 8)),
         "subnet_ocid": os.getenv("OCI_COMPUTE_SUBNET_OCID", ""),
         "image_ocid": os.getenv("OCI_COMPUTE_IMAGE_OCID", ""),
+        # Access — both optional. A custom image with a baked-in password needs
+        # neither; user_data (cloud-init) can set/enable a password if required.
         "ssh_authorized_key": os.getenv("OCI_COMPUTE_SSH_AUTHORIZED_KEY", ""),
+        "user_data": os.getenv("OCI_COMPUTE_USER_DATA", ""),
         "tags": tags,
         # Customer-managed encryption key for sensitive data (F-SEC-04); empty
         # falls back to Oracle-managed encryption in the module.
