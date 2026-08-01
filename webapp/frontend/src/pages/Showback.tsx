@@ -447,6 +447,121 @@ function fmtWhen(iso?: string | null) {
   return isNaN(d.getTime()) ? '—' : d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
 }
 
+function sevTag(sev: string) {
+  const type = sev === 'high' ? 'red' : sev === 'medium' ? 'magenta' : 'cool-gray'
+  return <Tag type={type as any} size="sm">{sev}</Tag>
+}
+
+// The exact stored JSON, one click away under every formatted report.
+function RawData({ data }: { data: any }) {
+  return (
+    <details style={{ marginTop: '0.6rem' }}>
+      <summary style={{ cursor: 'pointer', fontSize: '0.72rem', color: 'var(--cds-text-secondary)' }}>Raw data</summary>
+      <pre style={{ margin: '0.35rem 0 0', padding: '0.5rem', overflowX: 'auto', background: 'var(--cds-layer-accent-01)', fontSize: '0.72rem' }}>
+        {JSON.stringify(data, null, 2)}
+      </pre>
+    </details>
+  )
+}
+
+// Render a stored report run as a readable report (per kind), not raw JSON.
+function ReportView({ report, summary }: { report: string; summary: any }) {
+  if (!summary || typeof summary !== 'object') return <RawData data={summary} />
+  const currency: string = summary.currency || 'AED'
+
+  if (report === 'estate') {
+    const rows = Object.entries((summary.by_status || {}) as Record<string, number>).sort((a, b) => b[1] - a[1])
+    return (
+      <div style={{ fontSize: '0.82rem' }}>
+        <div style={{ marginBottom: '0.5rem' }}>
+          <strong style={{ fontSize: '1.05rem', fontWeight: 500 }}>{money(summary.committed_monthly || 0, currency)}</strong>
+          <span style={{ color: 'var(--cds-text-secondary)' }}> / month committed · {summary.environments_provisioned ?? 0} provisioned environment(s)</span>
+        </div>
+        {rows.length > 0 && (
+          <table style={{ borderCollapse: 'collapse', fontSize: '0.8rem' }}>
+            <tbody>
+              {rows.map(([status, count]) => (
+                <tr key={status}>
+                  <td style={{ padding: '0.15rem 1.5rem 0.15rem 0', color: 'var(--cds-text-secondary)', textTransform: 'capitalize' }}>{status}</td>
+                  <td style={{ padding: '0.15rem 0', textAlign: 'right', fontWeight: 500 }}>{count}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        <RawData data={summary} />
+      </div>
+    )
+  }
+
+  if (report === 'forecast') {
+    const months: any[] = Array.isArray(summary.months) ? summary.months : []
+    const fmax = Math.max(1, ...months.map((m) => m.projected_monthly || 0))
+    return (
+      <div style={{ fontSize: '0.82rem' }}>
+        <div style={{ marginBottom: '0.6rem', color: 'var(--cds-text-secondary)' }}>
+          Now <strong style={{ color: 'var(--cds-text-primary)' }}>{money(summary.current_monthly || 0, currency)}</strong>/mo → projected{' '}
+          <strong style={{ color: 'var(--cds-text-primary)' }}>{money(summary.projected_monthly || 0, currency)}</strong>/mo
+          {typeof summary.pipeline_monthly === 'number' && (
+            <> · <span style={{ color: 'var(--cds-support-success)' }}>+{money(summary.pipeline_monthly, currency)} pipeline</span></>
+          )}
+          {typeof summary.expiring_monthly === 'number' && (
+            <> · <span style={{ color: 'var(--cds-support-warning)' }}>−{money(summary.expiring_monthly, currency)} expiring</span></>
+          )}
+        </div>
+        {months.map((m) => (
+          <div key={m.month} style={{ display: 'grid', gridTemplateColumns: '5.5rem 1fr 7rem', gap: '0.5rem', alignItems: 'center', fontSize: '0.78rem', marginBottom: '0.2rem' }}>
+            <span style={{ color: 'var(--cds-text-secondary)' }}>{m.label}{m.month === 0 ? ' · now' : ''}</span>
+            <span style={{ display: 'block', background: 'var(--cds-layer-accent)', height: '0.7rem' }}>
+              <span style={{ display: 'block', width: `${((m.projected_monthly || 0) / fmax) * 100}%`, height: '100%', background: 'var(--cds-interactive)' }} />
+            </span>
+            <span style={{ textAlign: 'right', fontWeight: 500 }}>{money(m.projected_monthly || 0, currency)}</span>
+          </div>
+        ))}
+        <RawData data={summary} />
+      </div>
+    )
+  }
+
+  if (report === 'anomalies') {
+    const items: any[] = Array.isArray(summary.anomalies) ? summary.anomalies : []
+    const by = summary.by_severity || {}
+    return (
+      <div style={{ fontSize: '0.82rem' }}>
+        <div style={{ marginBottom: '0.5rem' }}>
+          <strong>{summary.count ?? items.length}</strong> signal(s)
+          {(by.high || by.medium || by.low) ? (
+            <span style={{ marginLeft: '0.5rem', display: 'inline-flex', gap: '0.35rem', alignItems: 'center' }}>
+              {by.high ? <>{sevTag('high')}×{by.high}</> : null}
+              {by.medium ? <>{sevTag('medium')}×{by.medium}</> : null}
+              {by.low ? <>{sevTag('low')}×{by.low}</> : null}
+            </span>
+          ) : null}
+        </div>
+        {items.length === 0 ? (
+          <p style={{ color: 'var(--cds-text-secondary)' }}>No anomalies flagged 👍</p>
+        ) : (
+          <ul style={{ margin: 0, padding: 0, listStyle: 'none' }}>
+            {items.map((a, i) => (
+              <li key={i} style={{ padding: '0.35rem 0', borderBottom: '1px solid var(--cds-border-subtle-01)' }}>
+                <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', marginBottom: '0.1rem', flexWrap: 'wrap' }}>
+                  {sevTag(a.severity)}
+                  <strong>{a.subject || a.reference}</strong>
+                  <span style={{ color: 'var(--cds-text-secondary)', fontSize: '0.72rem' }}>{a.kind}/{a.type}</span>
+                </div>
+                <div style={{ color: 'var(--cds-text-secondary)' }}>{a.signal}</div>
+              </li>
+            ))}
+          </ul>
+        )}
+        <RawData data={summary} />
+      </div>
+    )
+  }
+
+  return <RawData data={summary} />
+}
+
 // Scheduled report subscriptions (F-RPT-11). Oversight-only; the Showback page
 // already gates on that, so if the API says 'forbidden' we simply render nothing.
 function ReportSubscriptions() {
@@ -617,14 +732,13 @@ function ReportSubscriptions() {
                         <span style={{ fontSize: '0.8rem', color: 'var(--cds-text-secondary)' }}>No runs yet — use “Run now”.</span>
                       ) : (
                         runs.map((run) => (
-                          <details key={run.id} style={{ fontSize: '0.78rem', marginBottom: '0.25rem' }}>
+                          <details key={run.id} style={{ fontSize: '0.78rem', marginBottom: '0.35rem' }}>
                             <summary style={{ cursor: 'pointer' }}>
-                              {fmtWhen(run.generated_at)} · {run.report} {deliveredTag(run.delivered)}
+                              {fmtWhen(run.generated_at)} · {REPORT_KINDS.find(([v]) => v === run.report)?.[1] || run.report} {deliveredTag(run.delivered)}
                             </summary>
-                            <pre style={{ margin: '0.35rem 0 0', padding: '0.5rem', overflowX: 'auto',
-                              background: 'var(--cds-layer)', fontSize: '0.72rem' }}>
-                              {JSON.stringify(run.summary, null, 2)}
-                            </pre>
+                            <div style={{ margin: '0.5rem 0 0', padding: '0.65rem', background: 'var(--cds-layer)' }}>
+                              <ReportView report={run.report} summary={run.summary} />
+                            </div>
                           </details>
                         ))
                       )}
