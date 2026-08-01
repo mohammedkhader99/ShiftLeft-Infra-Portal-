@@ -3,7 +3,7 @@
 Runs against a fast in-memory seeded database via a dependency override.
 """
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -72,6 +72,11 @@ def test_submit_policy_unavailable_returns_503(client):
 
 # Governance metadata required on submit for create/add/resize (increment 6.1).
 _FUTURE_DATE = (date.today() + timedelta(days=30)).isoformat()
+# "Past"/"expired" is computed in UTC to match the server's validation
+# (datetime.now(timezone.utc).date() / waivers valid through end-of-day UTC), so
+# these stay deterministic regardless of the runner's local timezone — e.g. Dubai
+# (UTC+4) rolling to the next local day before UTC does.
+_PAST_DATE = (datetime.now(timezone.utc).date() - timedelta(days=1)).isoformat()
 VALID_METADATA = {
     "business_justification": "Needed to run the eGate UAT load tests before go-live.",
     "priority": "high",
@@ -902,7 +907,7 @@ def test_submit_rejects_unknown_criticality(client):
 
 
 def test_submit_rejects_past_delivery_date(client):
-    past = (date.today() - timedelta(days=1)).isoformat()
+    past = _PAST_DATE
     ref = _draft_ref(client, {**VALID_CREATE, "required_delivery_date": past})
     errors = client.post(f"/api/requests/{ref}/submit").json()["errors"]
     assert "required_delivery_date" in errors
@@ -1426,7 +1431,7 @@ def test_waiver_self_grant_is_blocked(client):
 def test_expired_waiver_still_blocks(client):
     app.dependency_overrides[get_policy_evaluator] = _deny_policy
     ref = client.post("/api/requests/draft", json=VALID_CREATE, headers=ALICE).json()["reference"]
-    past = (date.today() - timedelta(days=1)).isoformat()
+    past = _PAST_DATE
     granted = client.post(f"/api/requests/{ref}/waiver", headers=BOB,
                           json={"reason": "Exception that has already lapsed.", "expires_at": past})
     assert granted.status_code == 200
