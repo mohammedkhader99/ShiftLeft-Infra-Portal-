@@ -44,6 +44,13 @@ variable "instance_name" {
   default = ""
 }
 
+# The compute shape. A "*.Flex" shape is sized by instance_ocpus/memory below; a
+# fixed shape ignores those. Must be compatible with the chosen image.
+variable "instance_shape" {
+  type    = string
+  default = "VM.Standard.E4.Flex"
+}
+
 variable "instance_ocpus" {
   type    = number
   default = 1

@@ -79,6 +79,8 @@ def _oci_vars(name: str, tags: dict, resource_kind: str = "oci-bucket",
         # in a different compartment than object storage.
         "compute_compartment_ocid": os.getenv("OCI_COMPUTE_COMPARTMENT_OCID", ""),
         "instance_name": name if resource_kind == "oci-instance" else "",
+        # Shape must be compatible with the image; a *.Flex shape is sized below.
+        "instance_shape": os.getenv("OCI_COMPUTE_SHAPE", "VM.Standard.E4.Flex"),
         "instance_ocpus": int(sizing.get("ocpus", 1)),
         "instance_memory_gb": int(sizing.get("memory_gb", 8)),
         "subnet_ocid": os.getenv("OCI_COMPUTE_SUBNET_OCID", ""),

@@ -60,12 +60,16 @@ resource "oci_core_instance" "env" {
   compartment_id      = var.compute_compartment_ocid != "" ? var.compute_compartment_ocid : var.compartment_ocid
   availability_domain = data.oci_identity_availability_domains.ads[0].availability_domains[0].name
   display_name        = var.instance_name
-  shape               = "VM.Standard.E4.Flex"
+  shape               = var.instance_shape
 
-  # Flex shape sized from the request (1 OCPU ~ 2 vCPUs on x86).
-  shape_config {
-    ocpus         = var.instance_ocpus
-    memory_in_gbs = var.instance_memory_gb
+  # Only Flex shapes take a shape_config (ocpus/memory); fixed shapes have set
+  # sizing, so omit it there. Sized from the request (1 OCPU ~ 2 vCPUs on x86).
+  dynamic "shape_config" {
+    for_each = can(regex("Flex", var.instance_shape)) ? [1] : []
+    content {
+      ocpus         = var.instance_ocpus
+      memory_in_gbs = var.instance_memory_gb
+    }
   }
 
   # Private-only: placed in the supplied subnet, no public IP.

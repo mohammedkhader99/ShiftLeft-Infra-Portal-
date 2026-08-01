@@ -229,6 +229,10 @@ services:
       OCI_COMPUTE_IMAGE_OCID: ${OCI_COMPUTE_IMAGE_OCID:-}
       OCI_COMPUTE_SSH_AUTHORIZED_KEY: ${OCI_COMPUTE_SSH_AUTHORIZED_KEY:-}
       OCI_COMPUTE_USER_DATA: ${OCI_COMPUTE_USER_DATA:-}
+      # Compute shape (default VM.Standard.E4.Flex). Must be compatible with the
+      # image — check with list-image-shape-compatibility. A *.Flex shape is sized
+      # from the request; a fixed shape uses its own sizing.
+      OCI_COMPUTE_SHAPE: ${OCI_COMPUTE_SHAPE:-VM.Standard.E4.Flex}
       # Optional: the compartment the VM + its subnet/image live in (empty = same
       # as buckets, OCI_COMPARTMENT_OCID). The orchestrator's OCI user needs IAM
       # rights to use subnets/vnics, read instance-images, and manage instances

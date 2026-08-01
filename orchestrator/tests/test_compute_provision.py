@@ -56,6 +56,7 @@ def test_oci_vars_compute_shape(monkeypatch):
     monkeypatch.setenv("OCI_COMPUTE_SUBNET_OCID", "ocid1.subnet..s")
     monkeypatch.setenv("OCI_COMPUTE_IMAGE_OCID", "ocid1.image..i")
     monkeypatch.delenv("OCI_COMPUTE_SSH_AUTHORIZED_KEY", raising=False)
+    monkeypatch.delenv("OCI_COMPUTE_SHAPE", raising=False)  # pin the default, ignore any .env
     monkeypatch.setenv("OCI_COMPUTE_USER_DATA", "#cloud-config\npassword: x")
     v = provisioner._oci_vars("web-req-1", {"reference": "REQ-1"},
                               "oci-instance", {"ocpus": 4, "memory_gb": 64})
@@ -66,6 +67,13 @@ def test_oci_vars_compute_shape(monkeypatch):
     assert v["image_ocid"] == "ocid1.image..i"
     assert v["ssh_authorized_key"] == ""  # optional — not set here
     assert v["user_data"] == "#cloud-config\npassword: x"
+    assert v["instance_shape"] == "VM.Standard.E4.Flex"  # default
+
+
+def test_oci_vars_shape_override(monkeypatch):
+    monkeypatch.setenv("OCI_COMPUTE_SHAPE", "VM.Standard.E3.Flex")
+    v = provisioner._oci_vars("n", {}, "oci-instance", {"ocpus": 2, "memory_gb": 16})
+    assert v["instance_shape"] == "VM.Standard.E3.Flex"
 
 
 def test_oci_vars_bucket_default():
