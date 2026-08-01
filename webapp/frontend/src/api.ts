@@ -608,6 +608,13 @@ export async function getReportRuns(id: number): Promise<{ runs: ReportRunRow[] 
   return r.ok ? r.json() : null
 }
 
+// Generate a report on demand (F-RPT-11). Read-only; nothing is stored.
+export async function getReport(kind: string): Promise<{ report: string; data: any } | 'forbidden' | null> {
+  const r = await fetch(`/api/reports/${kind}`)
+  if (r.status === 403) return 'forbidden'
+  return r.ok ? r.json() : null
+}
+
 // Set the global auto-shutdown schedule (F-FIN-06, platform-admin).
 export async function setShutdownPolicy(
   policy: ShutdownPolicy,

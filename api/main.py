@@ -3507,6 +3507,17 @@ def list_report_runs(sub_id: int, session: Session = Depends(get_session),
                       "summary": r.summary} for r in runs]}
 
 
+@app.get("/api/reports/{kind}")
+def get_report(kind: str, session: Session = Depends(get_session),
+               _auth: str = Depends(require_action("view_overview"))) -> dict:
+    """Generate a report on demand (F-RPT-11) — oversight. Read-only: nothing is
+    stored and nothing is provisioned."""
+    if kind not in reports.REPORT_KINDS:
+        raise HTTPException(status_code=404, detail=f"Unknown report: {kind}")
+    return {"report": kind, "generated_at": datetime.now(timezone.utc).isoformat(),
+            "data": reports.generate_report(session, kind)}
+
+
 def _sweep_reports(session: Session) -> None:
     """Generate + deliver due report subscriptions (F-RPT-11), advancing each by
     its cadence. Runs each poll cycle; cheap when nothing is due."""

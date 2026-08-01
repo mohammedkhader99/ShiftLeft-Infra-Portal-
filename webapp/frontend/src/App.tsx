@@ -22,6 +22,7 @@ import {
   ListChecked,
   ChartColumn,
   Money,
+  Report,
   Settings,
   Activity as ActivityIcon,
   Chat,
@@ -30,6 +31,7 @@ import RequestForm from './pages/RequestForm'
 import MyRequests from './pages/MyRequests'
 import Overview from './pages/Overview'
 import Showback from './pages/Showback'
+import Reports from './pages/Reports'
 import Admin from './pages/Admin'
 import Activity from './pages/Activity'
 import Assistant from './pages/Assistant'
@@ -85,6 +87,7 @@ export default function App() {
     !route.startsWith('#/requests') &&
     !route.startsWith('#/overview') &&
     !route.startsWith('#/showback') &&
+    !route.startsWith('#/reports') &&
     !route.startsWith('#/activity') &&
     !route.startsWith('#/assistant') &&
     !route.startsWith('#/admin')
@@ -101,6 +104,9 @@ export default function App() {
   } else if (route.startsWith('#/showback')) {
     title = 'Showback'
     page = <Showback />
+  } else if (route.startsWith('#/reports')) {
+    title = 'Reports'
+    page = <Reports />
   } else if (route.startsWith('#/activity')) {
     title = 'Activity'
     page = <Activity />
@@ -161,6 +167,11 @@ export default function App() {
             <SideNavLink renderIcon={Money} href="#/showback" isActive={route.startsWith('#/showback')}>
               Showback
             </SideNavLink>
+            {oversight && (
+              <SideNavLink renderIcon={Report} href="#/reports" isActive={route.startsWith('#/reports')}>
+                Reports
+              </SideNavLink>
+            )}
             {oversight && (
               <SideNavLink renderIcon={ActivityIcon} href="#/activity" isActive={route.startsWith('#/activity')}>
                 Activity

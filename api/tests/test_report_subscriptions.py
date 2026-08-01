@@ -191,3 +191,22 @@ def test_run_now_does_not_change_schedule(client, session):
 
 def test_run_now_404(client, session):
     assert client.post("/api/report-subscriptions/9999/run").status_code == 404
+
+
+# --- On-demand report endpoint (Reports page) --------------------------------
+
+@pytest.mark.parametrize("kind", reports.REPORT_KINDS)
+def test_get_report_endpoint(client, session, kind):
+    r = client.get(f"/api/reports/{kind}")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["report"] == kind and body["data"]["report"] == kind and body["generated_at"]
+
+
+def test_get_report_unknown_404(client, session):
+    assert client.get("/api/reports/nope").status_code == 404
+
+
+def test_get_report_rbac_requester_forbidden(client, session, monkeypatch):
+    monkeypatch.setenv("ROLE_MAP", '{"req@x.com": ["requester"]}')
+    assert client.get("/api/reports/estate", headers={"X-Requester": "req@x.com"}).status_code == 403
