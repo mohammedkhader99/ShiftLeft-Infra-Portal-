@@ -32,6 +32,9 @@ LIFECYCLE_EVENTS = {
     "ttl.expiring", "ttl.expired", "ttl.renewed",
     "ttl.decommissioned", "ttl.decommission.failed",
     "ownership.transferred", "ownership.orphaned", "drift.detected",
+    # day-2 lifecycle operations (E3)
+    "refresh.performed", "restore.performed", "backup.created",
+    "resource.stopped", "resource.started", "access.granted", "access.revoked",
     # governance signals
     "policy.waived", "waiver.granted", "sla.breached", "quorum.met",
     "quorum.blocked", "four_eyes.blocked", "sod.blocked", "change_window.held",

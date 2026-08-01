@@ -419,6 +419,48 @@ class ProvisionedResource(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 
+class WebhookSubscription(Base):
+    """An admin-configured outbound webhook endpoint (F-INT-10). Lifecycle events
+    are delivered here, HMAC-signed. `secret` is a shared HMAC key the admin sets
+    (runtime config, never in git); the payload carries no portal secrets."""
+
+    __tablename__ = "webhook_subscription"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    url: Mapped[str] = mapped_column(String(500))
+    secret: Mapped[str] = mapped_column(String(200))
+    events: Mapped[list] = mapped_column(JSON, default=list)  # [] or ["*"] = all events
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_by: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class WebhookDelivery(Base):
+    """One at-least-once delivery record for an outbound webhook (F-INT-10)."""
+
+    __tablename__ = "webhook_delivery"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    subscription_id: Mapped[int] = mapped_column(index=True)
+    event_id: Mapped[int] = mapped_column(index=True)  # AuditLog.id
+    event: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending|delivered|failed
+    attempts: Mapped[int] = mapped_column(default=0)
+    last_error: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class WebhookState(Base):
+    """Singleton cursor for the webhook fan-out (F-INT-10): the last audit id
+    enqueued, so only NEW events fan out (history isn't backfilled)."""
+
+    __tablename__ = "webhook_state"
+
+    id: Mapped[int] = mapped_column(primary_key=True)  # always 1
+    last_event_id: Mapped[int] = mapped_column(default=0)
+
+
 class AccessGrant(Base):
     """A time-bound just-in-time access grant to a provisioned environment
     (F-IAM-07). The credential itself is delivered by the vault via a one-time link

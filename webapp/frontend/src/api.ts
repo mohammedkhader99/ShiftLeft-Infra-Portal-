@@ -523,6 +523,36 @@ export async function getShutdown(): Promise<Shutdown | 'forbidden' | null> {
   return r.ok ? r.json() : null
 }
 
+// Outbound webhooks (F-INT-10, platform-admin). The secret is never returned.
+export type WebhookRow = {
+  id: number; url: string; events: string[]; active: boolean; created_by?: string | null
+  last_delivery?: { event: string; status: string; attempts: number; error?: string | null } | null
+}
+
+export async function getWebhooks(): Promise<{ enabled: boolean; webhooks: WebhookRow[] } | 'forbidden' | null> {
+  const r = await fetch('/api/webhooks')
+  if (r.status === 403) return 'forbidden'
+  return r.ok ? r.json() : null
+}
+
+export async function createWebhook(url: string, secret: string, events: string[]): Promise<{ status: number; body: any }> {
+  const r = await fetch('/api/webhooks', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url, secret, events }),
+  })
+  return { status: r.status, body: await r.json().catch(() => ({})) }
+}
+
+export async function deleteWebhook(id: number): Promise<{ status: number }> {
+  const r = await fetch(`/api/webhooks/${id}`, { method: 'DELETE' })
+  return { status: r.status }
+}
+
+export async function testWebhook(id: number): Promise<{ status: number; body: any }> {
+  const r = await fetch(`/api/webhooks/${id}/test`, { method: 'POST' })
+  return { status: r.status, body: await r.json().catch(() => ({})) }
+}
+
 // Set the global auto-shutdown schedule (F-FIN-06, platform-admin).
 export async function setShutdownPolicy(
   policy: ShutdownPolicy,

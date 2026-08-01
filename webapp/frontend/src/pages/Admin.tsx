@@ -6,8 +6,9 @@ import {
   getQuotas, setQuota, deleteQuota,
   getApiKeys, createApiKey, revokeApiKey,
   getShutdown, setShutdownPolicy,
+  getWebhooks, createWebhook, deleteWebhook, testWebhook,
   type SystemConfig, type BudgetRow, type Lookups, type OrphanRow, type QuotaRow, type ApiKeyRow,
-  type Shutdown, type ShutdownPolicy,
+  type Shutdown, type ShutdownPolicy, type WebhookRow,
 } from '../api'
 
 function Flag({ on, onLabel, offLabel }: { on: boolean; onLabel?: string; offLabel?: string }) {
@@ -57,6 +58,16 @@ export default function Admin() {
   const [sdForm, setSdForm] = useState<ShutdownPolicy>({ enabled: false, days: 'mon-fri', start: '08:00', end: '20:00', tz: 'UTC' })
   const [sdSaving, setSdSaving] = useState(false)
   const [sdMsg, setSdMsg] = useState<{ ok: boolean; text: string } | null>(null)
+  const [webhooks, setWebhooks] = useState<WebhookRow[]>([])
+  const [webhooksEnabled, setWebhooksEnabled] = useState(false)
+  const [whUrl, setWhUrl] = useState('')
+  const [whSecret, setWhSecret] = useState('')
+  const [whEvents, setWhEvents] = useState('')
+  const [whMsg, setWhMsg] = useState<{ ok: boolean; text: string } | null>(null)
+
+  function reloadWebhooks() {
+    getWebhooks().then((w) => { if (w && w !== 'forbidden') { setWebhooks(w.webhooks); setWebhooksEnabled(w.enabled) } }).catch(() => {})
+  }
 
   function reloadBudgets() {
     getBudgets().then((b) => b && b !== 'forbidden' && setBudgets(b.budgets)).catch(() => {})
@@ -84,8 +95,23 @@ export default function Admin() {
     reloadQuotas()
     reloadApiKeys()
     reloadShutdown()
+    reloadWebhooks()
     getOrphans().then((o) => o && o !== 'forbidden' && setOrphans(o.orphans)).catch(() => {})
   }, [])
+
+  async function onAddWebhook() {
+    setWhMsg(null)
+    const events = whEvents.split(',').map((e) => e.trim()).filter(Boolean)
+    const { status, body } = await createWebhook(whUrl.trim(), whSecret, events)
+    if (status === 200) { setWhUrl(''); setWhSecret(''); setWhEvents(''); reloadWebhooks() }
+    else setWhMsg({ ok: false, text: body?.detail?.[0]?.msg || (typeof body?.detail === 'string' ? body.detail : 'Could not add webhook.') })
+  }
+  async function onTestWebhook(id: number) {
+    const { body } = await testWebhook(id)
+    setWhMsg({ ok: !!body?.ok, text: body?.ok ? 'Test event delivered.' : `Test failed: ${body?.error || 'no response'}` })
+    reloadWebhooks()
+  }
+  async function onDeleteWebhook(id: number) { await deleteWebhook(id); reloadWebhooks() }
 
   async function onSaveShutdown() {
     setSdSaving(true)
@@ -323,6 +349,63 @@ export default function Admin() {
         <p style={{ fontSize: '0.78rem', color: 'var(--cds-text-secondary)', marginTop: '0.5rem' }}>
           The Enabled toggle runs the scheduler; a real cloud stop additionally requires <code>OCI_ACTUATE_ENABLED</code>.
         </p>
+      </Tile>
+
+      <Tile>
+        <h4 style={{ fontSize: '0.95rem', fontWeight: 500, marginBottom: '0.25rem' }}>
+          Outbound webhooks (F-INT-10) <Flag on={webhooksEnabled} onLabel="delivering" offLabel="disabled" />
+        </h4>
+        <p style={{ fontSize: '0.8rem', color: 'var(--cds-text-secondary)', marginBottom: '0.75rem' }}>
+          Lifecycle events are POSTed to these endpoints, HMAC-signed (<code>X-Signature</code>), with retries.
+          Payloads carry no secrets. Delivery is off until <code>WEBHOOKS_ENABLED=true</code> (a test send fires regardless).
+        </p>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
+          <thead>
+            <tr style={{ textAlign: 'left', color: 'var(--cds-text-secondary)', borderBottom: '1px solid var(--cds-border-subtle)' }}>
+              <th style={{ padding: '0.3rem 0.5rem' }}>Endpoint</th>
+              <th style={{ padding: '0.3rem 0.5rem' }}>Events</th>
+              <th style={{ padding: '0.3rem 0.5rem' }}>Last delivery</th>
+              <th style={{ padding: '0.3rem 0.5rem' }} />
+            </tr>
+          </thead>
+          <tbody>
+            {webhooks.map((w) => (
+              <tr key={w.id} style={{ borderBottom: '1px solid var(--cds-border-subtle-01)' }}>
+                <td style={{ padding: '0.3rem 0.5rem', wordBreak: 'break-all' }}>{w.url}</td>
+                <td style={{ padding: '0.3rem 0.5rem', color: 'var(--cds-text-secondary)' }}>{w.events.length ? w.events.join(', ') : 'all'}</td>
+                <td style={{ padding: '0.3rem 0.5rem' }}>
+                  {w.last_delivery
+                    ? <Tag size="sm" type={w.last_delivery.status === 'delivered' ? 'green' : w.last_delivery.status === 'failed' ? 'red' : 'gray'}>
+                        {w.last_delivery.event} · {w.last_delivery.status}
+                      </Tag>
+                    : <span style={{ color: 'var(--cds-text-secondary)' }}>—</span>}
+                </td>
+                <td style={{ padding: '0.3rem 0.5rem', textAlign: 'right', whiteSpace: 'nowrap' }}>
+                  <Button size="sm" kind="ghost" onClick={() => onTestWebhook(w.id)}>Test</Button>
+                  <Button hasIconOnly kind="ghost" size="sm" renderIcon={TrashCan} iconDescription="Delete webhook" onClick={() => onDeleteWebhook(w.id)} />
+                </td>
+              </tr>
+            ))}
+            {webhooks.length === 0 && (
+              <tr><td colSpan={4} style={{ padding: '0.5rem', color: 'var(--cds-text-secondary)' }}>No webhooks configured.</td></tr>
+            )}
+          </tbody>
+        </table>
+        {whMsg && (
+          <InlineNotification kind={whMsg.ok ? 'success' : 'error'} lowContrast title={whMsg.text}
+            onCloseButtonClick={() => setWhMsg(null)} style={{ maxWidth: 'none', marginTop: '0.75rem' }} />
+        )}
+        <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'flex-end', marginTop: '0.75rem', flexWrap: 'wrap' }}>
+          <TextInput id="wh-url" size="sm" labelText="Endpoint URL" placeholder="https://…" value={whUrl}
+            onChange={(e) => setWhUrl(e.target.value)} style={{ minWidth: '16rem' }} />
+          <TextInput id="wh-secret" size="sm" labelText="Signing secret" type="password" value={whSecret}
+            onChange={(e) => setWhSecret(e.target.value)} style={{ maxWidth: '12rem' }} />
+          <TextInput id="wh-events" size="sm" labelText="Events (blank = all)" placeholder="provisioned, decommissioned"
+            value={whEvents} onChange={(e) => setWhEvents(e.target.value)} style={{ minWidth: '14rem' }} />
+          <Button size="sm" renderIcon={Add} disabled={!whUrl.trim() || whSecret.length < 8} onClick={onAddWebhook}>
+            Add webhook
+          </Button>
+        </div>
       </Tile>
 
       <Tile>

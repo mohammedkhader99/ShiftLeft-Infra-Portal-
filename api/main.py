@@ -34,6 +34,7 @@ from api import optimisation as optim
 from api import shutdown as autoshutdown
 from api import sustainability as sustainability_mod
 from api import vault
+from api import webhooks
 from api.attachment import build_request_pdf
 from api.costsheet import build_cost_sheet_xlsx
 from api.evidence import build_evidence_pdf
@@ -80,6 +81,8 @@ from db.models import (
     SizingAnchor,
     Subsidiary,
     Technology,
+    WebhookDelivery,
+    WebhookSubscription,
 )
 from db.session import SessionLocal
 
@@ -3219,6 +3222,91 @@ def _sweep_access(session: Session) -> None:
         session.commit()
 
 
+# --- Outbound webhooks (F-INT-10) --------------------------------------------
+
+class WebhookIn(BaseModel):
+    url: str
+    secret: str
+    events: list[str] = []  # [] or ["*"] = all lifecycle events
+
+    @field_validator("url")
+    @classmethod
+    def _valid_url(cls, v: str) -> str:
+        v = (v or "").strip()
+        if not (v.startswith("http://") or v.startswith("https://")):
+            raise ValueError("url must start with http:// or https://")
+        return v
+
+    @field_validator("secret")
+    @classmethod
+    def _valid_secret(cls, v: str) -> str:
+        v = (v or "").strip()
+        if len(v) < 8:
+            raise ValueError("secret must be at least 8 characters")
+        return v
+
+
+def _webhook_row(sub: WebhookSubscription, session: Session) -> dict:
+    """Subscription for the portal — the secret is NEVER returned."""
+    last = session.scalar(select(WebhookDelivery).where(WebhookDelivery.subscription_id == sub.id)
+                          .order_by(WebhookDelivery.id.desc()))
+    return {"id": sub.id, "url": sub.url, "events": sub.events or [], "active": sub.active,
+            "created_by": sub.created_by,
+            "last_delivery": ({"event": last.event, "status": last.status, "attempts": last.attempts,
+                               "error": last.last_error} if last else None)}
+
+
+@app.post("/api/webhooks")
+def create_webhook(body: WebhookIn, session: Session = Depends(get_session),
+                   actor: str = Depends(require_action("execute"))) -> dict:
+    """Register an outbound webhook endpoint (F-INT-10). platform_admin. Lifecycle
+    events are delivered here, HMAC-signed; the payload never contains secrets."""
+    sub = WebhookSubscription(url=body.url, secret=body.secret,
+                              events=[e.strip() for e in body.events if e.strip()], created_by=actor)
+    session.add(sub)
+    append_audit(session, "webhook.subscribed", actor=actor,
+                 detail={"url": body.url, "events": sub.events})
+    session.commit()
+    return _webhook_row(sub, session)
+
+
+@app.get("/api/webhooks")
+def list_webhooks(session: Session = Depends(get_session),
+                  _auth: str = Depends(require_action("execute"))) -> dict:
+    subs = session.scalars(select(WebhookSubscription).order_by(WebhookSubscription.id.desc())).all()
+    return {"enabled": webhooks.enabled(), "webhooks": [_webhook_row(s, session) for s in subs]}
+
+
+@app.delete("/api/webhooks/{webhook_id}")
+def delete_webhook(webhook_id: int, session: Session = Depends(get_session),
+                   actor: str = Depends(require_action("execute"))) -> dict:
+    sub = session.get(WebhookSubscription, webhook_id)
+    if sub is None:
+        raise HTTPException(status_code=404, detail="Webhook not found.")
+    url = sub.url
+    session.delete(sub)
+    append_audit(session, "webhook.unsubscribed", actor=actor, detail={"url": url})
+    session.commit()
+    return {"deleted": webhook_id}
+
+
+@app.post("/api/webhooks/{webhook_id}/test")
+def test_webhook(webhook_id: int, session: Session = Depends(get_session),
+                 actor: str = Depends(require_action("execute"))) -> dict:
+    """Send a signed test event to the endpoint now — an explicit admin action, so
+    it fires even when WEBHOOKS_ENABLED is off. Returns the delivery result."""
+    sub = session.get(WebhookSubscription, webhook_id)
+    if sub is None:
+        raise HTTPException(status_code=404, detail="Webhook not found.")
+    payload = {"id": 0, "event": "webhook.test", "reference": None, "actor": actor,
+               "detail": {"message": "Test event from the infra portal."},
+               "created_at": datetime.now(timezone.utc).isoformat()}
+    ok, err = webhooks.deliver(sub, payload)
+    append_audit(session, "webhook.tested", actor=actor, detail={"url": sub.url, "ok": ok, "error": err or None})
+    session.commit()
+    return {"ok": ok, "error": err or None}
+
+
 def _decommission(session: Session, req: Request, actor: str) -> dict:
     """Tear down the resources of the provisioned request this decommission
     request targets, then mark both decommissioned.
@@ -3929,6 +4017,19 @@ def _poll_once() -> None:
         try:
             with SessionLocal() as session:
                 append_audit(session, "access.sweep.error", detail={"error": str(exc)})
+                session.commit()
+        except Exception:  # noqa: BLE001
+            pass
+
+    # Outbound webhook fan-out (F-INT-10): opt-in; deliver new lifecycle events to
+    # admin-configured endpoints, signed, with retries. No-op unless WEBHOOKS_ENABLED.
+    try:
+        with SessionLocal() as session:
+            webhooks.process(session)
+    except Exception as exc:  # noqa: BLE001
+        try:
+            with SessionLocal() as session:
+                append_audit(session, "webhook.sweep.error", detail={"error": str(exc)})
                 session.commit()
         except Exception:  # noqa: BLE001
             pass
