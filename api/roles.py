@@ -32,6 +32,7 @@ ACTIONS = {
     "create_request": {REQUESTER, PLATFORM_ADMIN},
     "execute": {PLATFORM_ADMIN},          # approve / apply / destroy / decommission
     "grant_waiver": {PLATFORM_ADMIN, APPROVER},   # F-GOV-02: document a policy exception
+    "grant_access": {PLATFORM_ADMIN, APPROVER},   # F-IAM-07: grant time-bound JIT access
     "view_audit": {AUDITOR, PLATFORM_ADMIN, REQUESTER},
     "view_overview": {PLATFORM_ADMIN, AUDITOR, FINOPS},   # whole-estate dashboard
 }

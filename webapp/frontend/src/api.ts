@@ -167,9 +167,33 @@ export type RequestRow = {
   shutdown?: { override: Partial<ShutdownPolicy> | null; effective: ShutdownPolicy } | null
   // Backup restore-points (F-LCM-06), newest first.
   backups?: BackupRow[] | null
+  // Active JIT access grants (F-IAM-07) — metadata only, never the credential.
+  access_grants?: AccessGrantRow[] | null
 }
 
 export type BackupRow = { id: number; label: string; created_by?: string | null; created_at?: string | null }
+export type AccessGrantRow = {
+  id: number; grantee: string; scope: string; granted_by?: string | null
+  granted_at?: string | null; expires_at?: string | null; status: string
+}
+
+// Grant time-bound JIT access (F-IAM-07). Approver/admin only. The response
+// carries a one-time vault link (F-INT-05) shown ONCE — never stored.
+export async function grantAccess(
+  reference: string, grantee: string, scope: string, ttlHours: number,
+): Promise<{ status: number; body: any }> {
+  const r = await fetch(`/api/requests/${reference}/access`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ grantee, scope, ttl_hours: ttlHours }),
+  })
+  return { status: r.status, body: await r.json().catch(() => ({})) }
+}
+
+export async function revokeAccess(reference: string, id: number): Promise<{ status: number }> {
+  const r = await fetch(`/api/requests/${reference}/access/${id}/revoke`, { method: 'POST' })
+  return { status: r.status }
+}
 
 // Take a backup restore-point of a provisioned environment (F-LCM-06). Owner
 // self-service (owner or platform-admin); no approval — mock records metadata.

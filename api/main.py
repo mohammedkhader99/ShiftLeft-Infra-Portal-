@@ -33,6 +33,7 @@ from api import forecast
 from api import optimisation as optim
 from api import shutdown as autoshutdown
 from api import sustainability as sustainability_mod
+from api import vault
 from api.attachment import build_request_pdf
 from api.costsheet import build_cost_sheet_xlsx
 from api.evidence import build_evidence_pdf
@@ -61,6 +62,7 @@ from api.sizing import resolve_components
 from api.validation import validate_submission
 from common.signing import sign
 from db.models import (
+    AccessGrant,
     ActualCost,
     ApiKey,
     Approval,
@@ -1363,6 +1365,9 @@ class RequestOut(BaseModel):
     shutdown: dict | None = None
     # Backup restore-points (F-LCM-06) for a provisioned environment, newest first.
     backups: list | None = None
+    # Active JIT access grants (F-IAM-07) for a provisioned environment — metadata
+    # only, never the credential.
+    access_grants: list | None = None
 
     @computed_field
     @property
@@ -1508,6 +1513,7 @@ def list_requests(
         out.power = _derive_power(power_map.get(r.reference, []))
         out.shutdown = _shutdown_out(session, r)
         out.backups = _backups_out(session, r)
+        out.access_grants = _access_out(session, r)
         outs.append(out)
     return outs
 
@@ -1604,6 +1610,7 @@ def get_request(reference: str, session: Session = Depends(get_session)) -> Requ
     out.power = _power_for(session, reference)
     out.shutdown = _shutdown_out(session, req)
     out.backups = _backups_out(session, req)
+    out.access_grants = _access_out(session, req)
     return out
 
 
@@ -3080,6 +3087,138 @@ def _restore(session: Session, req: Request, actor: str) -> dict:
             "message": f"Restored {target.reference} from '{backup.label}': {summary}"}
 
 
+# --- Just-in-time access + vault credential delivery (F-IAM-07 / F-INT-05) ---
+
+_ACCESS_SCOPES = {"ssh", "db-read", "db-admin", "read-only", "admin"}
+_ACCESS_MAX_TTL_HOURS = 72
+
+
+def _access_row(g: AccessGrant) -> dict:
+    """Grant metadata for the portal — NEVER the credential/link."""
+    return {"id": g.id, "grantee": g.grantee, "scope": g.scope, "granted_by": g.granted_by,
+            "granted_at": g.granted_at.isoformat() if g.granted_at else None,
+            "expires_at": g.expires_at.isoformat() if g.expires_at else None, "status": g.status}
+
+
+def _access_out(session: Session, req: Request) -> list | None:
+    """Active JIT access grants on a provisioned env, for the portal (no secrets)."""
+    if req.status != "provisioned":
+        return None
+    now = datetime.now(timezone.utc)
+    rows = session.scalars(
+        select(AccessGrant).where(AccessGrant.reference == req.reference,
+                                  AccessGrant.status == "active", AccessGrant.expires_at > now)
+        .order_by(AccessGrant.id.desc())
+    ).all()
+    return [_access_row(g) for g in rows]
+
+
+class AccessGrantIn(BaseModel):
+    grantee: str
+    scope: str = "read-only"
+    ttl_hours: int = 4
+
+    @field_validator("grantee")
+    @classmethod
+    def _clean_grantee(cls, v: str) -> str:
+        if not (v or "").strip():
+            raise ValueError("grantee is required")
+        return v.strip()
+
+    @field_validator("scope")
+    @classmethod
+    def _valid_scope(cls, v: str) -> str:
+        v = (v or "").strip().lower()
+        if v not in _ACCESS_SCOPES:
+            raise ValueError(f"scope must be one of: {', '.join(sorted(_ACCESS_SCOPES))}")
+        return v
+
+    @field_validator("ttl_hours")
+    @classmethod
+    def _valid_ttl(cls, v: int) -> int:
+        if not (1 <= int(v) <= _ACCESS_MAX_TTL_HOURS):
+            raise ValueError(f"ttl_hours must be 1–{_ACCESS_MAX_TTL_HOURS}")
+        return int(v)
+
+
+@app.post("/api/requests/{reference}/access")
+def grant_access(reference: str, body: AccessGrantIn, session: Session = Depends(get_session),
+                 actor: str = Depends(require_action("grant_access"))) -> dict:
+    """Grant TIME-BOUND just-in-time access to a provisioned environment (F-IAM-07),
+    gated to approver/platform_admin. The vault mints a short-lived credential and
+    returns a ONE-TIME link (F-INT-05) — shown once here, never stored or logged.
+    The portal records only the grant metadata + a vault handle. Audited
+    `access.granted` (never the secret)."""
+    req = _load_request(reference, session)
+    if req.status != "provisioned":
+        raise HTTPException(status_code=400,
+                            detail="Access can only be granted to a provisioned environment.")
+    try:
+        cred = vault.issue_credential(reference, body.grantee, body.scope, body.ttl_hours)
+    except vault.VaultUnavailable as exc:
+        raise HTTPException(status_code=501, detail=str(exc))
+    grant = AccessGrant(reference=reference, grantee=body.grantee, scope=body.scope,
+                        granted_by=actor, expires_at=datetime.fromisoformat(cred["expires_at"]),
+                        status="active", vault_handle=cred.get("handle"))
+    session.add(grant)
+    append_audit(session, "access.granted", reference=reference, actor=actor,
+                 detail={"grantee": body.grantee, "scope": body.scope,
+                         "expires_at": cred["expires_at"], "handle": cred.get("handle")})
+    session.commit()
+    # The credential link is returned ONCE and never persisted portal-side.
+    return {"grant": _access_row(grant),
+            "credential": {"link": cred.get("link"), "expires_at": cred["expires_at"],
+                           "mock": cred.get("mock", False), "note": cred.get("note")}}
+
+
+@app.get("/api/requests/{reference}/access")
+def list_access(reference: str, session: Session = Depends(get_session),
+                _auth: str = Depends(require_action("grant_access"))) -> dict:
+    """The environment's JIT access grants (metadata only — never the credential)."""
+    _load_request(reference, session)
+    rows = session.scalars(
+        select(AccessGrant).where(AccessGrant.reference == reference).order_by(AccessGrant.id.desc())
+    ).all()
+    return {"reference": reference, "grants": [_access_row(g) for g in rows]}
+
+
+@app.post("/api/requests/{reference}/access/{grant_id}/revoke")
+def revoke_access(reference: str, grant_id: int, session: Session = Depends(get_session),
+                  actor: str = Depends(require_action("grant_access"))) -> dict:
+    """Revoke a JIT access grant early (approver/platform_admin). Revokes the vault
+    credential and audits `access.revoked`."""
+    grant = session.get(AccessGrant, grant_id)
+    if grant is None or grant.reference != reference:
+        raise HTTPException(status_code=404, detail="Access grant not found.")
+    if grant.status != "active":
+        return {"id": grant.id, "status": grant.status, "message": f"Already {grant.status}."}
+    vault.revoke(grant.vault_handle)
+    grant.status = "revoked"
+    append_audit(session, "access.revoked", reference=reference, actor=actor,
+                 detail={"grantee": grant.grantee, "scope": grant.scope})
+    session.commit()
+    return {"id": grant.id, "status": "revoked"}
+
+
+def _sweep_access(session: Session) -> None:
+    """Expire time-bound access grants past their expiry, revoking the vault
+    credential (F-IAM-07). Runs each poll cycle; cheap when nothing is due."""
+    now = datetime.now(timezone.utc)
+    due = session.scalars(
+        select(AccessGrant).where(AccessGrant.status == "active", AccessGrant.expires_at <= now)
+    ).all()
+    for grant in due:
+        try:
+            vault.revoke(grant.vault_handle)
+        except Exception:  # noqa: BLE001 — a vault hiccup must not stall the sweep
+            pass
+        grant.status = "expired"
+        append_audit(session, "access.expired", reference=grant.reference, actor="system",
+                     detail={"grantee": grant.grantee, "scope": grant.scope})
+    if due:
+        session.commit()
+
+
 def _decommission(session: Session, req: Request, actor: str) -> dict:
     """Tear down the resources of the provisioned request this decommission
     request targets, then mark both decommissioned.
@@ -3777,6 +3916,19 @@ def _poll_once() -> None:
         try:
             with SessionLocal() as session:
                 append_audit(session, "state.sweep.error", detail={"error": str(exc)})
+                session.commit()
+        except Exception:  # noqa: BLE001
+            pass
+
+    # JIT access expiry sweep (F-IAM-07): expire time-bound grants + revoke the
+    # vault credential. Always on (it's a security control, not opt-in).
+    try:
+        with SessionLocal() as session:
+            _sweep_access(session)
+    except Exception as exc:  # noqa: BLE001
+        try:
+            with SessionLocal() as session:
+                append_audit(session, "access.sweep.error", detail={"error": str(exc)})
                 session.commit()
         except Exception:  # noqa: BLE001
             pass

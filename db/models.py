@@ -419,6 +419,25 @@ class ProvisionedResource(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 
+class AccessGrant(Base):
+    """A time-bound just-in-time access grant to a provisioned environment
+    (F-IAM-07). The credential itself is delivered by the vault via a one-time link
+    (F-INT-05) and is NEVER stored here — only the grant metadata + a vault handle,
+    for expiry, revoke, and audit."""
+
+    __tablename__ = "access_grant"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    reference: Mapped[str] = mapped_column(String(20), index=True)  # the env's request ref
+    grantee: Mapped[str] = mapped_column(String(120))
+    scope: Mapped[str] = mapped_column(String(32))   # ssh | db-read | db-admin | read-only | admin
+    granted_by: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    granted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(String(16), default="active")  # active|expired|revoked
+    vault_handle: Mapped[str | None] = mapped_column(String(120), nullable=True)  # NOT the secret
+
+
 class Backup(Base):
     """A restore-point for a provisioned environment (F-LCM-06). Owner-initiated
     (taking one needs no approval); restoring FROM one is approval-governed. Mock

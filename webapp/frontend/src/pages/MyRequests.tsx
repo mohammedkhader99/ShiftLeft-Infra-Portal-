@@ -20,7 +20,7 @@ import {
   Toggle,
 } from '@carbon/react'
 import { WarningAltFilled, Renew, UserFollow, Search, Pause, Play } from '@carbon/icons-react'
-import { getMe, getRequests, getAudit, renewRequest, transferOwner, checkDrift, reconcileState, triageFailure, actuate, setRequestShutdown, createBackup, type RequestRow, type ShutdownPolicy } from '../api'
+import { getMe, getRequests, getAudit, renewRequest, transferOwner, checkDrift, reconcileState, triageFailure, actuate, setRequestShutdown, createBackup, grantAccess, revokeAccess, type RequestRow, type ShutdownPolicy } from '../api'
 import { workflowSteps, fmtWhen, type WFStep } from '../workflow'
 
 const FILTER_KEYS = ['status', 'request_type', 'technology', 'deployment_target', 'created_week', 'requested_by', 'subsidiary']
@@ -94,6 +94,64 @@ function BackupControl({ r, onChange }: { r: RequestRow; onChange: () => void })
   )
 }
 
+// Just-in-time access (F-IAM-07 / F-INT-05): an approver grants time-bound access;
+// the vault returns a ONE-TIME link shown once here — never stored by the portal.
+function AccessControl({ r, onChange }: { r: RequestRow; onChange: () => void }) {
+  const [grantee, setGrantee] = useState('')
+  const [scope, setScope] = useState('read-only')
+  const [ttl, setTtl] = useState('4')
+  const [busy, setBusy] = useState(false)
+  const [link, setLink] = useState<{ link: string; expires_at: string; note?: string } | null>(null)
+  const [err, setErr] = useState<string | null>(null)
+  const grants = r.access_grants ?? []
+  async function grant() {
+    if (!grantee.trim()) return
+    setBusy(true); setErr(null); setLink(null)
+    try {
+      const { status, body } = await grantAccess(r.reference, grantee.trim(), scope, Number(ttl) || 4)
+      if (status === 200) { setLink(body.credential); setGrantee(''); onChange() }
+      else setErr(body?.detail?.[0]?.msg || (typeof body?.detail === 'string' ? body.detail : 'Could not grant access.'))
+    } finally { setBusy(false) }
+  }
+  async function revoke(id: number) {
+    setBusy(true)
+    try { await revokeAccess(r.reference, id); onChange() } finally { setBusy(false) }
+  }
+  return (
+    <div style={{ marginTop: '0.5rem', fontSize: '0.82rem' }}>
+      <div style={{ color: 'var(--cds-text-secondary)', marginBottom: '0.3rem' }}>
+        JIT access ({grants.length} active)
+        {grants.map((g) => (
+          <span key={g.id} style={{ marginLeft: '0.5rem' }}>
+            <Tag type="blue" size="sm" title={`granted by ${g.granted_by || '?'}`}>
+              {g.grantee} · {g.scope} · until {g.expires_at ? g.expires_at.slice(0, 16).replace('T', ' ') : '?'}
+            </Tag>
+            <Button size="sm" kind="ghost" disabled={busy} onClick={() => revoke(g.id)}>revoke</Button>
+          </span>
+        ))}
+      </div>
+      <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-end', flexWrap: 'wrap' }}>
+        <TextInput id={`ac-g-${r.reference}`} size="sm" labelText="" placeholder="grantee email"
+          value={grantee} onChange={(e) => setGrantee(e.target.value)} style={{ maxWidth: '14rem' }} />
+        <select value={scope} onChange={(e) => setScope(e.target.value)}
+          style={{ height: '2rem', fontSize: '0.8rem' }}>
+          {['read-only', 'ssh', 'db-read', 'db-admin', 'admin'].map((s) => <option key={s} value={s}>{s}</option>)}
+        </select>
+        <TextInput id={`ac-t-${r.reference}`} size="sm" labelText="" type="number" placeholder="hours"
+          value={ttl} onChange={(e) => setTtl(e.target.value)} style={{ maxWidth: '5rem' }} />
+        <Button size="sm" kind="tertiary" disabled={busy} onClick={grant}>Grant access</Button>
+      </div>
+      {err && <p style={{ color: 'var(--cds-support-error)', marginTop: '0.3rem' }}>{err}</p>}
+      {link && (
+        <InlineNotification kind={link.note ? 'warning' : 'success'} lowContrast
+          title="One-time access link — copy it now, it won't be shown again"
+          subtitle={`${link.link}   ·   expires ${link.expires_at.slice(0, 16).replace('T', ' ')}${link.note ? `   ·   ${link.note}` : ''}`}
+          onCloseButtonClick={() => setLink(null)} style={{ maxWidth: 'none', marginTop: '0.5rem' }} />
+      )}
+    </div>
+  )
+}
+
 // Per-request auto-shutdown override (F-FIN-06 B): shows the effective schedule
 // and lets an admin override it for this environment, or clear back to global.
 function ShutdownControl({ r, onChange }: { r: RequestRow; onChange: () => void }) {
@@ -154,6 +212,7 @@ export default function MyRequests({ route }: { route: string }) {
   const canRenew = !!me && me.roles.includes('platform_admin')  // matches the API gate
   const canDiagnose = canRenew  // triage endpoint is platform-admin only too
   const canActuate = canRenew   // stop/start is the 'execute' gate = platform_admin
+  const canGrantAccess = !!me && me.roles.some((r) => ['platform_admin', 'approver'].includes(r))
   const estate = query.scope === 'all' && oversight
   const filterActive = estate || Object.keys(filters).length > 0
 
@@ -686,6 +745,7 @@ export default function MyRequests({ route }: { route: string }) {
                           )}
                         </div>
                         <BackupControl r={r} onChange={refresh} />
+                        {canGrantAccess && <AccessControl r={r} onChange={refresh} />}
                         {canActuate && r.power && <ShutdownControl r={r} onChange={refresh} />}
                         </>
                       )}
