@@ -7,8 +7,9 @@ import {
   getApiKeys, createApiKey, revokeApiKey,
   getShutdown, setShutdownPolicy,
   getWebhooks, createWebhook, deleteWebhook, testWebhook,
+  getRoleMap, setRoleMap, deleteRoleMap, resolveAccess,
   type SystemConfig, type BudgetRow, type Lookups, type OrphanRow, type QuotaRow, type ApiKeyRow,
-  type Shutdown, type ShutdownPolicy, type WebhookRow,
+  type Shutdown, type ShutdownPolicy, type WebhookRow, type RoleMapRow,
 } from '../api'
 
 function Flag({ on, onLabel, offLabel }: { on: boolean; onLabel?: string; offLabel?: string }) {
@@ -64,6 +65,14 @@ export default function Admin() {
   const [whSecret, setWhSecret] = useState('')
   const [whEvents, setWhEvents] = useState('')
   const [whMsg, setWhMsg] = useState<{ ok: boolean; text: string } | null>(null)
+  const [roleMap, setRoleMapRows] = useState<RoleMapRow[]>([])
+  const [roleOptions, setRoleOptions] = useState<string[]>([])
+  const [roleSource, setRoleSource] = useState('mock')
+  const [newGroup, setNewGroup] = useState('')
+  const [newRole, setNewRole] = useState('')
+  const [rmMsg, setRmMsg] = useState<{ ok: boolean; text: string } | null>(null)
+  const [checkEmail, setCheckEmail] = useState('')
+  const [checkResult, setCheckResult] = useState<{ groups: string[]; roles: string[] } | null>(null)
 
   function reloadWebhooks() {
     getWebhooks().then((w) => { if (w && w !== 'forbidden') { setWebhooks(w.webhooks); setWebhooksEnabled(w.enabled) } }).catch(() => {})
@@ -81,6 +90,16 @@ export default function Admin() {
   function reloadApiKeys() {
     getApiKeys().then((k) => k && setApiKeys(k.keys)).catch(() => {})
   }
+  function reloadRoleMap() {
+    getRoleMap().then((m) => {
+      if (m && m !== 'forbidden') {
+        setRoleMapRows(m.mappings)
+        setRoleOptions(m.roles)
+        setRoleSource(m.role_source)
+        setNewRole((cur) => cur || m.roles[0] || '')
+      }
+    }).catch(() => {})
+  }
 
   useEffect(() => {
     getConfig()
@@ -96,8 +115,22 @@ export default function Admin() {
     reloadApiKeys()
     reloadShutdown()
     reloadWebhooks()
+    reloadRoleMap()
     getOrphans().then((o) => o && o !== 'forbidden' && setOrphans(o.orphans)).catch(() => {})
   }, [])
+
+  async function onAddMapping() {
+    setRmMsg(null)
+    if (!newGroup.trim() || !newRole) return
+    const { status, body } = await setRoleMap(newGroup.trim(), newRole)
+    if (status === 200) { setNewGroup(''); reloadRoleMap() }
+    else setRmMsg({ ok: false, text: body?.detail?.[0]?.msg || (typeof body?.detail === 'string' ? body.detail : 'Could not save the mapping.') })
+  }
+  async function onDeleteMapping(group: string) { await deleteRoleMap(group); reloadRoleMap() }
+  async function onCheckAccess() {
+    const res = await resolveAccess(checkEmail.trim())
+    setCheckResult(res ? { groups: res.groups, roles: res.roles } : { groups: [], roles: [] })
+  }
 
   async function onAddWebhook() {
     setWhMsg(null)
@@ -219,6 +252,77 @@ export default function Admin() {
           </div>
         </Tile>
       )}
+
+      <Tile>
+        <h4 style={{ fontSize: '0.95rem', fontWeight: 500, marginBottom: '0.25rem' }}>
+          Access control — group → role map (F-IAM-01){' '}
+          <Tag size="sm" type={roleSource === 'jira' ? 'blue' : 'gray'}>
+            {roleSource === 'jira' ? 'live (Jira groups)' : 'dev / mock'}
+          </Tag>
+        </h4>
+        <p style={{ fontSize: '0.8rem', color: 'var(--cds-text-secondary)', marginBottom: '0.75rem' }}>
+          Map each Jira group to a portal role — the one authorization decision the portal owns. In live
+          mode these drive who can do what; a user in no mapped group is <code>read_only</code>. Verify people
+          with the checker below, then set <code>ROLE_SOURCE=jira</code> to enforce.
+        </p>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
+          <thead>
+            <tr style={{ textAlign: 'left', color: 'var(--cds-text-secondary)', borderBottom: '1px solid var(--cds-border-subtle)' }}>
+              <th style={{ padding: '0.3rem 0.5rem' }}>Jira group</th>
+              <th style={{ padding: '0.3rem 0.5rem' }}>Portal role</th>
+              <th style={{ padding: '0.3rem 0.5rem' }}>Updated by</th>
+              <th style={{ padding: '0.3rem 0.5rem' }} />
+            </tr>
+          </thead>
+          <tbody>
+            {roleMap.map((m) => (
+              <tr key={m.jira_group} style={{ borderBottom: '1px solid var(--cds-border-subtle-01)' }}>
+                <td style={{ padding: '0.3rem 0.5rem', fontWeight: 500 }}>{m.jira_group}</td>
+                <td style={{ padding: '0.3rem 0.5rem' }}><Tag size="sm" type="blue">{m.role}</Tag></td>
+                <td style={{ padding: '0.3rem 0.5rem', color: 'var(--cds-text-secondary)' }}>{m.updated_by || '—'}</td>
+                <td style={{ padding: '0.3rem 0.5rem', textAlign: 'right' }}>
+                  <Button hasIconOnly kind="ghost" size="sm" renderIcon={TrashCan} iconDescription={`Delete ${m.jira_group} mapping`} onClick={() => onDeleteMapping(m.jira_group)} />
+                </td>
+              </tr>
+            ))}
+            {roleMap.length === 0 && (
+              <tr><td colSpan={4} style={{ padding: '0.5rem', color: 'var(--cds-text-secondary)' }}>No mappings yet — falls back to the JIRA_ROLE_MAP env.</td></tr>
+            )}
+          </tbody>
+        </table>
+        {rmMsg && (
+          <InlineNotification kind={rmMsg.ok ? 'success' : 'error'} lowContrast title={rmMsg.text}
+            onCloseButtonClick={() => setRmMsg(null)} style={{ maxWidth: 'none', marginTop: '0.75rem' }} />
+        )}
+        <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'flex-end', marginTop: '0.75rem', flexWrap: 'wrap' }}>
+          <TextInput id="rm-group" size="sm" labelText="Jira group" placeholder="e.g. imd-approvers"
+            value={newGroup} onChange={(e) => setNewGroup(e.target.value)} style={{ minWidth: '16rem' }} />
+          <Select id="rm-role" size="sm" labelText="Portal role" value={newRole} onChange={(e) => setNewRole(e.target.value)} style={{ minWidth: '12rem' }}>
+            {roleOptions.map((r) => (<SelectItem key={r} value={r} text={r} />))}
+          </Select>
+          <Button size="sm" renderIcon={Add} disabled={!newGroup.trim() || !newRole} onClick={onAddMapping}>Add mapping</Button>
+        </div>
+        <div style={{ marginTop: '1rem', paddingTop: '0.75rem', borderTop: '1px solid var(--cds-border-subtle-01)' }}>
+          <div style={{ fontWeight: 500, fontSize: '0.8rem', marginBottom: '0.4rem' }}>Check a user's access</div>
+          <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'flex-end', flexWrap: 'wrap' }}>
+            <TextInput id="rm-check" size="sm" labelText="Email" placeholder="user@emaratechg.ae"
+              value={checkEmail} onChange={(e) => setCheckEmail(e.target.value)} style={{ minWidth: '16rem' }} />
+            <Button size="sm" kind="tertiary" disabled={!checkEmail.trim()} onClick={onCheckAccess}>Check</Button>
+          </div>
+          {checkResult && (
+            <div style={{ fontSize: '0.82rem', marginTop: '0.6rem' }}>
+              <div style={{ marginBottom: '0.25rem' }}>
+                <span style={{ color: 'var(--cds-text-secondary)' }}>Groups: </span>
+                {checkResult.groups.length ? checkResult.groups.map((g) => <Tag key={g} size="sm" type="cool-gray">{g}</Tag>) : <em style={{ color: 'var(--cds-text-secondary)' }}>none</em>}
+              </div>
+              <div>
+                <span style={{ color: 'var(--cds-text-secondary)' }}>Resolves to: </span>
+                {checkResult.roles.length ? checkResult.roles.map((r) => <Tag key={r} size="sm" type="green">{r}</Tag>) : <em style={{ color: 'var(--cds-text-secondary)' }}>read_only</em>}
+              </div>
+            </div>
+          )}
+        </div>
+      </Tile>
 
       <Tile>
         <h4 style={{ fontSize: '0.95rem', fontWeight: 500, marginBottom: '0.75rem' }}>Cost-centre budgets</h4>

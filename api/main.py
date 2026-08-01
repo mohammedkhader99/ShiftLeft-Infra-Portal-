@@ -84,6 +84,7 @@ from db.models import (
     ProvisionedResource,
     ReportRun,
     ReportSubscription,
+    RoleMapping,
     Request,
     RequestComponent,
     SizingAnchor,
@@ -361,6 +362,81 @@ def whoami(requester: str = Depends(_authed_requester)) -> dict:
     """The signed-in user's identity and resolved roles (for the portal to
     show the role and hide actions it can't take — the API stays the gate)."""
     return {"email": requester, "roles": sorted(roles_mod.resolve_roles(requester))}
+
+
+# --- Access control: group -> role map (E1, F-IAM-01) ------------------------
+
+class RoleMappingIn(BaseModel):
+    jira_group: str
+    role: str
+
+    @field_validator("jira_group")
+    @classmethod
+    def _clean_group(cls, v: str) -> str:
+        v = (v or "").strip()
+        if not v:
+            raise ValueError("A Jira group name is required.")
+        return v[:120]
+
+    @field_validator("role")
+    @classmethod
+    def _valid_role(cls, v: str) -> str:
+        v = (v or "").strip().lower()
+        if v not in roles_mod.ALL_ROLES:
+            raise ValueError(f"role must be one of: {', '.join(sorted(roles_mod.ALL_ROLES))}")
+        return v
+
+
+@app.get("/api/access/role-map")
+def list_role_map(session: Session = Depends(get_session),
+                  _auth: str = Depends(require_action("manage_access"))) -> dict:
+    """The group->role map (F-IAM-01) — platform_admin. Includes the current role
+    source so the admin sees whether these mappings are live or in dev/mock."""
+    rows = session.scalars(select(RoleMapping).order_by(RoleMapping.jira_group)).all()
+    return {
+        "mappings": [{"jira_group": r.jira_group, "role": r.role, "updated_by": r.updated_by,
+                      "updated_at": r.updated_at.isoformat() if r.updated_at else None} for r in rows],
+        "roles": sorted(roles_mod.ALL_ROLES),
+        "role_source": roles_mod.role_source(),
+    }
+
+
+@app.put("/api/access/role-map")
+def set_role_map(body: RoleMappingIn, session: Session = Depends(get_session),
+                 actor: str = Depends(require_action("manage_access"))) -> dict:
+    """Add or update a group->role mapping (F-IAM-01). Clears the role cache so it
+    takes effect immediately."""
+    row = session.get(RoleMapping, body.jira_group)
+    if row is None:
+        session.add(RoleMapping(jira_group=body.jira_group, role=body.role, updated_by=actor))
+    else:
+        row.role = body.role
+        row.updated_by = actor
+        row.updated_at = datetime.now(timezone.utc)
+    append_audit(session, "rolemap.set", actor=actor, detail={"group": body.jira_group, "role": body.role})
+    session.commit()
+    roles_mod.clear_cache()
+    return {"jira_group": body.jira_group, "role": body.role}
+
+
+@app.delete("/api/access/role-map/{jira_group}")
+def delete_role_map(jira_group: str, session: Session = Depends(get_session),
+                    actor: str = Depends(require_action("manage_access"))) -> dict:
+    row = session.get(RoleMapping, jira_group)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Mapping not found.")
+    session.delete(row)
+    append_audit(session, "rolemap.removed", actor=actor, detail={"group": jira_group})
+    session.commit()
+    roles_mod.clear_cache()
+    return {"deleted": jira_group}
+
+
+@app.get("/api/access/resolve")
+def resolve_access(email: str, _auth: str = Depends(require_action("manage_access"))) -> dict:
+    """Preview what a given user resolves to — their groups and the roles those
+    grant (F-IAM-01). Verify the map is right before turning live enforcement on."""
+    return roles_mod.resolve_detail(email)
 
 
 # --- API keys / programmatic access (E1, F-INT-01) ---------------------------

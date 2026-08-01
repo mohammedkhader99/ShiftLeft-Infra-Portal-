@@ -608,6 +608,33 @@ export async function getReportRuns(id: number): Promise<{ runs: ReportRunRow[] 
   return r.ok ? r.json() : null
 }
 
+// Access control: group -> role map (F-IAM-01, platform-admin).
+export type RoleMapRow = { jira_group: string; role: string; updated_by?: string | null; updated_at?: string | null }
+
+export async function getRoleMap(): Promise<{ mappings: RoleMapRow[]; roles: string[]; role_source: string } | 'forbidden' | null> {
+  const r = await fetch('/api/access/role-map')
+  if (r.status === 403) return 'forbidden'
+  return r.ok ? r.json() : null
+}
+
+export async function setRoleMap(jira_group: string, role: string): Promise<{ status: number; body: any }> {
+  const r = await fetch('/api/access/role-map', {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ jira_group, role }),
+  })
+  return { status: r.status, body: await r.json().catch(() => ({})) }
+}
+
+export async function deleteRoleMap(jira_group: string): Promise<{ status: number }> {
+  const r = await fetch(`/api/access/role-map/${encodeURIComponent(jira_group)}`, { method: 'DELETE' })
+  return { status: r.status }
+}
+
+export async function resolveAccess(email: string): Promise<{ email: string; source: string; groups: string[]; roles: string[] } | null> {
+  const r = await fetch(`/api/access/resolve?email=${encodeURIComponent(email)}`)
+  return r.ok ? r.json() : null
+}
+
 // Generate a report on demand (F-RPT-11). Read-only; nothing is stored.
 export async function getReport(kind: string): Promise<{ report: string; data: any } | 'forbidden' | null> {
   const r = await fetch(`/api/reports/${kind}`)

@@ -17,6 +17,8 @@ import time
 
 import httpx
 
+from db.session import SessionLocal
+
 # The six roles from ARCHITECTURE.md F-IAM-01.
 REQUESTER = "requester"
 APPROVER = "approver"
@@ -35,6 +37,7 @@ ACTIONS = {
     "grant_access": {PLATFORM_ADMIN, APPROVER},   # F-IAM-07: grant time-bound JIT access
     "view_audit": {AUDITOR, PLATFORM_ADMIN, REQUESTER},
     "view_overview": {PLATFORM_ADMIN, AUDITOR, FINOPS},   # whole-estate dashboard
+    "manage_access": {PLATFORM_ADMIN},    # F-IAM-01: edit the group->role map
 }
 
 _cache: dict[str, tuple[float, set[str]]] = {}
@@ -57,8 +60,26 @@ def _mock_role_map() -> dict:
         return {}
 
 
+def _load_db_role_map() -> dict | None:
+    """DB-managed group->role mappings (RoleMapping), or None if the table is empty
+    or unreadable. Separated so it can be exercised/overridden in tests."""
+    try:
+        from sqlalchemy import select
+
+        from db.models import RoleMapping
+        with SessionLocal() as session:
+            rows = session.scalars(select(RoleMapping)).all()
+        return {r.jira_group: r.role for r in rows} if rows else None
+    except Exception:  # noqa: BLE001 — a DB hiccup must never deny; fall back to env
+        return None
+
+
 def _group_role_map() -> dict:
-    """Jira group name -> portal role, as JIRA_ROLE_MAP JSON (live source)."""
+    """Jira group name -> portal role. The DB map (admin-managed, F-IAM-01) takes
+    precedence; the JIRA_ROLE_MAP env is the fallback/seed."""
+    db = _load_db_role_map()
+    if db:
+        return {g: r for g, r in db.items() if r in ALL_ROLES}
     raw = os.getenv("JIRA_ROLE_MAP", "").strip()
     if not raw:
         return {}
@@ -164,6 +185,18 @@ def resolve_roles(email: str) -> set[str]:
     roles = {gmap[g] for g in groups if g in gmap and gmap[g] in ALL_ROLES} or {READ_ONLY}
     _cache[email] = (now, roles)
     return roles
+
+
+def resolve_detail(email: str) -> dict:
+    """What a given user resolves to right now: their directory groups and the
+    roles those groups grant (F-IAM-01). Lets an admin verify the group->role map
+    before turning live enforcement on."""
+    return {
+        "email": email,
+        "source": role_source(),
+        "groups": user_groups(email),
+        "roles": sorted(resolve_roles(email)),
+    }
 
 
 def can(roles: set[str], action: str) -> bool:

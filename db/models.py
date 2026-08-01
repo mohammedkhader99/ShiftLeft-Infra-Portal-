@@ -469,6 +469,19 @@ class LeaderLease(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 
+class RoleMapping(Base):
+    """A Jira group -> portal role mapping (F-IAM-01). DB-backed so admins manage
+    it from the portal instead of an env var — the one authorization decision the
+    portal itself owns. Unblocks turning live RBAC enforcement on."""
+
+    __tablename__ = "role_mapping"
+
+    jira_group: Mapped[str] = mapped_column(String(120), primary_key=True)
+    role: Mapped[str] = mapped_column(String(40))
+    updated_by: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
 class RateLimitCounter(Base):
     """A shared fixed-window rate-limit counter (F-OPS-01 / F-SEC-09). One row per
     (client, minute), incremented atomically so the per-minute limit is global
