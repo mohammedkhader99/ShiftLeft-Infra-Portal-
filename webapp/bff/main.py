@@ -16,10 +16,18 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import auth
+from . import auth, security
 
 API_BASE_URL = os.getenv("API_BASE_URL", "http://api:8081")
-SESSION_SECRET = os.getenv("SESSION_SECRET", "dev-insecure-session-secret")
+_DEV_SESSION_SECRET = "dev-insecure-session-secret"
+SESSION_SECRET = os.getenv("SESSION_SECRET", _DEV_SESSION_SECRET)
+# Strict sessions (F-SEC-09): Secure cookie + a max-age, gated on SESSION_SECURE
+# (off for local HTTP; set true in prod). A secure profile must not use the dev
+# secret.
+SESSION_SECURE = security._bool_env("SESSION_SECURE", False)
+SESSION_MAX_AGE = int(os.getenv("SESSION_MAX_AGE", str(8 * 3600)))  # 8 hours
+if SESSION_SECURE and SESSION_SECRET == _DEV_SESSION_SECRET:
+    raise RuntimeError("SESSION_SECURE=true requires a real SESSION_SECRET (not the dev default).")
 SPA_DIST = Path(os.getenv("SPA_DIST", "/app/dist"))
 
 # Paths reachable without being signed in.
@@ -43,7 +51,13 @@ async def require_login(request: Request, call_next):
 
 # Added AFTER the guard so it is the OUTER middleware — request.session must
 # exist before the guard reads it. (Last-added middleware runs first.)
-app.add_middleware(SessionMiddleware, secret_key=SESSION_SECRET, same_site="lax")
+app.add_middleware(SessionMiddleware, secret_key=SESSION_SECRET, same_site="lax",
+                   https_only=SESSION_SECURE, max_age=SESSION_MAX_AGE)
+
+# Application hardening (F-SEC-09): security headers + Origin-based CSRF + rate
+# limit. Added last, so it is the OUTERMOST middleware (rejects/limits early and
+# stamps headers on the way out); it doesn't need the session.
+security.install(app)
 
 
 def _forward_headers(request: Request) -> dict:

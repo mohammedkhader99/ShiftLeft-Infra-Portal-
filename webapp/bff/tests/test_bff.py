@@ -49,7 +49,9 @@ def test_proxy_forwards_content_type_for_json_post(monkeypatch):
         return _Upstream()
 
     monkeypatch.setattr(bff, "_proxy_upstream", fake_upstream)
-    resp = client.post("/api/cost", json={"deployment_target": "onprem", "components": []})
+    # A browser sends Origin on a mutating request; the BFF's CSRF check requires it.
+    resp = client.post("/api/cost", headers={"Origin": "http://testserver"},
+                       json={"deployment_target": "onprem", "components": []})
     assert resp.status_code == 200
     # Without this the API can't parse the JSON body upstream.
     assert captured["headers"].get("Content-Type") == "application/json"

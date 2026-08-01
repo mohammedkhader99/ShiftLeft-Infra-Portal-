@@ -61,6 +61,7 @@ from api.pricing import estimate_cost
 from api import roles as roles_mod
 from api.sizing import resolve_components
 from api.validation import validate_submission
+from common.security import install_rate_limit, install_security_headers
 from common.signing import sign
 from db.models import (
     AccessGrant,
@@ -107,6 +108,12 @@ async def _lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Infra Portal API", lifespan=_lifespan)
+
+# Application hardening (F-SEC-09): strict headers (JSON-only, so lock everything
+# down) + a per-client rate limit. The API sits behind the BFF; these are defence
+# in depth. SSE + health are exempt from the rate limit.
+install_security_headers(app, csp="default-src 'none'; frame-ancestors 'none'; base-uri 'none'")
+install_rate_limit(app, exempt_prefixes=("/health", "/api/events/stream"))
 
 # No login yet (real identity arrives in increment E1); stamp a fixed requester.
 MOCK_REQUESTER = "mohammed.khader@emaratechg.ae"

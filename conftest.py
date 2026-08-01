@@ -62,3 +62,8 @@ os.environ["QUOTA_ENFORCE"] = "false"
 # developer's .env can't flag environments in unrelated tests; the orphan tests
 # set DEPARTED_OWNERS explicitly.
 os.environ["DEPARTED_OWNERS"] = ""
+# Application hardening (F-SEC-09): the per-client rate limit is read per-request,
+# so pin it OFF in the baseline — otherwise the whole suite's requests (same
+# 'testclient' host) could trip it and break unrelated tests. The rate-limit test
+# sets a low value itself.
+os.environ["RATE_LIMIT_PER_MINUTE"] = "0"
