@@ -226,7 +226,12 @@ services:
       # a compute apply refuses with a clear message. All customer-supplied; never
       # commit these.
       OCI_COMPUTE_SUBNET_OCID: ${OCI_COMPUTE_SUBNET_OCID:-}
+      # Default OS image, used for any technology not in the per-technology map.
       OCI_COMPUTE_IMAGE_OCID: ${OCI_COMPUTE_IMAGE_OCID:-}
+      # Optional per-technology image map (JSON: technology_code -> image OCID),
+      # e.g. {"rhel9":"ocid1.image...","win2019":"ocid1.image..."}. A component's
+      # technology picks its image; unmapped ones use OCI_COMPUTE_IMAGE_OCID.
+      OCI_COMPUTE_IMAGE_MAP: ${OCI_COMPUTE_IMAGE_MAP:-}
       OCI_COMPUTE_SSH_AUTHORIZED_KEY: ${OCI_COMPUTE_SSH_AUTHORIZED_KEY:-}
       OCI_COMPUTE_USER_DATA: ${OCI_COMPUTE_USER_DATA:-}
       # Compute shape (default VM.Standard.E4.Flex). Must be compatible with the

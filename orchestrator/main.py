@@ -147,6 +147,27 @@ def _instance_sizing(payload: dict) -> dict:
     return {"ocpus": best[0], "memory_gb": best[1]}
 
 
+def _image_for(payload: dict) -> str:
+    """The OS image for this request's compute component: a per-technology image
+    from OCI_COMPUTE_IMAGE_MAP (JSON: technology_code -> image OCID) if one
+    matches a component, else the default OCI_COMPUTE_IMAGE_OCID."""
+    try:
+        mapping = json.loads(os.getenv("OCI_COMPUTE_IMAGE_MAP", "") or "{}")
+    except (ValueError, TypeError):
+        mapping = {}
+    if isinstance(mapping, dict):
+        for c in payload.get("policy_input", {}).get("components", []):
+            code = c.get("technology_code")
+            if code and mapping.get(code):
+                return mapping[code]
+    return os.getenv("OCI_COMPUTE_IMAGE_OCID", "")
+
+
+def _compute_spec(payload: dict) -> dict:
+    """The compute instance's Terraform inputs: sizing + the resolved OS image."""
+    return {**_instance_sizing(payload), "image_ocid": _image_for(payload)}
+
+
 @app.post("/provision")
 async def provision(request: Request) -> dict:
     """Approve handoff: plan only (mock returns a mock result). Creates nothing."""
@@ -162,7 +183,7 @@ async def provision(request: Request) -> dict:
     verified = {"approval": True, "policy": True, "cost": True}
     name, tags = _bucket_and_tags(payload)
     rkind = _resource_kind(payload)
-    sizing = _instance_sizing(payload)
+    sizing = _compute_spec(payload)
 
     if mode in ("plan", "apply"):
         try:
@@ -213,7 +234,7 @@ async def apply(request: Request) -> dict:
     name, tags = _bucket_and_tags(payload)
     rkind = _resource_kind(payload)
     try:
-        result = provisioner.terraform_apply(reference, name, tags, rkind, _instance_sizing(payload))
+        result = provisioner.terraform_apply(reference, name, tags, rkind, _compute_spec(payload))
     except provisioner.ProvisionError as exc:
         raise HTTPException(status_code=400, detail=f"Terraform apply failed: {exc}")
 
@@ -243,7 +264,7 @@ async def drift(request: Request) -> dict:
     name, tags = _bucket_and_tags(payload)
     try:
         result = provisioner.terraform_drift(reference, name, tags, _resource_kind(payload),
-                                             _instance_sizing(payload))
+                                             _compute_spec(payload))
     except provisioner.ProvisionError as exc:
         raise HTTPException(status_code=400, detail=f"Drift check failed: {exc}")
     return {"reference": reference, **result}
@@ -305,7 +326,7 @@ async def destroy(request: Request) -> dict:
     name, tags = _bucket_and_tags(payload)
     try:
         result = provisioner.terraform_destroy(payload["reference"], name, tags,
-                                               _resource_kind(payload), _instance_sizing(payload))
+                                               _resource_kind(payload), _compute_spec(payload))
     except provisioner.ProvisionError as exc:
         raise HTTPException(status_code=400, detail=f"Terraform destroy failed: {exc}")
     _provisioned.pop(payload.get("idempotency_key", ""), None)

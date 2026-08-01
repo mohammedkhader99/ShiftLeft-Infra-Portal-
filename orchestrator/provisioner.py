@@ -47,16 +47,19 @@ def _require_oci() -> None:
 # and/or cloud-init user-data (OCI_COMPUTE_USER_DATA, e.g. to set a password on a
 # custom image) are BOTH optional. All are the customer's to supply via .env / a
 # vault — never held in code or git.
-_REQUIRED_COMPUTE_VARS = ("OCI_COMPUTE_SUBNET_OCID", "OCI_COMPUTE_IMAGE_OCID")
+_REQUIRED_COMPUTE_VARS = ("OCI_COMPUTE_SUBNET_OCID",)
 
 
 def _require_compute() -> None:
     missing = [k for k in _REQUIRED_COMPUTE_VARS if not os.getenv(k)]
+    # An OS image can come from the default var or the per-technology map.
+    if not os.getenv("OCI_COMPUTE_IMAGE_OCID") and not os.getenv("OCI_COMPUTE_IMAGE_MAP"):
+        missing.append("OCI_COMPUTE_IMAGE_OCID (a default image) or OCI_COMPUTE_IMAGE_MAP (per-technology images)")
     if missing:
         raise ProvisionError(
             "Compute (VM) provisioning is not configured: set "
             + ", ".join(missing)
-            + " — an existing subnet OCID and an OS image OCID."
+            + " — an existing subnet OCID and an OS image."
         )
 
 
@@ -84,7 +87,9 @@ def _oci_vars(name: str, tags: dict, resource_kind: str = "oci-bucket",
         "instance_ocpus": int(sizing.get("ocpus", 1)),
         "instance_memory_gb": int(sizing.get("memory_gb", 8)),
         "subnet_ocid": os.getenv("OCI_COMPUTE_SUBNET_OCID", ""),
-        "image_ocid": os.getenv("OCI_COMPUTE_IMAGE_OCID", ""),
+        # Per-technology image resolved by the orchestrator (sizing["image_ocid"]);
+        # falls back to the default image env for a plain/legacy call.
+        "image_ocid": sizing.get("image_ocid") or os.getenv("OCI_COMPUTE_IMAGE_OCID", ""),
         # Access — both optional. A custom image with a baked-in password needs
         # neither; user_data (cloud-init) can set/enable a password if required.
         "ssh_authorized_key": os.getenv("OCI_COMPUTE_SSH_AUTHORIZED_KEY", ""),

@@ -31,7 +31,7 @@ def test_instance_sizing_has_a_safe_minimum():
 # --- Compute-config gate -----------------------------------------------------
 
 def _clear_compute_env(monkeypatch):
-    for k in ("OCI_COMPUTE_SUBNET_OCID", "OCI_COMPUTE_IMAGE_OCID",
+    for k in ("OCI_COMPUTE_SUBNET_OCID", "OCI_COMPUTE_IMAGE_OCID", "OCI_COMPUTE_IMAGE_MAP",
               "OCI_COMPUTE_SSH_AUTHORIZED_KEY", "OCI_COMPUTE_USER_DATA"):
         monkeypatch.delenv(k, raising=False)
 
@@ -96,3 +96,45 @@ def test_compute_compartment_prefers_dedicated(monkeypatch):
     assert cloud_state._compute_compartment() == "ocid1.compartment..bucket"  # fallback
     monkeypatch.setenv("OCI_COMPUTE_COMPARTMENT_OCID", "ocid1.compartment..compute")
     assert cloud_state._compute_compartment() == "ocid1.compartment..compute"
+
+
+# --- Per-technology image mapping --------------------------------------------
+
+def test_image_for_maps_by_technology(monkeypatch):
+    monkeypatch.setenv("OCI_COMPUTE_IMAGE_MAP", '{"rhel9":"ocid1.image..rhel","win2019":"ocid1.image..win"}')
+    monkeypatch.setenv("OCI_COMPUTE_IMAGE_OCID", "ocid1.image..default")
+    payload = {"policy_input": {"components": [{"technology_code": "rhel9", "size": "small"}]}}
+    assert omain._image_for(payload) == "ocid1.image..rhel"
+
+
+def test_image_for_falls_back_to_default(monkeypatch):
+    monkeypatch.setenv("OCI_COMPUTE_IMAGE_MAP", '{"rhel9":"ocid1.image..rhel"}')
+    monkeypatch.setenv("OCI_COMPUTE_IMAGE_OCID", "ocid1.image..default")
+    payload = {"policy_input": {"components": [{"technology_code": "compute-vm", "size": "small"}]}}
+    assert omain._image_for(payload) == "ocid1.image..default"  # unmapped -> default
+
+
+def test_image_for_ignores_bad_map(monkeypatch):
+    monkeypatch.setenv("OCI_COMPUTE_IMAGE_MAP", "not-json")
+    monkeypatch.setenv("OCI_COMPUTE_IMAGE_OCID", "ocid1.image..default")
+    payload = {"policy_input": {"components": [{"technology_code": "rhel9"}]}}
+    assert omain._image_for(payload) == "ocid1.image..default"
+
+
+def test_compute_spec_includes_sizing_and_image(monkeypatch):
+    monkeypatch.setenv("OCI_COMPUTE_IMAGE_MAP", '{"rhel9":"ocid1.image..rhel"}')
+    spec = omain._compute_spec({"policy_input": {"components": [{"technology_code": "rhel9", "size": "large"}]}})
+    assert spec["image_ocid"] == "ocid1.image..rhel" and spec["ocpus"] == 4 and spec["memory_gb"] == 64
+
+
+def test_oci_vars_uses_spec_image():
+    v = provisioner._oci_vars("n", {}, "oci-instance",
+                              {"ocpus": 1, "memory_gb": 8, "image_ocid": "ocid1.image..fromspec"})
+    assert v["image_ocid"] == "ocid1.image..fromspec"
+
+
+def test_require_compute_passes_with_map_only(monkeypatch):
+    _clear_compute_env(monkeypatch)
+    monkeypatch.setenv("OCI_COMPUTE_SUBNET_OCID", "ocid1.subnet..s")
+    monkeypatch.setenv("OCI_COMPUTE_IMAGE_MAP", '{"rhel9":"ocid1.image..rhel"}')
+    provisioner._require_compute()  # no raise — the image comes from the map
