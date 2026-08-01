@@ -75,6 +75,9 @@ def _oci_vars(name: str, tags: dict, resource_kind: str = "oci-bucket",
         # ignored (count = 0), so empty strings are fine.
         "resource_kind": resource_kind,
         "bucket_name": name if resource_kind == "oci-bucket" else "",
+        # Optional compute compartment (empty = same as buckets); lets the VM live
+        # in a different compartment than object storage.
+        "compute_compartment_ocid": os.getenv("OCI_COMPUTE_COMPARTMENT_OCID", ""),
         "instance_name": name if resource_kind == "oci-instance" else "",
         "instance_ocpus": int(sizing.get("ocpus", 1)),
         "instance_memory_gb": int(sizing.get("memory_gb", 8)),

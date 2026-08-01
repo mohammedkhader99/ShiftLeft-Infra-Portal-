@@ -229,6 +229,11 @@ services:
       OCI_COMPUTE_IMAGE_OCID: ${OCI_COMPUTE_IMAGE_OCID:-}
       OCI_COMPUTE_SSH_AUTHORIZED_KEY: ${OCI_COMPUTE_SSH_AUTHORIZED_KEY:-}
       OCI_COMPUTE_USER_DATA: ${OCI_COMPUTE_USER_DATA:-}
+      # Optional: the compartment the VM + its subnet/image live in (empty = same
+      # as buckets, OCI_COMPARTMENT_OCID). The orchestrator's OCI user needs IAM
+      # rights to use subnets/vnics, read instance-images, and manage instances
+      # there. Describe/stop/start also look the instance up in this compartment.
+      OCI_COMPUTE_COMPARTMENT_OCID: ${OCI_COMPUTE_COMPARTMENT_OCID:-}
       # IaC security scanning (F-SEC-03/04): the terraform plan is scanned before
       # apply. When true, a HIGH-severity finding blocks the handoff; default off
       # = scan + report only (the API audits the findings either way).

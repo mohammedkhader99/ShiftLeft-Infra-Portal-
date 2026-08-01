@@ -81,6 +81,12 @@ def _key_path() -> str:
     return os.getenv("OCI_PRIVATE_KEY_PATH", "/secrets/oci_api_key.pem")
 
 
+def _compute_compartment() -> str:
+    """Where compute instances live — the compute compartment if set, else the
+    default provisioning compartment (must match how the VM was provisioned)."""
+    return os.getenv("OCI_COMPUTE_COMPARTMENT_OCID") or os.getenv("OCI_COMPARTMENT_OCID", "")
+
+
 def _require_oci_creds() -> None:
     """Raise a clear, actionable error if the live OCI adapter isn't configured."""
     missing = [k for k in _REQUIRED_OCI if not os.getenv(k)]
@@ -150,7 +156,7 @@ def _instance_state(instance) -> tuple[bool, str]:
 def _describe_live(reference: str, resources: list[dict]) -> list[dict]:
     """Query OCI for the real state of each resource. Read-only."""
     _require_oci_creds()
-    compartment = os.getenv("OCI_COMPARTMENT_OCID", "")
+    compartment = _compute_compartment()
     os_client = namespace = compute = None
     out = []
     for r in resources:
@@ -218,7 +224,7 @@ def _actuate_live(reference: str, resources: list[dict], action: str) -> list[di
             "stop/start (read-only reconciliation works without it)."
         )
     _require_oci_creds()
-    compartment = os.getenv("OCI_COMPARTMENT_OCID", "")
+    compartment = _compute_compartment()
     compute = _compute_client()
     # SOFTSTOP = graceful ACPI shutdown; START powers a stopped instance back on.
     oci_action = "SOFTSTOP" if action == "stop" else "START"

@@ -55,8 +55,9 @@ data "oci_identity_availability_domains" "ads" {
 }
 
 resource "oci_core_instance" "env" {
-  count               = var.resource_kind == "oci-instance" ? 1 : 0
-  compartment_id      = var.compartment_ocid
+  count = var.resource_kind == "oci-instance" ? 1 : 0
+  # Compute may live in a different compartment than the buckets; empty falls back.
+  compartment_id      = var.compute_compartment_ocid != "" ? var.compute_compartment_ocid : var.compartment_ocid
   availability_domain = data.oci_identity_availability_domains.ads[0].availability_domains[0].name
   display_name        = var.instance_name
   shape               = "VM.Standard.E4.Flex"

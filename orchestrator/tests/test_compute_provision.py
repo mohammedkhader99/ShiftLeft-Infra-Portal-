@@ -72,3 +72,19 @@ def test_oci_vars_bucket_default():
     v = provisioner._oci_vars("my-bucket", {"reference": "REQ-1"})
     assert v["resource_kind"] == "oci-bucket"
     assert v["bucket_name"] == "my-bucket" and v["instance_name"] == ""
+
+
+def test_oci_vars_compute_compartment(monkeypatch):
+    monkeypatch.delenv("OCI_COMPUTE_COMPARTMENT_OCID", raising=False)
+    assert provisioner._oci_vars("n", {})["compute_compartment_ocid"] == ""  # empty = falls back
+    monkeypatch.setenv("OCI_COMPUTE_COMPARTMENT_OCID", "ocid1.compartment..x")
+    assert provisioner._oci_vars("n", {})["compute_compartment_ocid"] == "ocid1.compartment..x"
+
+
+def test_compute_compartment_prefers_dedicated(monkeypatch):
+    from orchestrator import cloud_state
+    monkeypatch.setenv("OCI_COMPARTMENT_OCID", "ocid1.compartment..bucket")
+    monkeypatch.delenv("OCI_COMPUTE_COMPARTMENT_OCID", raising=False)
+    assert cloud_state._compute_compartment() == "ocid1.compartment..bucket"  # fallback
+    monkeypatch.setenv("OCI_COMPUTE_COMPARTMENT_OCID", "ocid1.compartment..compute")
+    assert cloud_state._compute_compartment() == "ocid1.compartment..compute"

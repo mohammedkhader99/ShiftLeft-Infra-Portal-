@@ -31,6 +31,14 @@ variable "kms_key_id" {
 }
 
 # --- Compute VM (resource_kind = oci-instance) -------------------------------
+# Optional: the compartment the VM (and its subnet/image) live in. Empty falls
+# back to compartment_ocid (where buckets go), so compute can use a different
+# compartment than object storage.
+variable "compute_compartment_ocid" {
+  type    = string
+  default = ""
+}
+
 variable "instance_name" {
   type    = string
   default = ""
