@@ -423,6 +423,38 @@ class ProvisionedResource(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 
+class ReportSubscription(Base):
+    """A scheduled report subscription (F-RPT-11). Generated on its cadence; each
+    run is stored (viewable) and optionally POSTed (signed) to target_url."""
+
+    __tablename__ = "report_subscription"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    report: Mapped[str] = mapped_column(String(24))    # forecast | anomalies | estate
+    cadence: Mapped[str] = mapped_column(String(12))   # daily | weekly | monthly
+    target_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    secret: Mapped[str | None] = mapped_column(String(200), nullable=True)  # HMAC for target_url
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_by: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    last_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    next_due: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class ReportRun(Base):
+    """A generated report snapshot for a subscription (F-RPT-11), viewable in the
+    portal — always available regardless of external delivery."""
+
+    __tablename__ = "report_run"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    subscription_id: Mapped[int] = mapped_column(index=True)
+    report: Mapped[str] = mapped_column(String(24))
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    delivered: Mapped[str | None] = mapped_column(String(16), nullable=True)  # None|delivered|failed
+    summary: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
 class WebhookSubscription(Base):
     """An admin-configured outbound webhook endpoint (F-INT-10). Lifecycle events
     are delivered here, HMAC-signed. `secret` is a shared HMAC key the admin sets

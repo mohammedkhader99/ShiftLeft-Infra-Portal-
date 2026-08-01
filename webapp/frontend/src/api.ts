@@ -566,6 +566,48 @@ export async function testWebhook(id: number): Promise<{ status: number; body: a
   return { status: r.status, body: await r.json().catch(() => ({})) }
 }
 
+// Report subscriptions (F-RPT-11, oversight). Scheduled reports to finance/
+// security/owners; each run is stored (viewable) + optionally POSTed signed.
+export type ReportSubRow = {
+  id: number; report: string; cadence: string; target_url?: string | null
+  active: boolean; created_by?: string | null; next_due?: string | null; last_sent_at?: string | null
+  last_run?: { id: number; delivered?: string | null; generated_at?: string | null } | null
+}
+export type ReportRunRow = {
+  id: number; report: string; delivered?: string | null; generated_at?: string | null; summary: any
+}
+
+export async function getReportSubscriptions(): Promise<{ subscriptions: ReportSubRow[] } | 'forbidden' | null> {
+  const r = await fetch('/api/report-subscriptions')
+  if (r.status === 403) return 'forbidden'
+  return r.ok ? r.json() : null
+}
+
+export async function createReportSubscription(
+  report: string, cadence: string, target_url?: string, secret?: string,
+): Promise<{ status: number; body: any }> {
+  const r = await fetch('/api/report-subscriptions', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ report, cadence, target_url: target_url || null, secret: secret || null }),
+  })
+  return { status: r.status, body: await r.json().catch(() => ({})) }
+}
+
+export async function deleteReportSubscription(id: number): Promise<{ status: number }> {
+  const r = await fetch(`/api/report-subscriptions/${id}`, { method: 'DELETE' })
+  return { status: r.status }
+}
+
+export async function runReportNow(id: number): Promise<{ status: number; body: any }> {
+  const r = await fetch(`/api/report-subscriptions/${id}/run`, { method: 'POST' })
+  return { status: r.status, body: await r.json().catch(() => ({})) }
+}
+
+export async function getReportRuns(id: number): Promise<{ runs: ReportRunRow[] } | null> {
+  const r = await fetch(`/api/report-subscriptions/${id}/runs`)
+  return r.ok ? r.json() : null
+}
+
 // Set the global auto-shutdown schedule (F-FIN-06, platform-admin).
 export async function setShutdownPolicy(
   policy: ShutdownPolicy,

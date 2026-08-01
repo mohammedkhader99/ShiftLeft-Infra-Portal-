@@ -31,6 +31,7 @@ from api import chatbot
 from api import eventstream
 from api import forecast
 from api import optimisation as optim
+from api import reports
 from api import shutdown as autoshutdown
 from api import sustainability as sustainability_mod
 from api import vault
@@ -78,6 +79,8 @@ from db.models import (
     Estimate,
     Project,
     ProvisionedResource,
+    ReportRun,
+    ReportSubscription,
     Request,
     RequestComponent,
     SizingAnchor,
@@ -3369,6 +3372,155 @@ def test_webhook(webhook_id: int, session: Session = Depends(get_session),
     return {"ok": ok, "error": err or None}
 
 
+# --- Report subscriptions (F-RPT-11) -----------------------------------------
+
+_REPORT_CADENCES = {"daily": timedelta(days=1), "weekly": timedelta(days=7),
+                    "monthly": timedelta(days=30)}
+
+
+class ReportSubscriptionIn(BaseModel):
+    report: str
+    cadence: str = "weekly"
+    target_url: str | None = None
+    secret: str | None = None
+
+    @field_validator("report")
+    @classmethod
+    def _valid_report(cls, v: str) -> str:
+        v = (v or "").strip().lower()
+        if v not in reports.REPORT_KINDS:
+            raise ValueError(f"report must be one of: {', '.join(reports.REPORT_KINDS)}")
+        return v
+
+    @field_validator("cadence")
+    @classmethod
+    def _valid_cadence(cls, v: str) -> str:
+        v = (v or "").strip().lower()
+        if v not in _REPORT_CADENCES:
+            raise ValueError("cadence must be daily, weekly or monthly")
+        return v
+
+    @field_validator("target_url")
+    @classmethod
+    def _valid_url(cls, v: str | None) -> str | None:
+        if v is None or not v.strip():
+            return None
+        v = v.strip()
+        if not (v.startswith("http://") or v.startswith("https://")):
+            raise ValueError("target_url must start with http:// or https://")
+        return v
+
+
+def _report_sub_row(sub: ReportSubscription, session: Session) -> dict:
+    """Subscription for the portal — the delivery secret is NEVER returned."""
+    last = session.scalar(select(ReportRun).where(ReportRun.subscription_id == sub.id)
+                          .order_by(ReportRun.id.desc()))
+    return {"id": sub.id, "report": sub.report, "cadence": sub.cadence, "target_url": sub.target_url,
+            "active": sub.active, "created_by": sub.created_by,
+            "next_due": sub.next_due.isoformat() if sub.next_due else None,
+            "last_sent_at": sub.last_sent_at.isoformat() if sub.last_sent_at else None,
+            "last_run": ({"id": last.id, "delivered": last.delivered,
+                          "generated_at": last.generated_at.isoformat() if last.generated_at else None}
+                         if last else None)}
+
+
+def _run_report(session: Session, sub: ReportSubscription, actor: str = "scheduler") -> ReportRun:
+    """Generate a subscription's report, store the run (always viewable), and
+    optionally POST it signed to its target URL. Caller commits."""
+    data = reports.generate_report(session, sub.report)
+    run = ReportRun(subscription_id=sub.id, report=sub.report, summary=data)
+    session.add(run)
+    delivered = None
+    if sub.target_url:
+        body = json.dumps({"report": sub.report,
+                           "generated_at": datetime.now(timezone.utc).isoformat(), "data": data},
+                          sort_keys=True, default=str).encode()
+        headers = {"Content-Type": "application/json", "X-Report": sub.report}
+        if sub.secret:
+            headers["X-Signature"] = sign(sub.secret, body)
+        try:
+            resp = httpx.post(sub.target_url, content=body, headers=headers, timeout=5.0)
+            delivered = "delivered" if 200 <= resp.status_code < 300 else "failed"
+        except Exception:  # noqa: BLE001
+            delivered = "failed"
+    run.delivered = delivered
+    append_audit(session, "report.sent", actor=actor,
+                 detail={"subscription": sub.id, "report": sub.report, "delivered": delivered})
+    return run
+
+
+@app.post("/api/report-subscriptions")
+def create_report_subscription(body: ReportSubscriptionIn, session: Session = Depends(get_session),
+                               actor: str = Depends(require_action("view_overview"))) -> dict:
+    """Subscribe to a scheduled report (F-RPT-11) — oversight (finance/security/
+    admin). Generated on its cadence + stored; optionally POSTed signed to a URL."""
+    sub = ReportSubscription(report=body.report, cadence=body.cadence, target_url=body.target_url,
+                             secret=body.secret, created_by=actor,
+                             next_due=datetime.now(timezone.utc))  # first run on the next sweep
+    session.add(sub)
+    append_audit(session, "report.subscribed", actor=actor,
+                 detail={"report": body.report, "cadence": body.cadence})
+    session.commit()
+    return _report_sub_row(sub, session)
+
+
+@app.get("/api/report-subscriptions")
+def list_report_subscriptions(session: Session = Depends(get_session),
+                              _auth: str = Depends(require_action("view_overview"))) -> dict:
+    subs = session.scalars(select(ReportSubscription).order_by(ReportSubscription.id.desc())).all()
+    return {"subscriptions": [_report_sub_row(s, session) for s in subs]}
+
+
+@app.delete("/api/report-subscriptions/{sub_id}")
+def delete_report_subscription(sub_id: int, session: Session = Depends(get_session),
+                               actor: str = Depends(require_action("view_overview"))) -> dict:
+    sub = session.get(ReportSubscription, sub_id)
+    if sub is None:
+        raise HTTPException(status_code=404, detail="Report subscription not found.")
+    session.delete(sub)
+    append_audit(session, "report.unsubscribed", actor=actor, detail={"report": sub.report})
+    session.commit()
+    return {"deleted": sub_id}
+
+
+@app.post("/api/report-subscriptions/{sub_id}/run")
+def run_report_now(sub_id: int, session: Session = Depends(get_session),
+                   actor: str = Depends(require_action("view_overview"))) -> dict:
+    """Generate a subscription's report now (an explicit test) — doesn't change the
+    schedule."""
+    sub = session.get(ReportSubscription, sub_id)
+    if sub is None:
+        raise HTTPException(status_code=404, detail="Report subscription not found.")
+    run = _run_report(session, sub, actor=actor)
+    session.commit()
+    return {"id": run.id, "report": run.report, "delivered": run.delivered, "summary": run.summary}
+
+
+@app.get("/api/report-subscriptions/{sub_id}/runs")
+def list_report_runs(sub_id: int, session: Session = Depends(get_session),
+                     _auth: str = Depends(require_action("view_overview"))) -> dict:
+    runs = session.scalars(select(ReportRun).where(ReportRun.subscription_id == sub_id)
+                           .order_by(ReportRun.id.desc()).limit(20)).all()
+    return {"subscription": sub_id,
+            "runs": [{"id": r.id, "report": r.report, "delivered": r.delivered,
+                      "generated_at": r.generated_at.isoformat() if r.generated_at else None,
+                      "summary": r.summary} for r in runs]}
+
+
+def _sweep_reports(session: Session) -> None:
+    """Generate + deliver due report subscriptions (F-RPT-11), advancing each by
+    its cadence. Runs each poll cycle; cheap when nothing is due."""
+    now = datetime.now(timezone.utc)
+    due = session.scalars(select(ReportSubscription).where(
+        ReportSubscription.active.is_(True), ReportSubscription.next_due <= now)).all()
+    for sub in due:
+        _run_report(session, sub, actor="scheduler")
+        sub.last_sent_at = now
+        sub.next_due = now + _REPORT_CADENCES.get(sub.cadence, timedelta(days=7))
+    if due:
+        session.commit()
+
+
 def _decommission(session: Session, req: Request, actor: str) -> dict:
     """Tear down the resources of the provisioned request this decommission
     request targets, then mark both decommissioned.
@@ -4105,6 +4257,19 @@ def _poll_once() -> None:
         try:
             with SessionLocal() as session:
                 append_audit(session, "webhook.sweep.error", detail={"error": str(exc)})
+                session.commit()
+        except Exception:  # noqa: BLE001
+            pass
+
+    # Scheduled report subscriptions (F-RPT-11): generate + deliver due reports,
+    # advancing each by its cadence. Cheap when nothing is due.
+    try:
+        with SessionLocal() as session:
+            _sweep_reports(session)
+    except Exception as exc:  # noqa: BLE001
+        try:
+            with SessionLocal() as session:
+                append_audit(session, "report.sweep.error", detail={"error": str(exc)})
                 session.commit()
         except Exception:  # noqa: BLE001
             pass

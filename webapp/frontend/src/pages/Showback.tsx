@@ -1,6 +1,18 @@
-import { useEffect, useState } from 'react'
-import { Tile, InlineLoading, Select, SelectItem, ContentSwitcher, Switch, Tag } from '@carbon/react'
-import { getShowback, getBudgets, getVariance, getForecast, getOptimisation, getSustainability, getShutdown, type Showback, type BudgetRow, type Variance, type Forecast, type Optimisation, type Sustainability, type Shutdown } from '../api'
+import { Fragment, useEffect, useState } from 'react'
+import { Tile, InlineLoading, Select, SelectItem, ContentSwitcher, Switch, Tag, Button, TextInput } from '@carbon/react'
+import { getShowback, getBudgets, getVariance, getForecast, getOptimisation, getSustainability, getShutdown, getReportSubscriptions, createReportSubscription, deleteReportSubscription, runReportNow, getReportRuns, type Showback, type BudgetRow, type Variance, type Forecast, type Optimisation, type Sustainability, type Shutdown, type ReportSubRow, type ReportRunRow } from '../api'
+
+// Report subscriptions (F-RPT-11): the report kinds + cadences the API accepts.
+const REPORT_KINDS: [string, string][] = [
+  ['forecast', 'Spend forecast'],
+  ['anomalies', 'Cost anomalies'],
+  ['estate', 'Estate summary'],
+]
+const CADENCES: [string, string][] = [
+  ['daily', 'Daily'],
+  ['weekly', 'Weekly'],
+  ['monthly', 'Monthly'],
+]
 
 // The dimensions cost can be attributed to (must match the API's group_by set).
 const GROUPS: [string, string][] = [
@@ -423,6 +435,207 @@ export default function ShowbackPage() {
           <p style={{ fontSize: '0.72rem', color: 'var(--cds-text-secondary)', marginTop: '0.5rem' }}>{sd.note}</p>
         </Tile>
       )}
+
+      <ReportSubscriptions />
     </div>
+  )
+}
+
+function fmtWhen(iso?: string | null) {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  return isNaN(d.getTime()) ? '—' : d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
+}
+
+// Scheduled report subscriptions (F-RPT-11). Oversight-only; the Showback page
+// already gates on that, so if the API says 'forbidden' we simply render nothing.
+function ReportSubscriptions() {
+  const [subs, setSubs] = useState<ReportSubRow[] | null>(null)
+  const [forbidden, setForbidden] = useState(false)
+  const [report, setReport] = useState('forecast')
+  const [cadence, setCadence] = useState('weekly')
+  const [url, setUrl] = useState('')
+  const [secret, setSecret] = useState('')
+  const [msg, setMsg] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [runsFor, setRunsFor] = useState<number | null>(null)
+  const [runs, setRuns] = useState<ReportRunRow[]>([])
+
+  const load = () =>
+    getReportSubscriptions()
+      .then((r) => {
+        if (r === 'forbidden') setForbidden(true)
+        else if (r) {
+          setSubs(r.subscriptions)
+          setForbidden(false)
+        }
+      })
+      .catch(() => {})
+
+  useEffect(() => {
+    load()
+  }, [])
+
+  if (forbidden) return null
+
+  const create = async () => {
+    setBusy(true)
+    const r = await createReportSubscription(report, cadence, url.trim() || undefined, secret.trim() || undefined)
+    setBusy(false)
+    if (r.status >= 400) {
+      setMsg(typeof r.body?.detail === 'string' ? r.body.detail : 'Could not create the subscription.')
+      return
+    }
+    setUrl('')
+    setSecret('')
+    setMsg(null)
+    load()
+  }
+
+  const remove = async (id: number) => {
+    await deleteReportSubscription(id)
+    if (runsFor === id) setRunsFor(null)
+    load()
+  }
+
+  const viewRuns = async (id: number) => {
+    if (runsFor === id) {
+      setRunsFor(null)
+      return
+    }
+    setRunsFor(id)
+    const r = await getReportRuns(id)
+    setRuns(r?.runs || [])
+  }
+
+  const runNow = async (id: number) => {
+    setBusy(true)
+    const r = await runReportNow(id)
+    setBusy(false)
+    if (r.status < 400) {
+      setMsg(`Report generated for subscription #${id}.`)
+      setRunsFor(id)
+      const rr = await getReportRuns(id)
+      setRuns(rr?.runs || [])
+      load()
+    }
+  }
+
+  const deliveredTag = (d?: string | null) =>
+    d === 'delivered' ? (
+      <Tag type="green" size="sm">delivered</Tag>
+    ) : d === 'failed' ? (
+      <Tag type="red" size="sm">delivery failed</Tag>
+    ) : (
+      <Tag type="cool-gray" size="sm">saved in portal</Tag>
+    )
+
+  return (
+    <Tile style={{ marginTop: '1rem' }}>
+      <h4 style={{ fontSize: '0.95rem', fontWeight: 500, marginBottom: '0.5rem' }}>
+        Report subscriptions (F-RPT-11)
+      </h4>
+      <p style={{ fontSize: '0.78rem', color: 'var(--cds-text-secondary)', marginBottom: '0.85rem' }}>
+        Schedule a report to finance, security or owners. Each run is saved here (always viewable);
+        a webhook URL is an optional external copy, HMAC-signed. Email delivery is a future option.
+      </p>
+
+      <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: '0.5rem' }}>
+        <div style={{ minWidth: '11rem' }}>
+          <Select id="rs-report" labelText="Report" value={report} onChange={(e) => setReport(e.target.value)}>
+            {REPORT_KINDS.map(([v, l]) => (
+              <SelectItem key={v} value={v} text={l} />
+            ))}
+          </Select>
+        </div>
+        <div style={{ minWidth: '8rem' }}>
+          <Select id="rs-cadence" labelText="Cadence" value={cadence} onChange={(e) => setCadence(e.target.value)}>
+            {CADENCES.map(([v, l]) => (
+              <SelectItem key={v} value={v} text={l} />
+            ))}
+          </Select>
+        </div>
+        <div style={{ flex: '1 1 14rem', minWidth: '12rem' }}>
+          <TextInput id="rs-url" labelText="Webhook URL (optional)" placeholder="https://…" value={url}
+            onChange={(e) => setUrl(e.target.value)} />
+        </div>
+        <div style={{ flex: '1 1 10rem', minWidth: '9rem' }}>
+          <TextInput id="rs-secret" type="password" labelText="Signing secret (optional)" placeholder="for X-Signature"
+            value={secret} onChange={(e) => setSecret(e.target.value)} />
+        </div>
+        <Button size="md" onClick={create} disabled={busy}>Subscribe</Button>
+      </div>
+
+      {msg && (
+        <p style={{ fontSize: '0.8rem', color: 'var(--cds-text-secondary)', marginBottom: '0.5rem' }}>{msg}</p>
+      )}
+
+      {subs === null ? (
+        <InlineLoading description="Loading subscriptions…" />
+      ) : subs.length === 0 ? (
+        <p style={{ fontSize: '0.85rem', color: 'var(--cds-text-secondary)' }}>No report subscriptions yet.</p>
+      ) : (
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
+          <thead>
+            <tr style={{ textAlign: 'left', color: 'var(--cds-text-secondary)', borderBottom: '1px solid var(--cds-border-subtle)' }}>
+              <th style={{ padding: '0.3rem 0.5rem' }}>Report</th>
+              <th style={{ padding: '0.3rem 0.5rem' }}>Cadence</th>
+              <th style={{ padding: '0.3rem 0.5rem' }}>Next due</th>
+              <th style={{ padding: '0.3rem 0.5rem' }}>Last run</th>
+              <th style={{ padding: '0.3rem 0.5rem', textAlign: 'right' }}>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {subs.map((s) => (
+              <Fragment key={s.id}>
+                <tr style={{ borderBottom: '1px solid var(--cds-border-subtle-01)' }}>
+                  <td style={{ padding: '0.3rem 0.5rem' }}>
+                    {REPORT_KINDS.find(([v]) => v === s.report)?.[1] || s.report}
+                    {s.target_url && <Tag type="blue" size="sm" style={{ marginLeft: '0.4rem' }}>webhook</Tag>}
+                  </td>
+                  <td style={{ padding: '0.3rem 0.5rem' }}>{s.cadence}</td>
+                  <td style={{ padding: '0.3rem 0.5rem', color: 'var(--cds-text-secondary)' }}>{fmtWhen(s.next_due)}</td>
+                  <td style={{ padding: '0.3rem 0.5rem' }}>
+                    {s.last_run ? (
+                      <>
+                        {fmtWhen(s.last_run.generated_at)} {deliveredTag(s.last_run.delivered)}
+                      </>
+                    ) : (
+                      <span style={{ color: 'var(--cds-text-secondary)' }}>never</span>
+                    )}
+                  </td>
+                  <td style={{ padding: '0.3rem 0.5rem', textAlign: 'right', whiteSpace: 'nowrap' }}>
+                    <Button kind="ghost" size="sm" onClick={() => runNow(s.id)} disabled={busy}>Run now</Button>
+                    <Button kind="ghost" size="sm" onClick={() => viewRuns(s.id)}>{runsFor === s.id ? 'Hide' : 'Runs'}</Button>
+                    <Button kind="danger--ghost" size="sm" onClick={() => remove(s.id)}>Delete</Button>
+                  </td>
+                </tr>
+                {runsFor === s.id && (
+                  <tr>
+                    <td colSpan={5} style={{ padding: '0.25rem 0.5rem 0.75rem', background: 'var(--cds-layer-accent-01)' }}>
+                      {runs.length === 0 ? (
+                        <span style={{ fontSize: '0.8rem', color: 'var(--cds-text-secondary)' }}>No runs yet — use “Run now”.</span>
+                      ) : (
+                        runs.map((run) => (
+                          <details key={run.id} style={{ fontSize: '0.78rem', marginBottom: '0.25rem' }}>
+                            <summary style={{ cursor: 'pointer' }}>
+                              {fmtWhen(run.generated_at)} · {run.report} {deliveredTag(run.delivered)}
+                            </summary>
+                            <pre style={{ margin: '0.35rem 0 0', padding: '0.5rem', overflowX: 'auto',
+                              background: 'var(--cds-layer)', fontSize: '0.72rem' }}>
+                              {JSON.stringify(run.summary, null, 2)}
+                            </pre>
+                          </details>
+                        ))
+                      )}
+                    </td>
+                  </tr>
+                )}
+              </Fragment>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </Tile>
   )
 }
