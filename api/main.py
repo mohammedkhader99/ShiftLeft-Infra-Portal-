@@ -1351,6 +1351,9 @@ class RequestOut(BaseModel):
     # Operational power state (cloud-sync increment 2): 'running' | 'stopped' |
     # 'partial' for a provisioned environment's resources, else None.
     power: str | None = None
+    # Per-request auto-shutdown (F-FIN-06 B): {override, effective} for a
+    # provisioned environment, else None.
+    shutdown: dict | None = None
 
     @computed_field
     @property
@@ -1494,6 +1497,7 @@ def list_requests(
         out.drift = _drift_out(r)
         out.state = _state_out(r)
         out.power = _derive_power(power_map.get(r.reference, []))
+        out.shutdown = _shutdown_out(session, r)
         outs.append(out)
     return outs
 
@@ -1538,6 +1542,15 @@ def _power_for(session: Session, reference: str) -> str | None:
     ).all())
 
 
+def _shutdown_out(session: Session, req: Request) -> dict | None:
+    """Per-request auto-shutdown for the portal: the override + the resolved
+    effective schedule (override merged over global). Provisioned envs only."""
+    if req.status != "provisioned":
+        return None
+    return {"override": req.shutdown_override,
+            "effective": autoshutdown.effective_policy(session, req)}
+
+
 def _environment_resource_kind(session: Session, req: Request) -> str:
     """The cloud resource this environment provisions, from its components:
     'oci-instance' if any component is a compute technology, else 'oci-bucket'."""
@@ -1564,6 +1577,7 @@ def get_request(reference: str, session: Session = Depends(get_session)) -> Requ
     out.drift = _drift_out(req)
     out.state = _state_out(req)
     out.power = _power_for(session, reference)
+    out.shutdown = _shutdown_out(session, req)
     return out
 
 
@@ -2788,6 +2802,9 @@ def _actuate_env(session: Session, req: Request, action: str, actor: str) -> dic
     reported = {r.get("name"): r.get("power_state") for r in response.json().get("resources", [])}
     for r in resources:
         r.power_state = reported.get(r.name, target)
+    # Remember only an auto-shutdown stop, so the sweep re-starts what IT stopped
+    # and never a manual stop. Any start (or a manual stop) clears the flag.
+    req.auto_stopped = (action == "stop" and actor == "auto-shutdown")
     append_audit(session, "resource.stopped" if action == "stop" else "resource.started",
                  reference=req.reference,
                  jira_key=req.approval.jira_key if req.approval else None, actor=actor,
@@ -2833,6 +2850,66 @@ def actuate_request(reference: str, body: ActuateIn,
         out["idempotent"] = True
         out["message"] = f"{reference} is already {result['power']}."
     return out
+
+
+class RequestShutdownIn(BaseModel):
+    enabled: bool | None = None
+    days: str | None = None
+    start: str | None = None
+    end: str | None = None
+    tz: str | None = None
+    clear: bool = False  # remove the override (inherit the global schedule)
+
+    @field_validator("start", "end")
+    @classmethod
+    def _valid_hm(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        try:
+            hh, mm = (v or "").strip().split(":")
+            hh, mm = int(hh), int(mm)
+            assert 0 <= hh <= 23 and 0 <= mm <= 59
+            return f"{hh:02d}:{mm:02d}"
+        except Exception:
+            raise ValueError("time must be HH:MM (00:00–23:59)")
+
+    @field_validator("tz")
+    @classmethod
+    def _valid_tz(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        from zoneinfo import ZoneInfo
+        try:
+            ZoneInfo((v or "").strip())
+            return v.strip()
+        except Exception:
+            raise ValueError("tz must be a valid IANA timezone, e.g. 'Asia/Dubai'")
+
+    @field_validator("days")
+    @classmethod
+    def _clean_days(cls, v: str | None) -> str | None:
+        return (v or "").strip().lower() or None
+
+
+@app.put("/api/requests/{reference}/shutdown")
+def set_request_shutdown(reference: str, body: RequestShutdownIn,
+                         session: Session = Depends(get_session),
+                         actor: str = Depends(require_action("execute"))) -> dict:
+    """Set or clear a request's per-request auto-shutdown override (F-FIN-06
+    increment B), platform_admin. The override is MERGED over the global policy —
+    the fields it sets win, the rest inherit global. `clear=true` removes it
+    (inherit global entirely). Audited."""
+    req = _load_request(reference, session)
+    if body.clear:
+        req.shutdown_override = None
+    else:
+        override = {k: v for k, v in body.model_dump(exclude={"clear"}).items() if v is not None}
+        req.shutdown_override = override or None
+    append_audit(session, "shutdown.override.set", reference=reference, actor=actor,
+                 detail={"override": req.shutdown_override})
+    session.commit()
+    return {"reference": reference, "override": req.shutdown_override,
+            "effective": autoshutdown.effective_policy(session, req)}
 
 
 def _decommission(session: Session, req: Request, actor: str) -> dict:
@@ -3254,44 +3331,41 @@ def _ttl_expired(session: Session, req: Request, expiry: datetime) -> None:
         _ttl_decommission(session, req)
 
 
-# Scheduled auto-shutdown (F-FIN-06): remembers the last off/in-hours state so a
-# pause/resume is recorded once per boundary, not every poll cycle.
-_shutdown_last_off: bool | None = None
-
-
 def _sweep_shutdowns(session: Session) -> None:
-    """Stop non-prod compute out-of-hours and start it back in-hours (F-FIN-06).
+    """Enforce each non-prod compute environment's effective auto-shutdown schedule
+    (F-FIN-06). Per-environment (increment B): the request's override merged over
+    the global policy wins, so different environments can have different windows —
+    or opt out entirely. Desired-state, not a global boundary:
 
-    Opt-in (SHUTDOWN_ENABLED). At the off-hours ⇄ business-hours boundary it drives
-    the SAME actuation path as a manual Stop/Start (`_actuate_env`, actor
-    'auto-shutdown') for each non-prod compute environment — so the recorded saving
-    is actually enacted. Prod and storage (buckets) are skipped; already-in-state
-    resources are a no-op. Mock changes no real cloud; live + OCI_ACTUATE_ENABLED
-    really powers the VM. No-op when disabled or when no boundary was crossed."""
-    global _shutdown_last_off
-    policy = autoshutdown.resolve_policy(session)
-    if not autoshutdown.enabled(policy):
-        _shutdown_last_off = None
-        return
-    off = autoshutdown.is_off_hours(policy)
-    if off == _shutdown_last_off:
-        return  # no boundary crossed since the last sweep
-    _shutdown_last_off = off
-    savings = autoshutdown.shutdown_savings(session, policy)
-    if not savings["environments"]:
-        return  # nothing non-prod to pause
-    action = "stop" if off else "start"
-    actuated: list[str] = []
-    for env in savings["environments"]:
-        req = session.scalar(select(Request).where(Request.reference == env["reference"]))
-        if req is None or req.approval is None:
+      - effective policy disabled  -> skipped (the opt-out / master-off).
+      - off-hours + running        -> stop  (actor 'auto-shutdown', marks auto_stopped).
+      - in-hours + auto_stopped    -> start (only re-starts what the sweep stopped).
+      - a manual stop              -> left alone (never auto-started).
+
+    Runs the SAME `_actuate_env` path as a manual click. Mock changes no real cloud;
+    live + OCI_ACTUATE_ENABLED really powers the VM."""
+    acted: list[tuple[str, str]] = []
+    for req in autoshutdown.nonprod_provisioned(session):
+        if req.approval is None:
+            continue
+        policy = autoshutdown.effective_policy(session, req)
+        if not autoshutdown.enabled(policy):
+            continue
+        power = _power_for(session, req.reference)  # compute-only; None if no VM
+        if power is None:
+            continue
+        off = autoshutdown.is_off_hours(policy)
+        if off and power != "stopped":
+            action = "stop"
+        elif not off and power == "stopped" and req.auto_stopped:
+            action = "start"
+        else:
             continue
         result = _actuate_env(session, req, action, actor="auto-shutdown")
         if result.get("power") and not result.get("idempotent"):
-            actuated.append(req.reference)
-    append_audit(session, "shutdown.paused" if off else "shutdown.resumed", actor="auto-shutdown",
-                 detail={"environments": len(savings["environments"]), "actuated": actuated,
-                         "saving": savings["total_saving"], "off_hours": off})
+            acted.append((req.reference, action))
+    if acted:
+        append_audit(session, "shutdown.swept", actor="auto-shutdown", detail={"actions": acted})
     session.commit()
 
 

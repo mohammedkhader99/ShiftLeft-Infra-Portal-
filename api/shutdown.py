@@ -71,6 +71,27 @@ def set_policy(session: Session, data: dict, actor: str | None = None) -> dict:
             "end": row.end_hm, "tz": row.tz}
 
 
+_POLICY_KEYS = ("enabled", "days", "start", "end", "tz")
+
+
+def effective_policy(session: Session, req) -> dict:
+    """A request's effective schedule: its per-request override (increment B)
+    MERGED over the global policy — any field the override sets wins, the rest
+    inherit global. Null override = inherit entirely."""
+    merged = dict(resolve_policy(session))
+    override = getattr(req, "shutdown_override", None) or {}
+    for k in _POLICY_KEYS:
+        if override.get(k) is not None:
+            merged[k] = override[k]
+    return merged
+
+
+def nonprod_provisioned(session: Session) -> list:
+    """Provisioned non-prod requests — the candidates the sweep evaluates."""
+    return [r for r in session.scalars(select(Request).where(Request.status == "provisioned"))
+            if (r.environment_tier or "").strip().lower() in NONPROD_TIERS]
+
+
 def enabled(policy: dict) -> bool:
     """Whether the auto-shutdown sweep runs under `policy`. Off by default."""
     return bool(policy.get("enabled"))

@@ -296,6 +296,14 @@ class Request(Base):
     # environment provisions (oci-bucket | oci-instance). Lets the handoff and
     # orchestrator branch without re-deriving from the catalogue. Null = bucket.
     resource_kind: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # Per-request auto-shutdown override (F-FIN-06 increment B): a partial policy
+    # {enabled?, days?, start?, end?, tz?} MERGED over the global policy (override
+    # wins). Null = inherit the global schedule.
+    shutdown_override: Mapped[dict | None] = mapped_column(JSON, default=None, nullable=True)
+    # True while auto-shutdown itself has this environment powered down, so the
+    # sweep only auto-starts what it stopped (never a manual stop). Cleared on any
+    # start or manual stop.
+    auto_stopped: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     # Policy waiver (F-GOV-02): a documented, expiring exception that lets a
     # request pass the OPA policy gate despite violations. Holds
     # {reason, granted_by, granted_at, expires_at}. Nullable — most requests have

@@ -163,6 +163,8 @@ export type RequestRow = {
   state?: { status: string; synced_at: string } | null
   // Operational power state (cloud-sync increment 2): 'running' | 'stopped' | 'partial'.
   power?: string | null
+  // Per-request auto-shutdown (F-FIN-06 B): the override + the resolved effective schedule.
+  shutdown?: { override: Partial<ShutdownPolicy> | null; effective: ShutdownPolicy } | null
 }
 
 export async function checkDrift(reference: string): Promise<{ status: number; body: any }> {
@@ -188,6 +190,21 @@ export async function actuate(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action }),
+  })
+  return { status: r.status, body: await r.json().catch(() => ({})) }
+}
+
+// Set or clear a request's per-request auto-shutdown override (F-FIN-06 B). The
+// override is merged over the global schedule (its fields win); { clear: true }
+// removes it (inherit global). Platform-admin only.
+export async function setRequestShutdown(
+  reference: string,
+  body: Partial<ShutdownPolicy> | { clear: true },
+): Promise<{ status: number; body: any }> {
+  const r = await fetch(`/api/requests/${reference}/shutdown`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
   })
   return { status: r.status, body: await r.json().catch(() => ({})) }
 }

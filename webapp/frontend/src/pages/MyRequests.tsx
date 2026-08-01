@@ -17,9 +17,10 @@ import {
   InlineNotification,
   Button,
   TextInput,
+  Toggle,
 } from '@carbon/react'
 import { WarningAltFilled, Renew, UserFollow, Search, Pause, Play } from '@carbon/icons-react'
-import { getMe, getRequests, getAudit, renewRequest, transferOwner, checkDrift, reconcileState, triageFailure, actuate, type RequestRow } from '../api'
+import { getMe, getRequests, getAudit, renewRequest, transferOwner, checkDrift, reconcileState, triageFailure, actuate, setRequestShutdown, type RequestRow, type ShutdownPolicy } from '../api'
 import { workflowSteps, fmtWhen, type WFStep } from '../workflow'
 
 const FILTER_KEYS = ['status', 'request_type', 'technology', 'deployment_target', 'created_week', 'requested_by', 'subsidiary']
@@ -57,6 +58,52 @@ function MetaField({ label, value }: { label: string; value?: string | null }) {
 function parseQuery(route: string): Record<string, string> {
   const i = route.indexOf('?')
   return i < 0 ? {} : Object.fromEntries(new URLSearchParams(route.slice(i + 1)))
+}
+
+// Per-request auto-shutdown override (F-FIN-06 B): shows the effective schedule
+// and lets an admin override it for this environment, or clear back to global.
+function ShutdownControl({ r, onChange }: { r: RequestRow; onChange: () => void }) {
+  const eff = r.shutdown?.effective
+  const ov = r.shutdown?.override
+  const [open, setOpen] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [form, setForm] = useState<ShutdownPolicy>({
+    enabled: ov?.enabled ?? eff?.enabled ?? false,
+    days: ov?.days ?? eff?.days ?? 'mon-fri',
+    start: ov?.start ?? eff?.start ?? '08:00',
+    end: ov?.end ?? eff?.end ?? '20:00',
+    tz: ov?.tz ?? eff?.tz ?? 'UTC',
+  })
+  if (!eff) return null
+  const summary = eff.enabled ? `${eff.days} ${eff.start}–${eff.end} ${eff.tz}` : 'off'
+  async function act(body: Partial<ShutdownPolicy> | { clear: true }) {
+    setBusy(true)
+    try { await setRequestShutdown(r.reference, body); onChange() } finally { setBusy(false) }
+  }
+  return (
+    <div style={{ marginTop: '0.5rem', fontSize: '0.82rem' }}>
+      <span style={{ color: 'var(--cds-text-secondary)' }}>
+        Auto-shutdown: {summary} <span style={{ fontStyle: 'italic' }}>({ov ? 'overridden for this env' : 'inherited from global'})</span>
+      </span>{' '}
+      <Button size="sm" kind="ghost" onClick={() => setOpen((o) => !o)}>{open ? 'Hide' : 'Override'}</Button>
+      {open && (
+        <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-end', flexWrap: 'wrap', marginTop: '0.4rem' }}>
+          <Toggle id={`sd-en-${r.reference}`} size="sm" labelText="Enabled" labelA="Off" labelB="On"
+            toggled={form.enabled} onToggle={(v) => setForm({ ...form, enabled: v })} />
+          <TextInput id={`sd-d-${r.reference}`} size="sm" labelText="Days" value={form.days}
+            onChange={(e) => setForm({ ...form, days: e.target.value })} style={{ maxWidth: '8rem' }} />
+          <TextInput id={`sd-s-${r.reference}`} size="sm" labelText="Start" value={form.start}
+            onChange={(e) => setForm({ ...form, start: e.target.value })} style={{ maxWidth: '6rem' }} />
+          <TextInput id={`sd-e-${r.reference}`} size="sm" labelText="End" value={form.end}
+            onChange={(e) => setForm({ ...form, end: e.target.value })} style={{ maxWidth: '6rem' }} />
+          <TextInput id={`sd-t-${r.reference}`} size="sm" labelText="Timezone" value={form.tz}
+            onChange={(e) => setForm({ ...form, tz: e.target.value })} style={{ maxWidth: '10rem' }} />
+          <Button size="sm" disabled={busy} onClick={() => act(form)}>Save override</Button>
+          {ov && <Button size="sm" kind="tertiary" disabled={busy} onClick={() => act({ clear: true })}>Clear</Button>}
+        </div>
+      )}
+    </div>
+  )
 }
 
 export default function MyRequests({ route }: { route: string }) {
@@ -532,6 +579,7 @@ export default function MyRequests({ route }: { route: string }) {
                         </div>
                       )}
                       {r.status === 'provisioned' && (
+                        <>
                         <div style={{ marginTop: '1rem', display: 'flex', alignItems: 'flex-end', gap: '1rem', flexWrap: 'wrap' }}>
                           <span style={{ fontSize: '0.85rem', color: 'var(--cds-text-secondary)' }}>
                             Owner: {r.owner || '—'}
@@ -603,6 +651,8 @@ export default function MyRequests({ route }: { route: string }) {
                             </span>
                           )}
                         </div>
+                        {canActuate && r.power && <ShutdownControl r={r} onChange={refresh} />}
+                        </>
                       )}
                       {r.health && r.health.factors.length > 0 && (
                         <div style={{ marginTop: '1rem', fontSize: '0.85rem' }}>

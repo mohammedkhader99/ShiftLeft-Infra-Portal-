@@ -30,9 +30,7 @@ def _schedule(monkeypatch):
     monkeypatch.setenv("SHUTDOWN_START", "08:00")
     monkeypatch.setenv("SHUTDOWN_END", "20:00")
     monkeypatch.setenv("SHUTDOWN_TZ", "UTC")
-    main._shutdown_last_off = None
     yield
-    main._shutdown_last_off = None
 
 
 @pytest.fixture()
@@ -117,19 +115,23 @@ def test_sweep_is_a_noop_when_disabled(session):
     assert session.scalars(select(AuditLog).where(AuditLog.event.like("shutdown.%"))).all() == []
 
 
-def test_sweep_records_pause_then_resume_once_per_boundary(session, monkeypatch):
-    _prov(session, "REQ-NP", "uat")
-    monkeypatch.setenv("SHUTDOWN_ENABLED", "true")
+# --- Per-request override precedence (increment B) ---------------------------
 
-    monkeypatch.setattr(shutdown, "is_off_hours", lambda *a, **k: True)
-    main._sweep_shutdowns(session)
-    main._sweep_shutdowns(session)  # same state — no second event
-    paused = session.scalars(select(AuditLog).where(AuditLog.event == "shutdown.paused")).all()
-    assert len(paused) == 1 and paused[0].detail["environments"] == 1
+def test_effective_policy_override_wins(session):
+    from db.models import ShutdownPolicy
+    session.add(ShutdownPolicy(id=1, enabled=True, days="mon-fri", start_hm="08:00",
+                               end_hm="20:00", tz="UTC"))
+    req = _prov(session, "REQ-NP", "uat")
+    req.shutdown_override = {"enabled": False, "tz": "Asia/Dubai"}  # opt out + custom tz
+    session.commit()
+    eff = shutdown.effective_policy(session, req)
+    assert eff["enabled"] is False and eff["tz"] == "Asia/Dubai"  # override wins
+    assert eff["days"] == "mon-fri" and eff["start"] == "08:00"   # rest inherit global
 
-    monkeypatch.setattr(shutdown, "is_off_hours", lambda *a, **k: False)
-    main._sweep_shutdowns(session)
-    assert len(session.scalars(select(AuditLog).where(AuditLog.event == "shutdown.resumed")).all()) == 1
+
+def test_effective_policy_inherits_when_no_override(session):
+    req = _prov(session, "REQ-NP", "uat")
+    assert shutdown.effective_policy(session, req) == shutdown.resolve_policy(session)
 
 
 # --- Endpoint ----------------------------------------------------------------
@@ -177,14 +179,18 @@ def test_put_shutdown_rbac(client, monkeypatch):
     assert r.status_code == 403
 
 
-def test_sweep_uses_db_policy(session, monkeypatch):
-    """The sweep's enable flag comes from the DB policy, not just env."""
-    from db.models import ShutdownPolicy
-    session.add(ShutdownPolicy(id=1, enabled=True, days="mon-fri", start_hm="08:00",
-                               end_hm="20:00", tz="UTC"))
+def test_put_request_override_and_clear(client, session):
     _prov(session, "REQ-NP", "uat")
-    monkeypatch.delenv("SHUTDOWN_ENABLED", raising=False)          # env does NOT enable it
-    monkeypatch.setattr(shutdown, "is_off_hours", lambda *a, **k: True)
-    main._shutdown_last_off = None
-    main._sweep_shutdowns(session)                                # enabled comes from the DB row
-    assert session.scalar(select(AuditLog).where(AuditLog.event == "shutdown.paused")) is not None
+    r = client.put("/api/requests/REQ-NP/shutdown", json={"enabled": False, "start": "06:00"})
+    assert r.status_code == 200
+    assert r.json()["override"] == {"enabled": False, "start": "06:00"}
+    assert r.json()["effective"]["start"] == "06:00" and r.json()["effective"]["days"] == "mon-fri"
+    assert client.put("/api/requests/REQ-NP/shutdown", json={"clear": True}).json()["override"] is None
+
+
+def test_put_request_override_rbac(client, session, monkeypatch):
+    _prov(session, "REQ-NP", "uat")
+    monkeypatch.setenv("ROLE_MAP", '{"req@x.com": ["requester"]}')
+    r = client.put("/api/requests/REQ-NP/shutdown", headers={"X-Requester": "req@x.com"},
+                   json={"enabled": False})
+    assert r.status_code == 403
