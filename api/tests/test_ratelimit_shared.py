@@ -13,6 +13,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from api import ratelimit
+from api.main import app, get_session
 from db.models import RateLimitCounter
 from db.session import Base
 
@@ -122,3 +123,35 @@ def test_middleware_fails_open_on_store_error(monkeypatch):
     # Store errors must not block requests — fail open.
     assert client.get("/ping", headers={"X-Requester": "alice"}).status_code == 200
     assert client.get("/ping", headers={"X-Requester": "alice"}).status_code == 200
+
+
+# --- Internal endpoint the BFF delegates to ----------------------------------
+
+@pytest.fixture()
+def api_client(factory):
+    def override():
+        with factory() as s:
+            yield s
+    app.dependency_overrides[get_session] = override
+    yield TestClient(app)
+    app.dependency_overrides.clear()
+
+
+def test_internal_endpoint_disabled_without_secret(api_client, monkeypatch):
+    monkeypatch.delenv("INTERNAL_API_KEY", raising=False)
+    assert api_client.post("/internal/ratelimit/hit", json={"identity": "x"}).status_code == 503
+
+
+def test_internal_endpoint_rejects_bad_key(api_client, monkeypatch):
+    monkeypatch.setenv("INTERNAL_API_KEY", "s3cret")
+    r = api_client.post("/internal/ratelimit/hit", json={"identity": "x"},
+                        headers={"X-Internal-Key": "wrong"})
+    assert r.status_code == 403
+
+
+def test_internal_endpoint_counts_with_key(api_client, monkeypatch):
+    monkeypatch.setenv("INTERNAL_API_KEY", "s3cret")
+    h = {"X-Internal-Key": "s3cret"}
+    c1 = api_client.post("/internal/ratelimit/hit", json={"identity": "alice"}, headers=h).json()["count"]
+    c2 = api_client.post("/internal/ratelimit/hit", json={"identity": "alice"}, headers=h).json()["count"]
+    assert c1 == 1 and c2 == 2

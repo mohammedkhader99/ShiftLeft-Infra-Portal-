@@ -55,10 +55,27 @@ async def require_login(request: Request, call_next):
 app.add_middleware(SessionMiddleware, secret_key=SESSION_SECRET, same_site="lax",
                    https_only=SESSION_SECURE, max_age=SESSION_MAX_AGE)
 
+INTERNAL_API_KEY = os.getenv("INTERNAL_API_KEY", "").strip()
+
+
+async def _shared_rate_counter(key: str) -> int:
+    """Increment the API's shared rate-limit counter for `key` and return the
+    running count (F-OPS-01) — so the BFF's limit is global across replicas too.
+    Raises on any failure, which makes the limiter fail open."""
+    async with httpx.AsyncClient(timeout=2.0) as client:
+        resp = await client.post(f"{API_BASE_URL}/internal/ratelimit/hit",
+                                 json={"identity": key},
+                                 headers={"X-Internal-Key": INTERNAL_API_KEY})
+        resp.raise_for_status()
+        return int(resp.json().get("count", 0))
+
+
 # Application hardening (F-SEC-09): security headers + Origin-based CSRF + rate
 # limit. Added last, so it is the OUTERMOST middleware (rejects/limits early and
-# stamps headers on the way out); it doesn't need the session.
-security.install(app)
+# stamps headers on the way out); it doesn't need the session. With
+# RATE_LIMIT_BACKEND=shared the count runs through the API's shared store so the
+# limit is global across BFF replicas (F-OPS-01); default stays in-memory.
+security.install(app, shared_counter=_shared_rate_counter)
 
 
 def _forward_headers(request: Request) -> dict:

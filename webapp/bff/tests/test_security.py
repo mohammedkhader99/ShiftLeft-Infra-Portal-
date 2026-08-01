@@ -4,6 +4,7 @@ CSRF check, and the strict-session secret guard."""
 import importlib
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import webapp.bff.main as bff
@@ -60,6 +61,70 @@ def test_origin_allowlist(monkeypatch):
         headers = {"host": "internal-host"}
     assert security._origin_allowed(_Req(), "https://portal.example") is True
     assert security._origin_allowed(_Req(), "https://other.example") is False
+
+
+# --- Shared rate limiting (F-OPS-01): delegates counting to the API ----------
+
+def _shared_client(monkeypatch, counter, limit="2"):
+    monkeypatch.setenv("RATE_LIMIT_BACKEND", "shared")
+    monkeypatch.setenv("RATE_LIMIT_PER_MINUTE", limit)
+    app = FastAPI()
+    security.install(app, shared_counter=counter)
+
+    @app.get("/ping")
+    def ping():
+        return {"ok": True}
+
+    @app.get("/healthz")
+    def healthz():
+        return {"ok": True}
+
+    return TestClient(app)
+
+
+def test_shared_limit_429_over_limit(monkeypatch):
+    counts = iter([1, 2, 3])
+
+    async def counter(key):
+        return next(counts)
+
+    c = _shared_client(monkeypatch, counter, limit="2")
+    assert [c.get("/ping").status_code for _ in range(3)] == [200, 200, 429]
+
+
+def test_shared_limit_fails_open_when_api_errors(monkeypatch):
+    async def counter(key):
+        raise RuntimeError("api unreachable")
+
+    c = _shared_client(monkeypatch, counter, limit="1")
+    # The store hop failed — must not block the portal.
+    assert c.get("/ping").status_code == 200
+    assert c.get("/ping").status_code == 200
+
+
+def test_shared_limit_exempts_healthz(monkeypatch):
+    async def counter(key):
+        return 999  # always over any limit
+
+    c = _shared_client(monkeypatch, counter, limit="1")
+    assert c.get("/healthz").status_code == 200
+
+
+def test_memory_backend_used_when_not_shared(monkeypatch):
+    monkeypatch.delenv("RATE_LIMIT_BACKEND", raising=False)  # default memory
+
+    async def counter(key):
+        raise AssertionError("shared counter must not be called under the memory backend")
+
+    monkeypatch.setenv("RATE_LIMIT_PER_MINUTE", "5")
+    app = FastAPI()
+    security.install(app, shared_counter=counter)
+
+    @app.get("/ping")
+    def ping():
+        return {"ok": True}
+
+    assert TestClient(app).get("/ping").status_code == 200  # counter never invoked
 
 
 def test_secure_profile_requires_real_secret(monkeypatch):

@@ -1,3 +1,4 @@
+import hmac
 import json
 import os
 import threading
@@ -121,7 +122,7 @@ app = FastAPI(title="Infra Portal API", lifespan=_lifespan)
 install_security_headers(app, csp="default-src 'none'; frame-ancestors 'none'; base-uri 'none'")
 # RATE_LIMIT_BACKEND=shared counts in the DB so the limit is global across replicas
 # (F-OPS-01). Default is the in-memory limiter — single-instance behaviour unchanged.
-_rate_exempt = ("/health", "/api/events/stream")
+_rate_exempt = ("/health", "/api/events/stream", "/internal/")
 if ratelimit.shared_enabled():
     ratelimit.install_shared_rate_limit(app, exempt_prefixes=_rate_exempt)
 else:
@@ -1138,6 +1139,25 @@ def health_ready() -> dict:
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=503, detail="database not reachable") from exc
     return {"ready": True, "mock": is_mock_mode()}
+
+
+class RateLimitHitIn(BaseModel):
+    identity: str = "?"
+
+
+@app.post("/internal/ratelimit/hit")
+def internal_ratelimit_hit(body: RateLimitHitIn, session: Session = Depends(get_session),
+                           x_internal_key: str = Header(default="")) -> dict:
+    """Service-to-service (F-OPS-01): increment the shared rate-limit counter for
+    `identity` in the current window and return the running count. Lets the BFF
+    share the same counter so its limit is global across replicas too. Guarded by
+    INTERNAL_API_KEY; disabled (503) until that secret is configured."""
+    secret = os.getenv("INTERNAL_API_KEY", "").strip()
+    if not secret:
+        raise HTTPException(status_code=503, detail="Internal rate-limit endpoint is not configured.")
+    if not hmac.compare_digest(x_internal_key or "", secret):
+        raise HTTPException(status_code=403, detail="Invalid internal key.")
+    return {"count": ratelimit.hit(session, body.identity)}
 
 
 # --- Lookups (increment 1.2) -------------------------------------------------

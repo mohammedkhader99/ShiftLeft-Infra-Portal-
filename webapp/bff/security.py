@@ -52,10 +52,17 @@ def _origin_allowed(request, origin: str | None) -> bool:
     return urlparse(origin).netloc == request.headers.get("host")  # same-origin
 
 
-def install(app) -> None:
-    """Register the BFF hardening middleware (headers + CSRF + rate limit)."""
+def install(app, *, shared_counter=None) -> None:
+    """Register the BFF hardening middleware (headers + CSRF + rate limit).
+
+    RATE_LIMIT_BACKEND=shared together with a `shared_counter(key) -> count`
+    coroutine counts in the API's shared store, so the per-minute limit is global
+    across BFF replicas (F-OPS-01); it FAILS OPEN if the store is unreachable.
+    Default 'memory' keeps the in-process limiter — single-instance unchanged.
+    """
     headers = _headers()
     csrf_on = _bool_env("CSRF_ENABLED", True)
+    shared = os.getenv("RATE_LIMIT_BACKEND", "memory").strip().lower() == "shared" and shared_counter is not None
     buckets: dict[str, list] = {}
 
     def _limit() -> int:
@@ -63,6 +70,15 @@ def install(app) -> None:
             return int(os.getenv("RATE_LIMIT_PER_MINUTE", "600"))
         except ValueError:
             return 600
+
+    def _over_limit_memory(key: str, limit: int) -> bool:
+        now = time.monotonic()
+        w = buckets.get(key)
+        if w is None or now - w[0] >= 60.0:
+            w = [now, 0]
+            buckets[key] = w
+        w[1] += 1
+        return w[1] > limit
 
     @app.middleware("http")
     async def _harden(request, call_next):
@@ -73,16 +89,18 @@ def install(app) -> None:
         limit = _limit()
         if limit > 0 and not request.url.path.startswith("/healthz"):
             key = request.headers.get("X-Requester") or (request.client.host if request.client else "?")
-            now = time.monotonic()
-            w = buckets.get(key)
-            if w is None or now - w[0] >= 60.0:
-                w = [now, 0]
-                buckets[key] = w
-            w[1] += 1
-            if w[1] > limit:
+            if shared:
+                try:
+                    over = (await shared_counter(key)) > limit
+                except Exception:  # noqa: BLE001 — fail open: the store must never block the portal
+                    over = False
+            else:
+                over = _over_limit_memory(key, limit)
+            if over:
+                retry = max(1, 60 - int(time.time()) % 60)
                 return JSONResponse(status_code=429, content={"error": "Rate limit exceeded — try again shortly."},
-                                    headers={"Retry-After": str(max(1, int(60 - (now - w[0])) + 1))})
+                                    headers={"Retry-After": str(retry)})
         response = await call_next(request)
-        for key, value in headers.items():
-            response.headers.setdefault(key, value)
+        for name, value in headers.items():
+            response.headers.setdefault(name, value)
         return response
