@@ -515,6 +515,10 @@ class AuditLog(Base):
     prev_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     entry_hash: Mapped[str] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    # Distributed-tracing correlation id (F-OPS-04): groups every step of one
+    # request across the stack. Metadata only — deliberately NOT part of the
+    # tamper-evident hash, so the chain is unchanged.
+    trace_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
 
 
 class ApiKey(Base):

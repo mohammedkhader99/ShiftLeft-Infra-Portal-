@@ -35,6 +35,7 @@ from api import shutdown as autoshutdown
 from api import sustainability as sustainability_mod
 from api import vault
 from api import webhooks
+from api.tracing import current_trace_id, install_tracing, new_trace_id, set_trace_id
 from api.attachment import build_request_pdf
 from api.costsheet import build_cost_sheet_xlsx
 from api.evidence import build_evidence_pdf
@@ -114,6 +115,10 @@ app = FastAPI(title="Infra Portal API", lifespan=_lifespan)
 # in depth. SSE + health are exempt from the rate limit.
 install_security_headers(app, csp="default-src 'none'; frame-ancestors 'none'; base-uri 'none'")
 install_rate_limit(app, exempt_prefixes=("/health", "/api/events/stream"))
+# Distributed tracing (F-OPS-04): installed last, so it is the OUTERMOST middleware
+# — it sets the request's trace id before anything else runs (so every audit entry
+# is stamped) and echoes X-Trace-Id on the way out.
+install_tracing(app)
 
 # No login yet (real identity arrives in increment E1); stamp a fixed requester.
 MOCK_REQUESTER = "mohammed.khader@emaratechg.ae"
@@ -272,10 +277,14 @@ def _post_to_orchestrator(body: bytes, signature: str, path: str = "/provision")
     error = None
     for attempt in range(ORCH_MAX_ATTEMPTS):
         try:
+            _headers = {"X-Signature": signature, "Content-Type": "application/json"}
+            _tid = current_trace_id()
+            if _tid:  # propagate the trace across the hop (F-OPS-04)
+                _headers["X-Trace-Id"] = _tid
             response = httpx.post(
                 f"{ORCHESTRATOR_URL}{path}",
                 content=body,
-                headers={"X-Signature": signature, "Content-Type": "application/json"},
+                headers=_headers,
                 timeout=ORCH_TIMEOUT,
             )
         except Exception as exc:  # noqa: BLE001 — transient network failure
@@ -2351,6 +2360,20 @@ def events_feed(
     return {"events": events, "cursor": cursor}
 
 
+@app.get("/api/traces/{trace_id}")
+def get_trace(trace_id: str, session: Session = Depends(get_session),
+              _auth: str = Depends(require_action("view_audit"))) -> dict:
+    """Every audit step recorded under one trace id (F-OPS-04) — follow a single
+    request across the portal, API, and orchestrator, in order."""
+    rows = session.scalars(
+        select(AuditLog).where(AuditLog.trace_id == trace_id).order_by(AuditLog.id)
+    ).all()
+    return {"trace_id": trace_id, "count": len(rows),
+            "steps": [{"id": r.id, "event": r.event, "reference": r.reference, "actor": r.actor,
+                       "jira_key": r.jira_key, "detail": r.detail,
+                       "created_at": r.created_at.isoformat() if r.created_at else None} for r in rows]}
+
+
 def _fetch_events(cursor: int, type_list: list[str] | None, reference: str | None) -> tuple[list[dict], int]:
     """One poll for the SSE stream, in its own session (runs off the event loop)."""
     with SessionLocal() as session:
@@ -3507,6 +3530,9 @@ def _advance_request(session: Session, req: Request) -> str:
     a manual click can never diverge or double-provision (the orchestrator keeps
     its own idempotency ledger keyed on the Jira key).
     """
+    # Give each autonomously-advanced request its own trace (F-OPS-04), so its
+    # steps (handoff, orchestrator result, provisioned, …) group under one id.
+    set_trace_id(new_trace_id())
     appr = req.approval
     if appr is None:
         return req.status

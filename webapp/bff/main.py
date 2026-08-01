@@ -8,6 +8,7 @@ credential — the token stays in the BFF's session (ARCHITECTURE.md P2, §14.1)
 """
 
 import os
+import secrets
 from pathlib import Path
 
 import httpx
@@ -68,6 +69,8 @@ def _forward_headers(request: Request) -> dict:
     id_token = request.session.get("id_token")
     if id_token:
         headers["Authorization"] = f"Bearer {id_token}"
+    # Distributed tracing (F-OPS-04): start (or forward) a trace id for this hop.
+    headers["X-Trace-Id"] = request.headers.get("X-Trace-Id") or secrets.token_hex(16)
     return headers
 
 
@@ -123,6 +126,9 @@ async def proxy(path: str, request: Request) -> Response:
     disposition = upstream.headers.get("content-disposition")
     if disposition:
         passthrough["Content-Disposition"] = disposition
+    trace = upstream.headers.get("x-trace-id")  # echo the trace id to the browser (F-OPS-04)
+    if trace:
+        passthrough["X-Trace-Id"] = trace
     return Response(content=upstream.content, status_code=upstream.status_code,
                     media_type=upstream.headers.get("content-type", "application/json"),
                     headers=passthrough)

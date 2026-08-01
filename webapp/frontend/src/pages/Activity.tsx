@@ -121,6 +121,11 @@ export default function Activity() {
                 {e.actor && (
                   <span style={{ color: 'var(--cds-text-secondary)', marginLeft: '0.5rem' }}>· {e.actor}</span>
                 )}
+                {e.trace_id && (
+                  <code title={`trace ${e.trace_id}`} style={{ color: 'var(--cds-text-secondary)', marginLeft: '0.5rem', fontSize: '0.72rem' }}>
+                    trace:{e.trace_id.slice(0, 8)}
+                  </code>
+                )}
               </span>
             </div>
           ))}

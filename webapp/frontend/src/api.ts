@@ -647,6 +647,7 @@ export type LifecycleEvent = {
   reference?: string | null
   actor?: string | null
   detail?: Record<string, unknown> | null
+  trace_id?: string | null
   at?: string | null
 }
 

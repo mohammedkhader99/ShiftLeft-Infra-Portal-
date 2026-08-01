@@ -54,6 +54,7 @@ def _event_dict(row: AuditLog) -> dict:
         "reference": row.reference,
         "actor": row.actor,
         "detail": row.detail or {},
+        "trace_id": row.trace_id,  # F-OPS-04 correlation id
         "at": row.created_at.isoformat() if row.created_at else None,
     }
 

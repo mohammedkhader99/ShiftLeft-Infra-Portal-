@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from api.tracing import current_trace_id
 from db.models import AuditLog
 
 
@@ -89,6 +90,7 @@ def append_audit(
         prev_hash=prev_hash or None,
         entry_hash=entry_hash,
         created_at=created_at,
+        trace_id=current_trace_id(),  # correlation only — not part of entry_hash (F-OPS-04)
     )
     session.add(row)
     return row

@@ -10,6 +10,7 @@ re-checks OPA + cost before acting (§4). PROVISION_MODE gates real work:
 """
 
 import json
+import logging
 import os
 import re
 
@@ -32,6 +33,23 @@ def _iac_scan_enforce() -> bool:
     return os.getenv("IAC_SCAN_ENFORCE", "false").strip().lower() in ("1", "true", "yes", "on")
 
 app = FastAPI(title="Mock Orchestrator")
+
+# Use uvicorn's logger so the line actually surfaces in the container logs.
+_trace_log = logging.getLogger("uvicorn.error")
+
+
+@app.middleware("http")
+async def _trace(request: Request, call_next):
+    """Distributed tracing (F-OPS-04): honour the API's X-Trace-Id — log it with
+    the operation and echo it back, so the hop is followable end-to-end."""
+    tid = request.headers.get("X-Trace-Id", "")
+    response = await call_next(request)
+    if tid:
+        response.headers["X-Trace-Id"] = tid
+        _trace_log.info("trace=%s %s %s -> %s", tid, request.method, request.url.path,
+                        response.status_code)
+    return response
+
 
 _provisioned: dict[str, dict] = {}  # idempotency ledger for real creations
 
