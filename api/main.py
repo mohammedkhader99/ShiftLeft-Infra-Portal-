@@ -2710,6 +2710,46 @@ def state_overview(session: Session = Depends(get_session),
     }
 
 
+def _actuate_env(session: Session, req: Request, action: str, actor: str) -> dict:
+    """Stop/start a provisioned environment's compute resources through the
+    orchestrator, updating power_state + auditing. Does NOT commit — the caller
+    owns the transaction. Shared by the Stop/Start endpoint and the auto-shutdown
+    sweep (F-FIN-06), so a manual click and the scheduler can never diverge.
+
+    Only compute (oci-instance) is stoppable — buckets are skipped. Idempotent: a
+    no-op if already in the target state. Returns {power, ...} or {error}/{skipped}.
+    """
+    resources = session.scalars(
+        select(ProvisionedResource).where(
+            ProvisionedResource.reference == req.reference,
+            ProvisionedResource.lifecycle_state == "active",
+            ProvisionedResource.kind == "oci-instance",
+        )
+    ).all()
+    if not resources:
+        return {"reference": req.reference, "action": action, "skipped": "no compute resources"}
+    target = "stopped" if action == "stop" else "running"
+    if all((r.power_state or "running") == target for r in resources):
+        return {"reference": req.reference, "action": action, "power": target, "idempotent": True}
+
+    sig_body, signature = _handoff_payload(req, action=action)
+    response, error = _post_to_orchestrator(sig_body, signature, path="/actuate")
+    if response is None or response.status_code != 200:
+        raw = error or (response.text if response else "")
+        return {"reference": req.reference, "action": action, "error": _short_reason(raw)}
+
+    reported = {r.get("name"): r.get("power_state") for r in response.json().get("resources", [])}
+    for r in resources:
+        r.power_state = reported.get(r.name, target)
+    append_audit(session, "resource.stopped" if action == "stop" else "resource.started",
+                 reference=req.reference,
+                 jira_key=req.approval.jira_key if req.approval else None, actor=actor,
+                 detail={"resources": [r.name for r in resources], "power_state": target,
+                         "by": actor})
+    return {"reference": req.reference, "action": action,
+            "power": _derive_power([r.power_state for r in resources])}
+
+
 class ActuateIn(BaseModel):
     action: str  # stop | start
 
@@ -2718,8 +2758,8 @@ class ActuateIn(BaseModel):
 def actuate_request(reference: str, body: ActuateIn,
                     session: Session = Depends(get_session),
                     actor: str = Depends(require_action("execute"))) -> dict:
-    """Stop or start a provisioned environment's resources from the portal
-    (cloud-sync increment 2 — actuation). A reversible operational action, gated to
+    """Stop or start a provisioned environment's compute from the portal (cloud-sync
+    increment 2 — actuation). A reversible operational action, gated to
     platform_admin under a standing operational policy (no per-action Jira ticket)
     and fully audited. It goes through the orchestrator (signed handoff) — the
     execute layer that holds the cloud credentials and re-verifies — never the API
@@ -2732,35 +2772,20 @@ def actuate_request(reference: str, body: ActuateIn,
     action = (body.action or "").strip().lower()
     if action not in ("stop", "start"):
         raise HTTPException(status_code=422, detail="action must be 'stop' or 'start'.")
-    resources = session.scalars(
-        select(ProvisionedResource).where(
-            ProvisionedResource.reference == reference,
-            ProvisionedResource.lifecycle_state == "active",
-        )
-    ).all()
-    if not resources:
-        raise HTTPException(status_code=400, detail="No active resources to actuate.")
-    target = "stopped" if action == "stop" else "running"
-    if all((r.power_state or "running") == target for r in resources):
-        return {"reference": reference, "action": action, "power": target,
-                "idempotent": True, "message": f"{reference} is already {target}."}
 
-    sig_body, signature = _handoff_payload(req, action=action)
-    response, error = _post_to_orchestrator(sig_body, signature, path="/actuate")
-    if response is None or response.status_code != 200:
-        raw = error or (response.text if response else "")
+    result = _actuate_env(session, req, action, actor)
+    if result.get("skipped"):
+        raise HTTPException(status_code=400,
+                            detail="This environment has no stoppable compute resources.")
+    if "error" in result:
         return JSONResponse(status_code=502,
-                            content={"error": f"{action.title()} failed: {_short_reason(raw)}"})
-
-    reported = {r.get("name"): r.get("power_state") for r in response.json().get("resources", [])}
-    for r in resources:
-        r.power_state = reported.get(r.name, target)
-    append_audit(session, "resource.stopped" if action == "stop" else "resource.started",
-                 reference=reference, jira_key=req.approval.jira_key, actor=actor,
-                 detail={"resources": [r.name for r in resources], "power_state": target})
+                            content={"error": f"{action.title()} failed: {result['error']}"})
     session.commit()
-    return {"reference": reference, "action": action,
-            "power": _derive_power([r.power_state for r in resources])}
+    out = {"reference": reference, "action": action, "power": result.get("power")}
+    if result.get("idempotent"):
+        out["idempotent"] = True
+        out["message"] = f"{reference} is already {result['power']}."
+    return out
 
 
 def _decommission(session: Session, req: Request, actor: str) -> dict:
@@ -3188,11 +3213,14 @@ _shutdown_last_off: bool | None = None
 
 
 def _sweep_shutdowns(session: Session) -> None:
-    """Record the scheduled pause/resume of non-prod environments (F-FIN-06).
+    """Stop non-prod compute out-of-hours and start it back in-hours (F-FIN-06).
 
-    Opt-in (SHUTDOWN_ENABLED); portal-side — it audits the off-hours ⇄ business-
-    hours boundary with the affected environment count + saving, and never stops
-    real cloud resources. No-op when disabled or when no boundary was crossed."""
+    Opt-in (SHUTDOWN_ENABLED). At the off-hours ⇄ business-hours boundary it drives
+    the SAME actuation path as a manual Stop/Start (`_actuate_env`, actor
+    'auto-shutdown') for each non-prod compute environment — so the recorded saving
+    is actually enacted. Prod and storage (buckets) are skipped; already-in-state
+    resources are a no-op. Mock changes no real cloud; live + OCI_ACTUATE_ENABLED
+    really powers the VM. No-op when disabled or when no boundary was crossed."""
     global _shutdown_last_off
     if not autoshutdown.enabled():
         _shutdown_last_off = None
@@ -3204,8 +3232,17 @@ def _sweep_shutdowns(session: Session) -> None:
     savings = autoshutdown.shutdown_savings(session)
     if not savings["environments"]:
         return  # nothing non-prod to pause
-    append_audit(session, "shutdown.paused" if off else "shutdown.resumed", actor="shutdown",
-                 detail={"environments": len(savings["environments"]),
+    action = "stop" if off else "start"
+    actuated: list[str] = []
+    for env in savings["environments"]:
+        req = session.scalar(select(Request).where(Request.reference == env["reference"]))
+        if req is None or req.approval is None:
+            continue
+        result = _actuate_env(session, req, action, actor="auto-shutdown")
+        if result.get("power") and not result.get("idempotent"):
+            actuated.append(req.reference)
+    append_audit(session, "shutdown.paused" if off else "shutdown.resumed", actor="auto-shutdown",
+                 detail={"environments": len(savings["environments"]), "actuated": actuated,
                          "saving": savings["total_saving"], "off_hours": off})
     session.commit()
 

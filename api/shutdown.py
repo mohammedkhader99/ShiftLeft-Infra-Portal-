@@ -5,10 +5,11 @@ powering non-prod environments down out-of-hours (compute stops; storage keeps
 billing). Prod/DR is never shut down.
 
 The saving view is read-only and always available. Actually pausing is opt-in
-(`SHUTDOWN_ENABLED`, default off) and **portal-side** — the background sweep
-records the off-hours ⇄ business-hours transitions in the audit trail; it does
-not stop real cloud resources (a real orchestrator stop/start is a documented
-hook for stoppable compute). Consistent with "nothing real changes without me".
+(`SHUTDOWN_ENABLED`, default off): at each off-hours ⇄ business-hours boundary the
+background sweep drives the control plane's actuation (the same signed stop/start
+a manual click uses) for non-prod **compute** — so the saving is enacted, not just
+recorded. In mock mode this changes no real cloud; live + `OCI_ACTUATE_ENABLED`
+really powers the VM. Prod and storage are never touched.
 """
 
 import os
@@ -153,6 +154,6 @@ def status(session: Session) -> dict:
         "environment_count": len(savings["environments"]),
         "environments": savings["environments"],
         "note": ("Potential saving = each non-prod environment's compute cost x the off-hours "
-                 "fraction (storage keeps billing). Enable SHUTDOWN_ENABLED to record scheduled "
-                 "pause/resume; pausing is portal-side and never stops real cloud resources."),
+                 "fraction (storage keeps billing). Enable SHUTDOWN_ENABLED to stop non-prod "
+                 "compute out-of-hours and start it back in-hours (mock changes no real cloud)."),
     }

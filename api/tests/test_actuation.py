@@ -180,3 +180,71 @@ def test_power_state_on_list_and_detail(client, session, monkeypatch):
     row = next(r for r in client.get("/api/requests").json() if r["reference"] == "REQ-A")
     assert row["power"] == "stopped"
     assert client.get("/api/requests/REQ-A").json()["power"] == "stopped"
+
+
+# --- Auto-shutdown sweep drives actuation (F-FIN-06) -------------------------
+
+def _enable_shutdown(monkeypatch, off_hours, envs):
+    """Enable the sweep, force the off/on-hours state, and feed it the given
+    non-prod environments (bypassing the pricing-based selection)."""
+    monkeypatch.setattr(main.autoshutdown, "enabled", lambda: True)
+    monkeypatch.setattr(main.autoshutdown, "is_off_hours", lambda *a, **k: off_hours)
+    monkeypatch.setattr(main.autoshutdown, "shutdown_savings",
+                        lambda s: {"environments": envs, "total_saving": 42.0})
+    main._shutdown_last_off = None
+
+
+def test_sweep_stops_nonprod_compute_off_hours(session, monkeypatch):
+    _prov(session, "REQ-NP", power="running")
+    _mock_actuate(monkeypatch)
+    _enable_shutdown(monkeypatch, off_hours=True, envs=[{"reference": "REQ-NP"}])
+    main._sweep_shutdowns(session)
+    assert main._power_for(session, "REQ-NP") == "stopped"
+    events = [e.event for e in session.scalars(select(AuditLog).where(AuditLog.reference == "REQ-NP"))]
+    assert "resource.stopped" in events
+    swept = session.scalar(select(AuditLog).where(AuditLog.event == "shutdown.paused"))
+    assert swept.actor == "auto-shutdown" and "REQ-NP" in swept.detail["actuated"]
+
+
+def test_sweep_starts_compute_in_hours(session, monkeypatch):
+    _prov(session, "REQ-NP", power="stopped")
+    _mock_actuate(monkeypatch)
+    _enable_shutdown(monkeypatch, off_hours=False, envs=[{"reference": "REQ-NP"}])
+    main._sweep_shutdowns(session)
+    assert main._power_for(session, "REQ-NP") == "running"
+    assert session.scalar(select(AuditLog).where(AuditLog.event == "shutdown.resumed")) is not None
+
+
+def test_sweep_noop_when_disabled(session, monkeypatch):
+    _prov(session, "REQ-NP", power="running")
+    monkeypatch.setattr(main.autoshutdown, "enabled", lambda: False)
+    monkeypatch.setattr(main, "_post_to_orchestrator",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not actuate")))
+    main._shutdown_last_off = None
+    main._sweep_shutdowns(session)
+    assert main._power_for(session, "REQ-NP") == "running"
+
+
+def test_sweep_skips_already_stopped(session, monkeypatch):
+    _prov(session, "REQ-NP", power="stopped")
+    monkeypatch.setattr(main, "_post_to_orchestrator",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("already stopped")))
+    _enable_shutdown(monkeypatch, off_hours=True, envs=[{"reference": "REQ-NP"}])
+    main._sweep_shutdowns(session)
+    assert main._power_for(session, "REQ-NP") == "stopped"
+
+
+def test_sweep_skips_buckets(session, monkeypatch):
+    req = Request(reference="REQ-B", status="provisioned", requester="u@x.com",
+                  request_type="create", environment_name="req-b")
+    session.add(req)
+    session.add(Approval(jira_key="INFRA-2", status="approved", request=req))
+    session.add(ProvisionedResource(reference="REQ-B", kind="oci-bucket", name="bkt",
+                                    lifecycle_state="active", power_state="running"))
+    session.commit()
+    monkeypatch.setattr(main, "_post_to_orchestrator",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not actuate a bucket")))
+    _enable_shutdown(monkeypatch, off_hours=True, envs=[{"reference": "REQ-B"}])
+    main._sweep_shutdowns(session)  # bucket has no power — skipped, no orchestrator call
+    swept = session.scalar(select(AuditLog).where(AuditLog.event == "shutdown.paused"))
+    assert swept.detail["actuated"] == []
