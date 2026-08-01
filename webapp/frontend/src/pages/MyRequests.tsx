@@ -20,7 +20,7 @@ import {
   Toggle,
 } from '@carbon/react'
 import { WarningAltFilled, Renew, UserFollow, Search, Pause, Play } from '@carbon/icons-react'
-import { getMe, getRequests, getAudit, renewRequest, transferOwner, checkDrift, reconcileState, triageFailure, actuate, setRequestShutdown, type RequestRow, type ShutdownPolicy } from '../api'
+import { getMe, getRequests, getAudit, renewRequest, transferOwner, checkDrift, reconcileState, triageFailure, actuate, setRequestShutdown, createBackup, type RequestRow, type ShutdownPolicy } from '../api'
 import { workflowSteps, fmtWhen, type WFStep } from '../workflow'
 
 const FILTER_KEYS = ['status', 'request_type', 'technology', 'deployment_target', 'created_week', 'requested_by', 'subsidiary']
@@ -31,6 +31,7 @@ type BadgeType = 'green' | 'teal' | 'blue' | 'cyan' | 'red' | 'gray' | 'cool-gra
 function badgeType(status: string): BadgeType {
   if (status === 'provisioned') return 'green'
   if (status === 'refreshed') return 'green'
+  if (status === 'restored') return 'green'
   if (status === 'in-progress') return 'teal'
   if (status === 'planned') return 'blue'
   if (status === 'submitted') return 'cyan'
@@ -59,6 +60,38 @@ function MetaField({ label, value }: { label: string; value?: string | null }) {
 function parseQuery(route: string): Record<string, string> {
   const i = route.indexOf('?')
   return i < 0 ? {} : Object.fromEntries(new URLSearchParams(route.slice(i + 1)))
+}
+
+// Backup restore-points (F-LCM-06): list the environment's backups and take a new
+// one (owner self-service; no approval). Restore is a separate governed request.
+function BackupControl({ r, onChange }: { r: RequestRow; onChange: () => void }) {
+  const [busy, setBusy] = useState(false)
+  const [label, setLabel] = useState('')
+  const backups = r.backups ?? []
+  async function take() {
+    setBusy(true)
+    try {
+      await createBackup(r.reference, label.trim() || undefined)
+      setLabel('')
+      onChange()
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <div style={{ marginTop: '0.5rem', fontSize: '0.82rem', display: 'flex', gap: '0.5rem', alignItems: 'flex-end', flexWrap: 'wrap' }}>
+      <span style={{ color: 'var(--cds-text-secondary)' }}>
+        Backups ({backups.length}): {backups.length
+          ? backups.slice(0, 3).map((b) => b.label).join(', ') + (backups.length > 3 ? ` +${backups.length - 3}` : '')
+          : 'none yet'}
+      </span>
+      <TextInput id={`bk-${r.reference}`} size="sm" labelText="" placeholder="backup label (optional)"
+        value={label} onChange={(e) => setLabel(e.target.value)} style={{ maxWidth: '13rem' }} />
+      <Button size="sm" kind="tertiary" disabled={busy} onClick={take}>
+        {busy ? 'Backing up…' : 'Back up now'}
+      </Button>
+    </div>
+  )
 }
 
 // Per-request auto-shutdown override (F-FIN-06 B): shows the effective schedule
@@ -652,6 +685,7 @@ export default function MyRequests({ route }: { route: string }) {
                             </span>
                           )}
                         </div>
+                        <BackupControl r={r} onChange={refresh} />
                         {canActuate && r.power && <ShutdownControl r={r} onChange={refresh} />}
                         </>
                       )}

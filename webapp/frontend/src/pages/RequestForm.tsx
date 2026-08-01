@@ -186,6 +186,7 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
   const [sourceRef, setSourceRef] = useState('')   // decommission source / refresh target
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [refreshFrom, setRefreshFrom] = useState('')  // refresh copy-from (higher env)
+  const [restoreBackupId, setRestoreBackupId] = useState('')  // restore: chosen backup
 
   const [cost, setCost] = useState<Cost | null>(null)
   const [errors, setErrors] = useState<Record<string, string>>({})
@@ -214,16 +215,20 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
   const isCreate = requestType === 'create'
   const isDecommission = requestType === 'decommission'
   const isRefresh = requestType === 'refresh'
+  const isRestore = requestType === 'restore'
   const NONPROD_TIERS = ['dev', 'test', 'sit', 'uat', 'preprod']
 
-  // Load the user's provisioned requests once decommission or refresh is chosen.
+  // Load the user's provisioned requests once an env-targeting type is chosen.
   useEffect(() => {
-    if ((isDecommission || isRefresh) && email) {
+    if ((isDecommission || isRefresh || isRestore) && email) {
       getRequests({ requester: email, status: 'provisioned' })
         .then(setProvisioned)
         .catch(() => setProvisioned([]))
     }
-  }, [isDecommission, isRefresh, email])
+  }, [isDecommission, isRefresh, isRestore, email])
+
+  // Restore: the backups of the currently-selected target (already on the row).
+  const restoreBackups = provisioned.find((p) => p.reference === sourceRef)?.backups ?? []
 
   const sourceObj = provisioned.find((p) => p.reference === sourceRef)
   const sourceComponents: Component[] = (sourceObj?.components ?? [])
@@ -238,7 +243,7 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
 
   // What we price: the chosen stack (create/add/resize) or the selected
   // technologies being torn down (decommission, at the source's target).
-  const pricedTarget = isRefresh ? '' : isDecommission ? sourceObj?.deployment_target ?? '' : target
+  const pricedTarget = isRefresh || isRestore ? '' : isDecommission ? sourceObj?.deployment_target ?? '' : target
   const pricedComponents = isDecommission
     ? selectedComponents
     : components.filter((c) => c.technology_code && c.size)
@@ -289,6 +294,13 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
         request_type: 'refresh',
         source_reference: sourceRef || null,             // target being refreshed
         refresh_from_reference: refreshFrom || null,     // higher source to copy from
+      }
+    }
+    if (isRestore) {
+      return {
+        request_type: 'restore',
+        source_reference: sourceRef || null,             // target being restored
+        restore_backup_id: restoreBackupId ? Number(restoreBackupId) : null,
       }
     }
     if (isDecommission) {
@@ -531,6 +543,47 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
                 copied in mock mode.
               </p>
             </>
+          ) : isRestore ? (
+            <>
+              <Select
+                id="restore_target"
+                labelText="Environment to restore"
+                value={sourceRef}
+                onChange={(e) => { setSourceRef(e.target.value); setRestoreBackupId('') }}
+                invalid={!!errors.source_reference}
+                invalidText={errors.source_reference}
+              >
+                <SelectItem value="" text="— select a provisioned environment —" />
+                {provisioned.map((p) => (
+                  <SelectItem key={p.reference} value={p.reference}
+                    text={`${p.reference} — ${p.environment_name || 'env'} (${p.environment_tier || '?'})`} />
+                ))}
+              </Select>
+              <Select
+                id="restore_backup"
+                labelText="Backup to restore from"
+                value={restoreBackupId}
+                onChange={(e) => setRestoreBackupId(e.target.value)}
+                invalid={!!errors.restore_backup_id}
+                invalidText={errors.restore_backup_id}
+              >
+                <SelectItem value=""
+                  text={restoreBackups.length ? '— select a backup —' : '— no backups for this environment —'} />
+                {restoreBackups.map((b) => (
+                  <SelectItem key={b.id} value={String(b.id)}
+                    text={`${b.label}${b.created_at ? ` · ${b.created_at.slice(0, 16).replace('T', ' ')}` : ''}`} />
+                ))}
+              </Select>
+              {sourceRef && restoreBackups.length === 0 && (
+                <p style={{ color: 'var(--cds-text-secondary)', fontSize: '0.85rem' }}>
+                  This environment has no backups yet — take one from My Requests first.
+                </p>
+              )}
+              <p style={{ color: 'var(--cds-text-secondary)', fontSize: '0.8rem' }}>
+                Rolls the environment back to the selected backup. Requires approval; nothing
+                changes in mock mode.
+              </p>
+            </>
           ) : (
             <>
               {isCreate && (
@@ -769,7 +822,7 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
               Save draft
             </Button>
             <Button onClick={onSubmit} disabled={busy}>
-              {isDecommission ? 'Submit decommission' : isRefresh ? 'Submit refresh' : 'Submit request'}
+              {isDecommission ? 'Submit decommission' : isRefresh ? 'Submit refresh' : isRestore ? 'Submit restore' : 'Submit request'}
             </Button>
           </div>
         </Stack>
@@ -778,7 +831,7 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
       <div style={{ flex: '0 0 20rem' }}>
         <Tile style={{ borderTop: '3px solid var(--cds-border-interactive)' }}>
           <p style={{ fontSize: '0.75rem', color: 'var(--cds-text-secondary)', textTransform: 'uppercase', letterSpacing: '0.02em' }}>
-            {isDecommission ? 'Monthly cost to free' : isRefresh ? 'Environment refresh' : 'Live cost'}
+            {isDecommission ? 'Monthly cost to free' : isRefresh ? 'Environment refresh' : isRestore ? 'Environment restore' : 'Live cost'}
           </p>
           {cost ? (
             <>
@@ -807,6 +860,8 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
                 ? 'Pick a provisioned request and tick technologies to see the monthly cost freed.'
                 : isRefresh
                 ? 'Refresh reuses the target environment — no new monthly cost. It copies data from a higher environment down, masking sensitive data.'
+                : isRestore
+                ? 'Restore reuses the target environment — no new monthly cost. It rolls the environment back to the selected backup (approval-governed, verified).'
                 : 'Choose a deployment target and add a component to see the cost.'}
             </p>
           )}

@@ -14,9 +14,9 @@ from datetime import date, datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from db.models import CostCentre, Environment, Project, Request, Subsidiary, Technology
+from db.models import Backup, CostCentre, Environment, Project, Request, Subsidiary, Technology
 
-REQUEST_TYPES = {"create", "add", "resize", "decommission", "refresh"}
+REQUEST_TYPES = {"create", "add", "resize", "decommission", "refresh", "restore"}
 SIZES = {"small", "medium", "large", "xlarge"}
 CLASSIFICATIONS = {"public", "internal", "confidential", "restricted"}
 SENSITIVE_CLASSIFICATIONS = {"restricted", "confidential"}  # a refresh must mask these
@@ -82,13 +82,14 @@ def validate_submission(data: dict, session: Session) -> dict[str, str]:
 
     request_type = (data.get("request_type") or "").strip()
     if request_type not in REQUEST_TYPES:
-        errors["request_type"] = "Choose a request type (create, add, resize, decommission or refresh)."
+        errors["request_type"] = ("Choose a request type (create, add, resize, decommission, "
+                                  "refresh or restore).")
         # Without a valid type we can't check type-specific rules.
         return errors
 
-    # Cost centre is required for every type except decommission and refresh, which
-    # inherit their context from the provisioned request they operate on.
-    if request_type not in ("decommission", "refresh"):
+    # Cost centre is required for every type except those that operate on an
+    # existing provisioned request (they inherit its context).
+    if request_type not in ("decommission", "refresh", "restore"):
         cost_centre = (data.get("cost_centre_code") or "").strip()
         if not cost_centre:
             errors["cost_centre_code"] = (
@@ -110,6 +111,8 @@ def validate_submission(data: dict, session: Session) -> dict[str, str]:
         _validate_decommission_fields(data, session, errors)
     elif request_type == "refresh":
         _validate_refresh_fields(data, session, errors)
+    elif request_type == "restore":
+        _validate_restore_fields(data, session, errors)
     else:  # add | resize
         target = (data.get("target_environment") or "").strip()
         if not target:
@@ -276,6 +279,35 @@ def _validate_refresh_fields(data: dict, session: Session, errors: dict[str, str
                 errors["refresh_from_reference"] = (
                     f"Refresh only from a higher or equal environment — {stier or '?'} is lower "
                     f"than {ttier or '?'}.")
+
+
+def _validate_restore_fields(data: dict, session: Session, errors: dict[str, str]) -> None:
+    """Restore (F-LCM-06) rolls a provisioned environment back to one of ITS OWN
+    backups. Guardrails: the target is provisioned; the chosen backup exists and
+    belongs to the target. (Approval-governed — a restore is destructive.)"""
+    target_ref = (data.get("source_reference") or "").strip()
+    backup_id = data.get("restore_backup_id")
+
+    target = None
+    if not target_ref:
+        errors["source_reference"] = "Select the environment to restore."
+    else:
+        target = session.scalar(select(Request).where(Request.reference == target_ref))
+        if target is None:
+            errors["source_reference"] = f"Unknown request '{target_ref}'."
+        elif target.status != "provisioned":
+            errors["source_reference"] = (
+                f"{target_ref} is not provisioned (status: {target.status}); only a provisioned "
+                "environment can be restored.")
+
+    if not backup_id:
+        errors["restore_backup_id"] = "Select a backup to restore from."
+    else:
+        backup = session.get(Backup, int(backup_id)) if str(backup_id).isdigit() else None
+        if backup is None:
+            errors["restore_backup_id"] = "Unknown backup."
+        elif target_ref and backup.reference != target_ref:
+            errors["restore_backup_id"] = "That backup belongs to a different environment."
 
 
 def _validate_create_fields(data: dict, session: Session, errors: dict[str, str]) -> None:

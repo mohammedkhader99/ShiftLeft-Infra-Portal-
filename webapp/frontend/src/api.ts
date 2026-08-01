@@ -165,6 +165,29 @@ export type RequestRow = {
   power?: string | null
   // Per-request auto-shutdown (F-FIN-06 B): the override + the resolved effective schedule.
   shutdown?: { override: Partial<ShutdownPolicy> | null; effective: ShutdownPolicy } | null
+  // Backup restore-points (F-LCM-06), newest first.
+  backups?: BackupRow[] | null
+}
+
+export type BackupRow = { id: number; label: string; created_by?: string | null; created_at?: string | null }
+
+// Take a backup restore-point of a provisioned environment (F-LCM-06). Owner
+// self-service (owner or platform-admin); no approval — mock records metadata.
+export async function createBackup(
+  reference: string,
+  label?: string,
+): Promise<{ status: number; body: any }> {
+  const r = await fetch(`/api/requests/${reference}/backup`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ label: label || null }),
+  })
+  return { status: r.status, body: await r.json().catch(() => ({})) }
+}
+
+export async function listBackups(reference: string): Promise<BackupRow[]> {
+  const r = await fetch(`/api/requests/${reference}/backups`)
+  return r.ok ? (await r.json()).backups : []
 }
 
 export async function checkDrift(reference: string): Promise<{ status: number; body: any }> {

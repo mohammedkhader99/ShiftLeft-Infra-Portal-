@@ -250,6 +250,9 @@ class Request(Base):
     # For 'refresh' (F-LCM-03): the higher environment whose data is copied down
     # into the target (source_reference). Null for other request types.
     refresh_from_reference: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # For 'restore' (F-LCM-06): the Backup id to restore the target
+    # (source_reference) to. Null for other request types.
+    restore_backup_id: Mapped[int | None] = mapped_column(nullable=True)
     data_classification: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
     # Governance metadata captured on the form (increment 6.1, from the UX
@@ -413,6 +416,22 @@ class ProvisionedResource(Base):
     # resource doesn't drop it from the TTL / health / billing queries that filter
     # on active resources.
     power_state: Mapped[str] = mapped_column(String(16), default="running")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class Backup(Base):
+    """A restore-point for a provisioned environment (F-LCM-06). Owner-initiated
+    (taking one needs no approval); restoring FROM one is approval-governed. Mock
+    records metadata (no real snapshot); live is an orchestrator extension point.
+    """
+
+    __tablename__ = "backup"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    reference: Mapped[str] = mapped_column(String(20), index=True)  # the env's request ref
+    label: Mapped[str] = mapped_column(String(120))
+    details: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_by: Mapped[str | None] = mapped_column(String(120), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 

@@ -65,6 +65,7 @@ from db.models import (
     ApiKey,
     Approval,
     AuditLog,
+    Backup,
     Budget,
     CostCentre,
     Quota,
@@ -1195,6 +1196,7 @@ REQUEST_FIELDS = (
     "environment_tier",
     "source_reference",
     "refresh_from_reference",
+    "restore_backup_id",
     "data_classification",
     # Governance metadata (increment 6.1).
     "business_justification",
@@ -1235,6 +1237,7 @@ class DraftIn(BaseModel):
     environment_tier: str | None = None
     source_reference: str | None = None
     refresh_from_reference: str | None = None
+    restore_backup_id: int | None = None
     data_classification: str | None = None
     # Governance metadata (increment 6.1). All optional at draft time.
     business_justification: str | None = None
@@ -1315,6 +1318,7 @@ class RequestOut(BaseModel):
     environment_tier: str | None = None
     source_reference: str | None = None
     refresh_from_reference: str | None = None
+    restore_backup_id: int | None = None
     data_classification: str | None = None
     # Governance metadata (increment 6.1).
     business_justification: str | None = None
@@ -1357,6 +1361,8 @@ class RequestOut(BaseModel):
     # Per-request auto-shutdown (F-FIN-06 B): {override, effective} for a
     # provisioned environment, else None.
     shutdown: dict | None = None
+    # Backup restore-points (F-LCM-06) for a provisioned environment, newest first.
+    backups: list | None = None
 
     @computed_field
     @property
@@ -1501,6 +1507,7 @@ def list_requests(
         out.state = _state_out(r)
         out.power = _derive_power(power_map.get(r.reference, []))
         out.shutdown = _shutdown_out(session, r)
+        out.backups = _backups_out(session, r)
         outs.append(out)
     return outs
 
@@ -1545,6 +1552,21 @@ def _power_for(session: Session, reference: str) -> str | None:
     ).all())
 
 
+def _backup_row(b: Backup) -> dict:
+    return {"id": b.id, "label": b.label, "created_by": b.created_by,
+            "created_at": b.created_at.isoformat() if b.created_at else None}
+
+
+def _backups_out(session: Session, req: Request) -> list | None:
+    """A provisioned environment's backup restore-points (F-LCM-06), newest first."""
+    if req.status != "provisioned":
+        return None
+    rows = session.scalars(
+        select(Backup).where(Backup.reference == req.reference).order_by(Backup.id.desc())
+    ).all()
+    return [_backup_row(b) for b in rows]
+
+
 def _shutdown_out(session: Session, req: Request) -> dict | None:
     """Per-request auto-shutdown for the portal: the override + the resolved
     effective schedule (override merged over global). Provisioned envs only."""
@@ -1581,6 +1603,7 @@ def get_request(reference: str, session: Session = Depends(get_session)) -> Requ
     out.state = _state_out(req)
     out.power = _power_for(session, reference)
     out.shutdown = _shutdown_out(session, req)
+    out.backups = _backups_out(session, req)
     return out
 
 
@@ -1721,9 +1744,9 @@ def submit_request(
             req.subsidiary = req.subsidiary or source.subsidiary
             req.environment_name = req.environment_name or source.environment_name
 
-    # Refresh inherits context from the TARGET env it refreshes (F-LCM-03), so the
-    # ticket + guardrails have full context (tier drives the non-prod check).
-    if req.request_type == "refresh" and req.source_reference:
+    # Refresh + restore inherit context from the TARGET env they operate on
+    # (F-LCM-03/06), so the ticket + guardrails have full context.
+    if req.request_type in ("refresh", "restore") and req.source_reference:
         target = session.scalar(select(Request).where(Request.reference == req.source_reference))
         if target is not None:
             req.deployment_target = req.deployment_target or target.deployment_target
@@ -2154,6 +2177,10 @@ def approve(jira_key: str, session: Session = Depends(get_session),
     # Refresh copies data from a higher env into the target (F-LCM-03).
     if req.request_type == "refresh":
         return _refresh(session, req, actor="approver")
+
+    # Restore rolls the target back to one of its backups (F-LCM-06).
+    if req.request_type == "restore":
+        return _restore(session, req, actor="approver")
 
     # Signed, versioned handoff. The signature is authenticity; the orchestrator
     # re-checks authority (approval + policy) and re-validates cost itself.
@@ -2932,6 +2959,127 @@ def set_request_shutdown(reference: str, body: RequestShutdownIn,
             "effective": autoshutdown.effective_policy(session, req)}
 
 
+# --- Backup & restore (F-LCM-06) ---------------------------------------------
+
+def _owner_or_admin(req: Request, actor: str) -> bool:
+    """Owner self-service: the environment owner (any of the named owners /
+    requester) or a platform_admin."""
+    if roles_mod.can(roles_mod.resolve_roles(actor), "execute"):
+        return True
+    owners = {req.requester, _resolve_owner(req), req.environment_owner,
+              req.application_owner, req.technical_owner, req.business_owner}
+    return actor in {o for o in owners if o}
+
+
+class BackupIn(BaseModel):
+    label: str | None = None
+
+
+@app.post("/api/requests/{reference}/backup")
+def create_backup(reference: str, body: BackupIn, session: Session = Depends(get_session),
+                  actor: str = Depends(_authed_requester)) -> dict:
+    """Take a backup restore-point of a provisioned environment (F-LCM-06). Owner
+    self-service — the env owner or a platform_admin, NO Jira approval (approval
+    governs the restore, not the backup). Mock records metadata; a real snapshot is
+    an orchestrator extension point. Audited `backup.created`."""
+    req = _load_request(reference, session)
+    if req.status != "provisioned":
+        raise HTTPException(status_code=400, detail="Only a provisioned environment can be backed up.")
+    if not _owner_or_admin(req, actor):
+        raise HTTPException(status_code=403,
+                            detail="Only the environment owner or a platform administrator can back it up.")
+    label = (body.label or "").strip() or f"backup-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M')}"
+    backup = Backup(reference=reference, label=label, created_by=actor,
+                    details={"mode": os.getenv("BACKUP_MODE", "mock")})
+    session.add(backup)
+    append_audit(session, "backup.created", reference=reference, actor=actor, detail={"label": label})
+    session.commit()
+    return _backup_row(backup)
+
+
+@app.get("/api/requests/{reference}/backups")
+def list_backups(reference: str, session: Session = Depends(get_session),
+                 _auth: str = Depends(_authed_requester)) -> dict:
+    """The provisioned environment's backup restore-points, newest first."""
+    _load_request(reference, session)
+    rows = session.scalars(
+        select(Backup).where(Backup.reference == reference).order_by(Backup.id.desc())
+    ).all()
+    return {"reference": reference, "backups": [_backup_row(b) for b in rows]}
+
+
+def _restore_handoff(req: Request, target: Request, backup: Backup) -> tuple[bytes, str]:
+    """Build + sign the restore handoff — the target env + the backup to restore."""
+    payload = {
+        "contract_version": CONTRACT_VERSION,
+        "idempotency_key": f"{req.approval.jira_key}:restore:{backup.id}",
+        "issued_at": datetime.now(timezone.utc).isoformat(),
+        "jira_key": req.approval.jira_key,
+        "reference": req.reference,
+        "operation": "restore",
+        "target": {"reference": target.reference, "policy_input": _policy_input(target)},
+        "backup": {"id": backup.id, "label": backup.label},
+    }
+    body = json.dumps(payload, sort_keys=True).encode()
+    return body, sign(WEBHOOK_SECRET, body)
+
+
+def _restore(session: Session, req: Request, actor: str) -> dict:
+    """Restore the target provisioned env (source_reference) to a chosen backup
+    (restore_backup_id), and record the verification result (F-LCM-06).
+    Approval-governed + orchestrator-executed, mirroring decommission/refresh. Mock
+    records it (verified); live is a restore extension point. The target stays
+    provisioned."""
+    target = session.scalar(select(Request).where(Request.reference == req.source_reference))
+    backup = session.get(Backup, req.restore_backup_id) if req.restore_backup_id else None
+    if target is None or backup is None or backup.reference != req.source_reference:
+        req.status = "restore-failed"
+        req.status_detail = "Restore target or backup not found (or mismatched)."
+        append_audit(session, "restore.source_missing", reference=req.reference,
+                     jira_key=req.approval.jira_key,
+                     detail={"target": req.source_reference, "backup_id": req.restore_backup_id})
+        session.commit()
+        return {"approval": "approved", "restored": False, "error": req.status_detail}
+
+    _transition_jira(session, req, inprogress_status(), "jira.in_progress")
+    session.commit()
+
+    body, signature = _restore_handoff(req, target, backup)
+    append_audit(session, "restore.handoff", reference=req.reference,
+                 jira_key=req.approval.jira_key, actor=actor,
+                 detail={"target": target.reference, "backup": backup.label})
+    session.commit()
+
+    response, error = _post_to_orchestrator(body, signature, path="/restore")
+    if response is None or response.status_code != 200:
+        raw = error or (response.text if response else "")
+        reason = _short_reason(raw)
+        req.status = "restore-failed"
+        req.status_detail = reason
+        append_audit(session, "restore.failed", reference=req.reference,
+                     jira_key=req.approval.jira_key,
+                     detail={"target": target.reference, "backup": backup.label, "error": raw})
+        add_comment(req.approval.jira_key, "⚠️ Automated restore failed; nothing was "
+                                           f"changed.\n\n{reason}")
+        session.commit()
+        return {"approval": "approved", "restored": False, "error": reason}
+
+    result = response.json()
+    verified = bool(result.get("verified"))
+    summary = result.get("summary")
+    req.status = "restored"
+    req.status_detail = None
+    _transition_jira(session, req, resolved_status(), "jira.resolved")
+    append_audit(session, "restore.performed", reference=req.reference,
+                 jira_key=req.approval.jira_key,
+                 detail={"target": target.reference, "backup": backup.label,
+                         "verified": verified, "summary": summary})
+    session.commit()
+    return {"approval": "approved", "restored": True, "target": target.reference,
+            "backup": backup.label, "verified": verified,
+            "message": f"Restored {target.reference} from '{backup.label}': {summary}"}
+
+
 def _decommission(session: Session, req: Request, actor: str) -> dict:
     """Tear down the resources of the provisioned request this decommission
     request targets, then mark both decommissioned.
@@ -3171,6 +3319,10 @@ def _advance_request(session: Session, req: Request) -> str:
         # Refresh copies data from a higher env into the target (F-LCM-03).
         if req.request_type == "refresh":
             _refresh(session, req, actor="poller")
+            return req.status
+        # Restore rolls the target back to one of its backups (F-LCM-06).
+        if req.request_type == "restore":
+            _restore(session, req, actor="poller")
             return req.status
         body, signature = _handoff_payload(req)
         append_audit(session, "orchestrator.handoff", reference=req.reference,

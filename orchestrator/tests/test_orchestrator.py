@@ -180,6 +180,20 @@ def test_refresh_live_is_unconfigured(monkeypatch):
     assert client.post("/refresh", content=body, headers=_signed(body)).status_code == 501
 
 
+def test_restore_mock_verifies(monkeypatch):
+    body = _body(operation="restore", target={"reference": "REQ-UAT"},
+                 backup={"id": 3, "label": "nightly"})
+    resp = client.post("/restore", content=body, headers=_signed(body))
+    assert resp.status_code == 200
+    assert resp.json()["restored"] is True and resp.json()["verified"] is True
+
+
+def test_restore_live_is_unconfigured(monkeypatch):
+    monkeypatch.setenv("RESTORE_MODE", "live")
+    body = _body(operation="restore", target={"reference": "T"}, backup={"id": 1, "label": "b"})
+    assert client.post("/restore", content=body, headers=_signed(body)).status_code == 501
+
+
 def test_apply_refused_when_not_apply_mode(monkeypatch):
     _patch(monkeypatch)
     monkeypatch.setattr(orch.provisioner, "provision_mode", lambda: "plan")

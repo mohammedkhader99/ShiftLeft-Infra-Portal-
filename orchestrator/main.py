@@ -336,6 +336,25 @@ async def refresh(request: Request) -> dict:
                         + (" (sensitive data masked)" if masked else "") + " — no data copied.")}
 
 
+@app.post("/restore")
+async def restore(request: Request) -> dict:
+    """Restore a provisioned environment to a backup, and VERIFY it (F-LCM-06).
+    Signature-verified. Mock records it + reports verified (restores nothing); live
+    (RESTORE_MODE=live) is an extension point — a real restore + verification job."""
+    body = await request.body()
+    if not verify(WEBHOOK_SECRET, body, request.headers.get("X-Signature", "")):
+        raise HTTPException(status_code=401, detail="Invalid webhook signature.")
+    payload = json.loads(body)
+    if os.getenv("RESTORE_MODE", "mock").strip().lower() == "live":
+        raise HTTPException(status_code=501, detail=(
+            "Live restore is not configured. Wire the restore + verification job in "
+            "orchestrator/main.restore to enable it."))
+    tgt = (payload.get("target") or {}).get("reference")
+    bk = (payload.get("backup") or {}).get("label")
+    return {"restored": True, "verified": True,
+            "summary": f"Mock-restored {tgt} to backup '{bk}' — verified, no data changed."}
+
+
 @app.post("/destroy")
 async def destroy(request: Request) -> dict:
     """Destroy the resource (rollback / cleanup). Signed, and apply mode only."""
