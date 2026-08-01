@@ -455,6 +455,20 @@ class ReportRun(Base):
     summary: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
+class LeaderLease(Base):
+    """A single-active leadership lease (F-OPS-01). One row per lease name; the
+    holder renews expires_at each tick. If it dies, the lease expires and another
+    replica takes over — so the poller runs in exactly one API replica at a time."""
+
+    __tablename__ = "leader_lease"
+
+    name: Mapped[str] = mapped_column(String(64), primary_key=True)
+    holder: Mapped[str] = mapped_column(String(80))
+    acquired_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    heartbeat_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
 class WebhookSubscription(Base):
     """An admin-configured outbound webhook endpoint (F-INT-10). Lifecycle events
     are delivered here, HMAC-signed. `secret` is a shared HMAC key the admin sets

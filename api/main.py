@@ -19,7 +19,7 @@ from fastapi import Request as HTTPRequest
 from fastapi import Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, computed_field, field_validator
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from api import ai_drafter
@@ -31,6 +31,7 @@ from api import chatbot
 from api import eventstream
 from api import forecast
 from api import optimisation as optim
+from api import leader
 from api import reports
 from api import shutdown as autoshutdown
 from api import sustainability as sustainability_mod
@@ -1115,7 +1116,21 @@ def health_scores(session: Session = Depends(get_session),
 
 @app.get("/health")
 def health() -> dict:
+    """Liveness: the process is up and serving. Used by the load balancer to know
+    the instance is alive (F-OPS-01)."""
     return {"ok": True, "mock": is_mock_mode()}
+
+
+@app.get("/health/ready")
+def health_ready() -> dict:
+    """Readiness (F-OPS-01): the instance can serve — its database is reachable.
+    A load balancer routes only to ready instances; returns 503 if the DB is down."""
+    try:
+        with SessionLocal() as session:
+            session.execute(text("SELECT 1"))
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=503, detail="database not reachable") from exc
+    return {"ready": True, "mock": is_mock_mode()}
 
 
 # --- Lookups (increment 1.2) -------------------------------------------------
@@ -4286,14 +4301,56 @@ def _poll_once() -> None:
             pass
 
 
+def _audit_leader(event: str) -> None:
+    """Record a leadership transition; never let auditing crash the loop."""
+    try:
+        with SessionLocal() as session:
+            append_audit(session, event, actor=leader.INSTANCE_ID, detail={"instance": leader.INSTANCE_ID})
+            session.commit()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _poller_loop() -> None:
-    interval = int(os.getenv("POLL_INTERVAL_SECONDS", "30"))
+    """Run the poller in exactly one replica at a time (F-OPS-01). Each tick we
+    renew the leader lease; only the leader runs _poll_once. If the leader dies,
+    its lease expires and a standby takes over within the TTL. On the poll cadence
+    the renewal is more frequent than the TTL so the lease never lapses in place."""
+    interval = max(2, int(os.getenv("POLL_INTERVAL_SECONDS", "30")))
+    renew = max(2, min(interval, leader.ttl_seconds() // 2))
+    last_poll = 0.0
+    was_leader = False
     while not _poller_stop.is_set():
+        is_leader = False
         try:
-            _poll_once()
-        except Exception:  # noqa: BLE001 — the loop must survive anything
+            with SessionLocal() as session:
+                is_leader = leader.try_acquire(session, "poller")
+        except Exception:  # noqa: BLE001 — treat any lease error as "not leader"
+            is_leader = False
+
+        if is_leader and not was_leader:
+            _audit_leader("poller.leader.acquired")
+        elif was_leader and not is_leader:
+            _audit_leader("poller.leader.lost")
+        was_leader = is_leader
+
+        now = time.monotonic()
+        if is_leader and (now - last_poll) >= interval:
+            last_poll = now
+            try:
+                _poll_once()
+            except Exception:  # noqa: BLE001 — the loop must survive anything
+                pass
+        _poller_stop.wait(renew)
+
+    # Graceful handover: release the lease so a standby takes over immediately.
+    if was_leader:
+        try:
+            with SessionLocal() as session:
+                leader.release(session, "poller")
+            _audit_leader("poller.leader.released")
+        except Exception:  # noqa: BLE001
             pass
-        _poller_stop.wait(interval)
 
 
 def _start_poller() -> None:
