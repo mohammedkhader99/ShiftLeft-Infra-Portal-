@@ -186,6 +186,24 @@ class Quota(Base):
     )
 
 
+class ShutdownPolicy(Base):
+    """The single global auto-shutdown schedule (F-FIN-06), editable by an admin
+    from the portal. Exactly one row (id=1). When absent, the .env defaults apply,
+    so behaviour is unchanged until an admin edits it. Per-request overrides
+    (increment B) take precedence over this."""
+
+    __tablename__ = "shutdown_policy"
+
+    id: Mapped[int] = mapped_column(primary_key=True)  # always 1 (a singleton)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    days: Mapped[str] = mapped_column(String(32), default="mon-fri")
+    start_hm: Mapped[str] = mapped_column(String(5), default="08:00")  # "HH:MM"
+    end_hm: Mapped[str] = mapped_column(String(5), default="20:00")
+    tz: Mapped[str] = mapped_column(String(64), default="UTC")
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_by: Mapped[str | None] = mapped_column(String(120), nullable=True)
+
+
 class Request(Base):
     """A provisioning request (increment 1.3): the first transactional table.
 

@@ -439,8 +439,10 @@ export type ShutdownEnv = {
   monthly_saving: number
   paused: boolean
 }
+export type ShutdownPolicy = { enabled: boolean; days: string; start: string; end: string; tz: string }
 export type Shutdown = {
   enabled: boolean
+  policy: ShutdownPolicy
   schedule: { days: string; start: string; end: string; tz: string }
   off_hours_now: boolean
   off_hours_fraction: number
@@ -455,6 +457,18 @@ export async function getShutdown(): Promise<Shutdown | 'forbidden' | null> {
   const r = await fetch('/api/shutdown')
   if (r.status === 403) return 'forbidden'
   return r.ok ? r.json() : null
+}
+
+// Set the global auto-shutdown schedule (F-FIN-06, platform-admin).
+export async function setShutdownPolicy(
+  policy: ShutdownPolicy,
+): Promise<{ status: number; body: any }> {
+  const r = await fetch('/api/shutdown', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(policy),
+  })
+  return { status: r.status, body: await r.json().catch(() => ({})) }
 }
 
 // Admin console (E1, F-OPS-09).

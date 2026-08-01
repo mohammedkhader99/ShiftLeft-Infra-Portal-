@@ -615,6 +615,53 @@ def shutdown_status(session: Session = Depends(get_session),
     return autoshutdown.status(session)
 
 
+class ShutdownPolicyIn(BaseModel):
+    enabled: bool = False
+    days: str = "mon-fri"
+    start: str = "08:00"
+    end: str = "20:00"
+    tz: str = "UTC"
+
+    @field_validator("start", "end")
+    @classmethod
+    def _valid_hm(cls, v: str) -> str:
+        try:
+            hh, mm = (v or "").strip().split(":")
+            hh, mm = int(hh), int(mm)
+            assert 0 <= hh <= 23 and 0 <= mm <= 59
+            return f"{hh:02d}:{mm:02d}"
+        except Exception:
+            raise ValueError("time must be HH:MM (00:00–23:59)")
+
+    @field_validator("tz")
+    @classmethod
+    def _valid_tz(cls, v: str) -> str:
+        from zoneinfo import ZoneInfo
+        try:
+            ZoneInfo((v or "").strip())
+            return v.strip()
+        except Exception:
+            raise ValueError("tz must be a valid IANA timezone, e.g. 'Asia/Dubai'")
+
+    @field_validator("days")
+    @classmethod
+    def _clean_days(cls, v: str) -> str:
+        return (v or "").strip().lower() or "mon-fri"
+
+
+@app.put("/api/shutdown")
+def set_shutdown_policy(body: ShutdownPolicyIn, session: Session = Depends(get_session),
+                        actor: str = Depends(require_action("execute"))) -> dict:
+    """Set the global auto-shutdown schedule from the portal (F-FIN-06),
+    platform_admin. Persisted in the DB (overrides the .env defaults) and audited.
+    Note: the enabled toggle runs the SWEEP; a real cloud stop still also requires
+    OCI_ACTUATE_ENABLED — that gate stays out of the UI (nothing real by surprise)."""
+    policy = autoshutdown.set_policy(session, body.model_dump(), actor=actor)
+    append_audit(session, "shutdown.policy.updated", actor=actor, detail=policy)
+    session.commit()
+    return autoshutdown.status(session)
+
+
 # --- Budget guardrails (E3.3, F-FIN-02) --------------------------------------
 
 def _budget_enforce() -> bool:
@@ -3222,14 +3269,15 @@ def _sweep_shutdowns(session: Session) -> None:
     resources are a no-op. Mock changes no real cloud; live + OCI_ACTUATE_ENABLED
     really powers the VM. No-op when disabled or when no boundary was crossed."""
     global _shutdown_last_off
-    if not autoshutdown.enabled():
+    policy = autoshutdown.resolve_policy(session)
+    if not autoshutdown.enabled(policy):
         _shutdown_last_off = None
         return
-    off = autoshutdown.is_off_hours()
+    off = autoshutdown.is_off_hours(policy)
     if off == _shutdown_last_off:
         return  # no boundary crossed since the last sweep
     _shutdown_last_off = off
-    savings = autoshutdown.shutdown_savings(session)
+    savings = autoshutdown.shutdown_savings(session, policy)
     if not savings["environments"]:
         return  # nothing non-prod to pause
     action = "stop" if off else "start"

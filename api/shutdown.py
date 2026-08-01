@@ -20,7 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from api.pricing import estimate_cost
-from db.models import Request
+from db.models import Request, ShutdownPolicy
 
 CURRENCY = "AED"
 NONPROD_TIERS = {"dev", "test", "sit", "uat", "preprod"}
@@ -28,9 +28,52 @@ _WEEKDAYS = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 
 HOURS_PER_WEEK = 168.0
 
 
-def enabled() -> bool:
-    """Whether the auto-pause sweep runs. Off by default — the saving view still works."""
-    return os.getenv("SHUTDOWN_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
+DEFAULTS = {"enabled": False, "days": "mon-fri", "start": "08:00", "end": "20:00", "tz": "UTC"}
+
+
+def _env_policy() -> dict:
+    """The schedule from .env — the fallback when no admin has set a DB policy."""
+    return {
+        "enabled": os.getenv("SHUTDOWN_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on"),
+        "days": os.getenv("SHUTDOWN_DAYS", DEFAULTS["days"]),
+        "start": os.getenv("SHUTDOWN_START", DEFAULTS["start"]),
+        "end": os.getenv("SHUTDOWN_END", DEFAULTS["end"]),
+        "tz": os.getenv("SHUTDOWN_TZ", DEFAULTS["tz"]),
+    }
+
+
+def resolve_policy(session: Session | None = None) -> dict:
+    """The effective GLOBAL policy: the DB row if an admin has set one, else the
+    .env defaults (so behaviour is unchanged until edited). Per-request overrides
+    (increment B) layer on top of this."""
+    if session is not None:
+        row = session.get(ShutdownPolicy, 1)
+        if row is not None:
+            return {"enabled": bool(row.enabled), "days": row.days,
+                    "start": row.start_hm, "end": row.end_hm, "tz": row.tz}
+    return _env_policy()
+
+
+def set_policy(session: Session, data: dict, actor: str | None = None) -> dict:
+    """Upsert the single global policy row and return the resolved policy."""
+    row = session.get(ShutdownPolicy, 1)
+    if row is None:
+        row = ShutdownPolicy(id=1)
+        session.add(row)
+    row.enabled = bool(data["enabled"])
+    row.days = data["days"]
+    row.start_hm = data["start"]
+    row.end_hm = data["end"]
+    row.tz = data["tz"]
+    row.updated_at = datetime.now(timezone.utc)
+    row.updated_by = actor
+    return {"enabled": row.enabled, "days": row.days, "start": row.start_hm,
+            "end": row.end_hm, "tz": row.tz}
+
+
+def enabled(policy: dict) -> bool:
+    """Whether the auto-shutdown sweep runs under `policy`. Off by default."""
+    return bool(policy.get("enabled"))
 
 
 def _parse_days(spec: str) -> set[int]:
@@ -63,44 +106,31 @@ def _parse_hm(spec: str, default: dtime) -> dtime:
         return default
 
 
-def _days() -> set[int]:
-    return _parse_days(os.getenv("SHUTDOWN_DAYS", "mon-fri"))
+def schedule(policy: dict) -> dict:
+    return {"days": policy.get("days"), "start": policy.get("start"),
+            "end": policy.get("end"), "tz": policy.get("tz")}
 
 
-def _start() -> dtime:
-    return _parse_hm(os.getenv("SHUTDOWN_START", "08:00"), dtime(8, 0))
-
-
-def _end() -> dtime:
-    return _parse_hm(os.getenv("SHUTDOWN_END", "20:00"), dtime(20, 0))
-
-
-def schedule() -> dict:
-    return {
-        "days": os.getenv("SHUTDOWN_DAYS", "mon-fri"),
-        "start": os.getenv("SHUTDOWN_START", "08:00"),
-        "end": os.getenv("SHUTDOWN_END", "20:00"),
-        "tz": os.getenv("SHUTDOWN_TZ", "UTC"),
-    }
-
-
-def is_off_hours(now: datetime | None = None) -> bool:
-    """True if non-prod should be shut down right now (outside business hours)."""
-    tz_name = os.getenv("SHUTDOWN_TZ", "UTC")
+def is_off_hours(policy: dict, now: datetime | None = None) -> bool:
+    """True if non-prod should be shut down right now under `policy`."""
     try:
-        tz = ZoneInfo(tz_name)
+        tz = ZoneInfo(policy.get("tz") or "UTC")
     except Exception:  # noqa: BLE001
         tz = timezone.utc
     local = (now or datetime.now(timezone.utc)).astimezone(tz)
-    in_hours = local.weekday() in _days() and _start() <= local.time() <= _end()
+    days = _parse_days(policy.get("days"))
+    start = _parse_hm(policy.get("start") or "08:00", dtime(8, 0))
+    end = _parse_hm(policy.get("end") or "20:00", dtime(20, 0))
+    in_hours = local.weekday() in days and start <= local.time() <= end
     return not in_hours
 
 
-def off_hours_fraction() -> float:
+def off_hours_fraction(policy: dict) -> float:
     """Fraction of a week spent off-hours — the share of compute cost that can be saved."""
-    start, end = _start(), _end()
+    start = _parse_hm(policy.get("start") or "08:00", dtime(8, 0))
+    end = _parse_hm(policy.get("end") or "20:00", dtime(20, 0))
     hours_per_day = max(0.0, (end.hour + end.minute / 60) - (start.hour + start.minute / 60))
-    business_hours = len(_days()) * hours_per_day
+    business_hours = len(_parse_days(policy.get("days"))) * hours_per_day
     return max(0.0, min(1.0, 1.0 - business_hours / HOURS_PER_WEEK))
 
 
@@ -110,10 +140,10 @@ def _compute_cost(session: Session, req: Request) -> float:
     return float(breakdown["by_category"]["compute"])
 
 
-def shutdown_savings(session: Session) -> dict:
+def shutdown_savings(session: Session, policy: dict | None = None) -> dict:
     """Per non-prod provisioned environment: potential monthly saving = its compute
     cost x the off-hours fraction (storage keeps billing). Plus the estate total."""
-    frac = off_hours_fraction()
+    frac = off_hours_fraction(policy or resolve_policy(session))
     environments: list[dict] = []
     total = 0.0
     for req in session.scalars(select(Request).where(Request.status == "provisioned")):
@@ -137,23 +167,25 @@ def shutdown_savings(session: Session) -> dict:
 
 
 def status(session: Session) -> dict:
-    """Schedule + current state + quantified saving. `paused` per env is derived:
-    the environment is powered down now iff the sweep is enabled and it's off-hours."""
-    off = is_off_hours()
-    on = enabled()
-    savings = shutdown_savings(session)
+    """Editable policy + current state + quantified saving. `paused` per env is
+    derived: powered down now iff the sweep is enabled and it's off-hours."""
+    policy = resolve_policy(session)
+    off = is_off_hours(policy)
+    on = enabled(policy)
+    savings = shutdown_savings(session, policy)
     for env in savings["environments"]:
         env["paused"] = on and off
     return {
         "enabled": on,
-        "schedule": schedule(),
+        "policy": policy,             # the editable global policy (admin panel)
+        "schedule": schedule(policy),
         "off_hours_now": off,
-        "off_hours_fraction": round(off_hours_fraction(), 3),
+        "off_hours_fraction": round(off_hours_fraction(policy), 3),
         "currency": CURRENCY,
         "total_saving": savings["total_saving"],
         "environment_count": len(savings["environments"]),
         "environments": savings["environments"],
         "note": ("Potential saving = each non-prod environment's compute cost x the off-hours "
-                 "fraction (storage keeps billing). Enable SHUTDOWN_ENABLED to stop non-prod "
+                 "fraction (storage keeps billing). Enable auto-shutdown to stop non-prod "
                  "compute out-of-hours and start it back in-hours (mock changes no real cloud)."),
     }

@@ -1,11 +1,13 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import { Tile, Tag, TextInput, Select, SelectItem, Button, InlineLoading, InlineNotification } from '@carbon/react'
-import { TrashCan, Add, Password } from '@carbon/icons-react'
+import { Tile, Tag, TextInput, Select, SelectItem, Button, Toggle, InlineLoading, InlineNotification } from '@carbon/react'
+import { TrashCan, Add, Password, Save } from '@carbon/icons-react'
 import {
   getConfig, getBudgets, getLookups, setBudget, deleteBudget, getOrphans,
   getQuotas, setQuota, deleteQuota,
   getApiKeys, createApiKey, revokeApiKey,
+  getShutdown, setShutdownPolicy,
   type SystemConfig, type BudgetRow, type Lookups, type OrphanRow, type QuotaRow, type ApiKeyRow,
+  type Shutdown, type ShutdownPolicy,
 } from '../api'
 
 function Flag({ on, onLabel, offLabel }: { on: boolean; onLabel?: string; offLabel?: string }) {
@@ -51,9 +53,16 @@ export default function Admin() {
   const [apiKeys, setApiKeys] = useState<ApiKeyRow[]>([])
   const [newKeyLabel, setNewKeyLabel] = useState('')
   const [issuedKey, setIssuedKey] = useState<string | null>(null)
+  const [sd, setSd] = useState<Shutdown | null>(null)
+  const [sdForm, setSdForm] = useState<ShutdownPolicy>({ enabled: false, days: 'mon-fri', start: '08:00', end: '20:00', tz: 'UTC' })
+  const [sdSaving, setSdSaving] = useState(false)
+  const [sdMsg, setSdMsg] = useState<{ ok: boolean; text: string } | null>(null)
 
   function reloadBudgets() {
     getBudgets().then((b) => b && b !== 'forbidden' && setBudgets(b.budgets)).catch(() => {})
+  }
+  function reloadShutdown() {
+    getShutdown().then((s) => { if (s && s !== 'forbidden') { setSd(s); setSdForm(s.policy) } }).catch(() => {})
   }
   function reloadQuotas() {
     getQuotas().then((q) => q && q !== 'forbidden' && setQuotas(q.quotas)).catch(() => {})
@@ -74,8 +83,25 @@ export default function Admin() {
     reloadBudgets()
     reloadQuotas()
     reloadApiKeys()
+    reloadShutdown()
     getOrphans().then((o) => o && o !== 'forbidden' && setOrphans(o.orphans)).catch(() => {})
   }, [])
+
+  async function onSaveShutdown() {
+    setSdSaving(true)
+    setSdMsg(null)
+    try {
+      const { status, body } = await setShutdownPolicy(sdForm)
+      if (status === 200) {
+        setSd(body); setSdForm(body.policy); setSdMsg({ ok: true, text: 'Schedule saved.' })
+      } else {
+        const msg = body?.detail?.[0]?.msg || (typeof body?.detail === 'string' ? body.detail : 'Could not save the schedule.')
+        setSdMsg({ ok: false, text: msg })
+      }
+    } finally {
+      setSdSaving(false)
+    }
+  }
 
   async function onCreateKey() {
     const label = newKeyLabel.trim() || 'api key'
@@ -256,6 +282,47 @@ export default function Admin() {
             Set quota
           </Button>
         </div>
+      </Tile>
+
+      <Tile>
+        <h4 style={{ fontSize: '0.95rem', fontWeight: 500, marginBottom: '0.25rem' }}>Auto-shutdown schedule (F-FIN-06)</h4>
+        <p style={{ fontSize: '0.8rem', color: 'var(--cds-text-secondary)', marginBottom: '0.75rem' }}>
+          Stops non-prod compute out-of-hours and starts it back in-hours. Applies to all non-prod environments.
+        </p>
+        <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'flex-end', flexWrap: 'wrap' }}>
+          <Toggle id="sd-enabled" size="sm" labelText="Enabled" labelA="Off" labelB="On"
+            toggled={sdForm.enabled} onToggle={(v) => setSdForm({ ...sdForm, enabled: v })} />
+          <TextInput id="sd-days" size="sm" labelText="Business days" placeholder="mon-fri"
+            value={sdForm.days} onChange={(e) => setSdForm({ ...sdForm, days: e.target.value })} style={{ maxWidth: '10rem' }} />
+          <TextInput id="sd-start" size="sm" labelText="Start (HH:MM)" value={sdForm.start}
+            onChange={(e) => setSdForm({ ...sdForm, start: e.target.value })} style={{ maxWidth: '8rem' }} />
+          <TextInput id="sd-end" size="sm" labelText="End (HH:MM)" value={sdForm.end}
+            onChange={(e) => setSdForm({ ...sdForm, end: e.target.value })} style={{ maxWidth: '8rem' }} />
+          <TextInput id="sd-tz" size="sm" labelText="Timezone" placeholder="Asia/Dubai" value={sdForm.tz}
+            onChange={(e) => setSdForm({ ...sdForm, tz: e.target.value })} style={{ maxWidth: '12rem' }} />
+          <Button size="sm" renderIcon={Save} disabled={sdSaving} onClick={onSaveShutdown}>
+            {sdSaving ? 'Saving…' : 'Save schedule'}
+          </Button>
+        </div>
+        {sdMsg && (
+          <InlineNotification kind={sdMsg.ok ? 'success' : 'error'} lowContrast title={sdMsg.text}
+            onCloseButtonClick={() => setSdMsg(null)} style={{ maxWidth: 'none', marginTop: '0.75rem' }} />
+        )}
+        {sd && (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(12rem, 1fr))', gap: '0 2rem', marginTop: '0.75rem' }}>
+            <Group title="Now">
+              <Row label="Off-hours now"><Flag on={sd.off_hours_now} onLabel="off-hours" offLabel="business hours" /></Row>
+              <Row label="Off-hours share">{Math.round(sd.off_hours_fraction * 100)}%</Row>
+            </Group>
+            <Group title="Non-prod estate">
+              <Row label="Environments">{sd.environment_count}</Row>
+              <Row label="Potential monthly saving">{money(sd.total_saving)}</Row>
+            </Group>
+          </div>
+        )}
+        <p style={{ fontSize: '0.78rem', color: 'var(--cds-text-secondary)', marginTop: '0.5rem' }}>
+          The Enabled toggle runs the scheduler; a real cloud stop additionally requires <code>OCI_ACTUATE_ENABLED</code>.
+        </p>
       </Tile>
 
       <Tile>

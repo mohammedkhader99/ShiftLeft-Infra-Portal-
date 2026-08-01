@@ -186,11 +186,12 @@ def test_power_state_on_list_and_detail(client, session, monkeypatch):
 
 def _enable_shutdown(monkeypatch, off_hours, envs):
     """Enable the sweep, force the off/on-hours state, and feed it the given
-    non-prod environments (bypassing the pricing-based selection)."""
-    monkeypatch.setattr(main.autoshutdown, "enabled", lambda: True)
+    non-prod environments (bypassing the pricing-based selection). The lambdas
+    accept the policy the sweep now threads through."""
+    monkeypatch.setattr(main.autoshutdown, "enabled", lambda *a, **k: True)
     monkeypatch.setattr(main.autoshutdown, "is_off_hours", lambda *a, **k: off_hours)
     monkeypatch.setattr(main.autoshutdown, "shutdown_savings",
-                        lambda s: {"environments": envs, "total_saving": 42.0})
+                        lambda *a, **k: {"environments": envs, "total_saving": 42.0})
     main._shutdown_last_off = None
 
 
@@ -217,7 +218,7 @@ def test_sweep_starts_compute_in_hours(session, monkeypatch):
 
 def test_sweep_noop_when_disabled(session, monkeypatch):
     _prov(session, "REQ-NP", power="running")
-    monkeypatch.setattr(main.autoshutdown, "enabled", lambda: False)
+    monkeypatch.setattr(main.autoshutdown, "enabled", lambda *a, **k: False)
     monkeypatch.setattr(main, "_post_to_orchestrator",
                         lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not actuate")))
     main._shutdown_last_off = None
