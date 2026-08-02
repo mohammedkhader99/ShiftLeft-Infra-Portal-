@@ -829,6 +829,19 @@ export async function chatops(command: string): Promise<{ status: number; body: 
   return { status: r.status, body: await r.json().catch(() => ({})) }
 }
 
+// AI natural-language layer for the approvals bot (F-INT-08). Interprets a plain-
+// English message into a safe command. Read-only intents run; approve/reject come
+// back as a proposal (needs_confirmation + command) that the AI never executes —
+// the caller confirms, which runs the authority-preserving chatops() path.
+export async function aiChat(message: string): Promise<{ status: number; body: any }> {
+  const r = await fetch('/api/ai/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message }),
+  })
+  return { status: r.status, body: await r.json().catch(() => ({})) }
+}
+
 export type AuditEntry = { event: string; created_at: string }
 
 export async function getAudit(reference: string): Promise<AuditEntry[]> {

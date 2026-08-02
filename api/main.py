@@ -23,6 +23,7 @@ from pydantic import BaseModel, ConfigDict, computed_field, field_validator
 from sqlalchemy import func, or_, select, text
 from sqlalchemy.orm import Session
 
+from api import ai_chat
 from api import ai_drafter
 from api import ai_explainer
 from api import ai_recommend
@@ -2779,6 +2780,90 @@ async def chatops_slack(http_request: HTTPRequest, session: Session = Depends(ge
                 "text": "Your Slack account isn't linked to a portal identity. Ask an admin to map it."}
     result = chatbot.handle_command(text, identity, session)
     return {"response_type": "ephemeral", "text": result["response"]}
+
+
+class AiChatIn(BaseModel):
+    message: str
+
+
+@app.post("/api/ai/chat")
+def ai_chat_endpoint(
+    body: AiChatIn,
+    session: Session = Depends(get_session),
+    requester: str = Depends(_authed_requester),
+) -> dict:
+    """Natural-language front-end to the approvals bot (F-INT-08, AI Assistant).
+
+    Claude (or the offline parser) maps a plain-English message to ONE safe
+    command. It **interprets only** (ARCHITECTURE.md §7/P3): read-only intents
+    (pending/status/help) run through the existing authority-preserving engine
+    immediately; approve/reject are **never executed here** — they come back as a
+    proposed command the caller must confirm, which then runs the normal
+    `/api/chatops` path (Jira transition + RBAC + segregation of duties + audit).
+    The interpretation itself is audited (`ai.chat`).
+    """
+    message = (body.message or "").strip()
+    if len(message) < 2:
+        raise HTTPException(
+            status_code=422,
+            detail="Type a message, e.g. \"what's pending?\" or \"approve REQ-2026-0001\".",
+        )
+    try:
+        intent = ai_chat.interpret(message)
+    except ai_chat.AiUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+
+    action = intent["action"]
+    reference = intent["reference"]
+    note = intent["note"]
+
+    append_audit(
+        session,
+        "ai.chat",
+        actor=requester,
+        detail={
+            "mode": intent["mode"],
+            "action": action,
+            "reference": reference,
+            "message": message[:300],
+        },
+    )
+    session.commit()
+
+    base = {
+        "mode": intent["mode"],
+        "action": action,
+        "reference": reference,
+        "note": note,
+        "intent": intent,
+    }
+
+    # Read-only intents: safe to run the existing engine now.
+    if action == "help":
+        return {**base, "needs_confirmation": False, "ok": True, "response": chatbot.HELP}
+    if action == "pending":
+        result = chatbot.handle_command("pending", requester, session)
+        return {**base, "needs_confirmation": False, "ok": result["ok"],
+                "response": result["response"]}
+    if action == "status":
+        result = chatbot.handle_command(f"status {reference}", requester, session)
+        return {**base, "needs_confirmation": False, "ok": result["ok"],
+                "response": result["response"]}
+
+    # Deciding intents: propose a command, never execute it here.
+    if action in ("approve", "reject"):
+        command = f"{action} {reference}" + (f" {note}" if note else "")
+        lines = [f"Did you mean to {action} {reference}?"]
+        if note:
+            lines.append(f"Note: “{note}”")
+        lines.append("Confirm to record your decision in Jira — I won't act until you do.")
+        return {**base, "needs_confirmation": True, "ok": True,
+                "command": command, "response": "\n".join(lines)}
+
+    # Unknown: nudge with any parse hint + the command help.
+    hint = "  ·  ".join(intent["warnings"])
+    response = ("I didn't catch a command in that. " + hint).strip() + "\n\n" + chatbot.HELP
+    return {**base, "needs_confirmation": False, "ok": False, "response": response}
 
 
 @app.get("/api/requests/{reference}/evidence.pdf")
