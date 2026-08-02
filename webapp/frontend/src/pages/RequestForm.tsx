@@ -68,6 +68,10 @@ const TARGETS: [string, string][] = [
   ['aws', 'Amazon Web Services (AWS)'],
   ['gcp', 'Google Cloud (GCP)'],
 ]
+// Short labels for the single-row target cards (full names stay in summaries).
+const TARGET_SHORT: Record<string, string> = {
+  onprem: 'On-prem', azure: 'Azure', oci: 'OCI', aws: 'AWS', gcp: 'GCP',
+}
 const RTYPE_LABEL: Record<string, string> = {
   create: 'Create environment',
   clone: 'Clone environment',
@@ -854,14 +858,15 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
                 <label style={{ fontSize: '0.75rem', color: 'var(--cds-text-secondary)', display: 'block', marginBottom: '0.35rem' }}>
                   Deployment target
                 </label>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(9rem, 1fr))', gap: '0.5rem' }}>
-                  {TARGETS.map(([v, label]) => {
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(0, 1fr))', gap: '0.5rem' }}>
+                  {TARGETS.map(([v]) => {
                     const Icon = v === 'onprem' ? Enterprise : Cloud
                     const sel = target === v
                     return (
-                      <button key={v} type="button" aria-pressed={sel} onClick={() => setTarget(v)} style={cardStyle(sel)}>
+                      <button key={v} type="button" aria-pressed={sel} onClick={() => setTarget(v)}
+                        style={{ ...cardStyle(sel), alignItems: 'center', textAlign: 'center', padding: '0.6rem 0.4rem' }}>
                         <Icon size={20} style={{ color: 'var(--cds-icon-primary)' }} />
-                        <span style={{ fontWeight: 500, fontSize: '0.82rem', lineHeight: 1.2 }}>{label}</span>
+                        <span style={{ fontWeight: 500, fontSize: '0.82rem', lineHeight: 1.2 }}>{TARGET_SHORT[v] || v}</span>
                       </button>
                     )
                   })}
