@@ -3,6 +3,9 @@
 #   - oci-bucket   : an Object Storage bucket (the original, safe default).
 #   - oci-instance : a private-only Compute VM, sized from the request — the
 #                    stoppable resource the control plane can start/stop.
+#   - oci-postgres : an OCI Database with PostgreSQL system (managed DBaaS) —
+#                    the first technology delivered as the thing actually asked
+#                    for, rather than a placeholder (GAP-ANALYSIS.md step 2).
 
 terraform {
   required_version = ">= 1.5.0"
@@ -94,10 +97,58 @@ resource "oci_core_instance" "env" {
   freeform_tags = var.tags
 }
 
+# --- Managed PostgreSQL (resource_kind = oci-postgres) -----------------------
+# OCI Database with PostgreSQL: a managed database system, so the requester gets
+# the technology they actually asked for with no OS to run and no admin step.
+#
+# The admin password is NEVER passed as a value. It is referenced by OCI Vault
+# secret OCID, so the secret exists only in the vault — not in this repo, the
+# orchestrator's environment, the plan, or Terraform state (CLAUDE.md: secrets
+# never in code or git; ARCHITECTURE.md P2).
+
+resource "oci_psql_db_system" "env" {
+  count          = var.resource_kind == "oci-postgres" ? 1 : 0
+  compartment_id = var.db_compartment_ocid != "" ? var.db_compartment_ocid : var.compartment_ocid
+  display_name   = var.db_name
+  db_version     = var.db_version
+  shape          = var.db_shape
+  instance_count = var.db_instance_count
+
+  # Private-only by design: placed in the supplied DB subnet, no public endpoint.
+  network_details {
+    subnet_id = var.db_subnet_ocid
+  }
+
+  storage_details {
+    system_type        = "OCI_OPTIMIZED_STORAGE"
+    is_regionally_durable = true
+    iops               = var.db_storage_iops
+  }
+
+  credentials {
+    username = var.db_admin_username
+    password_details {
+      password_type = "VAULT_SECRET"
+      secret_id     = var.db_admin_secret_ocid
+      secret_version = var.db_admin_secret_version
+    }
+  }
+
+  freeform_tags = var.tags
+}
+
 # `try(...)` returns "" for the resource that wasn't created (count = 0) instead
 # of erroring on an out-of-range index.
 output "bucket_name" {
   value = try(oci_objectstorage_bucket.env[0].name, "")
+}
+
+output "postgres_ocid" {
+  value = try(oci_psql_db_system.env[0].id, "")
+}
+
+output "postgres_name" {
+  value = try(oci_psql_db_system.env[0].display_name, "")
 }
 
 output "instance_ocid" {

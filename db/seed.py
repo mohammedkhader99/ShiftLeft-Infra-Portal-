@@ -108,6 +108,12 @@ TECHNOLOGIES = [
 # rather than the default object-storage bucket. RHEL/Windows are already VMs.
 COMPUTE_CODES = {"compute-vm", "rhel9", "win2019"}
 
+# Technologies delivered as a managed OCI Database with PostgreSQL system
+# (oci-postgres) — the requester gets an actual database, not a placeholder
+# bucket (GAP-ANALYSIS.md step 2). Real provisioning stays double-gated in the
+# orchestrator (OCI_PSQL_ENABLED + the subnet/vault-secret inputs).
+POSTGRES_CODES = {"postgres16"}
+
 # size -> (vcpu, memory_gb, storage_gb), applied to every technology.
 SIZES = {
     "small": (2, 4, 50),
@@ -185,6 +191,11 @@ def seed(session: Session) -> None:
     session.execute(
         update(Technology).where(Technology.code.in_(COMPUTE_CODES))
         .values(resource_kind="oci-instance")
+    )
+    # Managed PostgreSQL: delivered as a real database system, not a bucket.
+    session.execute(
+        update(Technology).where(Technology.code.in_(POSTGRES_CODES))
+        .values(resource_kind="oci-postgres")
     )
     session.flush()  # projects & technologies now have ids
 

@@ -173,7 +173,7 @@ The assessment above is deliberately left unchanged as a point-in-time record. W
 | Step | Status | Delivered |
 |---|---|---|
 | **1 — Close the honesty gap** | ✅ Done, 2 Aug 2026 | `api/fulfilment.py` classifies every (technology, target) pair as **automated** or **manual** using the same rules as the provisioner, with a test that fails if the two drift apart. `/api/lookups` exposes `automated_targets`; the request form badges each catalogue card and warns before submission when the infrastructure team must fulfil the request. **Measured result: 5 of 46 technologies are automated on at least one target; 41 are manual everywhere.** |
-| 2 — One technology end-to-end | Not started | |
+| **2 — One technology end-to-end** | ◐ In progress | **Provisioning module delivered, 2 Aug 2026.** PostgreSQL on OCI is now `resource_kind = oci-postgres`, provisioned as a real *OCI Database with PostgreSQL* system instead of a placeholder bucket — the first catalogue entry delivered as the thing actually requested. The admin password is referenced by **OCI Vault secret OCID** and never passed as a Terraform value, so it cannot reach the plan file, state, or this repository. Real provisioning is **double-gated** (`OCI_PSQL_ENABLED` plus a DB subnet and vault secret) because this deployment can run autonomously and a managed DB system is billable; absent either, an apply refuses with a clear message. `terraform validate` passes against the real OCI provider schema. **No resource has been created.** Remaining for step 2: real vault credential *delivery* to the requester, and backup/restore execution. |
 | 3 — Day-2 execution | Not started | |
 | 4 — Configuration layer | Not started | |
 | 5 — Network services | Not started | |

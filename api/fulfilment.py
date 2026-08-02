@@ -34,6 +34,10 @@ from __future__ import annotations
 # db.seed.COMPUTE_CODES / Technology.resource_kind == "oci-instance".
 _OCI_COMPUTE_KIND = "oci-instance"
 
+# Technologies delivered as a managed OCI Database with PostgreSQL system —
+# the first catalogue entry provisioned as the thing actually requested.
+_OCI_POSTGRES_KIND = "oci-postgres"
+
 # (target, technology code) pairs the orchestrator genuinely builds, beyond
 # compute. Object storage is the one non-compute resource with a real module.
 _OCI_OBJECT_STORAGE = "oci-objectstorage"
@@ -61,6 +65,11 @@ def fulfilment_for(technology, target: str | None) -> dict:
     tgt = (target or "").strip().lower()
 
     if tgt == "oci":
+        if kind == _OCI_POSTGRES_KIND:
+            return {"mode": "automated",
+                    "reason": ("Provisioned automatically as a managed OCI Database "
+                               "with PostgreSQL system. Real provisioning must be "
+                               "enabled with a DB subnet and vault secret.")}
         if kind == _OCI_COMPUTE_KIND:
             return {"mode": "automated",
                     "reason": "Provisioned automatically as an OCI Compute instance."}

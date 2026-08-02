@@ -85,3 +85,63 @@ variable "user_data" {
   type    = string
   default = ""
 }
+
+# --- Managed PostgreSQL (resource_kind = oci-postgres) -----------------------
+# Optional: the compartment the DB system lives in. Empty falls back to
+# compartment_ocid.
+variable "db_compartment_ocid" {
+  type    = string
+  default = ""
+}
+
+variable "db_name" {
+  type    = string
+  default = ""
+}
+
+# Major PostgreSQL version offered by the managed service.
+variable "db_version" {
+  type    = string
+  default = "14"
+}
+
+# The managed-PostgreSQL shape, sized from the request.
+variable "db_shape" {
+  type    = string
+  default = "PostgreSQL.VM.Standard.E4.Flex.2.32GB"
+}
+
+# 1 = single instance; >1 adds high-availability read replicas.
+variable "db_instance_count" {
+  type    = number
+  default = 1
+}
+
+# An existing private subnet for the database endpoint.
+variable "db_subnet_ocid" {
+  type    = string
+  default = ""
+}
+
+variable "db_storage_iops" {
+  type    = number
+  default = 75000
+}
+
+variable "db_admin_username" {
+  type    = string
+  default = "pgadmin"
+}
+
+# The OCI Vault SECRET OCID holding the admin password. The password itself is
+# never a Terraform value — the service reads it from the vault. Keeping it out
+# of variables is what stops it landing in the plan file or state.
+variable "db_admin_secret_ocid" {
+  type    = string
+  default = ""
+}
+
+variable "db_admin_secret_version" {
+  type    = number
+  default = 1
+}

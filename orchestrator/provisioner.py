@@ -63,6 +63,36 @@ def _require_compute() -> None:
         )
 
 
+# Managed PostgreSQL (GAP-ANALYSIS.md step 2) is DOUBLE-GATED, because this
+# deployment can run autonomously (AUTO_PROVISION + PROVISION_MODE=apply) and a
+# managed DB system is expensive: it needs both the infrastructure inputs AND an
+# explicit OCI_PSQL_ENABLED opt-in. Absent either, a real apply refuses with a
+# clear message rather than silently creating a billable database.
+_REQUIRED_PSQL_VARS = ("OCI_PSQL_SUBNET_OCID", "OCI_PSQL_ADMIN_SECRET_OCID")
+
+
+def psql_enabled() -> bool:
+    return os.getenv("OCI_PSQL_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _require_psql() -> None:
+    if not psql_enabled():
+        raise ProvisionError(
+            "Managed PostgreSQL provisioning is disabled. Set OCI_PSQL_ENABLED=true "
+            "to allow it — this creates a real, billable OCI Database with "
+            "PostgreSQL system."
+        )
+    missing = [k for k in _REQUIRED_PSQL_VARS if not os.getenv(k)]
+    if missing:
+        raise ProvisionError(
+            "Managed PostgreSQL provisioning is not configured: set "
+            + ", ".join(missing)
+            + " — an existing private DB subnet OCID and the OCI Vault SECRET OCID "
+            "holding the admin password (the password itself is never given to the "
+            "portal)."
+        )
+
+
 def _oci_vars(name: str, tags: dict, resource_kind: str = "oci-bucket",
               sizing: dict | None = None) -> dict:
     sizing = sizing or {}
@@ -98,6 +128,20 @@ def _oci_vars(name: str, tags: dict, resource_kind: str = "oci-bucket",
         # Customer-managed encryption key for sensitive data (F-SEC-04); empty
         # falls back to Oracle-managed encryption in the module.
         "kms_key_id": os.getenv("OCI_KMS_KEY_OCID", ""),
+        # --- Managed PostgreSQL (resource_kind = oci-postgres) ---------------
+        # The admin password is referenced by VAULT SECRET OCID and never passed
+        # as a value, so it never reaches the plan file or Terraform state.
+        "db_compartment_ocid": os.getenv("OCI_PSQL_COMPARTMENT_OCID", ""),
+        "db_name": name if resource_kind == "oci-postgres" else "",
+        "db_version": os.getenv("OCI_PSQL_VERSION", "14"),
+        "db_shape": sizing.get("db_shape") or os.getenv(
+            "OCI_PSQL_SHAPE", "PostgreSQL.VM.Standard.E4.Flex.2.32GB"),
+        "db_instance_count": int(sizing.get("db_instance_count", 1)),
+        "db_subnet_ocid": os.getenv("OCI_PSQL_SUBNET_OCID", ""),
+        "db_storage_iops": int(os.getenv("OCI_PSQL_STORAGE_IOPS", "75000")),
+        "db_admin_username": os.getenv("OCI_PSQL_ADMIN_USERNAME", "pgadmin"),
+        "db_admin_secret_ocid": os.getenv("OCI_PSQL_ADMIN_SECRET_OCID", ""),
+        "db_admin_secret_version": int(os.getenv("OCI_PSQL_ADMIN_SECRET_VERSION", "1")),
     }
 
 
@@ -143,6 +187,8 @@ def _require_cloud(cloud: str, resource_kind: str) -> None:
         _require_oci()
         if resource_kind == "oci-instance":
             _require_compute()
+        elif resource_kind == "oci-postgres":
+            _require_psql()
 
 
 def _cloud_vars(cloud: str, name: str, tags: dict, resource_kind: str, sizing: dict | None) -> dict:

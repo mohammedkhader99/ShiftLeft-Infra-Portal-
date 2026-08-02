@@ -65,7 +65,9 @@ def test_compute_technologies_classified_as_instance(session):
     assert kinds["compute-vm"] == "oci-instance"
     assert kinds["rhel9"] == "oci-instance"
     assert kinds["win2019"] == "oci-instance"
-    assert kinds["postgres16"] == "oci-bucket"  # a service, not a stoppable VM
+    assert kinds["kafka"] == "oci-bucket"  # a service, not a stoppable VM
+    # Postgres is delivered as a managed database system, not a VM or a bucket.
+    assert kinds["postgres16"] == "oci-postgres"
 
 
 # --- Resource-kind derivation ------------------------------------------------
@@ -85,12 +87,13 @@ def test_derivation_compute_component(session):
 
 
 def test_derivation_storage_only(session):
-    req = _req(session, ["postgres16"])
+    # A service with no dedicated module still falls back to a placeholder bucket.
+    req = _req(session, ["kafka"])
     assert main._environment_resource_kind(session, req) == "oci-bucket"
 
 
 def test_derivation_mixed_prefers_instance(session):
-    req = _req(session, ["postgres16", "rhel9"])
+    req = _req(session, ["kafka", "rhel9"])
     assert main._environment_resource_kind(session, req) == "oci-instance"
 
 

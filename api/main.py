@@ -2028,8 +2028,12 @@ def _shutdown_out(session: Session, req: Request) -> dict | None:
 
 def _environment_resource_kind(session: Session, req: Request) -> str:
     """The cloud resource this environment provisions, from its target + components.
-    AWS: an S3 bucket (aws-bucket) — AWS compute is a follow-on. OCI: 'oci-instance'
-    if any component is a compute technology, else 'oci-bucket'."""
+    AWS: an S3 bucket (aws-bucket) — AWS compute is a follow-on. OCI: a managed
+    PostgreSQL system ('oci-postgres') if any component is one, else 'oci-instance'
+    for a compute technology, else 'oci-bucket'.
+
+    Order matters: a managed database is the most specific delivery, so it wins
+    over compute, which wins over the placeholder bucket."""
     if (req.deployment_target or "").strip().lower() == "aws":
         return "aws-bucket"
     codes = [c.technology_code for c in req.components if c.technology_code]
@@ -2038,6 +2042,8 @@ def _environment_resource_kind(session: Session, req: Request) -> str:
     kinds = session.scalars(
         select(Technology.resource_kind).where(Technology.code.in_(codes))
     ).all()
+    if "oci-postgres" in kinds:
+        return "oci-postgres"
     return "oci-instance" if "oci-instance" in kinds else "oci-bucket"
 
 
