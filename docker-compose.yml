@@ -101,6 +101,22 @@ services:
       SUSTAIN_W_PER_VCPU: ${SUSTAIN_W_PER_VCPU:-12}
       SUSTAIN_W_PER_GB_RAM: ${SUSTAIN_W_PER_GB_RAM:-0.4}
       SUSTAIN_W_PER_GB_STORAGE: ${SUSTAIN_W_PER_GB_STORAGE:-0.005}
+      # Just-in-time credential delivery (F-IAM-07 / F-INT-05). VAULT_MODE=live
+      # uses HashiCorp Vault: the portal creates a short-lived child token per
+      # grant, reads the credential wrapped, and hands over a ONE-TIME link — it
+      # stores only the token accessor and never sees the credential itself.
+      # Revoking that accessor cascades to the leases it created.
+      VAULT_MODE: ${VAULT_MODE:-mock}
+      VAULT_ADDR: ${VAULT_ADDR:-}
+      VAULT_TOKEN: ${VAULT_TOKEN:-}
+      VAULT_CREDS_PATH: ${VAULT_CREDS_PATH:-database/creds/{scope}}
+      VAULT_GRANT_POLICY: ${VAULT_GRANT_POLICY:-default}
+      VAULT_NAMESPACE: ${VAULT_NAMESPACE:-}
+      VAULT_UI_ADDR: ${VAULT_UI_ADDR:-}
+      VAULT_VERIFY: ${VAULT_VERIFY:-true}
+      # Backup/restore run in the orchestrator; the API only needs to know which
+      # mode is active so it records a real backup id rather than metadata.
+      BACKUP_MODE: ${BACKUP_MODE:-mock}
       # Scheduled auto-shutdown (F-FIN-06): the business-hours window for non-prod
       # environments (outside it = shut-down hours). The saving view is always on;
       # SHUTDOWN_ENABLED=true additionally records scheduled pause/resume in the
@@ -259,6 +275,26 @@ services:
       CLOUD_STATE_MODE: ${CLOUD_STATE_MODE:-mock}
       CLOUD_STATE_SIMULATE_MISSING: ${CLOUD_STATE_SIMULATE_MISSING:-}
       OCI_ACTUATE_ENABLED: ${OCI_ACTUATE_ENABLED:-false}
+      # Managed PostgreSQL (GAP-ANALYSIS step 2). OCI_PSQL_ENABLED is a SECOND
+      # explicit opt-in on top of the subnet + vault-secret inputs, because a
+      # managed DB system is billable and this stack can provision autonomously.
+      # Absent any of them, a real apply refuses instead of creating a database.
+      OCI_PSQL_ENABLED: ${OCI_PSQL_ENABLED:-false}
+      OCI_PSQL_SUBNET_OCID: ${OCI_PSQL_SUBNET_OCID:-}
+      # The OCI Vault SECRET OCID for the admin password — a reference, never the
+      # password itself, so it stays out of the plan file and Terraform state.
+      OCI_PSQL_ADMIN_SECRET_OCID: ${OCI_PSQL_ADMIN_SECRET_OCID:-}
+      OCI_PSQL_ADMIN_SECRET_VERSION: ${OCI_PSQL_ADMIN_SECRET_VERSION:-1}
+      OCI_PSQL_ADMIN_USERNAME: ${OCI_PSQL_ADMIN_USERNAME:-pgadmin}
+      OCI_PSQL_COMPARTMENT_OCID: ${OCI_PSQL_COMPARTMENT_OCID:-}
+      OCI_PSQL_VERSION: ${OCI_PSQL_VERSION:-14}
+      OCI_PSQL_SHAPE: ${OCI_PSQL_SHAPE:-PostgreSQL.VM.Standard.E4.Flex.2.32GB}
+      OCI_PSQL_STORAGE_IOPS: ${OCI_PSQL_STORAGE_IOPS:-75000}
+      # Real backup/restore of that database (F-LCM-06). Live additionally needs
+      # OCI_PSQL_ENABLED. NOTE: a restore creates a SECOND, billable DB system —
+      # OCI managed PostgreSQL has no in-place rollback.
+      BACKUP_MODE: ${BACKUP_MODE:-mock}
+      RESTORE_MODE: ${RESTORE_MODE:-mock}
     ports:
       - "9091:9091"
     volumes:
