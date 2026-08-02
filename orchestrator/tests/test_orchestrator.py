@@ -194,6 +194,25 @@ def test_restore_live_is_unconfigured(monkeypatch):
     assert client.post("/restore", content=body, headers=_signed(body)).status_code == 501
 
 
+def test_reduce_mock_records(monkeypatch):
+    body = _body(operation="reduce", target={"reference": "REQ-UAT"},
+                 reductions=[{"technology": "postgres16", "from": "large", "to": "medium"}])
+    resp = client.post("/reduce", content=body, headers=_signed(body))
+    assert resp.status_code == 200
+    assert resp.json()["reduced"] is True and "postgres16" in resp.json()["summary"]
+
+
+def test_reduce_rejects_bad_signature():
+    body = _body(operation="reduce")
+    assert client.post("/reduce", content=body, headers={"X-Signature": "bad"}).status_code == 401
+
+
+def test_reduce_live_is_unconfigured(monkeypatch):
+    monkeypatch.setenv("REDUCE_MODE", "live")
+    body = _body(operation="reduce", target={"reference": "T"}, reductions=[])
+    assert client.post("/reduce", content=body, headers=_signed(body)).status_code == 501
+
+
 def test_apply_refused_when_not_apply_mode(monkeypatch):
     _patch(monkeypatch)
     monkeypatch.setattr(orch.provisioner, "provision_mode", lambda: "plan")

@@ -373,6 +373,26 @@ async def restore(request: Request) -> dict:
             "summary": f"Mock-restored {tgt} to backup '{bk}' — verified, no data changed."}
 
 
+@app.post("/reduce")
+async def reduce(request: Request) -> dict:
+    """Scale chosen components of a provisioned environment down (F-CAT).
+    Signature-verified. Mock records it (resizes nothing); live (REDUCE_MODE=live)
+    is an extension point — a real resize job (Terraform/scripts)."""
+    body = await request.body()
+    if not verify(WEBHOOK_SECRET, body, request.headers.get("X-Signature", "")):
+        raise HTTPException(status_code=401, detail="Invalid webhook signature.")
+    payload = json.loads(body)
+    if os.getenv("REDUCE_MODE", "mock").strip().lower() == "live":
+        raise HTTPException(status_code=501, detail=(
+            "Live capacity reduction is not configured. Wire the resize job in "
+            "orchestrator/main.reduce to enable it."))
+    tgt = (payload.get("target") or {}).get("reference")
+    reductions = payload.get("reductions") or []
+    parts = ", ".join(f"{r.get('technology')} {r.get('from')}→{r.get('to')}" for r in reductions)
+    return {"reduced": True,
+            "summary": f"Mock-reduced {tgt}: {parts or 'no changes'} — nothing resized."}
+
+
 @app.post("/destroy")
 async def destroy(request: Request) -> dict:
     """Destroy the resource (rollback / cleanup). Signed, and apply mode only."""

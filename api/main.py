@@ -2459,6 +2459,10 @@ def approve(jira_key: str, session: Session = Depends(get_session),
     if req.request_type == "restore":
         return _restore(session, req, actor="approver")
 
+    # Reduce scales chosen components of the target down (F-CAT).
+    if req.request_type == "reduce":
+        return _reduce(session, req, actor="approver")
+
     # Signed, versioned handoff. The signature is authenticity; the orchestrator
     # re-checks authority (approval + policy) and re-validates cost itself.
     approved_monthly = float(req.estimate.monthly) if req.estimate else None
@@ -3893,6 +3897,75 @@ def _refresh(session: Session, req: Request, actor: str) -> dict:
             "message": f"Refreshed {target.reference} from {src.reference}: {summary}"}
 
 
+def _reduce_handoff(req: Request, target: Request, reductions: list[dict]) -> tuple[bytes, str]:
+    """Build + sign the reduce-capacity handoff — the target and the per-component
+    size reductions (technology, from, to)."""
+    payload = {
+        "contract_version": CONTRACT_VERSION,
+        "idempotency_key": req.approval.jira_key,
+        "issued_at": datetime.now(timezone.utc).isoformat(),
+        "jira_key": req.approval.jira_key,
+        "reference": req.reference,
+        "operation": "reduce",
+        "target": {"reference": target.reference, "policy_input": _policy_input(target)},
+        "reductions": reductions,
+    }
+    body = json.dumps(payload, sort_keys=True).encode()
+    return body, sign(WEBHOOK_SECRET, body)
+
+
+def _reduce(session: Session, req: Request, actor: str) -> dict:
+    """Scale chosen components of the target (source_reference) DOWN (F-CAT).
+    Governed + orchestrator-executed, mirroring refresh. Mock records it; live is a
+    real resize extension point. The target stays provisioned."""
+    target = session.scalar(select(Request).where(Request.reference == req.source_reference))
+    if target is None:
+        req.status = "reduce-failed"
+        req.status_detail = f"Reduce target {req.source_reference} not found."
+        append_audit(session, "reduce.target_missing", reference=req.reference,
+                     jira_key=req.approval.jira_key, detail={"target": req.source_reference})
+        session.commit()
+        return {"approval": "approved", "reduced": False, "error": req.status_detail}
+
+    current = {c.technology_code: (c.size or "").strip().lower()
+               for c in target.components if c.technology_code}
+    reductions = [{"technology": c.technology_code, "from": current.get(c.technology_code),
+                   "to": (c.size or "").strip().lower()}
+                  for c in req.components if c.technology_code]
+
+    _transition_jira(session, req, inprogress_status(), "jira.in_progress")
+    session.commit()
+
+    body, signature = _reduce_handoff(req, target, reductions)
+    append_audit(session, "reduce.handoff", reference=req.reference,
+                 jira_key=req.approval.jira_key, actor=actor,
+                 detail={"target": target.reference, "reductions": reductions})
+    session.commit()
+
+    response, error = _post_to_orchestrator(body, signature, path="/reduce")
+    if response is None or response.status_code != 200:
+        raw = error or (response.text if response else "")
+        reason = _short_reason(raw)
+        req.status = "reduce-failed"
+        req.status_detail = reason
+        append_audit(session, "reduce.failed", reference=req.reference,
+                     jira_key=req.approval.jira_key, detail={"target": target.reference, "error": raw})
+        add_comment(req.approval.jira_key, f"⚠️ Automated capacity reduction failed.\n\n{reason}")
+        session.commit()
+        return {"approval": "approved", "reduced": False, "error": reason}
+
+    summary = response.json().get("summary")
+    req.status = "reduced"
+    req.status_detail = None
+    _transition_jira(session, req, resolved_status(), "jira.resolved")
+    append_audit(session, "capacity.reduced", reference=req.reference,
+                 jira_key=req.approval.jira_key,
+                 detail={"target": target.reference, "reductions": reductions, "summary": summary})
+    session.commit()
+    return {"approval": "approved", "reduced": True, "target": target.reference,
+            "reductions": reductions, "message": f"Reduced {target.reference}: {summary}"}
+
+
 # --- Automatic Jira-status poller (increment 2.7) ----------------------------
 # A background thread that pulls the live Jira status on a timer and advances
 # approved requests automatically — the same steps the portal's buttons run,
@@ -3996,6 +4069,10 @@ def _advance_request(session: Session, req: Request) -> str:
         # Restore rolls the target back to one of its backups (F-LCM-06).
         if req.request_type == "restore":
             _restore(session, req, actor="poller")
+            return req.status
+        # Reduce scales chosen components of the target down (F-CAT).
+        if req.request_type == "reduce":
+            _reduce(session, req, actor="poller")
             return req.status
         body, signature = _handoff_payload(req)
         append_audit(session, "orchestrator.handoff", reference=req.reference,

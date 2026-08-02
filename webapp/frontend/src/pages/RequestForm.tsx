@@ -48,6 +48,7 @@ import {
 } from '../api'
 
 const SIZES = ['small', 'medium', 'large', 'xlarge']
+const SIZE_INDEX: Record<string, number> = { small: 0, medium: 1, large: 2, xlarge: 3 }
 const CLASSIFICATIONS = ['public', 'internal', 'confidential', 'restricted']
 const ENV_TIERS: [string, string][] = [
   ['dev', 'Development'],
@@ -211,6 +212,7 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [refreshFrom, setRefreshFrom] = useState('')  // refresh copy-from (higher env)
   const [restoreBackupId, setRestoreBackupId] = useState('')  // restore: chosen backup
+  const [reduceSizes, setReduceSizes] = useState<Record<string, string>>({})  // reduce: tech -> smaller size
 
   const [cost, setCost] = useState<Cost | null>(null)
   const [errors, setErrors] = useState<Record<string, string>>({})
@@ -248,17 +250,18 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
   const isDecommission = requestType === 'decommission'
   const isRefresh = requestType === 'refresh'
   const isRestore = requestType === 'restore'
+  const isReduce = requestType === 'reduce'
   const NONPROD_TIERS = ['dev', 'test', 'sit', 'uat', 'preprod']
 
   // Load the user's provisioned requests once an env-targeting type is chosen
-  // (decommission/refresh/restore operate on one; clone copies one).
+  // (decommission/refresh/restore/reduce operate on one; clone copies one).
   useEffect(() => {
-    if ((isDecommission || isRefresh || isRestore || isClone) && email) {
+    if ((isDecommission || isRefresh || isRestore || isClone || isReduce) && email) {
       getRequests({ requester: email, status: 'provisioned' })
         .then(setProvisioned)
         .catch(() => setProvisioned([]))
     }
-  }, [isDecommission, isRefresh, isRestore, isClone, email])
+  }, [isDecommission, isRefresh, isRestore, isClone, isReduce, email])
 
   // Clone: selecting a source copies its stack, target and classification into the
   // form (the user gives the clone a new name/tier). The server re-validates it all.
@@ -291,14 +294,20 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
     [components],
   )
   const selectedComponents = sourceComponents.filter((c) => selected.has(compKey(c)))
+  // Reduce: the chosen components at their new (smaller) sizes.
+  const reduceComponents: Component[] = sourceComponents
+    .filter((c) => reduceSizes[c.technology_code])
+    .map((c) => ({ technology_code: c.technology_code, size: reduceSizes[c.technology_code] }))
 
-  // What we price: the chosen stack (create/add/resize) or the selected
-  // technologies being torn down (decommission, at the source's target).
-  const pricedTarget = isRefresh || isRestore ? '' : isDecommission ? sourceObj?.deployment_target ?? '' : target
+  // What we price: the chosen stack (create/add/resize/clone/…), the technologies
+  // being torn down (decommission), or the reduced components at their new sizes.
+  const pricedTarget = isRefresh || isRestore ? '' : (isDecommission || isReduce) ? sourceObj?.deployment_target ?? '' : target
   const pricedComponents = isDecommission
     ? selectedComponents
-    : components.filter((c) => c.technology_code && c.size)
-  const pricedAdvanced = isDecommission ? undefined : cleanAdvanced(advanced)
+    : isReduce
+      ? reduceComponents
+      : components.filter((c) => c.technology_code && c.size)
+  const pricedAdvanced = isDecommission || isReduce ? undefined : cleanAdvanced(advanced)
   const pricedKey = JSON.stringify([pricedTarget, pricedComponents, pricedAdvanced])
 
   useEffect(() => {
@@ -359,6 +368,15 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
         request_type: 'decommission',
         source_reference: sourceRef || null,
         components: selectedComponents,
+      }
+    }
+    if (isReduce) {
+      return {
+        request_type: 'reduce',
+        source_reference: sourceRef || null,
+        components: sourceComponents
+          .filter((c) => reduceSizes[c.technology_code])
+          .map((c) => ({ technology_code: c.technology_code, size: reduceSizes[c.technology_code] })),
       }
     }
     const p: Record<string, unknown> = {
@@ -521,7 +539,7 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
           />
         )}
 
-        {!isDecommission && !isRefresh && !isRestore && (
+        {!isDecommission && !isRefresh && !isRestore && !isReduce && (
           <ProgressIndicator
             currentIndex={currentIndex}
             spaceEqually
@@ -666,6 +684,67 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
               <p style={{ color: 'var(--cds-text-secondary)', fontSize: '0.8rem' }}>
                 Rolls the environment back to the selected backup. Requires approval; nothing
                 changes in mock mode.
+              </p>
+            </>
+          ) : isReduce ? (
+            <>
+              <Select
+                id="reduce_source"
+                labelText="Environment to reduce"
+                value={sourceRef}
+                onChange={(e) => { setSourceRef(e.target.value); setReduceSizes({}) }}
+                invalid={!!errors.source_reference}
+                invalidText={errors.source_reference}
+              >
+                <SelectItem value="" text="— select a provisioned environment —" />
+                {provisioned.map((p) => (
+                  <SelectItem key={p.reference} value={p.reference}
+                    text={`${p.reference} — ${p.environment_name || 'env'} (${p.environment_tier || '?'})`} />
+                ))}
+              </Select>
+              {provisioned.length === 0 && (
+                <p style={{ color: 'var(--cds-text-secondary)', fontSize: '0.85rem' }}>
+                  You have no provisioned environments to reduce.
+                </p>
+              )}
+              {sourceComponents.length > 0 && (
+                <FormGroup legendText="Reduce component sizes">
+                  {errors.components && (
+                    <p style={{ color: 'var(--cds-text-error)', fontSize: '0.75rem', marginBottom: '0.5rem' }}>
+                      {errors.components}
+                    </p>
+                  )}
+                  <p style={{ fontSize: '0.8rem', color: 'var(--cds-text-secondary)', margin: '0 0 0.6rem' }}>
+                    Choose a smaller size for any component — sizing up isn't allowed here (use Resize for that).
+                  </p>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                    {sourceComponents.map((c) => {
+                      const smaller = SIZES.filter((s) => SIZE_INDEX[s] < SIZE_INDEX[c.size])
+                      return (
+                        <div key={c.technology_code} style={{ display: 'flex', gap: '0.75rem', alignItems: 'flex-end' }}>
+                          <div style={{ flex: 1, fontSize: '0.85rem' }}>
+                            <div style={{ fontWeight: 500 }}>{techName(c.technology_code)}</div>
+                            <div style={{ color: 'var(--cds-text-secondary)', fontSize: '0.78rem' }}>current: {c.size || '—'}</div>
+                          </div>
+                          <div style={{ minWidth: '9rem' }}>
+                            <Select id={`reduce-${c.technology_code}`} labelText="" size="sm"
+                              value={reduceSizes[c.technology_code] || ''}
+                              onChange={(e) => setReduceSizes((m) => ({ ...m, [c.technology_code]: e.target.value }))}
+                              disabled={smaller.length === 0}>
+                              <SelectItem value="" text={smaller.length ? '— no change —' : 'already smallest'} />
+                              {smaller.map((s) => (
+                                <SelectItem key={s} value={s} text={s} />
+                              ))}
+                            </Select>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </FormGroup>
+              )}
+              <p style={{ color: 'var(--cds-text-secondary)', fontSize: '0.8rem' }}>
+                Scales the chosen components down. Approval-governed; nothing is resized in mock mode.
               </p>
             </>
           ) : (
@@ -963,7 +1042,7 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
               Save draft
             </Button>
             <Button onClick={onSubmit} disabled={busy}>
-              {isDecommission ? 'Submit decommission' : isRefresh ? 'Submit refresh' : isRestore ? 'Submit restore' : isClone ? 'Submit clone' : isSandbox ? 'Submit sandbox' : isTemporary ? 'Submit temporary' : 'Submit request'}
+              {isDecommission ? 'Submit decommission' : isRefresh ? 'Submit refresh' : isRestore ? 'Submit restore' : isReduce ? 'Submit reduction' : isClone ? 'Submit clone' : isSandbox ? 'Submit sandbox' : isTemporary ? 'Submit temporary' : 'Submit request'}
             </Button>
             {cost && !isDecommission && (
               <span style={{ marginLeft: 'auto', fontSize: '0.9rem', color: 'var(--cds-text-secondary)' }}>
@@ -975,7 +1054,7 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
       </div>
 
       <div style={{ flex: '0 0 20rem' }}>
-        {!isDecommission && !isRefresh && !isRestore && (
+        {!isDecommission && !isRefresh && !isRestore && !isReduce && (
           <Tile style={{ marginBottom: '1rem', borderTop: '3px solid var(--cds-border-interactive)' }}>
             <p style={{ fontSize: '0.75rem', color: 'var(--cds-text-secondary)', textTransform: 'uppercase', letterSpacing: '0.02em', marginBottom: '0.5rem' }}>
               Environment summary
@@ -1020,7 +1099,7 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
         )}
         <Tile style={{ borderTop: '3px solid var(--cds-border-interactive)' }}>
           <p style={{ fontSize: '0.75rem', color: 'var(--cds-text-secondary)', textTransform: 'uppercase', letterSpacing: '0.02em' }}>
-            {isDecommission ? 'Monthly cost to free' : isRefresh ? 'Environment refresh' : isRestore ? 'Environment restore' : 'Live cost'}
+            {isDecommission ? 'Monthly cost to free' : isRefresh ? 'Environment refresh' : isRestore ? 'Environment restore' : isReduce ? 'Reduced components — new monthly cost' : 'Live cost'}
           </p>
           {cost ? (
             <>
@@ -1051,6 +1130,8 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
                 ? 'Refresh reuses the target environment — no new monthly cost. It copies data from a higher environment down, masking sensitive data.'
                 : isRestore
                 ? 'Restore reuses the target environment — no new monthly cost. It rolls the environment back to the selected backup (approval-governed, verified).'
+                : isReduce
+                ? 'Pick a provisioned environment and choose a smaller size for a component to see the reduced monthly cost.'
                 : 'Choose a deployment target and add a component to see the cost.'}
             </p>
           )}

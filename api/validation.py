@@ -17,8 +17,10 @@ from sqlalchemy.orm import Session
 from db.models import Backup, CostCentre, Environment, Project, Request, Subsidiary, Technology
 
 REQUEST_TYPES = {"create", "add", "resize", "decommission", "refresh", "restore",
-                 "clone", "sandbox", "temporary"}
+                 "clone", "sandbox", "temporary", "reduce"}
 SIZES = {"small", "medium", "large", "xlarge"}
+# Size ladder for the reduce-capacity guardrail (F-CAT): new size must rank below.
+SIZE_ORDER = {"small": 0, "medium": 1, "large": 2, "xlarge": 3}
 CLASSIFICATIONS = {"public", "internal", "confidential", "restricted"}
 SENSITIVE_CLASSIFICATIONS = {"restricted", "confidential"}  # a refresh must mask these
 DEPLOYMENT_TARGETS = {"onprem", "azure", "oci"}
@@ -93,7 +95,7 @@ def validate_submission(data: dict, session: Session) -> dict[str, str]:
 
     # Cost centre is required for every type except those that operate on an
     # existing provisioned request (they inherit its context).
-    if request_type not in ("decommission", "refresh", "restore"):
+    if request_type not in ("decommission", "refresh", "restore", "reduce"):
         cost_centre = (data.get("cost_centre_code") or "").strip()
         if not cost_centre:
             errors["cost_centre_code"] = (
@@ -123,6 +125,8 @@ def validate_submission(data: dict, session: Session) -> dict[str, str]:
         _validate_refresh_fields(data, session, errors)
     elif request_type == "restore":
         _validate_restore_fields(data, session, errors)
+    elif request_type == "reduce":
+        _validate_reduce_fields(data, session, errors)
     else:  # add | resize
         target = (data.get("target_environment") or "").strip()
         if not target:
@@ -371,6 +375,46 @@ def _validate_clone_fields(data: dict, session: Session, errors: dict[str, str])
     elif (data.get("environment_name") or "").strip() and \
             (data.get("environment_name") or "").strip() == (source.environment_name or ""):
         errors["environment_name"] = "Give the clone a different name from the source environment."
+
+
+def _validate_reduce_fields(data: dict, session: Session, errors: dict[str, str]) -> None:
+    """Reduce capacity (F-CAT) scales chosen components of a PROVISIONED environment
+    DOWN. The source must be provisioned; each chosen technology must be in its
+    stack; and each new size must be strictly smaller than its current size."""
+    source_ref = (data.get("source_reference") or "").strip()
+    if not source_ref:
+        errors["source_reference"] = "Select the provisioned environment to reduce."
+        return
+    source = session.scalar(select(Request).where(Request.reference == source_ref))
+    if source is None:
+        errors["source_reference"] = f"Unknown request '{source_ref}'."
+        return
+    if source.status != "provisioned":
+        errors["source_reference"] = (
+            f"{source_ref} is not provisioned (status: {source.status}); only a provisioned "
+            "environment can be reduced.")
+        return
+
+    current = {c.technology_code: (c.size or "").strip().lower()
+               for c in source.components if c.technology_code}
+    selected = [c for c in (data.get("components") or []) if (c.get("technology_code") or "").strip()]
+    if not selected:
+        errors["components"] = "Choose at least one component to scale down."
+        return
+    for comp in selected:
+        tech = (comp.get("technology_code") or "").strip()
+        new = (comp.get("size") or "").strip().lower()
+        if tech not in current:
+            errors["components"] = f"'{tech}' is not part of {source_ref}; choose from its stack."
+            break
+        if new not in SIZES:
+            errors["components"] = f"Choose a valid smaller size for '{tech}'."
+            break
+        if SIZE_ORDER.get(new, 0) >= SIZE_ORDER.get(current[tech], 0):
+            errors["components"] = (
+                f"'{tech}' new size ({new}) must be smaller than its current size "
+                f"({current[tech]}) — reduce capacity only scales down.")
+            break
 
 
 def _validate_shortlived_fields(data: dict, session: Session, errors: dict[str, str],
