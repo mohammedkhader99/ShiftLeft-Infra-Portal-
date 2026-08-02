@@ -121,6 +121,38 @@ export async function draftWithAI(
   return { status: r.status, body: await r.json().catch(() => ({})) }
 }
 
+// AI cloud & sizing recommendation (E4). The AI picks a catalogue stack; the
+// portal — not the model — prices it across every cloud it can run on, so the
+// user can compare and pick the best value. Recommend-only; pre-fills the form.
+export type AiRecommendation = {
+  mode: string
+  components: { technology_code: string; size: string }[]
+  rationale: string | null
+  eligible_targets: string[]
+  comparison: {
+    target: string
+    currency: string
+    monthly: number
+    one_time: number
+    annual: number
+    pricing_source: string
+  }[]
+  recommended_target: string | null
+  notes: string[]
+  warnings: string[]
+}
+
+export async function recommendWithAI(
+  description: string,
+): Promise<{ status: number; body: any }> {
+  const r = await fetch('/api/ai/recommend', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ description }),
+  })
+  return { status: r.status, body: await r.json().catch(() => ({})) }
+}
+
 export type RequestRow = {
   reference: string
   status: string

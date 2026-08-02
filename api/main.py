@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 
 from api import ai_drafter
 from api import ai_explainer
+from api import ai_recommend
 from api import ai_triage
 from api import anomalies as anomaly_detect
 from api import apikeys
@@ -1448,6 +1449,54 @@ def ai_draft(
         detail={
             "mode": result["mode"],
             "description": description[:500],
+            "warnings": result["warnings"],
+        },
+    )
+    session.commit()
+    return result
+
+
+class AiRecommendIn(BaseModel):
+    description: str
+    data_classification: str | None = None
+
+
+@app.post("/api/ai/recommend")
+def ai_recommend_endpoint(
+    body: AiRecommendIn,
+    session: Session = Depends(get_session),
+    requester: str = Depends(require_action("create_request")),
+) -> dict:
+    """Recommend a cloud + component sizes from a plain-English workload (E4).
+
+    The AI **recommends only** (ARCHITECTURE.md §7): it picks a catalogue stack,
+    and the portal — not the model — prices that stack across every cloud it can
+    run on so the requester can compare and choose. It never sets an authoritative
+    charge, submits a request, or provisions. The requester reviews it and can
+    pre-fill the form with one click, where validate_submission and the pricing
+    engine re-check everything. Every recommendation is audited.
+    """
+    description = (body.description or "").strip()
+    if len(description) < 8:
+        raise HTTPException(
+            status_code=422,
+            detail="Describe the workload in a sentence or two (at least 8 characters).",
+        )
+    try:
+        result = ai_recommend.recommend(
+            description, session, classification=body.data_classification
+        )
+    except ai_recommend.AiUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    append_audit(
+        session,
+        "ai.recommended",
+        actor=requester,
+        detail={
+            "mode": result["mode"],
+            "description": description[:500],
+            "recommended_target": result["recommended_target"],
+            "eligible_targets": result["eligible_targets"],
             "warnings": result["warnings"],
         },
     )

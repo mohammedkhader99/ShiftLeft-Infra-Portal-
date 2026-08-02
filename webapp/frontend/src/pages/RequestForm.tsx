@@ -41,12 +41,14 @@ import {
   saveDraft,
   submitRequest,
   draftWithAI,
+  recommendWithAI,
   getApprovalInfo,
   type Lookups,
   type Component,
   type Cost,
   type RequestRow,
   type ApprovalInfo,
+  type AiRecommendation,
 } from '../api'
 
 const SIZES = ['small', 'medium', 'large', 'xlarge']
@@ -243,6 +245,12 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
   const [aiMsg, setAiMsg] = useState<
     { kind: 'success' | 'warning' | 'error'; title: string; subtitle?: string } | null
   >(null)
+
+  // AI cloud & sizing recommendation (E4): recommend a stack + compare its cost
+  // across every cloud it can run on. Recommend-only; "Use this" pre-fills below.
+  const [recBusy, setRecBusy] = useState(false)
+  const [rec, setRec] = useState<AiRecommendation | null>(null)
+  const [recErr, setRecErr] = useState<string | null>(null)
 
   // AI cost explanation (F-RPT-07): explain the live cost breakdown on demand.
   const [explain, setExplain] = useState<{ summary: string; tips: string[]; mode?: string } | null>(null)
@@ -469,6 +477,35 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
       kind: (body.warnings || []).length ? 'warning' : 'success',
       title: `Draft ready${body.mode ? ` · ${body.mode}` : ''} — review the fields below`,
       subtitle: bits.join('  ·  ') || 'Fields filled in from your description.',
+    })
+  }
+
+  // Ask the assistant to recommend a stack, then compare its cost across every
+  // cloud it can run on. Nothing is applied until the user clicks "Use this".
+  async function onRecommend() {
+    setRecBusy(true)
+    setRec(null)
+    setRecErr(null)
+    const { status, body } = await recommendWithAI(aiText.trim())
+    setRecBusy(false)
+    if (status !== 200) {
+      setRecErr(body?.detail || 'Could not produce a recommendation. Please try again.')
+      return
+    }
+    setRec(body as AiRecommendation)
+  }
+
+  // Pre-fill the form from a recommendation, for the chosen cloud target. Sets
+  // the target first so the target-aware catalogue keeps the recommended stack.
+  function useRecommendation(target: string) {
+    if (!rec) return
+    setTarget(target)
+    if (rec.components.length)
+      setComponents(rec.components.map((c) => ({ technology_code: c.technology_code, size: c.size })))
+    setAiMsg({
+      kind: 'success',
+      title: `Applied recommendation on ${TARGET_SHORT[target] || target}`,
+      subtitle: 'Review the stack and the rest of the form below, then submit as normal.',
     })
   }
 
@@ -1288,10 +1325,20 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
               value={aiText}
               onChange={(e) => setAiText(e.target.value)}
             />
-            <div style={{ marginTop: '0.5rem' }}>
+            <div style={{ marginTop: '0.5rem', display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
               <Button size="sm" onClick={onDraftWithAI} disabled={aiBusy || aiText.trim().length < 8}>
                 {aiBusy ? 'Drafting…' : 'Draft with AI'}
               </Button>
+              {isCreateLike && (
+                <Button
+                  size="sm"
+                  kind="tertiary"
+                  onClick={onRecommend}
+                  disabled={recBusy || aiText.trim().length < 8}
+                >
+                  {recBusy ? 'Comparing clouds…' : 'Recommend cloud & size'}
+                </Button>
+              )}
             </div>
             {aiMsg && (
               <InlineNotification
@@ -1302,6 +1349,101 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
                 onCloseButtonClick={() => setAiMsg(null)}
                 style={{ marginTop: '0.75rem', maxWidth: 'none' }}
               />
+            )}
+            {recErr && (
+              <InlineNotification
+                kind="error"
+                lowContrast
+                title="Could not recommend"
+                subtitle={recErr}
+                onCloseButtonClick={() => setRecErr(null)}
+                style={{ marginTop: '0.75rem', maxWidth: 'none' }}
+              />
+            )}
+            {rec && (
+              <div style={{ marginTop: '0.85rem' }}>
+                <p style={{ fontWeight: 600, fontSize: '0.85rem', margin: '0 0 0.15rem' }}>
+                  Recommended stack{rec.mode ? ` · ${rec.mode}` : ''}
+                </p>
+                {rec.components.length ? (
+                  <div style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap', margin: '0.2rem 0 0.5rem' }}>
+                    {rec.components.map((c) => (
+                      <Tag key={c.technology_code} type="cool-gray" size="sm">
+                        {c.technology_code} · {c.size}
+                      </Tag>
+                    ))}
+                  </div>
+                ) : (
+                  <p style={{ fontSize: '0.8rem', color: 'var(--cds-text-secondary)', margin: '0.2rem 0 0.5rem' }}>
+                    No catalogue technology matched — describe the workload's stack.
+                  </p>
+                )}
+                {rec.rationale && (
+                  <p style={{ fontSize: '0.8rem', color: 'var(--cds-text-secondary)', margin: '0 0 0.6rem' }}>
+                    {rec.rationale}
+                  </p>
+                )}
+                {rec.comparison.length > 0 && (
+                  <>
+                    <p style={{ fontSize: '0.75rem', color: 'var(--cds-text-secondary)', margin: '0 0 0.35rem' }}>
+                      Same stack, priced by the portal on every cloud it can run on. Cheapest first.
+                    </p>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.82rem' }}>
+                      <thead>
+                        <tr style={{ textAlign: 'left', color: 'var(--cds-text-secondary)' }}>
+                          <th style={{ padding: '0.3rem 0.4rem', fontWeight: 500 }}>Cloud</th>
+                          <th style={{ padding: '0.3rem 0.4rem', fontWeight: 500, textAlign: 'right' }}>Monthly</th>
+                          <th style={{ padding: '0.3rem 0.4rem', fontWeight: 500, textAlign: 'right' }}>One-time</th>
+                          <th style={{ padding: '0.3rem 0.4rem' }} />
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {rec.comparison.map((row) => {
+                          const isRec = row.target === rec.recommended_target
+                          return (
+                            <tr
+                              key={row.target}
+                              style={{
+                                borderTop: '1px solid var(--cds-border-subtle)',
+                                background: isRec ? 'var(--cds-layer-accent)' : undefined,
+                              }}
+                            >
+                              <td style={{ padding: '0.35rem 0.4rem' }}>
+                                {TARGET_SHORT[row.target] || row.target}
+                                {isRec && (
+                                  <Tag type="green" size="sm" style={{ marginLeft: '0.4rem' }}>
+                                    best value
+                                  </Tag>
+                                )}
+                              </td>
+                              <td style={{ padding: '0.35rem 0.4rem', textAlign: 'right', fontWeight: isRec ? 600 : 400 }}>
+                                {row.monthly.toFixed(2)} {row.currency}
+                              </td>
+                              <td style={{ padding: '0.35rem 0.4rem', textAlign: 'right', color: 'var(--cds-text-secondary)' }}>
+                                {row.one_time.toFixed(2)}
+                              </td>
+                              <td style={{ padding: '0.35rem 0.4rem', textAlign: 'right' }}>
+                                <Button size="sm" kind="ghost" onClick={() => useRecommendation(row.target)}>
+                                  Use this
+                                </Button>
+                              </td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </>
+                )}
+                {(rec.notes.length > 0 || rec.warnings.length > 0) && (
+                  <p style={{ fontSize: '0.72rem', color: 'var(--cds-text-secondary)', marginTop: '0.5rem' }}>
+                    {[...rec.notes, ...rec.warnings].join('  ·  ')}
+                  </p>
+                )}
+                <p style={{ fontSize: '0.72rem', color: 'var(--cds-text-secondary)', marginTop: '0.4rem' }}>
+                  A suggestion only — nothing is submitted or provisioned. The portal re-prices and
+                  re-validates everything when you submit.
+                </p>
+              </div>
             )}
           </Tile>
         )}
