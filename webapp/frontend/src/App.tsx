@@ -46,6 +46,7 @@ const REQUEST_TYPES: [string, string][] = [
   ['clone', 'Clone environment'],
   ['sandbox', 'Sandbox environment'],
   ['temporary', 'Temporary environment'],
+  ['dr', 'Disaster Recovery'],
   ['add', 'Add component'],
   ['resize', 'Resize component'],
   ['reduce', 'Reduce capacity'],
@@ -56,7 +57,7 @@ const REQUEST_TYPES: [string, string][] = [
 const RT_LABEL = Object.fromEntries(REQUEST_TYPES) as Record<string, string>
 
 function parseRequestType(route: string): string {
-  const m = route.match(/^#\/request\/new\/(create|clone|sandbox|temporary|add|resize|reduce|refresh|restore|decommission)/)
+  const m = route.match(/^#\/request\/new\/(create|clone|sandbox|temporary|dr|add|resize|reduce|refresh|restore|decommission)/)
   return m ? m[1] : 'create'
 }
 

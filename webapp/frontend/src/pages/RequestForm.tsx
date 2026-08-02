@@ -245,8 +245,9 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
   const isClone = requestType === 'clone'
   const isSandbox = requestType === 'sandbox'
   const isTemporary = requestType === 'temporary'
+  const isDr = requestType === 'dr'
   // All of these provision a NEW environment (share the create form fields).
-  const isCreateLike = isCreate || isClone || isSandbox || isTemporary
+  const isCreateLike = isCreate || isClone || isSandbox || isTemporary || isDr
   const isDecommission = requestType === 'decommission'
   const isRefresh = requestType === 'refresh'
   const isRestore = requestType === 'restore'
@@ -256,12 +257,12 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
   // Load the user's provisioned requests once an env-targeting type is chosen
   // (decommission/refresh/restore/reduce operate on one; clone copies one).
   useEffect(() => {
-    if ((isDecommission || isRefresh || isRestore || isClone || isReduce) && email) {
+    if ((isDecommission || isRefresh || isRestore || isClone || isReduce || isDr) && email) {
       getRequests({ requester: email, status: 'provisioned' })
         .then(setProvisioned)
         .catch(() => setProvisioned([]))
     }
-  }, [isDecommission, isRefresh, isRestore, isClone, isReduce, email])
+  }, [isDecommission, isRefresh, isRestore, isClone, isReduce, isDr, email])
 
   // Clone: selecting a source copies its stack, target and classification into the
   // form (the user gives the clone a new name/tier). The server re-validates it all.
@@ -404,7 +405,7 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
     } else {
       p.target_environment = targetEnv || null
     }
-    if (isClone) p.source_reference = sourceRef || null
+    if (isClone || isDr) p.source_reference = sourceRef || null
     if (isTemporary) p.expires_on = expiresOn || null
     return p
   }
@@ -499,7 +500,7 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
   // Section progress (Portal UI polish) — completion is derived from live state;
   // the current step is the first incomplete one. Single-page form is preserved;
   // clicking a step just scrolls to that section.
-  const basicsDone = isClone
+  const basicsDone = isClone || isDr
     ? !!(sourceRef && projectCode && costCentre && envName && envTier)
     : isCreate || isSandbox || isTemporary
       ? !!(projectCode && costCentre && target && envName && envTier && classification && (!isTemporary || expiresOn))
@@ -774,6 +775,30 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
                   ) : null}
                 </>
               )}
+              {isDr && (
+                <>
+                  <Select id="dr_source" labelText="Environment to protect (primary)" value={sourceRef}
+                    onChange={(e) => { onCloneSourceChange(e.target.value); setEnvTier(e.target.value ? 'dr' : '') }}
+                    invalid={!!errors.source_reference} invalidText={errors.source_reference}>
+                    <SelectItem value="" text="— select a provisioned environment —" />
+                    {provisioned.map((p) => (
+                      <SelectItem key={p.reference} value={p.reference}
+                        text={`${p.reference} — ${p.environment_name || 'env'} (${p.environment_tier || '?'})`} />
+                    ))}
+                  </Select>
+                  {provisioned.length === 0 ? (
+                    <p style={{ color: 'var(--cds-text-secondary)', fontSize: '0.85rem' }}>
+                      You have no provisioned environments to protect.
+                    </p>
+                  ) : sourceRef ? (
+                    <p style={{ color: 'var(--cds-text-secondary)', fontSize: '0.8rem' }}>
+                      The DR replica copies the primary's stack and classification — give it a new name and
+                      choose its DR deployment target (a different region for resilience). It's a prod-class
+                      (DR-tier) environment. Approval-governed; nothing is provisioned in mock mode.
+                    </p>
+                  ) : null}
+                </>
+              )}
               {isCreateLike && (
                 <Select id="project_code" labelText="Project" value={projectCode} onChange={(e) => setProjectCode(e.target.value)} invalid={!!errors.project_code} invalidText={errors.project_code}>
                   <SelectItem value="" text="— select —" />
@@ -816,9 +841,14 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
               )}
 
               {isCreateLike && (
-                <Select id="environment_tier" labelText="Environment tier" value={envTier} onChange={(e) => setEnvTier(e.target.value)} invalid={!!errors.environment_tier} invalidText={errors.environment_tier}>
+                <Select id="environment_tier" labelText="Environment tier" value={envTier} onChange={(e) => setEnvTier(e.target.value)} disabled={isDr} invalid={!!errors.environment_tier} invalidText={errors.environment_tier}>
                   <SelectItem value="" text="— select —" />
-                  {(isSandbox || isTemporary ? ENV_TIERS.filter(([v]) => NONPROD_TIERS.includes(v)) : ENV_TIERS).map(([v, label]) => (
+                  {(isDr
+                    ? ENV_TIERS.filter(([v]) => v === 'dr')
+                    : isSandbox || isTemporary
+                      ? ENV_TIERS.filter(([v]) => NONPROD_TIERS.includes(v))
+                      : ENV_TIERS
+                  ).map(([v, label]) => (
                     <SelectItem key={v} value={v} text={label} />
                   ))}
                 </Select>
@@ -1042,7 +1072,7 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
               Save draft
             </Button>
             <Button onClick={onSubmit} disabled={busy}>
-              {isDecommission ? 'Submit decommission' : isRefresh ? 'Submit refresh' : isRestore ? 'Submit restore' : isReduce ? 'Submit reduction' : isClone ? 'Submit clone' : isSandbox ? 'Submit sandbox' : isTemporary ? 'Submit temporary' : 'Submit request'}
+              {isDecommission ? 'Submit decommission' : isRefresh ? 'Submit refresh' : isRestore ? 'Submit restore' : isReduce ? 'Submit reduction' : isClone ? 'Submit clone' : isSandbox ? 'Submit sandbox' : isTemporary ? 'Submit temporary' : isDr ? 'Submit DR request' : 'Submit request'}
             </Button>
             {cost && !isDecommission && (
               <span style={{ marginLeft: 'auto', fontSize: '0.9rem', color: 'var(--cds-text-secondary)' }}>
@@ -1062,6 +1092,7 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
             <div style={{ fontSize: '0.82rem', lineHeight: 1.9 }}>
               <SummaryRow label="Type">{RTYPE_LABEL[requestType] || requestType}</SummaryRow>
               {isClone && <SummaryRow label="Cloned from">{sourceRef || '—'}</SummaryRow>}
+              {isDr && <SummaryRow label="DR of">{sourceRef || '—'}</SummaryRow>}
               {isTemporary && <SummaryRow label="Expires on">{expiresOn || '—'}</SummaryRow>}
               {isSandbox && <SummaryRow label="Lifetime">short-lived (auto-expires)</SummaryRow>}
               <SummaryRow label="Target">{TARGETS.find(([v]) => v === target)?.[1] || '—'}</SummaryRow>

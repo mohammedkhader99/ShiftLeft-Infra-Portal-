@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from db.models import Backup, CostCentre, Environment, Project, Request, Subsidiary, Technology
 
 REQUEST_TYPES = {"create", "add", "resize", "decommission", "refresh", "restore",
-                 "clone", "sandbox", "temporary", "reduce"}
+                 "clone", "sandbox", "temporary", "reduce", "dr"}
 SIZES = {"small", "medium", "large", "xlarge"}
 # Size ladder for the reduce-capacity guardrail (F-CAT): new size must rank below.
 SIZE_ORDER = {"small": 0, "medium": 1, "large": 2, "xlarge": 3}
@@ -71,12 +71,12 @@ NAME_PATTERN = re.compile(r"^[a-z0-9-]{3,40}$")
 TARGET_TYPES = {"add", "resize"}
 # Request types that provision a NEW environment (create + clone + the short-lived
 # sandbox/temporary). They carry components, metadata, and are charged + quota'd.
-CREATE_LIKE_TYPES = {"create", "clone", "sandbox", "temporary"}
+CREATE_LIKE_TYPES = {"create", "clone", "sandbox", "temporary", "dr"}
 # Request types that must carry at least one technology component.
-COMPONENT_TYPES = {"create", "add", "resize", "clone", "sandbox", "temporary"}
+COMPONENT_TYPES = {"create", "add", "resize", "clone", "sandbox", "temporary", "dr"}
 # Request types that must carry the governance metadata (all but decommission,
 # which inherits its context from the request it tears down).
-METADATA_TYPES = {"create", "add", "resize", "clone", "sandbox", "temporary"}
+METADATA_TYPES = {"create", "add", "resize", "clone", "sandbox", "temporary", "dr"}
 
 
 def validate_submission(data: dict, session: Session) -> dict[str, str]:
@@ -119,6 +119,8 @@ def validate_submission(data: dict, session: Session) -> dict[str, str]:
         _validate_shortlived_fields(data, session, errors, require_expiry=False)
     elif request_type == "temporary":
         _validate_shortlived_fields(data, session, errors, require_expiry=True)
+    elif request_type == "dr":
+        _validate_dr_fields(data, session, errors)
     elif request_type == "decommission":
         _validate_decommission_fields(data, session, errors)
     elif request_type == "refresh":
@@ -375,6 +377,27 @@ def _validate_clone_fields(data: dict, session: Session, errors: dict[str, str])
     elif (data.get("environment_name") or "").strip() and \
             (data.get("environment_name") or "").strip() == (source.environment_name or ""):
         errors["environment_name"] = "Give the clone a different name from the source environment."
+
+
+def _validate_dr_fields(data: dict, session: Session, errors: dict[str, str]) -> None:
+    """Disaster Recovery provisions a DR REPLICA of a provisioned environment
+    (F-CAT): the create-field rules for the replica (its own name + DR target),
+    the tier must be 'dr' (prod-class), and a valid provisioned source to protect."""
+    _validate_create_fields(data, session, errors)
+    tier = (data.get("environment_tier") or "").strip().lower()
+    if tier in ENV_TIERS and tier != "dr":
+        errors["environment_tier"] = "A Disaster Recovery replica must be at the DR tier."
+    source_ref = (data.get("source_reference") or "").strip()
+    if not source_ref:
+        errors["source_reference"] = "Select the environment to protect (the DR primary)."
+        return
+    source = session.scalar(select(Request).where(Request.reference == source_ref))
+    if source is None:
+        errors["source_reference"] = f"Unknown request '{source_ref}'."
+    elif source.status != "provisioned":
+        errors["source_reference"] = (
+            f"{source_ref} is not provisioned (status: {source.status}); only a provisioned "
+            "environment can have a DR replica.")
 
 
 def _validate_reduce_fields(data: dict, session: Session, errors: dict[str, str]) -> None:
