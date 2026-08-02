@@ -15,6 +15,8 @@ import {
   FormGroup,
   Accordion,
   AccordionItem,
+  ProgressIndicator,
+  ProgressStep,
 } from '@carbon/react'
 import {
   TrashCan,
@@ -446,6 +448,21 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
     }
   }
 
+  // Section progress (Portal UI polish) — completion is derived from live state;
+  // the current step is the first incomplete one. Single-page form is preserved;
+  // clicking a step just scrolls to that section.
+  const basicsDone = isCreate
+    ? !!(projectCode && costCentre && target && envName && envTier && classification)
+    : !!(costCentre && target && targetEnv)
+  const stackDone = filledComponents.some((c) => c.technology_code && c.size)
+  const detailsDone = justification.trim().length >= 20 && !!priority && !!criticality && !!deliveryDate
+  const stepDone = [basicsDone, stackDone, detailsDone]
+  const firstIncomplete = stepDone.indexOf(false)
+  const currentIndex = firstIncomplete === -1 ? stepDone.length - 1 : firstIncomplete
+  const SECTION_IDS = ['section-basics', 'section-stack', 'section-details']
+  const scrollToSection = (i: number) =>
+    document.getElementById(SECTION_IDS[i])?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+
   if (!lookups) return <p style={{ color: 'var(--cds-text-secondary)' }}>Loading form…</p>
 
   return (
@@ -470,6 +487,19 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
             onCloseButtonClick={() => setWarnings([])}
             style={{ marginBottom: '1rem', maxWidth: 'none' }}
           />
+        )}
+
+        {!isDecommission && !isRefresh && !isRestore && (
+          <ProgressIndicator
+            currentIndex={currentIndex}
+            spaceEqually
+            onChange={scrollToSection}
+            style={{ marginBottom: '1.5rem' }}
+          >
+            <ProgressStep label="Basics" complete={basicsDone} />
+            <ProgressStep label="Stack" complete={stackDone} />
+            <ProgressStep label="Details" complete={detailsDone} />
+          </ProgressIndicator>
         )}
 
         <Stack gap={6}>
@@ -608,6 +638,7 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
             </>
           ) : (
             <>
+              <div id="section-basics" style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
               {isCreate && (
                 <Select id="project_code" labelText="Project" value={projectCode} onChange={(e) => setProjectCode(e.target.value)} invalid={!!errors.project_code} invalidText={errors.project_code}>
                   <SelectItem value="" text="— select —" />
@@ -666,7 +697,9 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
                   ))}
                 </Select>
               )}
+              </div>
 
+              <div id="section-stack">
               <FormGroup legendText="Components">
                 {errors.components && (
                   <p style={{ color: 'var(--cds-text-error)', fontSize: '0.75rem', marginBottom: '0.5rem' }}>{errors.components}</p>
@@ -726,7 +759,9 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
                   </div>
                 )}
               </FormGroup>
+              </div>
 
+              <div id="section-details" style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
               <FormGroup legendText="Request details">
                 <Stack gap={5}>
                   <TextArea
@@ -837,6 +872,7 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
                   </div>
                 </AccordionItem>
               </Accordion>
+              </div>
             </>
           )}
 
