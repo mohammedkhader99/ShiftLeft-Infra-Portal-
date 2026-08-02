@@ -12,6 +12,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from api import roles as roles_mod
+from api.audit import append_audit
 from api.main import app, get_session
 from db.models import AuditLog, RoleMapping
 from db.seed import seed
@@ -111,3 +112,27 @@ def test_resolve_preview(client, monkeypatch):
     monkeypatch.setenv("GROUP_MAP", '{"alice@x.com": ["imd-finance"]}')
     body = client.get("/api/access/resolve", params={"email": "alice@x.com"}).json()
     assert body["email"] == "alice@x.com" and body["roles"] == ["finops"] and body["groups"] == ["imd-finance"]
+
+
+# --- Users & roles view ------------------------------------------------------
+
+def test_users_view_lists_human_actors(client, session, monkeypatch):
+    monkeypatch.setenv("ROLE_MAP", '{"alice@x.com": ["approver"]}')
+    monkeypatch.setenv("GROUP_MAP", '{"alice@x.com": ["imd-approvers"]}')
+    append_audit(session, "request.created", actor="alice@x.com", reference="REQ-1")
+    append_audit(session, "request.submitted", actor="alice@x.com", reference="REQ-1")
+    append_audit(session, "state.reconciled", actor="scheduler")  # system actor, no '@'
+    append_audit(session, "poll.tick", actor="jira-poller")       # system actor, no '@'
+    session.commit()
+
+    body = client.get("/api/access/users").json()
+    emails = [u["email"] for u in body["users"]]
+    assert emails == ["alice@x.com"]  # only the human actor
+    alice = body["users"][0]
+    assert alice["roles"] == ["approver"] and alice["groups"] == ["imd-approvers"]
+    assert alice["actions"] == 2 and alice["last_seen"]
+
+
+def test_users_view_rbac(client, monkeypatch):
+    monkeypatch.setenv("ROLE_MAP", '{"req@x.com": ["requester"]}')
+    assert client.get("/api/access/users", headers={"X-Requester": "req@x.com"}).status_code == 403

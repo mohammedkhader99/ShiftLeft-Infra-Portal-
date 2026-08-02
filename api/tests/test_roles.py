@@ -1,6 +1,16 @@
 """RBAC role resolution + permission logic (E1.1, F-IAM-01)."""
 
+import pytest
+
 import api.roles as roles
+
+
+@pytest.fixture(autouse=True)
+def _isolate_db_role_map(monkeypatch):
+    """These tests exercise env/mock role resolution, so isolate them from any rows
+    in the shared DB group->role map (that DB path is covered in test_role_map).
+    Otherwise mappings a real deployment has stored would leak in and skew results."""
+    monkeypatch.setattr(roles, "_load_db_role_map", lambda: None)
 
 
 class _Resp:

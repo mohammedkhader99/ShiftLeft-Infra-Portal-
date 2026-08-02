@@ -635,6 +635,14 @@ export async function resolveAccess(email: string): Promise<{ email: string; sou
   return r.ok ? r.json() : null
 }
 
+export type UserRow = { email: string; roles: string[]; groups: string[]; actions: number; last_seen?: string | null }
+
+export async function getUsers(): Promise<{ users: UserRow[]; source: string } | 'forbidden' | null> {
+  const r = await fetch('/api/access/users')
+  if (r.status === 403) return 'forbidden'
+  return r.ok ? r.json() : null
+}
+
 // Generate a report on demand (F-RPT-11). Read-only; nothing is stored.
 export async function getReport(kind: string): Promise<{ report: string; data: any } | 'forbidden' | null> {
   const r = await fetch(`/api/reports/${kind}`)

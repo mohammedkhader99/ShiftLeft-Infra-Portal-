@@ -439,6 +439,28 @@ def resolve_access(email: str, _auth: str = Depends(require_action("manage_acces
     return roles_mod.resolve_detail(email)
 
 
+@app.get("/api/access/users")
+def list_users(session: Session = Depends(get_session),
+               _auth: str = Depends(require_action("manage_access"))) -> dict:
+    """Read-only Users & roles (F-IAM-01): the people who've used the portal —
+    distinct email actors in the audit trail, most-recently-active first — each
+    with their resolved roles + groups, last-seen, and action count. Visibility
+    only; reflects the directory. Capped, since live resolution hits Jira."""
+    rows = session.execute(
+        select(AuditLog.actor, func.count(), func.max(AuditLog.created_at))
+        .where(AuditLog.actor.like("%@%"))   # humans are emails; excludes poller/scheduler/leader ids
+        .group_by(AuditLog.actor)
+        .order_by(func.max(AuditLog.created_at).desc())
+        .limit(50)
+    ).all()
+    users = []
+    for actor, count, last_seen in rows:
+        detail = roles_mod.resolve_detail(actor)
+        users.append({"email": actor, "roles": detail["roles"], "groups": detail["groups"],
+                      "actions": int(count), "last_seen": last_seen.isoformat() if last_seen else None})
+    return {"users": users, "source": roles_mod.role_source()}
+
+
 # --- API keys / programmatic access (E1, F-INT-01) ---------------------------
 
 class ApiKeyIn(BaseModel):

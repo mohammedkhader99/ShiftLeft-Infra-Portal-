@@ -7,9 +7,9 @@ import {
   getApiKeys, createApiKey, revokeApiKey,
   getShutdown, setShutdownPolicy,
   getWebhooks, createWebhook, deleteWebhook, testWebhook,
-  getRoleMap, setRoleMap, deleteRoleMap, resolveAccess,
+  getRoleMap, setRoleMap, deleteRoleMap, resolveAccess, getUsers,
   type SystemConfig, type BudgetRow, type Lookups, type OrphanRow, type QuotaRow, type ApiKeyRow,
-  type Shutdown, type ShutdownPolicy, type WebhookRow, type RoleMapRow,
+  type Shutdown, type ShutdownPolicy, type WebhookRow, type RoleMapRow, type UserRow,
 } from '../api'
 
 function Flag({ on, onLabel, offLabel }: { on: boolean; onLabel?: string; offLabel?: string }) {
@@ -73,6 +73,7 @@ export default function Admin() {
   const [rmMsg, setRmMsg] = useState<{ ok: boolean; text: string } | null>(null)
   const [checkEmail, setCheckEmail] = useState('')
   const [checkResult, setCheckResult] = useState<{ groups: string[]; roles: string[] } | null>(null)
+  const [users, setUsers] = useState<UserRow[]>([])
 
   function reloadWebhooks() {
     getWebhooks().then((w) => { if (w && w !== 'forbidden') { setWebhooks(w.webhooks); setWebhooksEnabled(w.enabled) } }).catch(() => {})
@@ -116,6 +117,7 @@ export default function Admin() {
     reloadShutdown()
     reloadWebhooks()
     reloadRoleMap()
+    getUsers().then((u) => u && u !== 'forbidden' && setUsers(u.users)).catch(() => {})
     getOrphans().then((o) => o && o !== 'forbidden' && setOrphans(o.orphans)).catch(() => {})
   }, [])
 
@@ -322,6 +324,45 @@ export default function Admin() {
             </div>
           )}
         </div>
+      </Tile>
+
+      <Tile>
+        <h4 style={{ fontSize: '0.95rem', fontWeight: 500, marginBottom: '0.25rem' }}>
+          Users &amp; roles <span style={{ fontWeight: 400, color: 'var(--cds-text-secondary)' }}>— who has used the portal</span>
+        </h4>
+        <p style={{ fontSize: '0.8rem', color: 'var(--cds-text-secondary)', marginBottom: '0.75rem' }}>
+          Read-only. People who've acted in the portal (from the audit trail), with the roles and groups they
+          currently resolve to. Reflects the directory — as complete as who has signed in.
+        </p>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
+          <thead>
+            <tr style={{ textAlign: 'left', color: 'var(--cds-text-secondary)', borderBottom: '1px solid var(--cds-border-subtle)' }}>
+              <th style={{ padding: '0.3rem 0.5rem' }}>Email</th>
+              <th style={{ padding: '0.3rem 0.5rem' }}>Roles</th>
+              <th style={{ padding: '0.3rem 0.5rem' }}>Groups</th>
+              <th style={{ padding: '0.3rem 0.5rem' }}>Last seen</th>
+              <th style={{ padding: '0.3rem 0.5rem', textAlign: 'right' }}>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {users.map((u) => (
+              <tr key={u.email} style={{ borderBottom: '1px solid var(--cds-border-subtle-01)' }}>
+                <td style={{ padding: '0.3rem 0.5rem', fontWeight: 500 }}>{u.email}</td>
+                <td style={{ padding: '0.3rem 0.5rem' }}>
+                  {u.roles.length ? u.roles.map((r) => <Tag key={r} size="sm" type="green">{r}</Tag>) : <em style={{ color: 'var(--cds-text-secondary)' }}>read_only</em>}
+                </td>
+                <td style={{ padding: '0.3rem 0.5rem' }}>
+                  {u.groups.length ? u.groups.map((g) => <Tag key={g} size="sm" type="cool-gray">{g}</Tag>) : <span style={{ color: 'var(--cds-text-secondary)' }}>—</span>}
+                </td>
+                <td style={{ padding: '0.3rem 0.5rem', color: 'var(--cds-text-secondary)' }}>{u.last_seen ? u.last_seen.slice(0, 16).replace('T', ' ') : '—'}</td>
+                <td style={{ padding: '0.3rem 0.5rem', textAlign: 'right', color: 'var(--cds-text-secondary)' }}>{u.actions}</td>
+              </tr>
+            ))}
+            {users.length === 0 && (
+              <tr><td colSpan={5} style={{ padding: '0.5rem', color: 'var(--cds-text-secondary)' }}>No users have acted yet.</td></tr>
+            )}
+          </tbody>
+        </table>
       </Tile>
 
       <Tile>
