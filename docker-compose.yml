@@ -295,6 +295,16 @@ services:
       # OCI managed PostgreSQL has no in-place rollback.
       BACKUP_MODE: ${BACKUP_MODE:-mock}
       RESTORE_MODE: ${RESTORE_MODE:-mock}
+      # First-boot configuration (GAP-ANALYSIS step 4): cloud-init installs and
+      # enables the requested technologies on a new VM, because private-only VMs
+      # can't be reached over SSH. Off by default — it changes what a VM does at
+      # boot and REQUIRES the subnet to have egress (NAT/service gateway) or an
+      # internal mirror, otherwise the install fails and you get a bare VM.
+      # CONFIG_PACKAGE_MAP (JSON) corrects package names for your image;
+      # CONFIG_OS_FAMILY switches package manager (rhel|debian|suse).
+      CONFIG_ENABLED: ${CONFIG_ENABLED:-false}
+      CONFIG_OS_FAMILY: ${CONFIG_OS_FAMILY:-rhel}
+      CONFIG_PACKAGE_MAP: ${CONFIG_PACKAGE_MAP:-}
     ports:
       - "9091:9091"
     volumes:

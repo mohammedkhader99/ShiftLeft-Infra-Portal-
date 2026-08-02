@@ -47,6 +47,25 @@ _REASON_MANUAL = (
     "The portal validates, prices, approves and audits this request, then the "
     "infrastructure team provisions it. It is not built automatically."
 )
+
+# Technologies with a first-boot configuration template (GAP-ANALYSIS step 4).
+# Mirrors orchestrator/configure.TEMPLATES — a test asserts the two stay in step.
+#
+# These are deliberately still MANUAL. A template that has never been booted on a
+# real VM is a plan, not a capability: package names are image-dependent and the
+# install needs subnet egress. Claiming 'automated' on that basis would undo the
+# honesty step 1 bought. A code moves to CONFIG_VERIFIED_CODES only after a real
+# VM has been provisioned and checked.
+CONFIGURABLE_CODES = {"nginx", "apache", "redis7", "java21", "python312", "nodejs20"}
+
+# Proven on a real VM. Empty until one actually is.
+CONFIG_VERIFIED_CODES: set[str] = set()
+
+_REASON_CONFIG_PENDING = (
+    "A first-boot configuration exists for this technology but has not yet been "
+    "verified on a real VM, so the infrastructure team still fulfils it. The portal "
+    "validates, prices, approves and audits the request as normal."
+)
 _REASON_NO_PATH = (
     "There is no automated provisioning path for this deployment target yet, so "
     "the infrastructure team fulfils the request after approval."
@@ -76,6 +95,12 @@ def fulfilment_for(technology, target: str | None) -> dict:
         if code == _OCI_OBJECT_STORAGE:
             return {"mode": "automated",
                     "reason": "Provisioned automatically as an OCI Object Storage bucket."}
+        if code in CONFIG_VERIFIED_CODES:
+            return {"mode": "automated",
+                    "reason": ("Provisioned as an OCI Compute instance and configured "
+                               "automatically at first boot.")}
+        if code in CONFIGURABLE_CODES:
+            return {"mode": "manual", "reason": _REASON_CONFIG_PENDING}
         return {"mode": "manual", "reason": _REASON_MANUAL}
 
     if tgt == "aws":

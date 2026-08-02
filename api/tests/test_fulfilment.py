@@ -162,6 +162,26 @@ def test_classifier_agrees_with_the_provisioners_resource_kind(session):
         session.flush()
 
 
+def test_configurable_codes_match_the_orchestrators_templates():
+    """The catalogue's idea of what has a first-boot configuration must match the
+    orchestrator's actual templates — otherwise the portal describes a capability
+    that doesn't exist (or hides one that does)."""
+    from orchestrator import configure
+    assert fulfilment.CONFIGURABLE_CODES == set(configure.TEMPLATES)
+    # And the verified list must agree on both sides.
+    assert fulfilment.CONFIG_VERIFIED_CODES == configure.VERIFIED_CODES
+
+
+def test_configurable_technologies_are_still_manual_and_say_why(session):
+    """Step 4 adds templates, not proof. Until a real VM has booted one, these
+    stay manual — with a reason that explains the distinction."""
+    out = fulfilment.fulfilment_for(_tech(session, "nginx"), "oci")
+    assert out["mode"] == "manual"
+    assert "not yet been verified on a real VM" in out["reason"]
+    # It must not appear in the automated set the form badges green.
+    assert fulfilment.automated_targets(_tech(session, "nginx"), ["oci", "aws"]) == []
+
+
 def test_managed_database_wins_over_compute_in_a_mixed_stack(session):
     """A stack with both Postgres and a VM must provision the database system —
     the most specific delivery — not fall back to compute."""

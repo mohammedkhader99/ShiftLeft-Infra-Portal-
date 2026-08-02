@@ -123,7 +123,10 @@ def _oci_vars(name: str, tags: dict, resource_kind: str = "oci-bucket",
         # Access — both optional. A custom image with a baked-in password needs
         # neither; user_data (cloud-init) can set/enable a password if required.
         "ssh_authorized_key": os.getenv("OCI_COMPUTE_SSH_AUTHORIZED_KEY", ""),
-        "user_data": os.getenv("OCI_COMPUTE_USER_DATA", ""),
+        # Per-request first-boot configuration (GAP-ANALYSIS step 4) when the
+        # orchestrator rendered one; otherwise the static env default, so existing
+        # deployments behave exactly as before.
+        "user_data": sizing.get("user_data") or os.getenv("OCI_COMPUTE_USER_DATA", ""),
         "tags": tags,
         # Customer-managed encryption key for sensitive data (F-SEC-04); empty
         # falls back to Oracle-managed encryption in the module.

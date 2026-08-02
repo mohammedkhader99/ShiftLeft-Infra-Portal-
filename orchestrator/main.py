@@ -18,7 +18,7 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request
 
 from common.signing import verify
-from orchestrator import backups, cloud_state, provisioner
+from orchestrator import backups, cloud_state, configure, provisioner
 
 API_URL = os.getenv("API_URL", "http://localhost:8081")
 OPA_URL = os.getenv("OPA_URL", "http://localhost:8181")
@@ -182,8 +182,16 @@ def _image_for(payload: dict) -> str:
 
 
 def _compute_spec(payload: dict) -> dict:
-    """The compute instance's Terraform inputs: sizing + the resolved OS image."""
-    return {**_instance_sizing(payload), "image_ocid": _image_for(payload)}
+    """The compute instance's Terraform inputs: sizing, the resolved OS image, and
+    the first-boot configuration that turns a bare VM into a working service
+    (GAP-ANALYSIS step 4). user_data is "" when configuration is off or no chosen
+    technology has a template, which leaves the previous behaviour untouched."""
+    components = payload.get("policy_input", {}).get("components", [])
+    return {
+        **_instance_sizing(payload),
+        "image_ocid": _image_for(payload),
+        "user_data": configure.render(components),
+    }
 
 
 @app.post("/provision")
