@@ -65,6 +65,7 @@ const TARGETS: [string, string][] = [
 ]
 const RTYPE_LABEL: Record<string, string> = {
   create: 'Create environment',
+  clone: 'Clone environment',
   add: 'Add component',
   resize: 'Resize component',
 }
@@ -236,19 +237,40 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
   }, [])
 
   const isCreate = requestType === 'create'
+  const isClone = requestType === 'clone'
+  const isCreateLike = isCreate || isClone  // both provision a NEW environment
   const isDecommission = requestType === 'decommission'
   const isRefresh = requestType === 'refresh'
   const isRestore = requestType === 'restore'
   const NONPROD_TIERS = ['dev', 'test', 'sit', 'uat', 'preprod']
 
-  // Load the user's provisioned requests once an env-targeting type is chosen.
+  // Load the user's provisioned requests once an env-targeting type is chosen
+  // (decommission/refresh/restore operate on one; clone copies one).
   useEffect(() => {
-    if ((isDecommission || isRefresh || isRestore) && email) {
+    if ((isDecommission || isRefresh || isRestore || isClone) && email) {
       getRequests({ requester: email, status: 'provisioned' })
         .then(setProvisioned)
         .catch(() => setProvisioned([]))
     }
-  }, [isDecommission, isRefresh, isRestore, email])
+  }, [isDecommission, isRefresh, isRestore, isClone, email])
+
+  // Clone: selecting a source copies its stack, target and classification into the
+  // form (the user gives the clone a new name/tier). The server re-validates it all.
+  function onCloneSourceChange(ref: string) {
+    setSourceRef(ref)
+    const src = provisioned.find((p) => p.reference === ref)
+    if (!src) return
+    setTarget(src.deployment_target || '')
+    setClassification(src.data_classification || '')
+    setComponents(
+      (src.components ?? [])
+        .filter((c) => c.technology_code)
+        .map((c) => ({ technology_code: c.technology_code as string, size: c.size || 'medium' })),
+    )
+    if (src.advanced_options && typeof src.advanced_options === 'object') {
+      setAdvanced(src.advanced_options as Record<string, string | boolean>)
+    }
+  }
 
   // Restore: the backups of the currently-selected target (already on the row).
   const restoreBackups = provisioned.find((p) => p.reference === sourceRef)?.backups ?? []
@@ -351,13 +373,14 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
       advanced_options: cleanAdvanced(advanced),
       components: filledComponents,
     }
-    if (isCreate) {
+    if (isCreateLike) {
       p.project_code = projectCode || null
       p.environment_name = envName || null
       p.environment_tier = envTier || null
     } else {
       p.target_environment = targetEnv || null
     }
+    if (isClone) p.source_reference = sourceRef || null
     return p
   }
 
@@ -451,9 +474,11 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
   // Section progress (Portal UI polish) — completion is derived from live state;
   // the current step is the first incomplete one. Single-page form is preserved;
   // clicking a step just scrolls to that section.
-  const basicsDone = isCreate
-    ? !!(projectCode && costCentre && target && envName && envTier && classification)
-    : !!(costCentre && target && targetEnv)
+  const basicsDone = isClone
+    ? !!(sourceRef && projectCode && costCentre && envName && envTier)
+    : isCreate
+      ? !!(projectCode && costCentre && target && envName && envTier && classification)
+      : !!(costCentre && target && targetEnv)
   const stackDone = filledComponents.some((c) => c.technology_code && c.size)
   const detailsDone = justification.trim().length >= 20 && !!priority && !!criticality && !!deliveryDate
   const stepDone = [basicsDone, stackDone, detailsDone]
@@ -639,7 +664,31 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
           ) : (
             <>
               <div id="section-basics" style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-              {isCreate && (
+              {isClone && (
+                <>
+                  <Select id="clone_source" labelText="Environment to clone" value={sourceRef}
+                    onChange={(e) => onCloneSourceChange(e.target.value)}
+                    invalid={!!errors.source_reference} invalidText={errors.source_reference}>
+                    <SelectItem value="" text="— select a provisioned environment —" />
+                    {provisioned.map((p) => (
+                      <SelectItem key={p.reference} value={p.reference}
+                        text={`${p.reference} — ${p.environment_name || 'env'} (${p.environment_tier || '?'})`} />
+                    ))}
+                  </Select>
+                  {provisioned.length === 0 ? (
+                    <p style={{ color: 'var(--cds-text-secondary)', fontSize: '0.85rem' }}>
+                      You have no provisioned environments to clone.
+                    </p>
+                  ) : sourceRef ? (
+                    <p style={{ color: 'var(--cds-text-secondary)', fontSize: '0.8rem' }}>
+                      The stack, deployment target and classification below are copied from the source —
+                      give the clone a new name (and adjust anything if needed). Approval-governed;
+                      nothing is provisioned in mock mode.
+                    </p>
+                  ) : null}
+                </>
+              )}
+              {isCreateLike && (
                 <Select id="project_code" labelText="Project" value={projectCode} onChange={(e) => setProjectCode(e.target.value)} invalid={!!errors.project_code} invalidText={errors.project_code}>
                   <SelectItem value="" text="— select —" />
                   {lookups.projects.map((p) => (
@@ -669,7 +718,7 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
                 ))}
               </Select>
 
-              {isCreate ? (
+              {isCreateLike ? (
                 <TextInput id="environment_name" labelText="New environment name" placeholder="e.g. egate-uat" value={envName} onChange={(e) => setEnvName(e.target.value)} invalid={!!errors.environment_name} invalidText={errors.environment_name} />
               ) : (
                 <Select id="target_environment" labelText="Existing environment" value={targetEnv} onChange={(e) => setTargetEnv(e.target.value)} invalid={!!errors.target_environment} invalidText={errors.target_environment}>
@@ -680,7 +729,7 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
                 </Select>
               )}
 
-              {isCreate && (
+              {isCreateLike && (
                 <Select id="environment_tier" labelText="Environment tier" value={envTier} onChange={(e) => setEnvTier(e.target.value)} invalid={!!errors.environment_tier} invalidText={errors.environment_tier}>
                   <SelectItem value="" text="— select —" />
                   {ENV_TIERS.map(([v, label]) => (
@@ -689,7 +738,7 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
                 </Select>
               )}
 
-              {isCreate && (
+              {isCreateLike && (
                 <Select id="data_classification" labelText="Data classification" value={classification} onChange={(e) => setClassification(e.target.value)} invalid={!!errors.data_classification} invalidText={errors.data_classification}>
                   <SelectItem value="" text="— select —" />
                   {CLASSIFICATIONS.map((c) => (
@@ -893,7 +942,7 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
               Save draft
             </Button>
             <Button onClick={onSubmit} disabled={busy}>
-              {isDecommission ? 'Submit decommission' : isRefresh ? 'Submit refresh' : isRestore ? 'Submit restore' : 'Submit request'}
+              {isDecommission ? 'Submit decommission' : isRefresh ? 'Submit refresh' : isRestore ? 'Submit restore' : isClone ? 'Submit clone' : 'Submit request'}
             </Button>
             {cost && !isDecommission && (
               <span style={{ marginLeft: 'auto', fontSize: '0.9rem', color: 'var(--cds-text-secondary)' }}>
@@ -912,8 +961,9 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
             </p>
             <div style={{ fontSize: '0.82rem', lineHeight: 1.9 }}>
               <SummaryRow label="Type">{RTYPE_LABEL[requestType] || requestType}</SummaryRow>
+              {isClone && <SummaryRow label="Cloned from">{sourceRef || '—'}</SummaryRow>}
               <SummaryRow label="Target">{TARGETS.find(([v]) => v === target)?.[1] || '—'}</SummaryRow>
-              {isCreate ? (
+              {isCreateLike ? (
                 <>
                   <SummaryRow label="Environment">{envName || '—'}</SummaryRow>
                   <SummaryRow label="Tier">
@@ -938,7 +988,7 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
               </SummaryRow>
               {cost && <SummaryRow label="Est. monthly"><strong>{cost.totals.monthly.toFixed(2)} {cost.currency}</strong></SummaryRow>}
             </div>
-            {isCreate && envTier && NONPROD_TIERS.includes(envTier) && (
+            {isCreateLike && envTier && NONPROD_TIERS.includes(envTier) && (
               <p style={{ fontSize: '0.72rem', color: 'var(--cds-text-secondary)', marginTop: '0.5rem' }}>
                 Non-prod environments have a limited lifetime (auto-expire per the TTL policy) and can be auto-shut-down out of hours.
               </p>

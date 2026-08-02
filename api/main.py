@@ -985,7 +985,7 @@ def _environment_count(session: Session, project_code: str | None,
         return 0
     stmt = (select(func.count()).select_from(Request)
             .where(Request.project_code == project_code,
-                   Request.request_type == "create",
+                   Request.request_type.in_(("create", "clone")),
                    Request.status.in_(SHOWBACK_SCOPES["committed"])))
     if exclude_ref:
         stmt = stmt.where(Request.reference != exclude_ref)
@@ -2064,9 +2064,9 @@ def submit_request(
         budget_warnings.append(_budget_message(bstatus))
         append_audit(session, "budget.warning", reference=req.reference, detail=bstatus)
 
-    # Quota guardrail (F-FIN-08): cap environments per project — create requests
-    # only (add/resize/decommission don't create a new environment).
-    if req.request_type == "create":
+    # Quota guardrail (F-FIN-08): cap environments per project — types that create
+    # a new environment (create + clone; add/resize/decommission don't).
+    if req.request_type in ("create", "clone"):
         qcount = _environment_count(session, req.project_code, exclude_ref=req.reference)
         qstatus = _quota_status(session, req.project_code, qcount + 1)
         if qstatus is not None and qstatus["status"] == "over" and _quota_enforce():

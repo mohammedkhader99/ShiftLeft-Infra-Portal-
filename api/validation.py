@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from db.models import Backup, CostCentre, Environment, Project, Request, Subsidiary, Technology
 
-REQUEST_TYPES = {"create", "add", "resize", "decommission", "refresh", "restore"}
+REQUEST_TYPES = {"create", "add", "resize", "decommission", "refresh", "restore", "clone"}
 SIZES = {"small", "medium", "large", "xlarge"}
 CLASSIFICATIONS = {"public", "internal", "confidential", "restricted"}
 SENSITIVE_CLASSIFICATIONS = {"restricted", "confidential"}  # a refresh must mask these
@@ -66,11 +66,12 @@ NAME_PATTERN = re.compile(r"^[a-z0-9-]{3,40}$")
 
 # Request types that add to / resize an existing seeded environment.
 TARGET_TYPES = {"add", "resize"}
-# Request types that must carry at least one technology component.
-COMPONENT_TYPES = {"create", "add", "resize"}
+# Request types that must carry at least one technology component. Clone provisions
+# a new environment with the source's stack, so it carries components too.
+COMPONENT_TYPES = {"create", "add", "resize", "clone"}
 # Request types that must carry the governance metadata (all but decommission,
 # which inherits its context from the request it tears down).
-METADATA_TYPES = {"create", "add", "resize"}
+METADATA_TYPES = {"create", "add", "resize", "clone"}
 
 
 def validate_submission(data: dict, session: Session) -> dict[str, str]:
@@ -83,7 +84,7 @@ def validate_submission(data: dict, session: Session) -> dict[str, str]:
     request_type = (data.get("request_type") or "").strip()
     if request_type not in REQUEST_TYPES:
         errors["request_type"] = ("Choose a request type (create, add, resize, decommission, "
-                                  "refresh or restore).")
+                                  "refresh, restore or clone).")
         # Without a valid type we can't check type-specific rules.
         return errors
 
@@ -107,6 +108,8 @@ def validate_submission(data: dict, session: Session) -> dict[str, str]:
 
     if request_type == "create":
         _validate_create_fields(data, session, errors)
+    elif request_type == "clone":
+        _validate_clone_fields(data, session, errors)
     elif request_type == "decommission":
         _validate_decommission_fields(data, session, errors)
     elif request_type == "refresh":
@@ -337,6 +340,30 @@ def _validate_create_fields(data: dict, session: Session, errors: dict[str, str]
         errors["environment_tier"] = (
             "Select the environment tier (dev, test, sit, uat, preprod, prod or dr)."
         )
+
+
+def _validate_clone_fields(data: dict, session: Session, errors: dict[str, str]) -> None:
+    """Clone provisions a NEW environment mirroring an existing provisioned one.
+    Same create-field rules for the new environment (project, name, tier,
+    classification — checked by _validate_create_fields; its stack + target are
+    validated by the shared component rules), plus a valid provisioned source to
+    copy from. A clone is a new billable environment, so it's charged + quota'd
+    like a create."""
+    _validate_create_fields(data, session, errors)
+    source_ref = (data.get("source_reference") or "").strip()
+    if not source_ref:
+        errors["source_reference"] = "Select the provisioned environment to clone."
+        return
+    source = session.scalar(select(Request).where(Request.reference == source_ref))
+    if source is None:
+        errors["source_reference"] = f"Unknown request '{source_ref}'."
+    elif source.status != "provisioned":
+        errors["source_reference"] = (
+            f"{source_ref} is not provisioned (status: {source.status}); only a provisioned "
+            "environment can be cloned.")
+    elif (data.get("environment_name") or "").strip() and \
+            (data.get("environment_name") or "").strip() == (source.environment_name or ""):
+        errors["environment_name"] = "Give the clone a different name from the source environment."
 
 
 def _validate_components(data: dict, session: Session, errors: dict[str, str]) -> None:

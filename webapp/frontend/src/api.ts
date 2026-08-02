@@ -128,6 +128,7 @@ export type RequestRow = {
   requester: string
   requester_name?: string | null
   deployment_target?: string | null
+  data_classification?: string | null
   environment_name?: string | null
   target_environment?: string | null
   environment_tier?: string | null
