@@ -65,7 +65,7 @@ from api.policy import PolicyUnavailable, get_policy_evaluator
 from api.pricing import estimate_cost
 from api import roles as roles_mod
 from api.sizing import resolve_components
-from api.validation import validate_submission
+from api.validation import CREATE_LIKE_TYPES, validate_submission
 from common.security import install_rate_limit, install_security_headers
 from common.signing import sign
 from db.models import (
@@ -159,6 +159,14 @@ def _ttl_days_nonprod() -> int:
         return 30
 
 
+def _ttl_days_sandbox() -> int:
+    """A sandbox environment's short lifetime (F-CAT). Default 7 days."""
+    try:
+        return max(1, int(os.getenv("TTL_DAYS_SANDBOX", "7")))
+    except (ValueError, TypeError):
+        return 7
+
+
 def _ttl_warn_days() -> int:
     try:
         return max(0, int(os.getenv("TTL_WARN_DAYS", "7")))
@@ -173,11 +181,20 @@ def _ttl_enforce() -> bool:
 
 
 def _ttl_for(req: Request) -> datetime | None:
-    """Expiry for a newly provisioned environment (F-FIN-07): a lifetime for a
-    known non-prod tier, None (never expires) for prod/dr or unknown tier."""
+    """Expiry for a newly provisioned environment (F-FIN-07 / F-CAT): a short-lived
+    sandbox gets a short default, a temporary env its chosen expiry, other non-prod
+    tiers today's policy, and prod/dr never expire."""
+    now = datetime.now(timezone.utc)
+    if req.request_type == "sandbox":
+        return now + timedelta(days=_ttl_days_sandbox())
+    if req.request_type == "temporary":
+        if req.expires_on:  # the user's chosen date, at end of that day (UTC)
+            return datetime(req.expires_on.year, req.expires_on.month, req.expires_on.day,
+                            23, 59, 59, tzinfo=timezone.utc)
+        return now + timedelta(days=_ttl_days_nonprod())  # fallback if somehow unset
     tier = (req.environment_tier or "").strip().lower()
     if tier in TTL_NONPROD_TIERS:
-        return datetime.now(timezone.utc) + timedelta(days=_ttl_days_nonprod())
+        return now + timedelta(days=_ttl_days_nonprod())
     return None
 
 
@@ -985,7 +1002,7 @@ def _environment_count(session: Session, project_code: str | None,
         return 0
     stmt = (select(func.count()).select_from(Request)
             .where(Request.project_code == project_code,
-                   Request.request_type.in_(("create", "clone")),
+                   Request.request_type.in_(tuple(CREATE_LIKE_TYPES)),
                    Request.status.in_(SHOWBACK_SCOPES["committed"])))
     if exclude_ref:
         stmt = stmt.where(Request.reference != exclude_ref)
@@ -1449,6 +1466,7 @@ REQUEST_FIELDS = (
     "priority",
     "business_criticality",
     "required_delivery_date",
+    "expires_on",
     "application_owner",
     "business_owner",
     "technical_owner",
@@ -1491,6 +1509,7 @@ class DraftIn(BaseModel):
     priority: str | None = None
     business_criticality: str | None = None
     required_delivery_date: date | None = None
+    expires_on: date | None = None
     application_owner: str | None = None
     business_owner: str | None = None
     technical_owner: str | None = None
@@ -1499,7 +1518,7 @@ class DraftIn(BaseModel):
     advanced_options: dict | None = None
     components: list[ComponentIn] | None = None
 
-    @field_validator("required_delivery_date", mode="before")
+    @field_validator("required_delivery_date", "expires_on", mode="before")
     @classmethod
     def _blank_date_to_none(cls, v):
         """Treat an empty string (an unfilled date field) as no date."""
@@ -1573,6 +1592,7 @@ class RequestOut(BaseModel):
     priority: str | None = None
     business_criticality: str | None = None
     required_delivery_date: date | None = None
+    expires_on: date | None = None
     application_owner: str | None = None
     business_owner: str | None = None
     technical_owner: str | None = None
@@ -2065,8 +2085,8 @@ def submit_request(
         append_audit(session, "budget.warning", reference=req.reference, detail=bstatus)
 
     # Quota guardrail (F-FIN-08): cap environments per project — types that create
-    # a new environment (create + clone; add/resize/decommission don't).
-    if req.request_type in ("create", "clone"):
+    # a new environment (create/clone/sandbox/temporary; add/resize/decommission don't).
+    if req.request_type in CREATE_LIKE_TYPES:
         qcount = _environment_count(session, req.project_code, exclude_ref=req.reference)
         qstatus = _quota_status(session, req.project_code, qcount + 1)
         if qstatus is not None and qstatus["status"] == "over" and _quota_enforce():

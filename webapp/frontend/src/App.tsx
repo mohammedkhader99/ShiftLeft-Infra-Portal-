@@ -44,6 +44,8 @@ type Me = { email: string; roles: string[] }
 const REQUEST_TYPES: [string, string][] = [
   ['create', 'Create environment'],
   ['clone', 'Clone environment'],
+  ['sandbox', 'Sandbox environment'],
+  ['temporary', 'Temporary environment'],
   ['add', 'Add component'],
   ['resize', 'Resize component'],
   ['refresh', 'Refresh environment'],
@@ -53,7 +55,7 @@ const REQUEST_TYPES: [string, string][] = [
 const RT_LABEL = Object.fromEntries(REQUEST_TYPES) as Record<string, string>
 
 function parseRequestType(route: string): string {
-  const m = route.match(/^#\/request\/new\/(create|clone|add|resize|refresh|restore|decommission)/)
+  const m = route.match(/^#\/request\/new\/(create|clone|sandbox|temporary|add|resize|refresh|restore|decommission)/)
   return m ? m[1] : 'create'
 }
 

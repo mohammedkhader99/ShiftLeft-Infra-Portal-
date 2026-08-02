@@ -16,7 +16,8 @@ from sqlalchemy.orm import Session
 
 from db.models import Backup, CostCentre, Environment, Project, Request, Subsidiary, Technology
 
-REQUEST_TYPES = {"create", "add", "resize", "decommission", "refresh", "restore", "clone"}
+REQUEST_TYPES = {"create", "add", "resize", "decommission", "refresh", "restore",
+                 "clone", "sandbox", "temporary"}
 SIZES = {"small", "medium", "large", "xlarge"}
 CLASSIFICATIONS = {"public", "internal", "confidential", "restricted"}
 SENSITIVE_CLASSIFICATIONS = {"restricted", "confidential"}  # a refresh must mask these
@@ -66,12 +67,14 @@ NAME_PATTERN = re.compile(r"^[a-z0-9-]{3,40}$")
 
 # Request types that add to / resize an existing seeded environment.
 TARGET_TYPES = {"add", "resize"}
-# Request types that must carry at least one technology component. Clone provisions
-# a new environment with the source's stack, so it carries components too.
-COMPONENT_TYPES = {"create", "add", "resize", "clone"}
+# Request types that provision a NEW environment (create + clone + the short-lived
+# sandbox/temporary). They carry components, metadata, and are charged + quota'd.
+CREATE_LIKE_TYPES = {"create", "clone", "sandbox", "temporary"}
+# Request types that must carry at least one technology component.
+COMPONENT_TYPES = {"create", "add", "resize", "clone", "sandbox", "temporary"}
 # Request types that must carry the governance metadata (all but decommission,
 # which inherits its context from the request it tears down).
-METADATA_TYPES = {"create", "add", "resize", "clone"}
+METADATA_TYPES = {"create", "add", "resize", "clone", "sandbox", "temporary"}
 
 
 def validate_submission(data: dict, session: Session) -> dict[str, str]:
@@ -84,7 +87,7 @@ def validate_submission(data: dict, session: Session) -> dict[str, str]:
     request_type = (data.get("request_type") or "").strip()
     if request_type not in REQUEST_TYPES:
         errors["request_type"] = ("Choose a request type (create, add, resize, decommission, "
-                                  "refresh, restore or clone).")
+                                  "refresh, restore, clone, sandbox or temporary).")
         # Without a valid type we can't check type-specific rules.
         return errors
 
@@ -110,6 +113,10 @@ def validate_submission(data: dict, session: Session) -> dict[str, str]:
         _validate_create_fields(data, session, errors)
     elif request_type == "clone":
         _validate_clone_fields(data, session, errors)
+    elif request_type == "sandbox":
+        _validate_shortlived_fields(data, session, errors, require_expiry=False)
+    elif request_type == "temporary":
+        _validate_shortlived_fields(data, session, errors, require_expiry=True)
     elif request_type == "decommission":
         _validate_decommission_fields(data, session, errors)
     elif request_type == "refresh":
@@ -364,6 +371,34 @@ def _validate_clone_fields(data: dict, session: Session, errors: dict[str, str])
     elif (data.get("environment_name") or "").strip() and \
             (data.get("environment_name") or "").strip() == (source.environment_name or ""):
         errors["environment_name"] = "Give the clone a different name from the source environment."
+
+
+def _validate_shortlived_fields(data: dict, session: Session, errors: dict[str, str],
+                                *, require_expiry: bool) -> None:
+    """Sandbox / Temporary provision a short-lived NON-PROD environment (F-CAT).
+    Same create-field rules, but the tier must be non-prod (never prod/DR); a
+    temporary environment must additionally carry a future expiry date."""
+    _validate_create_fields(data, session, errors)
+    tier = (data.get("environment_tier") or "").strip().lower()
+    if tier in ENV_TIERS and tier not in NONPROD_TIERS:
+        errors["environment_tier"] = (
+            "A sandbox/temporary environment must be non-production (never prod/DR)."
+        )
+    if require_expiry:
+        raw = data.get("expires_on")
+        expiry: date | None = None
+        if isinstance(raw, date):
+            expiry = raw
+        elif isinstance(raw, str) and raw.strip():
+            try:
+                expiry = date.fromisoformat(raw.strip())
+            except ValueError:
+                errors["expires_on"] = "Enter a valid expiry date (YYYY-MM-DD)."
+        if "expires_on" not in errors:
+            if expiry is None:
+                errors["expires_on"] = "Choose when this temporary environment should expire."
+            elif expiry <= datetime.now(timezone.utc).date():
+                errors["expires_on"] = "The expiry date must be in the future."
 
 
 def _validate_components(data: dict, session: Session, errors: dict[str, str]) -> None:

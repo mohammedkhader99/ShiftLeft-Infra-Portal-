@@ -262,6 +262,9 @@ class Request(Base):
     priority: Mapped[str | None] = mapped_column(String(16), nullable=True)  # low|medium|high|critical
     business_criticality: Mapped[str | None] = mapped_column(String(16), nullable=True)  # tier1..tier4
     required_delivery_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # Chosen expiry for a 'temporary' environment (F-CAT). Drives its TTL. Null
+    # for other request types (sandbox uses a short policy default instead).
+    expires_on: Mapped[date | None] = mapped_column(Date, nullable=True)
     application_owner: Mapped[str | None] = mapped_column(String(160), nullable=True)
     business_owner: Mapped[str | None] = mapped_column(String(160), nullable=True)
     technical_owner: Mapped[str | None] = mapped_column(String(160), nullable=True)

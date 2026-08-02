@@ -66,6 +66,8 @@ const TARGETS: [string, string][] = [
 const RTYPE_LABEL: Record<string, string> = {
   create: 'Create environment',
   clone: 'Clone environment',
+  sandbox: 'Sandbox environment',
+  temporary: 'Temporary environment',
   add: 'Add component',
   resize: 'Resize component',
 }
@@ -191,6 +193,7 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
   const [priority, setPriority] = useState('')
   const [criticality, setCriticality] = useState('')
   const [deliveryDate, setDeliveryDate] = useState('')
+  const [expiresOn, setExpiresOn] = useState('')  // temporary env expiry (F-CAT)
   const [appOwner, setAppOwner] = useState('')
   const [bizOwner, setBizOwner] = useState('')
   const [techOwner, setTechOwner] = useState('')
@@ -238,7 +241,10 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
 
   const isCreate = requestType === 'create'
   const isClone = requestType === 'clone'
-  const isCreateLike = isCreate || isClone  // both provision a NEW environment
+  const isSandbox = requestType === 'sandbox'
+  const isTemporary = requestType === 'temporary'
+  // All of these provision a NEW environment (share the create form fields).
+  const isCreateLike = isCreate || isClone || isSandbox || isTemporary
   const isDecommission = requestType === 'decommission'
   const isRefresh = requestType === 'refresh'
   const isRestore = requestType === 'restore'
@@ -381,6 +387,7 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
       p.target_environment = targetEnv || null
     }
     if (isClone) p.source_reference = sourceRef || null
+    if (isTemporary) p.expires_on = expiresOn || null
     return p
   }
 
@@ -476,8 +483,8 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
   // clicking a step just scrolls to that section.
   const basicsDone = isClone
     ? !!(sourceRef && projectCode && costCentre && envName && envTier)
-    : isCreate
-      ? !!(projectCode && costCentre && target && envName && envTier && classification)
+    : isCreate || isSandbox || isTemporary
+      ? !!(projectCode && costCentre && target && envName && envTier && classification && (!isTemporary || expiresOn))
       : !!(costCentre && target && targetEnv)
   const stackDone = filledComponents.some((c) => c.technology_code && c.size)
   const detailsDone = justification.trim().length >= 20 && !!priority && !!criticality && !!deliveryDate
@@ -732,7 +739,7 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
               {isCreateLike && (
                 <Select id="environment_tier" labelText="Environment tier" value={envTier} onChange={(e) => setEnvTier(e.target.value)} invalid={!!errors.environment_tier} invalidText={errors.environment_tier}>
                   <SelectItem value="" text="— select —" />
-                  {ENV_TIERS.map(([v, label]) => (
+                  {(isSandbox || isTemporary ? ENV_TIERS.filter(([v]) => NONPROD_TIERS.includes(v)) : ENV_TIERS).map(([v, label]) => (
                     <SelectItem key={v} value={v} text={label} />
                   ))}
                 </Select>
@@ -745,6 +752,20 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
                     <SelectItem key={c} value={c} text={c} />
                   ))}
                 </Select>
+              )}
+
+              {isTemporary && (
+                <DatePicker datePickerType="single" dateFormat="Y-m-d" minDate={TODAY} value={expiresOn}
+                  onChange={(dates: Date[]) => setExpiresOn(dates[0] ? fmtDate(dates[0]) : '')}>
+                  <DatePickerInput id="expires_on" labelText="Expires on"
+                    placeholder="yyyy-mm-dd" invalid={!!errors.expires_on} invalidText={errors.expires_on} />
+                </DatePicker>
+              )}
+              {isSandbox && (
+                <p style={{ fontSize: '0.8rem', color: 'var(--cds-text-secondary)' }}>
+                  A sandbox is a short-lived non-prod environment — it's given a short lifetime and
+                  auto-expires (warned before, then reclaimed when TTL enforcement is on).
+                </p>
               )}
               </div>
 
@@ -942,7 +963,7 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
               Save draft
             </Button>
             <Button onClick={onSubmit} disabled={busy}>
-              {isDecommission ? 'Submit decommission' : isRefresh ? 'Submit refresh' : isRestore ? 'Submit restore' : isClone ? 'Submit clone' : 'Submit request'}
+              {isDecommission ? 'Submit decommission' : isRefresh ? 'Submit refresh' : isRestore ? 'Submit restore' : isClone ? 'Submit clone' : isSandbox ? 'Submit sandbox' : isTemporary ? 'Submit temporary' : 'Submit request'}
             </Button>
             {cost && !isDecommission && (
               <span style={{ marginLeft: 'auto', fontSize: '0.9rem', color: 'var(--cds-text-secondary)' }}>
@@ -962,6 +983,8 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
             <div style={{ fontSize: '0.82rem', lineHeight: 1.9 }}>
               <SummaryRow label="Type">{RTYPE_LABEL[requestType] || requestType}</SummaryRow>
               {isClone && <SummaryRow label="Cloned from">{sourceRef || '—'}</SummaryRow>}
+              {isTemporary && <SummaryRow label="Expires on">{expiresOn || '—'}</SummaryRow>}
+              {isSandbox && <SummaryRow label="Lifetime">short-lived (auto-expires)</SummaryRow>}
               <SummaryRow label="Target">{TARGETS.find(([v]) => v === target)?.[1] || '—'}</SummaryRow>
               {isCreateLike ? (
                 <>
