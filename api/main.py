@@ -3543,6 +3543,19 @@ def _owner_or_admin(req: Request, actor: str) -> bool:
     return actor in {o for o in owners if o}
 
 
+def _db_system_ocid(session: Session, reference: str) -> str:
+    """The managed-database OCID recorded for a provisioned environment, from the
+    Terraform outputs. Empty for environments that aren't a managed database."""
+    res = session.scalars(
+        select(ProvisionedResource).where(
+            ProvisionedResource.reference == reference,
+            ProvisionedResource.kind == "oci-postgres",
+            ProvisionedResource.lifecycle_state == "active",
+        )
+    ).first()
+    return ((res.details or {}).get("postgres_ocid") or "") if res else ""
+
+
 class BackupIn(BaseModel):
     label: str | None = None
 
@@ -3561,10 +3574,41 @@ def create_backup(reference: str, body: BackupIn, session: Session = Depends(get
         raise HTTPException(status_code=403,
                             detail="Only the environment owner or a platform administrator can back it up.")
     label = (body.label or "").strip() or f"backup-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M')}"
-    backup = Backup(reference=reference, label=label, created_by=actor,
-                    details={"mode": os.getenv("BACKUP_MODE", "mock")})
+    mode = os.getenv("BACKUP_MODE", "mock").strip().lower()
+    details: dict = {"mode": mode}
+
+    # Live mode takes a REAL snapshot through the orchestrator (the layer that
+    # holds cloud credentials) and records the cloud backup id — without it a
+    # restore has nothing to restore from, so a failure here must not be recorded
+    # as a successful backup.
+    if mode == "live":
+        payload = {
+            "contract_version": CONTRACT_VERSION,
+            "idempotency_key": f"{reference}:backup:{label}",
+            "issued_at": datetime.now(timezone.utc).isoformat(),
+            "reference": reference,
+            "operation": "backup",
+            "target": {"reference": reference,
+                       "resource_id": _db_system_ocid(session, reference)},
+            "backup": {"label": label},
+        }
+        raw = json.dumps(payload, sort_keys=True).encode()
+        response, error = _post_to_orchestrator(raw, sign(WEBHOOK_SECRET, raw), path="/backup")
+        if response is None or response.status_code != 200:
+            reason = _short_reason(error or (response.text if response else ""))
+            append_audit(session, "backup.failed", reference=reference, actor=actor,
+                         detail={"label": label, "error": reason})
+            session.commit()
+            raise HTTPException(status_code=502, detail=f"The backup did not run: {reason}")
+        result = response.json()
+        details.update({"backup_id": result.get("backup_id", ""),
+                        "summary": result.get("summary")})
+
+    backup = Backup(reference=reference, label=label, created_by=actor, details=details)
     session.add(backup)
-    append_audit(session, "backup.created", reference=reference, actor=actor, detail={"label": label})
+    append_audit(session, "backup.created", reference=reference, actor=actor,
+                 detail={"label": label, "mode": mode,
+                         "backup_id": details.get("backup_id", "")})
     session.commit()
     return _backup_row(backup)
 
@@ -3589,8 +3633,13 @@ def _restore_handoff(req: Request, target: Request, backup: Backup) -> tuple[byt
         "jira_key": req.approval.jira_key,
         "reference": req.reference,
         "operation": "restore",
-        "target": {"reference": target.reference, "policy_input": _policy_input(target)},
-        "backup": {"id": backup.id, "label": backup.label},
+        "target": {"reference": target.reference, "policy_input": _policy_input(target),
+                   # The cloud id of the system being restored (empty for non-DB envs).
+                   "resource_id": (backup.details or {}).get("db_system_id", "")},
+        # backup_id is the CLOUD backup (e.g. an OCI backup OCID); without it a live
+        # restore has nothing to restore from and refuses rather than pretending.
+        "backup": {"id": backup.id, "label": backup.label,
+                   "backup_id": (backup.details or {}).get("backup_id", "")},
     }
     body = json.dumps(payload, sort_keys=True).encode()
     return body, sign(WEBHOOK_SECRET, body)
@@ -3639,13 +3688,32 @@ def _restore(session: Session, req: Request, actor: str) -> dict:
     result = response.json()
     verified = bool(result.get("verified"))
     summary = result.get("summary")
+    # A live OCI restore creates a NEW database system — there is no in-place
+    # rollback. Carry that fact through to the requester and the Jira ticket
+    # instead of implying the original database was rewound.
+    new_system = result.get("new_db_system_id") or ""
+    if result.get("in_place") is False:
+        req.status_detail = (
+            "Restored into a NEW database system"
+            + (f" ({new_system})" if new_system else "")
+            + " — the original is unchanged. Repoint the application at the new endpoint."
+        )
+        add_comment(req.approval.jira_key,
+                    "ℹ️ Restore complete, but NOT in place: OCI managed PostgreSQL "
+                    "restores into a new database system"
+                    + (f" ({new_system})" if new_system else "")
+                    + ". The original database is untouched — repoint the application "
+                      "at the new endpoint, then retire whichever system is no longer needed.")
+    else:
+        req.status_detail = None
     req.status = "restored"
-    req.status_detail = None
     _transition_jira(session, req, resolved_status(), "jira.resolved")
     append_audit(session, "restore.performed", reference=req.reference,
                  jira_key=req.approval.jira_key,
                  detail={"target": target.reference, "backup": backup.label,
-                         "verified": verified, "summary": summary})
+                         "verified": verified, "summary": summary,
+                         "in_place": result.get("in_place", True),
+                         "new_db_system_id": new_system})
     session.commit()
     return {"approval": "approved", "restored": True, "target": target.reference,
             "backup": backup.label, "verified": verified,

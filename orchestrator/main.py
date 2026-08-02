@@ -18,7 +18,7 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request
 
 from common.signing import verify
-from orchestrator import cloud_state, provisioner
+from orchestrator import backups, cloud_state, provisioner
 
 API_URL = os.getenv("API_URL", "http://localhost:8081")
 OPA_URL = os.getenv("OPA_URL", "http://localhost:8181")
@@ -354,23 +354,50 @@ async def refresh(request: Request) -> dict:
                         + (" (sensitive data masked)" if masked else "") + " — no data copied.")}
 
 
-@app.post("/restore")
-async def restore(request: Request) -> dict:
-    """Restore a provisioned environment to a backup, and VERIFY it (F-LCM-06).
-    Signature-verified. Mock records it + reports verified (restores nothing); live
-    (RESTORE_MODE=live) is an extension point — a real restore + verification job."""
+@app.post("/backup")
+async def backup(request: Request) -> dict:
+    """Take a backup of a provisioned environment's managed database (F-LCM-06).
+    Signature-verified. Mock records it; live (BACKUP_MODE=live) calls the real OCI
+    API and returns the backup OCID the portal stores for a later restore."""
     body = await request.body()
     if not verify(WEBHOOK_SECRET, body, request.headers.get("X-Signature", "")):
         raise HTTPException(status_code=401, detail="Invalid webhook signature.")
     payload = json.loads(body)
-    if os.getenv("RESTORE_MODE", "mock").strip().lower() == "live":
-        raise HTTPException(status_code=501, detail=(
-            "Live restore is not configured. Wire the restore + verification job in "
-            "orchestrator/main.restore to enable it."))
-    tgt = (payload.get("target") or {}).get("reference")
-    bk = (payload.get("backup") or {}).get("label")
-    return {"restored": True, "verified": True,
-            "summary": f"Mock-restored {tgt} to backup '{bk}' — verified, no data changed."}
+    target = payload.get("target") or {}
+    label = (payload.get("backup") or {}).get("label") or "backup"
+    try:
+        return backups.create_backup(target, label)
+    except backups.BackupError as exc:
+        raise HTTPException(status_code=501, detail=str(exc))
+
+
+@app.post("/restore")
+async def restore(request: Request) -> dict:
+    """Restore a provisioned environment from a backup (F-LCM-06).
+
+    Signature-verified. Mock records it; live (RESTORE_MODE=live) performs a real
+    OCI restore — which creates a NEW database system, because OCI managed
+    PostgreSQL has no in-place rollback. The response says so explicitly so the
+    portal never implies the original database was rewound.
+    """
+    body = await request.body()
+    if not verify(WEBHOOK_SECRET, body, request.headers.get("X-Signature", "")):
+        raise HTTPException(status_code=401, detail="Invalid webhook signature.")
+    payload = json.loads(body)
+    target = payload.get("target") or {}
+    bk = payload.get("backup") or {}
+    if backups.restore_mode() != "live":
+        tgt = target.get("reference")
+        return {"restored": True, "verified": True,
+                "summary": f"Mock-restored {tgt} to backup '{bk.get('label')}' — verified, no data changed."}
+    try:
+        return backups.restore_to_new_system(
+            target,
+            backup_id=bk.get("backup_id") or "",
+            new_display_name=f"{target.get('reference', 'env')}-restored",
+        )
+    except backups.BackupError as exc:
+        raise HTTPException(status_code=501, detail=str(exc))
 
 
 @app.post("/reduce")
