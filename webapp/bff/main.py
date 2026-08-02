@@ -83,7 +83,7 @@ def _forward_headers(request: Request) -> dict:
     email/name, plus the raw Entra id token as a Bearer in live mode."""
     user = auth.session_user(request) or auth.DEFAULT_DEV_USER
     headers = {"X-Requester": user["email"], "X-Requester-Name": user.get("name", "")}
-    id_token = request.session.get("id_token")
+    id_token = auth.get_id_token(request)
     if id_token:
         headers["Authorization"] = f"Bearer {id_token}"
     # Distributed tracing (F-OPS-04): start (or forward) a trace id for this hop.

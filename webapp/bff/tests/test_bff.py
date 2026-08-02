@@ -2,6 +2,7 @@
 
 import asyncio
 
+import pytest
 from fastapi.testclient import TestClient
 
 import webapp.bff.main as bff
@@ -15,6 +16,26 @@ class _FakeReq:
 
     def __init__(self, session: dict | None = None):
         self.session = session if session is not None else {}
+
+
+@pytest.fixture(autouse=True)
+def _clear_token_store():
+    """The server-side token store is a module global — isolate it per test."""
+    auth._TOKEN_STORE.clear()
+    yield
+    auth._TOKEN_STORE.clear()
+
+
+# A far-future stored_at so the store's TTL prune never drops a seeded entry.
+_NEVER_PRUNE = 9_999_999_999
+
+
+def _seed(**fields):
+    """A signed-in _FakeReq whose cookie sid points at a server-side token entry."""
+    fields.setdefault("stored_at", _NEVER_PRUNE)
+    req = _FakeReq({"sid": "sid-test"})
+    auth._TOKEN_STORE["sid-test"] = dict(fields)
+    return req
 
 
 def test_healthz():
@@ -84,39 +105,48 @@ def test_mock_login_starts_a_session(monkeypatch):
 
 # --- Token lifecycle helpers (silent renewal) --------------------------------
 
-def test_store_tokens_persists_id_refresh_and_expiry():
+def test_store_tokens_keeps_big_tokens_out_of_the_cookie():
+    # The regression that broke login: id + refresh tokens are too big for the
+    # signed cookie. They must live server-side; only a small sid is in the cookie.
     req = _FakeReq()
     auth.store_tokens(req, {"id_token": "id1", "refresh_token": "r1", "expires_at": 2000000000})
-    assert req.session["id_token"] == "id1"
-    assert req.session["refresh_token"] == "r1"
-    assert req.session["token_expires_at"] == 2000000000
+    sid = req.session["sid"]
+    assert "id_token" not in req.session and "refresh_token" not in req.session
+    assert auth.get_id_token(req) == "id1"
+    entry = auth._TOKEN_STORE[sid]
+    assert entry["refresh_token"] == "r1"
+    assert entry["token_expires_at"] == 2000000000
 
 
 def test_store_tokens_computes_expiry_from_expires_in(monkeypatch):
     monkeypatch.setattr(auth.time, "time", lambda: 1000.0)
     req = _FakeReq()
     auth.store_tokens(req, {"id_token": "id1", "expires_in": 3600})
-    assert req.session["token_expires_at"] == 1000 + 3600
+    assert auth._TOKEN_STORE[req.session["sid"]]["token_expires_at"] == 1000 + 3600
 
 
 def test_store_tokens_keeps_old_refresh_when_response_omits_it():
     # Entra may not re-issue a refresh token on every refresh — keep the old one.
-    req = _FakeReq({"refresh_token": "old"})
+    req = _seed(refresh_token="old")
     auth.store_tokens(req, {"id_token": "id2"})
-    assert req.session["refresh_token"] == "old"
+    assert auth._TOKEN_STORE[req.session["sid"]]["refresh_token"] == "old"
+    assert auth.get_id_token(req) == "id2"
 
 
 def test_token_expired_within_skew_and_untracked(monkeypatch):
     monkeypatch.setattr(auth.time, "time", lambda: 1000.0)
-    assert auth.token_expired(_FakeReq({"token_expires_at": 1030}), skew=60) is True   # 30s left
-    assert auth.token_expired(_FakeReq({"token_expires_at": 5000}), skew=60) is False
-    assert auth.token_expired(_FakeReq({}), skew=60) is False  # no expiry tracked → don't force
+    assert auth.token_expired(_seed(token_expires_at=1030), skew=60) is True   # 30s left
+    assert auth.token_expired(_seed(token_expires_at=5000), skew=60) is False
+    assert auth.token_expired(_FakeReq(), skew=60) is False  # no session/entry → don't force
 
 
 def test_end_session_clears_identity_and_tokens():
-    req = _FakeReq({"user": {"email": "x"}, "id_token": "i", "refresh_token": "r", "token_expires_at": 1})
+    req = _seed(id_token="i", refresh_token="r", token_expires_at=1)
+    req.session["user"] = {"email": "x"}
+    sid = req.session["sid"]
     auth.end_session(req)
     assert req.session == {}
+    assert sid not in auth._TOKEN_STORE
 
 
 def _fake_oauth(monkeypatch, fetch):
@@ -138,18 +168,18 @@ def test_refresh_tokens_renews_from_refresh_token(monkeypatch):
         return {"id_token": "id-new", "refresh_token": "r2", "expires_at": 2000000000}
 
     _fake_oauth(monkeypatch, fetch)
-    req = _FakeReq({"refresh_token": "r1"})
+    req = _seed(refresh_token="r1")
     assert asyncio.run(auth.refresh_tokens(req)) is True
     # It really used the refresh grant with the stored token.
     assert captured["grant_type"] == "refresh_token"
     assert captured["refresh_token"] == "r1"
-    # And the session now carries the fresh tokens.
-    assert req.session["id_token"] == "id-new"
-    assert req.session["refresh_token"] == "r2"
+    # And the store now carries the fresh tokens.
+    assert auth.get_id_token(req) == "id-new"
+    assert auth._TOKEN_STORE[req.session["sid"]]["refresh_token"] == "r2"
 
 
 def test_refresh_tokens_false_without_a_refresh_token():
-    assert asyncio.run(auth.refresh_tokens(_FakeReq({}))) is False
+    assert asyncio.run(auth.refresh_tokens(_FakeReq())) is False
 
 
 def test_refresh_tokens_false_when_entra_rejects(monkeypatch):
@@ -157,7 +187,7 @@ def test_refresh_tokens_false_when_entra_rejects(monkeypatch):
         raise RuntimeError("invalid_grant")
 
     _fake_oauth(monkeypatch, fetch)
-    assert asyncio.run(auth.refresh_tokens(_FakeReq({"refresh_token": "stale"}))) is False
+    assert asyncio.run(auth.refresh_tokens(_seed(refresh_token="stale"))) is False
 
 
 # --- Proxy renewal behaviour -------------------------------------------------
