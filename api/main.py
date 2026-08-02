@@ -20,7 +20,7 @@ from fastapi import Request as HTTPRequest
 from fastapi import Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, computed_field, field_validator
-from sqlalchemy import func, select, text
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.orm import Session
 
 from api import ai_drafter
@@ -535,6 +535,38 @@ def approval_info(_requester: str = Depends(_authed_requester)) -> dict:
             "tz": os.getenv("CHANGE_WINDOW_TZ", "UTC"),
         },
     }
+
+
+@app.get("/api/search")
+def search_requests(q: str = "", requester: str = Depends(_authed_requester),
+                    session: Session = Depends(get_session)) -> dict:
+    """Header quick-search over the caller's OWN requests (Portal UI polish).
+    Case-insensitive contains on reference / environment / project / cost centre;
+    scoped server-side to the caller. Short queries (<2 chars) return nothing."""
+    term = q.strip()
+    if len(term) < 2:
+        return {"results": []}
+    like = f"%{term}%"
+    rows = session.scalars(
+        select(Request)
+        .where(Request.requester == requester)
+        .where(or_(
+            Request.reference.ilike(like),
+            Request.environment_name.ilike(like),
+            Request.target_environment.ilike(like),
+            Request.project_code.ilike(like),
+            Request.cost_centre_code.ilike(like),
+        ))
+        .order_by(Request.id.desc())
+        .limit(15)
+    ).all()
+    return {"results": [{
+        "reference": r.reference,
+        "environment": r.environment_name or r.target_environment or "",
+        "status": r.status,
+        "tier": r.environment_tier or "",
+        "request_type": r.request_type,
+    } for r in rows]}
 
 
 @app.get("/api/config")
@@ -1646,6 +1678,7 @@ def save_draft(
 def list_requests(
     requester: str | None = None,
     requested_by: str | None = None,
+    reference: str | None = None,
     subsidiary: str | None = None,
     status: str | None = None,
     request_type: str | None = None,
@@ -1664,6 +1697,8 @@ def list_requests(
     stmt = select(Request).order_by(Request.id.desc())
     if requester:
         stmt = stmt.where(Request.requester == requester)
+    if reference:
+        stmt = stmt.where(Request.reference == reference)
     if requested_by:  # matches the displayed name-or-email (the by-requester chart)
         stmt = stmt.where(
             func.coalesce(Request.requester_name, Request.requester) == requested_by

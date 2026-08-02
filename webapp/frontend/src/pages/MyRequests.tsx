@@ -23,7 +23,7 @@ import { WarningAltFilled, Renew, UserFollow, Search, Pause, Play } from '@carbo
 import { getMe, getRequests, getAudit, renewRequest, transferOwner, checkDrift, reconcileState, triageFailure, actuate, setRequestShutdown, createBackup, grantAccess, revokeAccess, setOwnerGroup, type RequestRow, type ShutdownPolicy } from '../api'
 import { workflowSteps, fmtWhen, type WFStep } from '../workflow'
 
-const FILTER_KEYS = ['status', 'request_type', 'technology', 'deployment_target', 'created_week', 'requested_by', 'subsidiary']
+const FILTER_KEYS = ['status', 'request_type', 'technology', 'deployment_target', 'created_week', 'requested_by', 'subsidiary', 'reference']
 const OVERSIGHT = ['platform_admin', 'auditor', 'finops']
 
 type BadgeType = 'green' | 'teal' | 'blue' | 'cyan' | 'red' | 'gray' | 'cool-gray'

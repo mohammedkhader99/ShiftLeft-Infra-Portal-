@@ -623,6 +623,15 @@ export async function getApprovalInfo(): Promise<ApprovalInfo | null> {
   return r.ok ? r.json() : null
 }
 
+// Header quick-search over the caller's own requests.
+export type SearchResult = { reference: string; environment: string; status: string; tier: string; request_type: string }
+
+export async function searchRequests(q: string): Promise<SearchResult[]> {
+  const r = await fetch(`/api/search?q=${encodeURIComponent(q)}`)
+  if (!r.ok) return []
+  return (await r.json()).results || []
+}
+
 // Access control: group -> role map (F-IAM-01, platform-admin).
 export type RoleMapRow = { jira_group: string; role: string; updated_by?: string | null; updated_at?: string | null }
 

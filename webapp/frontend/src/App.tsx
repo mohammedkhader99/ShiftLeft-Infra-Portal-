@@ -35,6 +35,7 @@ import Reports from './pages/Reports'
 import Admin from './pages/Admin'
 import Activity from './pages/Activity'
 import Assistant from './pages/Assistant'
+import HeaderSearch from './components/HeaderSearch'
 
 type Me = { email: string; roles: string[] }
 
@@ -129,6 +130,7 @@ export default function App() {
           <HeaderName href="#/request/new" prefix="IMD">
             Infrastructure Provisioning Portal
           </HeaderName>
+          {me && <HeaderSearch />}
           <HeaderGlobalBar>
             <HeaderGlobalAction aria-label="Toggle theme" onClick={() => setDark((d) => !d)}>
               {dark ? <Light size={20} /> : <Asleep size={20} />}
