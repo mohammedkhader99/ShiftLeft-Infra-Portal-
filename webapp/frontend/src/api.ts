@@ -608,6 +608,21 @@ export async function getReportRuns(id: number): Promise<{ runs: ReportRunRow[] 
   return r.ok ? r.json() : null
 }
 
+// What happens after Submit — non-sensitive approval facts for any requester.
+export type ApprovalInfo = {
+  system_of_record: string
+  quorum: number
+  sla_hours: number
+  four_eyes: boolean
+  sod_enforced: boolean
+  change_window: { enabled: boolean; open_now: boolean; days: string; start: string; end: string; tz: string }
+}
+
+export async function getApprovalInfo(): Promise<ApprovalInfo | null> {
+  const r = await fetch('/api/approval-info')
+  return r.ok ? r.json() : null
+}
+
 // Access control: group -> role map (F-IAM-01, platform-admin).
 export type RoleMapRow = { jira_group: string; role: string; updated_by?: string | null; updated_at?: string | null }
 

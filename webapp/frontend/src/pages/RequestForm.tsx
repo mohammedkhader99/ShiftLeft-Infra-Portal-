@@ -37,10 +37,12 @@ import {
   saveDraft,
   submitRequest,
   draftWithAI,
+  getApprovalInfo,
   type Lookups,
   type Component,
   type Cost,
   type RequestRow,
+  type ApprovalInfo,
 } from '../api'
 
 const SIZES = ['small', 'medium', 'large', 'xlarge']
@@ -223,9 +225,12 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
   const [explain, setExplain] = useState<{ summary: string; tips: string[]; mode?: string } | null>(null)
   const [explainBusy, setExplainBusy] = useState(false)
 
+  const [approvalInfo, setApprovalInfo] = useState<ApprovalInfo | null>(null)
+
   useEffect(() => {
     getLookups().then(setLookups).catch(() => setLookups(null))
     getMe().then((m) => setEmail(m?.email ?? null))
+    getApprovalInfo().then(setApprovalInfo).catch(() => setApprovalInfo(null))
   }, [])
 
   const isCreate = requestType === 'create'
@@ -961,6 +966,40 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
             </div>
           )}
         </Tile>
+
+        {approvalInfo && (
+          <Tile style={{ marginTop: '1rem', borderTop: '3px solid var(--cds-border-interactive)' }}>
+            <p style={{ fontSize: '0.75rem', color: 'var(--cds-text-secondary)', textTransform: 'uppercase', letterSpacing: '0.02em', marginBottom: '0.25rem' }}>
+              Approval summary
+            </p>
+            <p style={{ fontSize: '0.82rem', margin: '0 0 0.5rem' }}>
+              Submitting raises a ticket in <strong>{approvalInfo.system_of_record}</strong> for approval —
+              nothing is provisioned until it's approved.
+            </p>
+            <div style={{ fontSize: '0.82rem', lineHeight: 1.9 }}>
+              <SummaryRow label="Approvals needed">
+                {approvalInfo.quorum} approver{approvalInfo.quorum > 1 ? 's' : ''}
+              </SummaryRow>
+              <SummaryRow label="Response SLA">{approvalInfo.sla_hours}h</SummaryRow>
+              {(approvalInfo.four_eyes || approvalInfo.sod_enforced) && (
+                <SummaryRow label="Self-approval"><Tag type="gray" size="sm">blocked — not you</Tag></SummaryRow>
+              )}
+              {approvalInfo.change_window.enabled && (
+                <SummaryRow label="Change window">
+                  {approvalInfo.change_window.days} {approvalInfo.change_window.start}–{approvalInfo.change_window.end} {approvalInfo.change_window.tz}
+                  <Tag type={approvalInfo.change_window.open_now ? 'green' : 'gray'} size="sm" style={{ marginLeft: '0.4rem' }}>
+                    {approvalInfo.change_window.open_now ? 'open now' : 'closed now'}
+                  </Tag>
+                </SummaryRow>
+              )}
+            </div>
+            {approvalInfo.change_window.enabled && (
+              <p style={{ fontSize: '0.72rem', color: 'var(--cds-text-secondary)', marginTop: '0.5rem' }}>
+                Once approved, it provisions inside the change window.
+              </p>
+            )}
+          </Tile>
+        )}
 
         {!isDecommission && (
           <Tile style={{ marginTop: '1rem', borderTop: '3px solid var(--cds-border-interactive)' }}>

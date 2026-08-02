@@ -514,6 +514,29 @@ def revoke_api_key(key_id: int, requester: str = Depends(_authed_requester),
     return {"revoked": True, "id": key_id}
 
 
+@app.get("/api/approval-info")
+def approval_info(_requester: str = Depends(_authed_requester)) -> dict:
+    """What happens after Submit — the non-sensitive approval facts, for any
+    signed-in requester (F-GOV-*). Unlike /api/config (admin posture), this exposes
+    only what a requester legitimately needs: where approval happens, how many
+    approvers + by when, that they can't self-approve, and the change window."""
+    return {
+        "system_of_record": "Jira" if jira_mode() == "live" else "Jira (mock mode)",
+        "quorum": _approval_quorum(),
+        "sla_hours": float(os.getenv("APPROVAL_SLA_HOURS", "24")),
+        "four_eyes": _four_eyes_enforced(),
+        "sod_enforced": _sod_enforced(),
+        "change_window": {
+            "enabled": _change_window_enabled(),
+            "open_now": change_window_status()["open"],
+            "days": os.getenv("CHANGE_WINDOW_DAYS", "mon-fri"),
+            "start": os.getenv("CHANGE_WINDOW_START", "08:00"),
+            "end": os.getenv("CHANGE_WINDOW_END", "18:00"),
+            "tz": os.getenv("CHANGE_WINDOW_TZ", "UTC"),
+        },
+    }
+
+
 @app.get("/api/config")
 def system_config(_auth: str = Depends(require_action("execute"))) -> dict:
     """The effective governance & FinOps posture (F-OPS-09), read server-side.
