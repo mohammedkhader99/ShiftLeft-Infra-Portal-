@@ -28,6 +28,7 @@ from api import ai_drafter
 from api import ai_explainer
 from api import ai_recommend
 from api import ai_triage
+from api import portal_help
 from api import anomalies as anomaly_detect
 from api import apikeys
 from api import chatbot
@@ -2840,7 +2841,9 @@ def ai_chat_endpoint(
 
     # Read-only intents: safe to run the existing engine now.
     if action == "help":
-        return {**base, "needs_confirmation": False, "ok": True, "response": chatbot.HELP}
+        extra = ("\n\nYou can also ask what any page or feature does — e.g. "
+                 "\"what does the Reduce capacity request do?\" or \"what's the Admin page for?\".")
+        return {**base, "needs_confirmation": False, "ok": True, "response": chatbot.HELP + extra}
     if action == "pending":
         result = chatbot.handle_command("pending", requester, session)
         return {**base, "needs_confirmation": False, "ok": result["ok"],
@@ -2860,10 +2863,16 @@ def ai_chat_endpoint(
         return {**base, "needs_confirmation": True, "ok": True,
                 "command": command, "response": "\n".join(lines)}
 
-    # Unknown: nudge with any parse hint + the command help.
-    hint = "  ·  ".join(intent["warnings"])
-    response = ("I didn't catch a command in that. " + hint).strip() + "\n\n" + chatbot.HELP
-    return {**base, "needs_confirmation": False, "ok": False, "response": response}
+    # A question about the portal ('explain'), or anything else we couldn't map to
+    # a command ('unknown'): answer from the help knowledge base. Grounded — the
+    # answer only ever comes from the curated KB, never invented.
+    try:
+        help_result = portal_help.answer(message)
+    except portal_help.AiUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    return {**base, "action": "explain", "needs_confirmation": False,
+            "ok": bool(help_result["matched"]), "topic": help_result.get("title"),
+            "response": help_result["response"]}
 
 
 @app.get("/api/requests/{reference}/evidence.pdf")

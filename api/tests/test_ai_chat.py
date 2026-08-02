@@ -94,6 +94,12 @@ def test_interpret_help_and_unknown():
     assert ai_chat.interpret("hello there")["action"] == "unknown"
 
 
+def test_interpret_portal_question_is_explain():
+    # A question about the portal (no request id, not a command) → explain.
+    assert ai_chat.interpret("what does the reduce capacity page do?")["action"] == "explain"
+    assert ai_chat.interpret("what is the purpose of the admin page?")["action"] == "explain"
+
+
 def test_interpret_normalizes_loose_reference():
     assert ai_chat.interpret("status req 2026 1")["reference"] == "REQ-2026-0001"
 
@@ -155,6 +161,29 @@ def test_endpoint_reject_also_only_proposes(client, session):
     body = r.json()
     assert body["needs_confirmation"] is True and body["command"] == "reject REQ-2026-0001"
     assert session.scalar(select(Approval).where(Approval.jira_key == "INFRA-1001")).status == "pending"
+
+
+def test_endpoint_explains_a_portal_feature(client):
+    r = client.post("/api/ai/chat", json={"message": "what does the reduce capacity request do?"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["action"] == "explain" and body["needs_confirmation"] is False
+    assert "lowers the size" in body["response"]
+    assert body["topic"] == "Reduce capacity request"
+
+
+def test_endpoint_unknown_question_offers_the_topic_overview(client):
+    r = client.post("/api/ai/chat", json={"message": "what is the meaning of life?"})
+    body = r.json()
+    assert body["needs_confirmation"] is False
+    # Falls back to the catalogue of things it can explain.
+    assert "Request types" in body["response"]
+
+
+def test_endpoint_help_mentions_asking_about_pages(client):
+    body = client.post("/api/ai/chat", json={"message": "what can you do?"}).json()
+    assert body["action"] == "help"
+    assert "page or feature" in body["response"]
 
 
 def test_endpoint_audits_the_interpretation(client, session):

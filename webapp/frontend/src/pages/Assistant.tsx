@@ -9,7 +9,8 @@ const EXAMPLES = [
   "what's pending?",
   'show me REQ-2026-0056',
   'approve REQ-2026-0056, looks good',
-  'reject REQ-2026-0056',
+  'what does the Reduce capacity request do?',
+  "what's the Admin page for?",
   'help',
 ]
 

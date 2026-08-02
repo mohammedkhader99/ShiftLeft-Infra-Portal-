@@ -28,8 +28,9 @@ import re
 # Reuse the drafter's shared AI plumbing so every AI feature behaves identically.
 from api.ai_drafter import AiUnavailable, ai_mode, ai_model, anthropic_client
 
-# The only commands the bot understands. 'unknown' means "couldn't map it".
-ACTIONS = ("pending", "status", "approve", "reject", "help", "unknown")
+# The commands the bot understands. 'explain' = a question about what a portal
+# page/feature does (answered from the help knowledge base); 'unknown' = no match.
+ACTIONS = ("pending", "status", "approve", "reject", "help", "explain", "unknown")
 READONLY_ACTIONS = ("pending", "status", "help")
 DECIDING_ACTIONS = ("approve", "reject")
 
@@ -67,8 +68,9 @@ def _interpret_mock(message: str) -> dict:
     def has(*phrases: str) -> bool:
         return any(p in text for p in phrases)
 
-    # Order matters: reject is checked before approve so "do not approve" wins,
-    # and help/pending before the bare-reference fallback.
+    # Order matters: reject is checked before approve so "do not approve" wins;
+    # commands before the reference fallback; a portal question (no reference)
+    # becomes 'explain'.
     if has("help", "commands", "what can you do", "how do i", "how do you"):
         action = "help"
     elif has("reject", "decline", "deny", "refuse", "turn down", "do not approve", "don't approve"):
@@ -81,6 +83,9 @@ def _interpret_mock(message: str) -> dict:
         action = "pending"
     elif reference:  # a bare reference, or "status/show REQ-x" → show its status
         action = "status"
+    elif has("what", "how", "why", "purpose", "explain", "difference", "mean",
+             "used for", "tell me", "describe", "does", " do "):
+        action = "explain"  # a question about the portal → answered from the help KB
     else:
         action = "unknown"
 
@@ -94,11 +99,13 @@ _SYSTEM = (
     "You are the natural-language front-end to an infrastructure provisioning "
     "approvals bot. Read the user's message and map it to EXACTLY ONE command: "
     "'pending' (list requests awaiting approval), 'status' (one request's "
-    "status), 'approve', 'reject', or 'help'. Use 'unknown' if it matches none. "
-    "Set 'reference' to the request id when the message names one (format "
-    "REQ-YYYY-NNNN), else an empty string. For approve/reject, copy any short "
-    "reason the user gives into 'note'. You ONLY interpret — you never approve, "
-    "reject, or act, and a human confirms every approve/reject before it runs."
+    "status), 'approve', 'reject', 'help' (what commands exist), or 'explain' "
+    "(the user is asking what a portal page or feature does or means). Use "
+    "'unknown' if it matches none. Set 'reference' to the request id when the "
+    "message names one (format REQ-YYYY-NNNN), else an empty string. For approve/"
+    "reject, copy any short reason the user gives into 'note'. You ONLY interpret "
+    "— you never approve, reject, or act, and a human confirms every approve/"
+    "reject before it runs."
 )
 
 
