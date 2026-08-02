@@ -13,9 +13,10 @@ breakdown, in AED.
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from api.adapters import aws_pricing, azure_pricing, oci_pricing
+from api.adapters import aws_pricing, azure_pricing, gcp_pricing, oci_pricing
 from api.adapters.aws_pricing import AWSUnavailable
 from api.adapters.azure_pricing import AzureUnavailable
+from api.adapters.gcp_pricing import GCPUnavailable
 from api.adapters.oci_pricing import OCIUnavailable
 from api.sizing import resolve_components
 from db.models import RateCard
@@ -25,7 +26,7 @@ CURRENCY = "AED"
 
 # Which rate_card.kind holds each target's resource rates.
 TARGET_KIND = {"onprem": "onprem", "azure": "cloud_azure", "oci": "cloud_oci",
-               "aws": "cloud_aws"}
+               "aws": "cloud_aws", "gcp": "cloud_gcp"}
 DEPLOYMENT_TARGETS = set(TARGET_KIND)
 
 # Which licence (if any) a technology carries. Mock config for now; a proper
@@ -140,6 +141,19 @@ def estimate_cost(
             pricing_source = "aws-live"
         except AWSUnavailable:
             pricing_source = "aws-cached"  # keep the cached rate cards
+
+    # GCP live pricing (multi-cloud breadth): same decomposed formula, same
+    # cache fallback as AWS/OCI. The live fetch is an extension point.
+    if target == "gcp" and gcp_pricing.is_live():
+        try:
+            gcp_discount = _discount(session, "cloud_gcp")
+            resource = {
+                item: rate * (1 - gcp_discount)
+                for item, rate in gcp_pricing.rates().items()
+            }
+            pricing_source = "gcp-live"
+        except GCPUnavailable:
+            pricing_source = "gcp-cached"  # keep the cached rate cards
 
     lines: list[dict] = []
     one_time_total = 0.0

@@ -64,6 +64,7 @@ const TARGETS: [string, string][] = [
   ['azure', 'Microsoft Azure'],
   ['oci', 'Oracle Cloud (OCI)'],
   ['aws', 'Amazon Web Services (AWS)'],
+  ['gcp', 'Google Cloud (GCP)'],
 ]
 const RTYPE_LABEL: Record<string, string> = {
   create: 'Create environment',

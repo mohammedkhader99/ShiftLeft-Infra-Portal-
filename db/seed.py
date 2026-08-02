@@ -121,6 +121,14 @@ RATE_CARDS = [
      "discount_pct": 10.0},
     {"kind": "cloud_aws", "item": "storage-gb-month", "unit": "per GB/month", "rate": 0.11,
      "discount_pct": 10.0},
+    # GCP: compute per hour, storage per GB/month; 12% negotiated discount
+    # (indicative rates; live via the GCP Cloud Billing Catalog, gcp_pricing adapter).
+    {"kind": "cloud_gcp", "item": "vcpu-hour", "unit": "per vCPU/hour", "rate": 0.12,
+     "discount_pct": 12.0},
+    {"kind": "cloud_gcp", "item": "memory-gb-hour", "unit": "per GB/hour", "rate": 0.010,
+     "discount_pct": 12.0},
+    {"kind": "cloud_gcp", "item": "storage-gb-month", "unit": "per GB/month", "rate": 0.09,
+     "discount_pct": 12.0},
 ]
 
 

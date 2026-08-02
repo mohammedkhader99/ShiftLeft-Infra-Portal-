@@ -23,7 +23,7 @@ SIZES = {"small", "medium", "large", "xlarge"}
 SIZE_ORDER = {"small": 0, "medium": 1, "large": 2, "xlarge": 3}
 CLASSIFICATIONS = {"public", "internal", "confidential", "restricted"}
 SENSITIVE_CLASSIFICATIONS = {"restricted", "confidential"}  # a refresh must mask these
-DEPLOYMENT_TARGETS = {"onprem", "azure", "oci", "aws"}
+DEPLOYMENT_TARGETS = {"onprem", "azure", "oci", "aws", "gcp"}
 # Environment tier ladder (increment 6.2, from the UX brief).
 ENV_TIERS = {"dev", "test", "sit", "uat", "preprod", "prod", "dr"}
 NONPROD_TIERS = {"dev", "test", "sit", "uat", "preprod"}
