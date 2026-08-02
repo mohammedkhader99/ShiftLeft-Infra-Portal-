@@ -110,34 +110,57 @@ async def login(request: Request):
 
 @app.get("/auth/callback", name="auth_callback")
 async def auth_callback(request: Request):
-    """Microsoft's redirect back: read the identity, keep the id token for the API."""
+    """Microsoft's redirect back: read the identity, keep the id + refresh tokens
+    for the API and for silent renewal."""
     token = await auth.get_oauth().entra.authorize_access_token(request)
     info = token.get("userinfo") or {}
     email = info.get("email") or info.get("preferred_username") or ""
     request.session["user"] = {"email": email, "name": info.get("name") or email}
-    request.session["id_token"] = token.get("id_token")
+    auth.store_tokens(request, token)
     return RedirectResponse("/", status_code=303)
 
 
 @app.get("/logout")
 def logout(request: Request):
-    request.session.pop("user", None)
-    request.session.pop("id_token", None)
+    auth.end_session(request)
     return RedirectResponse("/login" if auth.is_live() else "/", status_code=303)
 
 
 @app.api_route("/api/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
 async def proxy(path: str, request: Request) -> Response:
     body = await request.body()
-    headers = _forward_headers(request)
+    url = f"{API_BASE_URL}/api/{path}"
+    params = dict(request.query_params)
     # Preserve the request's Content-Type so JSON POST bodies parse upstream.
     content_type = request.headers.get("content-type")
-    if content_type:
-        headers["Content-Type"] = content_type
-    upstream = await _proxy_upstream(
-        request.method, f"{API_BASE_URL}/api/{path}",
-        dict(request.query_params), body, headers,
-    )
+
+    def _headers() -> dict:
+        h = _forward_headers(request)
+        if content_type:
+            h["Content-Type"] = content_type
+        return h
+
+    # Silent renewal (live mode): if the id token has expired or is about to,
+    # refresh it from the stored refresh token before forwarding, so a long
+    # session survives the ~1-hour token lifetime without re-signing in.
+    if auth.is_live() and auth.token_expired(request):
+        await auth.refresh_tokens(request)  # best-effort; the 401 path below is the backstop
+
+    upstream = await _proxy_upstream(request.method, url, params, body, _headers())
+
+    # Backstop: the API still rejected the token (clock skew, a session predating
+    # renewal, or an expired refresh token). Try one refresh + retry; if it still
+    # fails, the session can't be renewed — end it and tell the SPA plainly.
+    if upstream.status_code == 401 and auth.is_live():
+        if await auth.refresh_tokens(request):
+            upstream = await _proxy_upstream(request.method, url, params, body, _headers())
+        if upstream.status_code == 401:
+            auth.end_session(request)
+            return JSONResponse(
+                {"detail": "Your session has expired — please sign in again."},
+                status_code=401,
+            )
+
     # Forward the download filename for file responses (e.g. the Excel cost sheet).
     passthrough = {}
     disposition = upstream.headers.get("content-disposition")
