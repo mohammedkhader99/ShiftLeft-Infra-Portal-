@@ -468,9 +468,16 @@ def _validate_shortlived_fields(data: dict, session: Session, errors: dict[str, 
                 errors["expires_on"] = "The expiry date must be in the future."
 
 
+def _tech_targets(tech: Technology) -> list[str]:
+    """The deployment targets a technology is available on (parsed from its CSV)."""
+    return [t.strip() for t in (tech.targets or "").split(",") if t.strip()]
+
+
 def _validate_components(data: dict, session: Session, errors: dict[str, str]) -> None:
-    """Require at least one component, each a valid technology + size."""
+    """Require at least one component, each a valid technology + size, and each
+    available on the chosen deployment target (F-CAT)."""
     components = data.get("components") or []
+    target = (data.get("deployment_target") or "").strip()
     # Ignore fully-blank rows (a stray empty row shouldn't count).
     filled = [
         c for c in components
@@ -494,6 +501,10 @@ def _validate_components(data: dict, session: Session, errors: dict[str, str]) -
             elif tech.lifecycle_state == "eol":
                 errors[f"component_{index}_technology"] = (
                     f"{tech.name} is end-of-life and can no longer be requested."
+                )
+            elif target in DEPLOYMENT_TARGETS and target not in _tech_targets(tech):
+                errors[f"component_{index}_technology"] = (
+                    f"{tech.name} is not available on {target} — choose a technology offered there."
                 )
         if size not in SIZES:
             errors[f"component_{index}_size"] = "Choose a size: small, medium or large."

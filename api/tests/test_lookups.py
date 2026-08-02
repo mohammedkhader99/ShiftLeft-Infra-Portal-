@@ -45,7 +45,7 @@ def test_lookups_returns_all_categories(client):
     data = response.json()
     assert len(data["projects"]) == 3
     assert len(data["cost_centres"]) == 3
-    assert len(data["technologies"]) == 22
+    assert len(data["technologies"]) == 46  # 22 + 24 add-ons + cloud services
     assert len(data["environments"]) == 2
 
 

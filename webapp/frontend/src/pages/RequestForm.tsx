@@ -102,6 +102,13 @@ const TECH_ICON_BY_CODE: Record<string, CarbonIconType> = {
   k8s: ContainerSoftware, openshift: ContainerSoftware,
   vault: Security, keycloak: Security,
   rhel9: Terminal, win2019: Terminal,
+  // Cloud-managed services + add-ons (target-aware catalogue).
+  'aws-rds': DataBase, 'azure-sql': DataBase, 'azure-cosmos': DataBase, 'oci-adb': DataBase,
+  'gcp-cloudsql': DataBase, 'gcp-firestore': DataBase, 'aws-dynamodb': DataBase,
+  'aws-eks': ContainerSoftware, 'azure-aks': ContainerSoftware, 'oci-oke': ContainerSoftware,
+  'gcp-gke': ContainerSoftware, 'service-mesh': ContainerSoftware,
+  'aws-lambda': Code, 'azure-functions': Code, 'oci-functions': Code, 'gcp-functions': Code,
+  'api-gateway': Api,
 }
 const techIcon = (code: string): CarbonIconType => TECH_ICON_BY_CODE[code] ?? Application
 
@@ -329,6 +336,17 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pricedKey])
 
+  // Target-aware catalogue (F-CAT): when the deployment target changes, drop any
+  // picked components not offered on the new target (so the stack stays valid).
+  useEffect(() => {
+    if (!target || !lookups) return
+    const allowed = new Set(
+      lookups.technologies.filter((t) => t.targets.includes(target)).map((t) => t.code),
+    )
+    setComponents((cs) => cs.filter((c) => !c.technology_code || allowed.has(c.technology_code)))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [target])
+
   const techName = (code: string) =>
     lookups?.technologies.find((t) => t.code === code)?.name ?? code
 
@@ -517,6 +535,12 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
     document.getElementById(SECTION_IDS[i])?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 
   if (!lookups) return <p style={{ color: 'var(--cds-text-secondary)' }}>Loading form…</p>
+
+  // Only technologies offered on the selected deployment target (F-CAT); the full
+  // catalogue until a target is chosen.
+  const availableTechs = target
+    ? lookups.technologies.filter((t) => t.targets.includes(target))
+    : lookups.technologies
 
   return (
     <div style={{ display: 'flex', gap: '2rem', flexWrap: 'wrap' }}>
@@ -886,10 +910,12 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
                   <p style={{ color: 'var(--cds-text-error)', fontSize: '0.75rem', marginBottom: '0.5rem' }}>{errors.components}</p>
                 )}
                 <p style={{ fontSize: '0.8rem', color: 'var(--cds-text-secondary)', margin: '0 0 0.6rem' }}>
-                  Pick one or more technologies, then choose a size for each.
+                  {target
+                    ? `Technologies available on ${TARGETS.find(([v]) => v === target)?.[1] || target}. Pick one or more, then choose a size for each.`
+                    : 'Pick a deployment target above to see its technologies, then choose sizes.'}
                 </p>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(9.5rem, 1fr))', gap: '0.5rem' }}>
-                  {lookups.technologies.map((t) => {
+                  {availableTechs.map((t) => {
                     const Icon = techIcon(t.code)
                     const sel = components.some((c) => c.technology_code === t.code)
                     return (

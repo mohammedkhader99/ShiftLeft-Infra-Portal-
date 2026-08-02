@@ -27,9 +27,9 @@ def test_seed_populates_reference_data(session):
     seed(session)
     assert session.scalar(select(func.count()).select_from(Project)) == 3
     assert session.scalar(select(func.count()).select_from(CostCentre)) == 3
-    assert session.scalar(select(func.count()).select_from(Technology)) == 22
-    # 22 technologies * 4 sizes (incl. xlarge) = 88 sizing anchors.
-    assert session.scalar(select(func.count()).select_from(SizingAnchor)) == 88
+    assert session.scalar(select(func.count()).select_from(Technology)) == 46  # +24 add-ons + cloud services
+    # 46 technologies * 4 sizes (incl. xlarge) = 184 sizing anchors.
+    assert session.scalar(select(func.count()).select_from(SizingAnchor)) == 184
     assert session.scalar(select(func.count()).select_from(RateCard)) == 20  # +3 cloud_aws +3 cloud_gcp
 
 
@@ -52,7 +52,7 @@ def test_seed_is_idempotent(session):
     seed(session)
     seed(session)
     assert session.scalar(select(func.count()).select_from(Project)) == 3
-    assert session.scalar(select(func.count()).select_from(SizingAnchor)) == 88
+    assert session.scalar(select(func.count()).select_from(SizingAnchor)) == 184
 
 
 def test_lifecycle_states_present(session):

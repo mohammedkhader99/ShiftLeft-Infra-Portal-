@@ -1351,6 +1351,17 @@ class TechnologyOut(BaseModel):
     code: str
     name: str
     lifecycle_state: str
+    # Deployment targets this technology is available on (list of target codes),
+    # so the form can filter the catalogue by the selected target (F-CAT).
+    targets: list[str] = []
+
+    @field_validator("targets", mode="before")
+    @classmethod
+    def _split_targets(cls, v):
+        """The DB stores a CSV; expose it as a list."""
+        if isinstance(v, str):
+            return [t.strip() for t in v.split(",") if t.strip()]
+        return v or []
 
 
 class EnvironmentOut(BaseModel):

@@ -73,6 +73,35 @@ TECHNOLOGIES = [
     # A first-class compute (VM) type — a stoppable OCI Compute instance, which
     # the control plane can stop/start. See COMPUTE_CODES below.
     {"code": "compute-vm", "name": "Compute Instance (VM)", "lifecycle_state": "certified"},
+    # --- Platform-service add-ons (available on every deployment target) -------
+    {"code": "monitoring", "name": "Monitoring & Alerting", "lifecycle_state": "certified"},
+    {"code": "logging", "name": "Centralised Logging", "lifecycle_state": "certified"},
+    {"code": "backup", "name": "Backup & Recovery", "lifecycle_state": "certified"},
+    {"code": "service-mesh", "name": "Service Mesh (Istio)", "lifecycle_state": "preview"},
+    {"code": "api-gateway", "name": "API Gateway", "lifecycle_state": "certified"},
+    # --- AWS-managed services (targets: aws) ----------------------------------
+    {"code": "aws-rds", "name": "Amazon RDS", "lifecycle_state": "certified", "targets": "aws"},
+    {"code": "aws-s3", "name": "Amazon S3", "lifecycle_state": "certified", "targets": "aws"},
+    {"code": "aws-eks", "name": "Amazon EKS", "lifecycle_state": "certified", "targets": "aws"},
+    {"code": "aws-lambda", "name": "AWS Lambda", "lifecycle_state": "certified", "targets": "aws"},
+    {"code": "aws-dynamodb", "name": "Amazon DynamoDB", "lifecycle_state": "certified", "targets": "aws"},
+    # --- Azure-managed services (targets: azure) ------------------------------
+    {"code": "azure-sql", "name": "Azure SQL Database", "lifecycle_state": "certified", "targets": "azure"},
+    {"code": "azure-blob", "name": "Azure Blob Storage", "lifecycle_state": "certified", "targets": "azure"},
+    {"code": "azure-aks", "name": "Azure Kubernetes Service (AKS)", "lifecycle_state": "certified", "targets": "azure"},
+    {"code": "azure-functions", "name": "Azure Functions", "lifecycle_state": "certified", "targets": "azure"},
+    {"code": "azure-cosmos", "name": "Azure Cosmos DB", "lifecycle_state": "certified", "targets": "azure"},
+    # --- OCI-managed services (targets: oci) ----------------------------------
+    {"code": "oci-adb", "name": "Oracle Autonomous Database", "lifecycle_state": "certified", "targets": "oci"},
+    {"code": "oci-objectstorage", "name": "OCI Object Storage", "lifecycle_state": "certified", "targets": "oci"},
+    {"code": "oci-oke", "name": "OCI Container Engine (OKE)", "lifecycle_state": "certified", "targets": "oci"},
+    {"code": "oci-functions", "name": "OCI Functions", "lifecycle_state": "certified", "targets": "oci"},
+    # --- GCP-managed services (targets: gcp) ----------------------------------
+    {"code": "gcp-cloudsql", "name": "Google Cloud SQL", "lifecycle_state": "certified", "targets": "gcp"},
+    {"code": "gcp-gcs", "name": "Google Cloud Storage", "lifecycle_state": "certified", "targets": "gcp"},
+    {"code": "gcp-gke", "name": "Google Kubernetes Engine (GKE)", "lifecycle_state": "certified", "targets": "gcp"},
+    {"code": "gcp-functions", "name": "Google Cloud Functions", "lifecycle_state": "certified", "targets": "gcp"},
+    {"code": "gcp-firestore", "name": "Firestore", "lifecycle_state": "certified", "targets": "gcp"},
 ]
 
 # Technologies that provision a stoppable OCI Compute instance (oci-instance)

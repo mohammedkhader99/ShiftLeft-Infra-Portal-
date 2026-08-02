@@ -71,6 +71,11 @@ class Technology(Base):
     # Drives the orchestrator's provisioning branch and whether the control plane
     # offers stop/start.
     resource_kind: Mapped[str] = mapped_column(String(16), default="oci-bucket")
+    # Which deployment targets this technology is available on (CSV of target
+    # codes). Default = all: generic software runs anywhere. A cloud-managed
+    # service (e.g. Amazon RDS) sets just its own cloud. Drives the target-aware
+    # catalogue filter + submit validation (F-CAT).
+    targets: Mapped[str] = mapped_column(String(80), default="onprem,azure,oci,aws,gcp")
 
     sizing_anchors: Mapped[list["SizingAnchor"]] = relationship(
         back_populates="technology"

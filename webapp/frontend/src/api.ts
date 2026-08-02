@@ -5,7 +5,7 @@ export type Lookups = {
   projects: { code: string; name: string }[]
   cost_centres: { code: string; name: string }[]
   subsidiaries: { code: string; name: string }[]
-  technologies: { code: string; name: string; lifecycle_state: string }[]
+  technologies: { code: string; name: string; lifecycle_state: string; targets: string[] }[]
   environments: { name: string; environment_class: string }[]
 }
 
