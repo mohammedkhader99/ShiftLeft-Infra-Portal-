@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type CSSProperties } from 'react'
+import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react'
 import {
   Stack,
   Select,
@@ -59,6 +59,11 @@ const TARGETS: [string, string][] = [
   ['azure', 'Microsoft Azure'],
   ['oci', 'Oracle Cloud (OCI)'],
 ]
+const RTYPE_LABEL: Record<string, string> = {
+  create: 'Create environment',
+  add: 'Add component',
+  resize: 'Resize component',
+}
 const PRIORITIES = ['low', 'medium', 'high', 'critical']
 const CRITICALITIES: [string, string][] = [
   ['tier1', 'Tier 1 — mission critical'],
@@ -121,6 +126,16 @@ const cleanAdvanced = (a: Record<string, string | boolean>) =>
   Object.fromEntries(
     Object.entries(a).filter(([, v]) => v !== '' && v !== false && v != null),
   )
+
+// A label/value line in the live Environment-summary panel.
+function SummaryRow({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem' }}>
+      <span style={{ color: 'var(--cds-text-secondary)' }}>{label}</span>
+      <span style={{ textAlign: 'right', fontWeight: 500 }}>{children}</span>
+    </div>
+  )
+}
 
 type Result = { kind: 'success' | 'error'; title: string; subtitle?: string }
 
@@ -820,18 +835,75 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
             </>
           )}
 
-          <div style={{ display: 'flex', gap: '0.75rem' }}>
+          <div
+            style={{
+              position: 'sticky',
+              bottom: 0,
+              zIndex: 10,
+              display: 'flex',
+              gap: '0.75rem',
+              alignItems: 'center',
+              padding: '0.75rem 0',
+              background: 'var(--cds-background)',
+              borderTop: '1px solid var(--cds-border-subtle)',
+            }}
+          >
             <Button kind="secondary" onClick={onSaveDraft} disabled={busy}>
               Save draft
             </Button>
             <Button onClick={onSubmit} disabled={busy}>
               {isDecommission ? 'Submit decommission' : isRefresh ? 'Submit refresh' : isRestore ? 'Submit restore' : 'Submit request'}
             </Button>
+            {cost && !isDecommission && (
+              <span style={{ marginLeft: 'auto', fontSize: '0.9rem', color: 'var(--cds-text-secondary)' }}>
+                <strong style={{ color: 'var(--cds-text-primary)' }}>{cost.totals.monthly.toFixed(2)} {cost.currency}</strong>/mo
+              </span>
+            )}
           </div>
         </Stack>
       </div>
 
       <div style={{ flex: '0 0 20rem' }}>
+        {!isDecommission && !isRefresh && !isRestore && (
+          <Tile style={{ marginBottom: '1rem', borderTop: '3px solid var(--cds-border-interactive)' }}>
+            <p style={{ fontSize: '0.75rem', color: 'var(--cds-text-secondary)', textTransform: 'uppercase', letterSpacing: '0.02em', marginBottom: '0.5rem' }}>
+              Environment summary
+            </p>
+            <div style={{ fontSize: '0.82rem', lineHeight: 1.9 }}>
+              <SummaryRow label="Type">{RTYPE_LABEL[requestType] || requestType}</SummaryRow>
+              <SummaryRow label="Target">{TARGETS.find(([v]) => v === target)?.[1] || '—'}</SummaryRow>
+              {isCreate ? (
+                <>
+                  <SummaryRow label="Environment">{envName || '—'}</SummaryRow>
+                  <SummaryRow label="Tier">
+                    {envTier ? (
+                      <>
+                        {ENV_TIERS.find(([v]) => v === envTier)?.[1] || envTier}
+                        <Tag type={NONPROD_TIERS.includes(envTier) ? 'teal' : 'blue'} size="sm" style={{ marginLeft: '0.4rem' }}>
+                          {NONPROD_TIERS.includes(envTier) ? 'non-prod' : 'prod-class'}
+                        </Tag>
+                      </>
+                    ) : '—'}
+                  </SummaryRow>
+                  <SummaryRow label="Classification">{classification || '—'}</SummaryRow>
+                </>
+              ) : (
+                <SummaryRow label="Environment">{targetEnv || '—'}</SummaryRow>
+              )}
+              <SummaryRow label="Technologies">
+                {filledComponents.length
+                  ? `${filledComponents.length} — ${filledComponents.map((c) => `${techName(c.technology_code)}${c.size ? ` (${c.size})` : ''}`).join(', ')}`
+                  : '—'}
+              </SummaryRow>
+              {cost && <SummaryRow label="Est. monthly"><strong>{cost.totals.monthly.toFixed(2)} {cost.currency}</strong></SummaryRow>}
+            </div>
+            {isCreate && envTier && NONPROD_TIERS.includes(envTier) && (
+              <p style={{ fontSize: '0.72rem', color: 'var(--cds-text-secondary)', marginTop: '0.5rem' }}>
+                Non-prod environments have a limited lifetime (auto-expire per the TTL policy) and can be auto-shut-down out of hours.
+              </p>
+            )}
+          </Tile>
+        )}
         <Tile style={{ borderTop: '3px solid var(--cds-border-interactive)' }}>
           <p style={{ fontSize: '0.75rem', color: 'var(--cds-text-secondary)', textTransform: 'uppercase', letterSpacing: '0.02em' }}>
             {isDecommission ? 'Monthly cost to free' : isRefresh ? 'Environment refresh' : isRestore ? 'Environment restore' : 'Live cost'}
