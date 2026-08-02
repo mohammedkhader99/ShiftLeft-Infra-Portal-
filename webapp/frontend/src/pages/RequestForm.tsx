@@ -28,6 +28,8 @@ import {
   ContainerSoftware,
   Security,
   Terminal,
+  Cloud,
+  Enterprise,
   type CarbonIconType,
 } from '@carbon/icons-react'
 import {
@@ -848,12 +850,28 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
                 ))}
               </Select>
 
-              <Select id="deployment_target" labelText="Deployment target" value={target} onChange={(e) => setTarget(e.target.value)} invalid={!!errors.deployment_target} invalidText={errors.deployment_target}>
-                <SelectItem value="" text="— select —" />
-                {TARGETS.map(([v, label]) => (
-                  <SelectItem key={v} value={v} text={label} />
-                ))}
-              </Select>
+              <div>
+                <label style={{ fontSize: '0.75rem', color: 'var(--cds-text-secondary)', display: 'block', marginBottom: '0.35rem' }}>
+                  Deployment target
+                </label>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(9rem, 1fr))', gap: '0.5rem' }}>
+                  {TARGETS.map(([v, label]) => {
+                    const Icon = v === 'onprem' ? Enterprise : Cloud
+                    const sel = target === v
+                    return (
+                      <button key={v} type="button" aria-pressed={sel} onClick={() => setTarget(v)} style={cardStyle(sel)}>
+                        <Icon size={20} style={{ color: 'var(--cds-icon-primary)' }} />
+                        <span style={{ fontWeight: 500, fontSize: '0.82rem', lineHeight: 1.2 }}>{label}</span>
+                      </button>
+                    )
+                  })}
+                </div>
+                {errors.deployment_target && (
+                  <p style={{ color: 'var(--cds-text-error)', fontSize: '0.75rem', marginTop: '0.35rem' }}>
+                    {errors.deployment_target}
+                  </p>
+                )}
+              </div>
 
               {isCreateLike ? (
                 <TextInput id="environment_name" labelText="New environment name" placeholder="e.g. egate-uat" value={envName} onChange={(e) => setEnvName(e.target.value)} invalid={!!errors.environment_name} invalidText={errors.environment_name} />
