@@ -113,6 +113,14 @@ RATE_CARDS = [
      "discount_pct": 15.0},
     {"kind": "cloud_oci", "item": "storage-gb-month", "unit": "per GB/month", "rate": 0.08,
      "discount_pct": 15.0},
+    # AWS: compute per hour, storage per GB/month; 10% negotiated discount
+    # (indicative rates; live via the AWS Price List API, aws_pricing adapter).
+    {"kind": "cloud_aws", "item": "vcpu-hour", "unit": "per vCPU/hour", "rate": 0.13,
+     "discount_pct": 10.0},
+    {"kind": "cloud_aws", "item": "memory-gb-hour", "unit": "per GB/hour", "rate": 0.011,
+     "discount_pct": 10.0},
+    {"kind": "cloud_aws", "item": "storage-gb-month", "unit": "per GB/month", "rate": 0.11,
+     "discount_pct": 10.0},
 ]
 
 

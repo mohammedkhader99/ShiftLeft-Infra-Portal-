@@ -63,6 +63,7 @@ const TARGETS: [string, string][] = [
   ['onprem', 'On-premises'],
   ['azure', 'Microsoft Azure'],
   ['oci', 'Oracle Cloud (OCI)'],
+  ['aws', 'Amazon Web Services (AWS)'],
 ]
 const RTYPE_LABEL: Record<string, string> = {
   create: 'Create environment',

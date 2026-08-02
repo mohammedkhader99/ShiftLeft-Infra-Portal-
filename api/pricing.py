@@ -13,7 +13,8 @@ breakdown, in AED.
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from api.adapters import azure_pricing, oci_pricing
+from api.adapters import aws_pricing, azure_pricing, oci_pricing
+from api.adapters.aws_pricing import AWSUnavailable
 from api.adapters.azure_pricing import AzureUnavailable
 from api.adapters.oci_pricing import OCIUnavailable
 from api.sizing import resolve_components
@@ -23,7 +24,8 @@ HOURS_PER_MONTH = 730  # standard cloud billing month
 CURRENCY = "AED"
 
 # Which rate_card.kind holds each target's resource rates.
-TARGET_KIND = {"onprem": "onprem", "azure": "cloud_azure", "oci": "cloud_oci"}
+TARGET_KIND = {"onprem": "onprem", "azure": "cloud_azure", "oci": "cloud_oci",
+               "aws": "cloud_aws"}
 DEPLOYMENT_TARGETS = set(TARGET_KIND)
 
 # Which licence (if any) a technology carries. Mock config for now; a proper
@@ -124,6 +126,20 @@ def estimate_cost(
             pricing_source = "oci-live"
         except OCIUnavailable:
             pricing_source = "oci-cached"  # keep the cached rate cards
+
+    # AWS live pricing (multi-cloud breadth): same decomposed formula — swap in the
+    # live (discounted) rate dict. The live fetch is an extension point, so this
+    # falls back to the cached seeded rate cards until it's wired.
+    if target == "aws" and aws_pricing.is_live():
+        try:
+            aws_discount = _discount(session, "cloud_aws")
+            resource = {
+                item: rate * (1 - aws_discount)
+                for item, rate in aws_pricing.rates().items()
+            }
+            pricing_source = "aws-live"
+        except AWSUnavailable:
+            pricing_source = "aws-cached"  # keep the cached rate cards
 
     lines: list[dict] = []
     one_time_total = 0.0

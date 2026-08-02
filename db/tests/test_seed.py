@@ -30,7 +30,7 @@ def test_seed_populates_reference_data(session):
     assert session.scalar(select(func.count()).select_from(Technology)) == 22
     # 22 technologies * 4 sizes (incl. xlarge) = 88 sizing anchors.
     assert session.scalar(select(func.count()).select_from(SizingAnchor)) == 88
-    assert session.scalar(select(func.count()).select_from(RateCard)) == 14
+    assert session.scalar(select(func.count()).select_from(RateCard)) == 17  # +3 cloud_aws
 
 
 def test_seed_query_returns_named_rows(session):
