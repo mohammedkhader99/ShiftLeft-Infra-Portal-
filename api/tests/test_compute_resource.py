@@ -94,6 +94,14 @@ def test_derivation_mixed_prefers_instance(session):
     assert main._environment_resource_kind(session, req) == "oci-instance"
 
 
+def test_derivation_aws_target_is_bucket(session):
+    # AWS provisions an S3 bucket regardless of components (AWS compute is a follow-on).
+    req = _req(session, ["postgres16", "rhel9"])
+    req.deployment_target = "aws"
+    session.commit()
+    assert main._environment_resource_kind(session, req) == "aws-bucket"
+
+
 # --- Handoff carries the kind ------------------------------------------------
 
 def test_handoff_payload_includes_resource_kind(session):

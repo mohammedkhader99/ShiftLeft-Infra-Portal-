@@ -1853,8 +1853,11 @@ def _shutdown_out(session: Session, req: Request) -> dict | None:
 
 
 def _environment_resource_kind(session: Session, req: Request) -> str:
-    """The cloud resource this environment provisions, from its components:
-    'oci-instance' if any component is a compute technology, else 'oci-bucket'."""
+    """The cloud resource this environment provisions, from its target + components.
+    AWS: an S3 bucket (aws-bucket) — AWS compute is a follow-on. OCI: 'oci-instance'
+    if any component is a compute technology, else 'oci-bucket'."""
+    if (req.deployment_target or "").strip().lower() == "aws":
+        return "aws-bucket"
     codes = [c.technology_code for c in req.components if c.technology_code]
     if not codes:
         return "oci-bucket"

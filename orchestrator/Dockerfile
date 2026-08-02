@@ -24,12 +24,13 @@ RUN pip install --no-cache-dir -r requirements.txt -r orchestrator-requirements.
 COPY orchestrator ./orchestrator
 COPY common ./common
 
-# Pre-download the Terraform provider into a shared plugin cache at build time,
-# so per-request `init`s reuse it instead of re-downloading (fast). /tfstate is
-# the persistent per-request state volume (2.6c).
+# Pre-download the Terraform providers (OCI + AWS) into a shared plugin cache at
+# build time, so per-request `init`s reuse them instead of re-downloading (fast).
+# /tfstate is the persistent per-request state volume (2.6c).
 ENV TF_PLUGIN_CACHE_DIR=/opt/tf-plugin-cache
 RUN mkdir -p /opt/tf-plugin-cache /tfstate \
-    && cd orchestrator/terraform && terraform init -input=false
+    && cd orchestrator/terraform && terraform init -input=false \
+    && cd aws && terraform init -input=false
 
 EXPOSE 9091
 

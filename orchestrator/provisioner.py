@@ -101,11 +101,62 @@ def _oci_vars(name: str, tags: dict, resource_kind: str = "oci-bucket",
     }
 
 
-def _workdir(reference: str) -> Path:
-    """Per-request working dir on the persistent volume, seeded with the module."""
+# --- AWS (multi-cloud): S3 bucket provisioning -------------------------------
+# Credentials are the standard AWS env vars, read by the Terraform AWS provider —
+# never held in code or git (P3). Mock mode creates nothing; a real apply needs
+# these set, or it refuses (mirroring the OCI gate).
+
+def _require_aws() -> None:
+    missing = [k for k in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_REGION")
+               if not os.getenv(k)]
+    if missing:
+        raise ProvisionError(f"AWS not configured: missing {', '.join(missing)}")
+
+
+def _aws_vars(name: str, tags: dict, resource_kind: str = "aws-bucket") -> dict:
+    return {
+        "region": os.getenv("AWS_REGION", ""),
+        "resource_kind": resource_kind,
+        "bucket_name": name if resource_kind == "aws-bucket" else "",
+        "tags": tags,
+        # Customer-managed encryption key ARN for sensitive data (F-SEC-04); empty
+        # falls back to AWS-managed (SSE-S3) in the module.
+        "kms_key_arn": os.getenv("AWS_KMS_KEY_ARN", ""),
+    }
+
+
+def _cloud_of(resource_kind: str) -> str:
+    """Which cloud a resource_kind targets: 'aws' for aws-*, else 'oci'."""
+    return "aws" if (resource_kind or "").startswith("aws-") else "oci"
+
+
+def _module_dir(cloud: str) -> Path:
+    """The Terraform module for a cloud. OCI is the flat (default) module; AWS has
+    its own subdir with its own provider."""
+    return MODULE_DIR / "aws" if cloud == "aws" else MODULE_DIR
+
+
+def _require_cloud(cloud: str, resource_kind: str) -> None:
+    if cloud == "aws":
+        _require_aws()
+    else:
+        _require_oci()
+        if resource_kind == "oci-instance":
+            _require_compute()
+
+
+def _cloud_vars(cloud: str, name: str, tags: dict, resource_kind: str, sizing: dict | None) -> dict:
+    if cloud == "aws":
+        return _aws_vars(name, tags, resource_kind)
+    return _oci_vars(name, tags, resource_kind, sizing)
+
+
+def _workdir(reference: str, cloud: str = "oci") -> Path:
+    """Per-request working dir on the persistent volume, seeded with the cloud's
+    module. A workdir only ever holds one cloud's .tf (a request's cloud is fixed)."""
     workdir = STATE_ROOT / reference
     workdir.mkdir(parents=True, exist_ok=True)
-    for tf in MODULE_DIR.glob("*.tf"):
+    for tf in _module_dir(cloud).glob("*.tf"):
         dest = workdir / tf.name
         if not dest.exists():
             shutil.copy(tf, dest)
@@ -143,11 +194,10 @@ def _summary(stdout: str, pattern: str, fallback: str) -> str:
 def terraform_plan(reference: str, name: str, tags: dict,
                    resource_kind: str = "oci-bucket", sizing: dict | None = None) -> dict:
     """Init + plan in the request's workspace, saving the plan. Creates nothing."""
-    _require_oci()
-    if resource_kind == "oci-instance":
-        _require_compute()
-    workdir = _workdir(reference)
-    _write_tfvars(workdir, _oci_vars(name, tags, resource_kind, sizing))
+    cloud = _cloud_of(resource_kind)
+    _require_cloud(cloud, resource_kind)
+    workdir = _workdir(reference, cloud)
+    _write_tfvars(workdir, _cloud_vars(cloud, name, tags, resource_kind, sizing))
 
     init = _run(["init", "-input=false", "-no-color"], workdir)
     if init.returncode != 0:
@@ -182,10 +232,9 @@ def terraform_apply(reference: str, name: str, tags: dict,
     """Apply the EXACT saved plan for this request. CREATES the resource."""
     if provision_mode() != "apply":
         raise ProvisionError("apply is not enabled (PROVISION_MODE is not 'apply')")
-    _require_oci()
-    if resource_kind == "oci-instance":
-        _require_compute()
-    workdir = _workdir(reference)
+    cloud = _cloud_of(resource_kind)
+    _require_cloud(cloud, resource_kind)
+    workdir = _workdir(reference, cloud)
     if not (workdir / PLAN_FILE).exists():
         raise ProvisionError("no saved plan for this request — approve (plan) it first")
 
@@ -216,11 +265,10 @@ def terraform_drift(reference: str, name: str, tags: dict,
                     resource_kind: str = "oci-bucket", sizing: dict | None = None) -> dict:
     """Re-plan a provisioned request's existing workspace and detect drift from
     the applied state (F-LCM-09). Read-only — a plan creates nothing."""
-    _require_oci()
-    if resource_kind == "oci-instance":
-        _require_compute()
-    workdir = _workdir(reference)
-    _write_tfvars(workdir, _oci_vars(name, tags, resource_kind, sizing))
+    cloud = _cloud_of(resource_kind)
+    _require_cloud(cloud, resource_kind)
+    workdir = _workdir(reference, cloud)
+    _write_tfvars(workdir, _cloud_vars(cloud, name, tags, resource_kind, sizing))
 
     init = _run(["init", "-input=false", "-no-color"], workdir)
     if init.returncode != 0:
@@ -241,9 +289,10 @@ def terraform_drift(reference: str, name: str, tags: dict,
 def terraform_destroy(reference: str, name: str, tags: dict,
                       resource_kind: str = "oci-bucket", sizing: dict | None = None) -> dict:
     """Destroy the resources for this request from its own state."""
-    _require_oci()
-    workdir = _workdir(reference)
-    _write_tfvars(workdir, _oci_vars(name, tags, resource_kind, sizing))
+    cloud = _cloud_of(resource_kind)
+    _require_cloud(cloud, resource_kind)
+    workdir = _workdir(reference, cloud)
+    _write_tfvars(workdir, _cloud_vars(cloud, name, tags, resource_kind, sizing))
 
     _run(["init", "-input=false", "-no-color"], workdir)
     destroy = _run(["destroy", "-input=false", "-no-color", "-auto-approve"], workdir)
