@@ -842,6 +842,41 @@ export async function aiChat(message: string): Promise<{ status: number; body: a
   return { status: r.status, body: await r.json().catch(() => ({})) }
 }
 
+// Runtime settings (F-OPS-09). Non-secret governance/FinOps/AI knobs editable
+// from the Admin console; secrets/security switches stay read-only in .env.
+export type AdminSetting = {
+  key: string
+  label: string
+  help: string
+  type: string
+  group: string
+  choices?: string[] | null
+  default: string
+  value: string
+  source: string
+}
+export type AdminSettings = {
+  editable: AdminSetting[]
+  read_only: { key: string; label: string; value: string; source: string }[]
+  note: string
+}
+export async function getAdminSettings(): Promise<{ status: number; body: any }> {
+  const r = await fetch('/api/admin/settings')
+  return { status: r.status, body: await r.json().catch(() => ({})) }
+}
+export async function setAdminSetting(key: string, value: string): Promise<{ status: number; body: any }> {
+  const r = await fetch(`/api/admin/settings/${key}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ value }),
+  })
+  return { status: r.status, body: await r.json().catch(() => ({})) }
+}
+export async function resetAdminSetting(key: string): Promise<{ status: number; body: any }> {
+  const r = await fetch(`/api/admin/settings/${key}`, { method: 'DELETE' })
+  return { status: r.status, body: await r.json().catch(() => ({})) }
+}
+
 export type AuditEntry = { event: string; created_at: string }
 
 export async function getAudit(reference: string): Promise<AuditEntry[]> {

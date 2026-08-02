@@ -490,6 +490,24 @@ class RoleMapping(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 
+class Setting(Base):
+    """A runtime override for a NON-SECRET governance/FinOps/AI setting (F-OPS-09).
+
+    A row here overrides the matching environment variable at read time (see
+    api/settings.py precedence: DB -> .env -> default), so a platform admin can
+    tune the portal's policy posture from the Admin console instead of editing
+    .env and redeploying. Only allow-listed, non-secret keys are ever stored;
+    secrets and security/provisioning switches stay in .env/vault by design and
+    are never written here. `value` is the raw string, parsed by the reader."""
+
+    __tablename__ = "setting"
+
+    key: Mapped[str] = mapped_column(String(80), primary_key=True)
+    value: Mapped[str] = mapped_column(String(400))
+    updated_by: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
 class RateLimitCounter(Base):
     """A shared fixed-window rate-limit counter (F-OPS-01 / F-SEC-09). One row per
     (client, minute), incremented atomically so the per-minute limit is global

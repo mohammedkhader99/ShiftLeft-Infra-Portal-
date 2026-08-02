@@ -50,13 +50,16 @@ class AiUnavailable(RuntimeError):
 
 def ai_mode() -> str:
     """'live' calls the Claude API; anything else (the default) uses the offline
-    keyword drafter. Mirrors AZURE_PRICING_MODE / JIRA_MODE."""
-    return os.getenv("AI_MODE", "mock").strip().lower()
+    keyword drafter. Read via the runtime settings store so it can be toggled from
+    the Admin console (DB override -> .env -> default)."""
+    from api import settings  # local import avoids any import-order coupling
+    return (settings.env("AI_MODE", "mock") or "mock").strip().lower()
 
 
 def ai_model() -> str:
-    """The Claude model used in live mode (configurable; sensible default)."""
-    return os.getenv("AI_MODEL", "claude-opus-5").strip() or "claude-opus-5"
+    """The Claude model used in live mode (configurable from the Admin console)."""
+    from api import settings
+    return (settings.env("AI_MODEL", "claude-opus-5") or "").strip() or "claude-opus-5"
 
 
 def anthropic_client():

@@ -29,6 +29,7 @@ from api import ai_explainer
 from api import ai_recommend
 from api import ai_triage
 from api import portal_help
+from api import settings
 from api import anomalies as anomaly_detect
 from api import apikeys
 from api import chatbot
@@ -90,6 +91,7 @@ from db.models import (
     RoleMapping,
     Request,
     RequestComponent,
+    Setting,
     SizingAnchor,
     Subsidiary,
     Technology,
@@ -157,7 +159,7 @@ TTL_NONPROD_TIERS = {"dev", "test", "sit", "uat", "preprod"}
 
 def _ttl_days_nonprod() -> int:
     try:
-        return max(1, int(os.getenv("TTL_DAYS_NONPROD", "30")))
+        return max(1, int(settings.env("TTL_DAYS_NONPROD", "30")))
     except (ValueError, TypeError):
         return 30
 
@@ -172,7 +174,7 @@ def _ttl_days_sandbox() -> int:
 
 def _ttl_warn_days() -> int:
     try:
-        return max(0, int(os.getenv("TTL_WARN_DAYS", "7")))
+        return max(0, int(settings.env("TTL_WARN_DAYS", "7")))
     except (ValueError, TypeError):
         return 7
 
@@ -180,7 +182,7 @@ def _ttl_warn_days() -> int:
 def _ttl_enforce() -> bool:
     """Whether an expired non-prod environment is auto-decommissioned. Off by
     default: expiry only warns/flags until an operator turns enforcement on."""
-    return os.getenv("TTL_ENFORCE", "false").strip().lower() in ("1", "true", "yes", "on")
+    return settings.env("TTL_ENFORCE", "false").strip().lower() in ("1", "true", "yes", "on")
 
 
 def _ttl_for(req: Request) -> datetime | None:
@@ -203,7 +205,7 @@ def _ttl_for(req: Request) -> datetime | None:
 
 def _variance_alert_pct() -> float:
     try:
-        return max(0.0, float(os.getenv("VARIANCE_ALERT_PCT", "15")))
+        return max(0.0, float(settings.env("VARIANCE_ALERT_PCT", "15")))
     except (ValueError, TypeError):
         return 15.0
 
@@ -543,16 +545,16 @@ def approval_info(_requester: str = Depends(_authed_requester)) -> dict:
     return {
         "system_of_record": "Jira" if jira_mode() == "live" else "Jira (mock mode)",
         "quorum": _approval_quorum(),
-        "sla_hours": float(os.getenv("APPROVAL_SLA_HOURS", "24")),
+        "sla_hours": float(settings.env("APPROVAL_SLA_HOURS", "24")),
         "four_eyes": _four_eyes_enforced(),
         "sod_enforced": _sod_enforced(),
         "change_window": {
             "enabled": _change_window_enabled(),
             "open_now": change_window_status()["open"],
-            "days": os.getenv("CHANGE_WINDOW_DAYS", "mon-fri"),
-            "start": os.getenv("CHANGE_WINDOW_START", "08:00"),
-            "end": os.getenv("CHANGE_WINDOW_END", "18:00"),
-            "tz": os.getenv("CHANGE_WINDOW_TZ", "UTC"),
+            "days": settings.env("CHANGE_WINDOW_DAYS", "mon-fri"),
+            "start": settings.env("CHANGE_WINDOW_START", "08:00"),
+            "end": settings.env("CHANGE_WINDOW_END", "18:00"),
+            "tz": settings.env("CHANGE_WINDOW_TZ", "UTC"),
         },
     }
 
@@ -609,16 +611,16 @@ def system_config(_auth: str = Depends(require_action("execute"))) -> dict:
             "sod_enforced": _sod_enforced(),
             "four_eyes_enforced": _four_eyes_enforced(),
             "approval_quorum": _approval_quorum(),
-            "approval_sla_hours": float(os.getenv("APPROVAL_SLA_HOURS", "24")),
+            "approval_sla_hours": float(settings.env("APPROVAL_SLA_HOURS", "24")),
             "audit_hmac": bool(os.getenv("AUDIT_HMAC_KEY", "").strip()),
         },
         "change_window": {
             "enabled": _change_window_enabled(),
             "open_now": change_window_status()["open"],
-            "days": os.getenv("CHANGE_WINDOW_DAYS", "mon-fri"),
-            "start": os.getenv("CHANGE_WINDOW_START", "08:00"),
-            "end": os.getenv("CHANGE_WINDOW_END", "18:00"),
-            "tz": os.getenv("CHANGE_WINDOW_TZ", "UTC"),
+            "days": settings.env("CHANGE_WINDOW_DAYS", "mon-fri"),
+            "start": settings.env("CHANGE_WINDOW_START", "08:00"),
+            "end": settings.env("CHANGE_WINDOW_END", "18:00"),
+            "tz": settings.env("CHANGE_WINDOW_TZ", "UTC"),
         },
         "finops": {
             "ttl_days_nonprod": _ttl_days_nonprod(),
@@ -630,6 +632,101 @@ def system_config(_auth: str = Depends(require_action("execute"))) -> dict:
             "departed_owners_count": len(_departed_owners()),
         },
     }
+
+
+class SettingIn(BaseModel):
+    value: str
+
+
+@app.get("/api/admin/settings")
+def list_settings(_auth: str = Depends(require_action("manage_settings"))) -> dict:
+    """The editable runtime settings + the read-only .env-managed posture (F-OPS-09).
+
+    Only non-secret, allow-listed governance/FinOps/AI keys are editable, each with
+    its current value and source (database / env / default). Secrets and the
+    security/provisioning switches are shown read-only and managed in .env — this
+    endpoint never returns a secret value.
+    """
+    editable = [
+        {
+            "key": key,
+            "label": meta["label"],
+            "help": meta["help"],
+            "type": meta["type"],
+            "group": meta["group"],
+            "choices": meta.get("choices"),
+            "default": meta["default"],
+            "value": settings.effective(key),
+            "source": settings.source_of(key),
+        }
+        for key, meta in settings.ALLOWLIST.items()
+    ]
+    read_only = [
+        {
+            "key": key,
+            "label": label,
+            "value": os.getenv(key) or "(default)",
+            "source": "env" if os.getenv(key) is not None else "default",
+        }
+        for key, label in settings.READ_ONLY_ENV.items()
+    ]
+    return {
+        "editable": editable,
+        "read_only": read_only,
+        "note": ("Secrets (API keys, credentials) and security/provisioning switches "
+                 "are managed in .env / the vault and are never editable here."),
+    }
+
+
+@app.put("/api/admin/settings/{key}")
+def set_setting(
+    key: str,
+    body: SettingIn,
+    session: Session = Depends(get_session),
+    admin: str = Depends(require_action("manage_settings")),
+) -> dict:
+    """Override a runtime setting from the Admin console (F-OPS-09). Validated,
+    audited (`setting.changed`), and takes effect on the next read. Only
+    allow-listed non-secret keys are accepted."""
+    if key not in settings.ALLOWLIST:
+        raise HTTPException(status_code=404, detail="Unknown or non-editable setting.")
+    try:
+        value = settings.coerce(key, body.value)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    before = settings.effective(key)
+    row = session.get(Setting, key)
+    if row is None:
+        session.add(Setting(key=key, value=value, updated_by=admin))
+    else:
+        row.value = value
+        row.updated_by = admin
+        row.updated_at = datetime.now(timezone.utc)
+    append_audit(session, "setting.changed", actor=admin,
+                 detail={"key": key, "from": before, "to": value})
+    session.commit()
+    settings.invalidate_cache()
+    return {"key": key, "value": settings.effective(key), "source": settings.source_of(key)}
+
+
+@app.delete("/api/admin/settings/{key}")
+def reset_setting(
+    key: str,
+    session: Session = Depends(get_session),
+    admin: str = Depends(require_action("manage_settings")),
+) -> dict:
+    """Remove a runtime override so the setting reverts to its .env / built-in
+    default (F-OPS-09). Audited (`setting.reset`)."""
+    if key not in settings.ALLOWLIST:
+        raise HTTPException(status_code=404, detail="Unknown or non-editable setting.")
+    row = session.get(Setting, key)
+    if row is not None:
+        before = row.value
+        session.delete(row)
+        append_audit(session, "setting.reset", actor=admin, detail={"key": key, "from": before})
+        session.commit()
+        settings.invalidate_cache()
+    return {"key": key, "value": settings.effective(key), "source": settings.source_of(key)}
 
 
 @app.get("/api/stats")
@@ -874,12 +971,12 @@ def set_shutdown_policy(body: ShutdownPolicyIn, session: Session = Depends(get_s
 def _budget_enforce() -> bool:
     """Whether an over-budget submit is a hard block. Off by default: over budget
     warns until an operator turns enforcement on."""
-    return os.getenv("BUDGET_ENFORCE", "false").strip().lower() in ("1", "true", "yes", "on")
+    return settings.env("BUDGET_ENFORCE", "false").strip().lower() in ("1", "true", "yes", "on")
 
 
 def _budget_warn_pct() -> float:
     try:
-        return max(0.0, min(100.0, float(os.getenv("BUDGET_WARN_PCT", "90"))))
+        return max(0.0, min(100.0, float(settings.env("BUDGET_WARN_PCT", "90"))))
     except (ValueError, TypeError):
         return 90.0
 
@@ -994,7 +1091,7 @@ def delete_budget(cost_centre_code: str, session: Session = Depends(get_session)
 def _quota_enforce() -> bool:
     """Whether an over-quota create is a hard block. Off by default: over quota
     warns until an operator turns enforcement on."""
-    return os.getenv("QUOTA_ENFORCE", "false").strip().lower() in ("1", "true", "yes", "on")
+    return settings.env("QUOTA_ENFORCE", "false").strip().lower() in ("1", "true", "yes", "on")
 
 
 def _environment_count(session: Session, project_code: str | None,
@@ -1614,7 +1711,7 @@ def _compute_sla(status: str | None, submitted_at, created_at) -> dict | None:
         return None
     if start.tzinfo is None:
         start = start.replace(tzinfo=timezone.utc)
-    sla_hours = float(os.getenv("APPROVAL_SLA_HOURS", "24"))
+    sla_hours = float(settings.env("APPROVAL_SLA_HOURS", "24"))
     elapsed = (datetime.now(timezone.utc) - start).total_seconds() / 3600.0
     if sla_hours <= 0 or elapsed >= sla_hours:
         state = "breached"
@@ -2333,7 +2430,7 @@ def get_approval(jira_key: str, session: Session = Depends(get_session)) -> dict
 
 def _sod_enforced() -> bool:
     """Whether segregation of duties is enforced (E1.2). On by default."""
-    return os.getenv("SOD_ENFORCED", "true").strip().lower() in ("1", "true", "yes", "on")
+    return settings.env("SOD_ENFORCED", "true").strip().lower() in ("1", "true", "yes", "on")
 
 
 def _check_sod(session: Session, req: Request, actor: str, action: str) -> None:
@@ -2353,7 +2450,7 @@ def _check_sod(session: Session, req: Request, actor: str, action: str) -> None:
 
 
 def _four_eyes_enforced() -> bool:
-    return os.getenv("FOUR_EYES_ENFORCED", "true").strip().lower() in ("1", "true", "yes", "on")
+    return settings.env("FOUR_EYES_ENFORCED", "true").strip().lower() in ("1", "true", "yes", "on")
 
 
 def _same_person(approver: dict, requester_email: str) -> bool:
@@ -2405,7 +2502,7 @@ def _approval_quorum() -> int:
     """How many distinct approvers a request needs before provisioning (F-GOV-06).
     Default 1 = today's single-approver behaviour."""
     try:
-        return max(1, int(os.getenv("APPROVAL_QUORUM", "1")))
+        return max(1, int(settings.env("APPROVAL_QUORUM", "1")))
     except (ValueError, TypeError):
         return 1
 
@@ -4288,7 +4385,7 @@ _WEEKDAYS = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 
 
 
 def _change_window_enabled() -> bool:
-    return os.getenv("CHANGE_WINDOW_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
+    return settings.env("CHANGE_WINDOW_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
 
 
 def _parse_days(spec: str) -> set[int]:
@@ -4326,15 +4423,15 @@ def change_window_status(now: datetime | None = None) -> dict:
     Disabled (the default) always returns open, so nothing is ever held."""
     if not _change_window_enabled():
         return {"open": True, "reason": ""}
-    tz_name = os.getenv("CHANGE_WINDOW_TZ", "UTC").strip() or "UTC"
+    tz_name = settings.env("CHANGE_WINDOW_TZ", "UTC").strip() or "UTC"
     try:
         tz = ZoneInfo(tz_name)
     except Exception:  # noqa: BLE001
         tz, tz_name = timezone.utc, "UTC"
     local = (now or datetime.now(timezone.utc)).astimezone(tz)
-    days = _parse_days(os.getenv("CHANGE_WINDOW_DAYS", "mon-fri"))
-    start = _parse_hm(os.getenv("CHANGE_WINDOW_START", "08:00"), dtime(8, 0))
-    end = _parse_hm(os.getenv("CHANGE_WINDOW_END", "18:00"), dtime(18, 0))
+    days = _parse_days(settings.env("CHANGE_WINDOW_DAYS", "mon-fri"))
+    start = _parse_hm(settings.env("CHANGE_WINDOW_START", "08:00"), dtime(8, 0))
+    end = _parse_hm(settings.env("CHANGE_WINDOW_END", "18:00"), dtime(18, 0))
     if local.weekday() in days and start <= local.time() <= end:
         return {"open": True, "reason": ""}
     window = (f"{os.getenv('CHANGE_WINDOW_DAYS', 'mon-fri')} "

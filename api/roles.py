@@ -38,6 +38,7 @@ ACTIONS = {
     "view_audit": {AUDITOR, PLATFORM_ADMIN, REQUESTER},
     "view_overview": {PLATFORM_ADMIN, AUDITOR, FINOPS},   # whole-estate dashboard
     "manage_access": {PLATFORM_ADMIN},    # F-IAM-01: edit the group->role map
+    "manage_settings": {PLATFORM_ADMIN},  # F-OPS-09: edit runtime governance settings
 }
 
 _cache: dict[str, tuple[float, set[str]]] = {}

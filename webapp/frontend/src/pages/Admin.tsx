@@ -11,6 +11,7 @@ import {
   type SystemConfig, type BudgetRow, type Lookups, type OrphanRow, type QuotaRow, type ApiKeyRow,
   type Shutdown, type ShutdownPolicy, type WebhookRow, type RoleMapRow, type UserRow,
 } from '../api'
+import SettingsEditor from '../components/SettingsEditor'
 
 function Flag({ on, onLabel, offLabel }: { on: boolean; onLabel?: string; offLabel?: string }) {
   return (
@@ -254,6 +255,8 @@ export default function Admin() {
           </div>
         </Tile>
       )}
+
+      <SettingsEditor />
 
       <Tile>
         <h4 style={{ fontSize: '0.95rem', fontWeight: 500, marginBottom: '0.25rem' }}>
