@@ -28,6 +28,7 @@ from api import ai_drafter
 from api import ai_explainer
 from api import ai_recommend
 from api import ai_triage
+from api import fulfilment
 from api import portal_help
 from api import settings
 from api import anomalies as anomaly_detect
@@ -1454,6 +1455,11 @@ class TechnologyOut(BaseModel):
     # Deployment targets this technology is available on (list of target codes),
     # so the form can filter the catalogue by the selected target (F-CAT).
     targets: list[str] = []
+    # Of those targets, the ones the orchestrator provisions AUTOMATICALLY. On any
+    # other target the request is governed here and then fulfilled by the
+    # infrastructure team — the form shows that plainly so the catalogue never
+    # promises more than the platform delivers (GAP-ANALYSIS.md step 1).
+    automated_targets: list[str] = []
 
     @field_validator("targets", mode="before")
     @classmethod
@@ -1478,6 +1484,14 @@ class LookupsResponse(BaseModel):
     environments: list[EnvironmentOut]
 
 
+def _technology_out(tech: Technology) -> TechnologyOut:
+    """A catalogue entry plus the targets where it is genuinely automated, so the
+    form can tell the requester which items need the infrastructure team."""
+    out = TechnologyOut.model_validate(tech)
+    out.automated_targets = fulfilment.automated_targets(tech, out.targets)
+    return out
+
+
 @app.get("/api/lookups", response_model=LookupsResponse)
 def lookups(session: Session = Depends(get_session)) -> LookupsResponse:
     """Read-only reference data for the guided-request form's dropdowns."""
@@ -1489,7 +1503,8 @@ def lookups(session: Session = Depends(get_session)) -> LookupsResponse:
         subsidiaries=session.scalars(
             select(Subsidiary).where(Subsidiary.active.is_(True)).order_by(Subsidiary.name)
         ).all(),
-        technologies=session.scalars(select(Technology).order_by(Technology.name)).all(),
+        technologies=[_technology_out(t) for t in
+                      session.scalars(select(Technology).order_by(Technology.name)).all()],
         environments=session.scalars(select(Environment).order_by(Environment.name)).all(),
     )
 

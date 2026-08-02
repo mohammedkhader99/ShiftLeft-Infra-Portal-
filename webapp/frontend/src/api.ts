@@ -5,7 +5,9 @@ export type Lookups = {
   projects: { code: string; name: string }[]
   cost_centres: { code: string; name: string }[]
   subsidiaries: { code: string; name: string }[]
-  technologies: { code: string; name: string; lifecycle_state: string; targets: string[] }[]
+  // `automated_targets` are the targets the orchestrator provisions itself; on any
+  // other target the request is governed here and fulfilled by the infra team.
+  technologies: { code: string; name: string; lifecycle_state: string; targets: string[]; automated_targets: string[] }[]
   environments: { name: string; environment_class: string }[]
 }
 

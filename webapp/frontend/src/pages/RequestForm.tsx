@@ -585,6 +585,15 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
     ? lookups.technologies.filter((t) => t.targets.includes(target))
     : lookups.technologies
 
+  // Chosen components the platform does NOT provision automatically — the infra
+  // team fulfils these after approval. Say so before the requester submits.
+  // Only meaningful once a deployment target is chosen.
+  const manualComponents = !target
+    ? []
+    : components
+        .map((c) => lookups.technologies.find((t) => t.code === c.technology_code))
+        .filter((t): t is NonNullable<typeof t> => !!t && !(t.automated_targets || []).includes(target))
+
   return (
     <div style={{ display: 'flex', gap: '2rem', flexWrap: 'wrap' }}>
       <div style={{ flex: '1 1 30rem', maxWidth: '40rem' }}>
@@ -987,6 +996,22 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
                             {t.lifecycle_state}
                           </Tag>
                         )}
+                        {/* How it actually gets delivered on the selected target.
+                            Only meaningful once a target is chosen. */}
+                        {target && (
+                          <Tag
+                            type={(t.automated_targets || []).includes(target) ? 'green' : 'gray'}
+                            size="sm"
+                            style={{ margin: 0 }}
+                            title={
+                              (t.automated_targets || []).includes(target)
+                                ? 'The portal provisions this automatically.'
+                                : 'The infrastructure team fulfils this after approval.'
+                            }
+                          >
+                            {(t.automated_targets || []).includes(target) ? 'automated' : 'manual'}
+                          </Tag>
+                        )}
                       </button>
                     )
                   })}
@@ -1208,7 +1233,26 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
                   : '—'}
               </SummaryRow>
               {cost && <SummaryRow label="Est. monthly"><strong>{cost.totals.monthly.toFixed(2)} {cost.currency}</strong></SummaryRow>}
+              {filledComponents.length > 0 && target && (
+                <SummaryRow label="Delivery">
+                  {manualComponents.length === 0 ? (
+                    <Tag type="green" size="sm" style={{ margin: 0 }}>fully automated</Tag>
+                  ) : (
+                    <Tag type="gray" size="sm" style={{ margin: 0 }}>
+                      {manualComponents.length} of {filledComponents.length} fulfilled by the infra team
+                    </Tag>
+                  )}
+                </SummaryRow>
+              )}
             </div>
+            {manualComponents.length > 0 && (
+              <p style={{ fontSize: '0.72rem', color: 'var(--cds-text-secondary)', marginTop: '0.5rem' }}>
+                After approval, the infrastructure team provisions{' '}
+                {manualComponents.map((t) => t.name).join(', ')} — {target ? TARGET_SHORT[target] || target : 'this target'}{' '}
+                has no automated build for {manualComponents.length > 1 ? 'these' : 'this'} yet. The portal still validates,
+                prices, routes the approval and records the audit trail.
+              </p>
+            )}
             {isCreateLike && envTier && NONPROD_TIERS.includes(envTier) && (
               <p style={{ fontSize: '0.72rem', color: 'var(--cds-text-secondary)', marginTop: '0.5rem' }}>
                 Non-prod environments have a limited lifetime (auto-expire per the TTL policy) and can be auto-shut-down out of hours.

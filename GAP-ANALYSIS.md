@@ -163,3 +163,18 @@ Claims were verified directly against source, not planning documents:
 | Compute presumes admin-built network | [orchestrator/terraform/main.tf](orchestrator/terraform/main.tf) — `var.subnet_ocid`, `var.image_ocid` |
 | RBAC enforcement off | Running API environment: `ROLE_SOURCE=mock` |
 | Feature and test counts | 126 catalogued features (ARCHITECTURE.md); 769 passing tests |
+
+---
+
+## 10. Progress log
+
+The assessment above is deliberately left unchanged as a point-in-time record. Work completed against section 7 is tracked here.
+
+| Step | Status | Delivered |
+|---|---|---|
+| **1 — Close the honesty gap** | ✅ Done, 2 Aug 2026 | `api/fulfilment.py` classifies every (technology, target) pair as **automated** or **manual** using the same rules as the provisioner, with a test that fails if the two drift apart. `/api/lookups` exposes `automated_targets`; the request form badges each catalogue card and warns before submission when the infrastructure team must fulfil the request. **Measured result: 5 of 46 technologies are automated on at least one target; 41 are manual everywhere.** |
+| 2 — One technology end-to-end | Not started | |
+| 3 — Day-2 execution | Not started | |
+| 4 — Configuration layer | Not started | |
+| 5 — Network services | Not started | |
+| 6 — Scale the module library | Not started | |
