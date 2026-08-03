@@ -156,12 +156,21 @@ def _resource_kind(payload: dict) -> str:
 
 
 def _instance_sizing(payload: dict) -> dict:
-    """OCI flex-shape sizing (ocpus, memory_gb) from the largest component size."""
-    best = (1, 8)  # a safe minimum
+    """OCI flex-shape sizing (ocpus, memory_gb) from the largest component size.
+
+    The fallback applies only when NO component resolves to a known size. It used
+    to be a floor applied to every request, which meant a 'small' environment —
+    priced by the catalogue at 2 vCPU / 4 GB — was actually built with 8 GB, and a
+    reduction down to 'small' silently changed nothing while reporting success.
+    Sizing now matches what the catalogue prices.
+    """
+    best: tuple[int, int] | None = None
     for c in payload.get("policy_input", {}).get("components", []):
         vcpu, mem = _SIZES.get((c.get("size") or "").lower(), (0, 0))
-        if mem > best[1]:
+        if mem and (best is None or mem > best[1]):
             best = (max(1, round(vcpu / 2)), mem)  # 1 OCPU ~ 2 vCPUs on x86 flex
+    if best is None:
+        best = (1, 8)  # nothing recognisable — a safe default, not a floor
     return {"ocpus": best[0], "memory_gb": best[1]}
 
 
@@ -181,16 +190,28 @@ def _image_for(payload: dict) -> str:
     return os.getenv("OCI_COMPUTE_IMAGE_OCID", "")
 
 
+def _psql_shape(sizing: dict) -> str:
+    """The OCI managed-PostgreSQL flex shape for a given sizing, e.g.
+    PostgreSQL.VM.Standard.E4.Flex.2.32GB. The family is configurable because
+    available shapes differ by region and change over time."""
+    family = os.getenv("OCI_PSQL_SHAPE_FAMILY", "PostgreSQL.VM.Standard.E4.Flex").strip()
+    return f"{family}.{int(sizing.get('ocpus', 1))}.{int(sizing.get('memory_gb', 8))}GB"
+
+
 def _compute_spec(payload: dict) -> dict:
     """The compute instance's Terraform inputs: sizing, the resolved OS image, and
     the first-boot configuration that turns a bare VM into a working service
     (GAP-ANALYSIS step 4). user_data is "" when configuration is off or no chosen
     technology has a template, which leaves the previous behaviour untouched."""
     components = payload.get("policy_input", {}).get("components", [])
+    sizing = _instance_sizing(payload)
     return {
-        **_instance_sizing(payload),
+        **sizing,
         "image_ocid": _image_for(payload),
         "user_data": configure.render(components),
+        # The managed-PostgreSQL shape for the same sizing, so a database scales
+        # with the request like a VM does. Unused for non-database resources.
+        "db_shape": _psql_shape(sizing),
     }
 
 
@@ -417,15 +438,54 @@ async def reduce(request: Request) -> dict:
     if not verify(WEBHOOK_SECRET, body, request.headers.get("X-Signature", "")):
         raise HTTPException(status_code=401, detail="Invalid webhook signature.")
     payload = json.loads(body)
-    if os.getenv("REDUCE_MODE", "mock").strip().lower() == "live":
-        raise HTTPException(status_code=501, detail=(
-            "Live capacity reduction is not configured. Wire the resize job in "
-            "orchestrator/main.reduce to enable it."))
-    tgt = (payload.get("target") or {}).get("reference")
+    target = payload.get("target") or {}
+    tgt = target.get("reference")
     reductions = payload.get("reductions") or []
     parts = ", ".join(f"{r.get('technology')} {r.get('from')}→{r.get('to')}" for r in reductions)
-    return {"reduced": True,
-            "summary": f"Mock-reduced {tgt}: {parts or 'no changes'} — nothing resized."}
+
+    if os.getenv("REDUCE_MODE", "mock").strip().lower() != "live":
+        return {"reduced": True,
+                "summary": f"Mock-reduced {tgt}: {parts or 'no changes'} — nothing resized."}
+
+    # Live resize goes through TERRAFORM, not a direct SDK call: the request's
+    # workspace is the source of truth, so re-planning with the smaller sizing
+    # keeps state consistent. A direct API resize would show up as drift and could
+    # be reverted by the next apply.
+    if not reductions:
+        return {"reduced": False, "summary": "No reductions supplied — nothing to do."}
+    rkind = target.get("resource_kind") or "oci-bucket"
+    if rkind not in ("oci-instance", "oci-postgres"):
+        raise HTTPException(status_code=501, detail=(
+            f"'{rkind}' has no resizable capacity — only compute instances and managed "
+            "databases can be scaled down."))
+
+    # Apply the reductions to the target's components, then size from the result.
+    policy_input = dict(target.get("policy_input") or {})
+    new_size = {str(r.get("technology")): str(r.get("to")) for r in reductions if r.get("to")}
+    components = [
+        {**c, "size": new_size.get(c.get("technology_code"), c.get("size"))}
+        for c in (policy_input.get("components") or [])
+    ]
+    policy_input["components"] = components
+    synthetic = {"policy_input": policy_input, "reference": tgt}
+    name, tags = _bucket_and_tags(synthetic)
+    sizing = _compute_spec(synthetic)
+
+    try:
+        plan = provisioner.terraform_plan(tgt, name, tags, rkind, sizing)
+        applied = provisioner.terraform_apply(tgt, name, tags, rkind, sizing)
+    except provisioner.ProvisionError as exc:
+        raise HTTPException(status_code=400, detail=f"Resize failed: {exc}")
+    return {
+        "reduced": True,
+        "plan_summary": plan.get("summary"),
+        "outputs": applied.get("outputs", {}),
+        # Resizing real infrastructure is not free of impact: a flex-shape change
+        # restarts the instance, and a database shape change restarts the service.
+        "disruptive": True,
+        "summary": (f"Resized {tgt}: {parts}. {applied.get('summary', 'apply complete')}. "
+                    "The resource restarted as part of the change."),
+    }
 
 
 @app.post("/destroy")

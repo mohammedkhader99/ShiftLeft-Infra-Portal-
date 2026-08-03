@@ -207,10 +207,21 @@ def test_reduce_rejects_bad_signature():
     assert client.post("/reduce", content=body, headers={"X-Signature": "bad"}).status_code == 401
 
 
-def test_reduce_live_is_unconfigured(monkeypatch):
+def test_reduce_live_refuses_a_resource_with_no_capacity(monkeypatch):
+    """Live reduce is implemented (GAP-ANALYSIS step 3), but a bucket has no
+    capacity to scale down — it refuses rather than pretending to resize."""
+    monkeypatch.setenv("REDUCE_MODE", "live")
+    body = _body(operation="reduce",
+                 target={"reference": "T", "resource_kind": "oci-bucket"},
+                 reductions=[{"technology": "x", "from": "large", "to": "small"}])
+    assert client.post("/reduce", content=body, headers=_signed(body)).status_code == 501
+
+
+def test_reduce_live_with_no_reductions_is_a_no_op(monkeypatch):
     monkeypatch.setenv("REDUCE_MODE", "live")
     body = _body(operation="reduce", target={"reference": "T"}, reductions=[])
-    assert client.post("/reduce", content=body, headers=_signed(body)).status_code == 501
+    resp = client.post("/reduce", content=body, headers=_signed(body))
+    assert resp.status_code == 200 and resp.json()["reduced"] is False
 
 
 def test_apply_refused_when_not_apply_mode(monkeypatch):

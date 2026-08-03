@@ -305,6 +305,14 @@ services:
       CONFIG_ENABLED: ${CONFIG_ENABLED:-false}
       CONFIG_OS_FAMILY: ${CONFIG_OS_FAMILY:-rhel}
       CONFIG_PACKAGE_MAP: ${CONFIG_PACKAGE_MAP:-}
+      # Live capacity reduction (GAP-ANALYSIS step 3): scales a provisioned VM or
+      # managed database DOWN by re-planning its Terraform workspace with the
+      # smaller sizing. Needs PROVISION_MODE=apply as well. A real resize RESTARTS
+      # the resource, so it is off by default.
+      REDUCE_MODE: ${REDUCE_MODE:-mock}
+      # The managed-PostgreSQL shape family used when a database is resized;
+      # available shapes differ by region and change over time.
+      OCI_PSQL_SHAPE_FAMILY: ${OCI_PSQL_SHAPE_FAMILY:-PostgreSQL.VM.Standard.E4.Flex}
     ports:
       - "9091:9091"
     volumes:

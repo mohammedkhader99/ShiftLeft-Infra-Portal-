@@ -4240,9 +4240,11 @@ def _refresh(session: Session, req: Request, actor: str) -> dict:
             "message": f"Refreshed {target.reference} from {src.reference}: {summary}"}
 
 
-def _reduce_handoff(req: Request, target: Request, reductions: list[dict]) -> tuple[bytes, str]:
+def _reduce_handoff(req: Request, target: Request, reductions: list[dict],
+                    resource_kind: str = "oci-bucket") -> tuple[bytes, str]:
     """Build + sign the reduce-capacity handoff — the target and the per-component
-    size reductions (technology, from, to)."""
+    size reductions (technology, from, to). `resource_kind` tells the orchestrator
+    which Terraform module owns the target, so a live resize can re-plan it."""
     payload = {
         "contract_version": CONTRACT_VERSION,
         "idempotency_key": req.approval.jira_key,
@@ -4250,7 +4252,8 @@ def _reduce_handoff(req: Request, target: Request, reductions: list[dict]) -> tu
         "jira_key": req.approval.jira_key,
         "reference": req.reference,
         "operation": "reduce",
-        "target": {"reference": target.reference, "policy_input": _policy_input(target)},
+        "target": {"reference": target.reference, "policy_input": _policy_input(target),
+                   "resource_kind": resource_kind},
         "reductions": reductions,
     }
     body = json.dumps(payload, sort_keys=True).encode()
@@ -4279,7 +4282,8 @@ def _reduce(session: Session, req: Request, actor: str) -> dict:
     _transition_jira(session, req, inprogress_status(), "jira.in_progress")
     session.commit()
 
-    body, signature = _reduce_handoff(req, target, reductions)
+    body, signature = _reduce_handoff(req, target, reductions,
+                                      _environment_resource_kind(session, target))
     append_audit(session, "reduce.handoff", reference=req.reference,
                  jira_key=req.approval.jira_key, actor=actor,
                  detail={"target": target.reference, "reductions": reductions})
@@ -4297,13 +4301,24 @@ def _reduce(session: Session, req: Request, actor: str) -> dict:
         session.commit()
         return {"approval": "approved", "reduced": False, "error": reason}
 
-    summary = response.json().get("summary")
+    result = response.json()
+    summary = result.get("summary")
     req.status = "reduced"
-    req.status_detail = None
+    # A real resize restarts the resource (a flex-shape change reboots a VM; a
+    # database shape change restarts the service). Say so rather than letting
+    # "reduced" imply it happened invisibly.
+    disruptive = bool(result.get("disruptive"))
+    req.status_detail = ("The resource restarted as part of this resize."
+                         if disruptive else None)
+    if disruptive:
+        add_comment(req.approval.jira_key,
+                    "ℹ️ Capacity reduced. Note this was a live resize: the resource "
+                    "restarted as part of the change, so there was a brief interruption.")
     _transition_jira(session, req, resolved_status(), "jira.resolved")
     append_audit(session, "capacity.reduced", reference=req.reference,
                  jira_key=req.approval.jira_key,
-                 detail={"target": target.reference, "reductions": reductions, "summary": summary})
+                 detail={"target": target.reference, "reductions": reductions,
+                         "summary": summary, "disruptive": disruptive})
     session.commit()
     return {"approval": "approved", "reduced": True, "target": target.reference,
             "reductions": reductions, "message": f"Reduced {target.reference}: {summary}"}
