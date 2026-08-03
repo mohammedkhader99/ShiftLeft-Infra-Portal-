@@ -31,6 +31,8 @@ _SHIPPED = [
      "builds": ["postgres16"], "description": "Managed PostgreSQL."},
     {"ref": "aws/s3", "target": "aws", "resource_kind": "aws-bucket",
      "builds": ["aws-s3"], "description": "S3 bucket."},
+    {"ref": "oci/apache-httpd", "target": "oci", "resource_kind": "oci-apache",
+     "builds": ["apache"], "description": "Apache on OCI Compute."},
 ]
 
 
@@ -177,3 +179,54 @@ def test_certifying_a_blueprint_flips_the_catalogue_badge(client, session, shipp
     fulfilment.invalidate_cache()
     by_code = {t["code"]: t for t in client.get("/api/lookups").json()["technologies"]}
     assert by_code["postgres16"]["automated_targets"] == []
+
+
+# --- What actually gets built --------------------------------------------
+
+def test_a_certified_blueprint_decides_the_resource_kind(client, session, shipped):
+    """The bug this closes: apache was certified with the oci/apache-httpd
+    blueprint, and a request still provisioned an object-storage bucket because
+    the derivation read Technology.resource_kind instead of the registry."""
+    from api.main import _environment_resource_kind
+    from db.models import Request, RequestComponent
+
+    req = Request(reference="REQ-BP-1", status="submitted", requester="u@x.com",
+                  request_type="create", deployment_target="oci")
+    req.components = [RequestComponent(technology_code="apache", size="small")]
+    session.add(req)
+    session.flush()
+
+    # Before certification: the legacy derivation, a placeholder bucket.
+    assert _environment_resource_kind(session, req) == "oci-bucket"
+
+    client.post("/api/blueprints", json={"technology_code": "apache",
+                                         "deployment_target": "oci",
+                                         "blueprint_ref": "oci/apache-httpd"})
+    # After: what the blueprint actually builds.
+    assert _environment_resource_kind(session, req) == "oci-apache"
+
+
+def test_certification_records_the_manifests_resource_kind(client, session, shipped):
+    """Without this the derivation has nothing to read."""
+    from db.models import Blueprint as BP
+    client.post("/api/blueprints", json={"technology_code": "postgres16",
+                                         "deployment_target": "oci",
+                                         "blueprint_ref": "oci/postgres"})
+    assert session.get(BP, ("postgres16", "oci")).resource_kind == "oci-postgres"
+
+
+def test_withdrawing_returns_to_the_legacy_derivation(client, session, shipped):
+    from api.main import _environment_resource_kind
+    from db.models import Request, RequestComponent
+
+    req = Request(reference="REQ-BP-2", status="submitted", requester="u@x.com",
+                  request_type="create", deployment_target="oci")
+    req.components = [RequestComponent(technology_code="apache", size="small")]
+    session.add(req)
+    session.flush()
+    client.post("/api/blueprints", json={"technology_code": "apache",
+                                         "deployment_target": "oci",
+                                         "blueprint_ref": "oci/apache-httpd"})
+    assert _environment_resource_kind(session, req) == "oci-apache"
+    client.delete("/api/blueprints/apache/oci")
+    assert _environment_resource_kind(session, req) == "oci-bucket"

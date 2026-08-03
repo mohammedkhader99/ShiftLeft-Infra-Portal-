@@ -517,6 +517,11 @@ class Blueprint(Base):
     deployment_target: Mapped[str] = mapped_column(String(16), primary_key=True)
     # Path of the module in the orchestrator, e.g. 'oci/postgres'.
     blueprint_ref: Mapped[str] = mapped_column(String(160))
+    # What this recipe builds, copied from the orchestrator's manifest at
+    # certification. Recorded here so the provisioning path derives the resource
+    # kind from the SAME source as the catalogue badge — when they were separate,
+    # a certified Apache blueprint still provisioned an object-storage bucket.
+    resource_kind: Mapped[str] = mapped_column(String(32), default="")
     version: Mapped[str] = mapped_column(String(32), default="")
     # certified = usable for real provisioning; draft = present but not approved.
     status: Mapped[str] = mapped_column(String(16), default="draft")

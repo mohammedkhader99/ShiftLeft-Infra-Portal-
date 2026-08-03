@@ -856,7 +856,9 @@ def certify_blueprint(body: BlueprintIn, session: Session = Depends(get_session)
     if shipped is None:
         raise HTTPException(status_code=503,
                             detail="The orchestrator is unreachable, so its blueprints can't be confirmed.")
-    if not any(code in bp.get("builds", []) and bp.get("target") == target for bp in shipped):
+    manifest = next((bp for bp in shipped
+                     if code in bp.get("builds", []) and bp.get("target") == target), None)
+    if manifest is None:
         raise HTTPException(
             status_code=422,
             detail=f"The orchestrator ships no blueprint building '{code}' on {target}.")
@@ -867,6 +869,9 @@ def certify_blueprint(body: BlueprintIn, session: Session = Depends(get_session)
         row = Blueprint(technology_code=code, deployment_target=target)
         session.add(row)
     row.blueprint_ref = (body.blueprint_ref or "").strip()
+    # From the manifest, so provisioning derives what to build from the SAME
+    # source as the catalogue badge.
+    row.resource_kind = manifest.get("resource_kind", "")
     row.version = (body.version or "").strip()
     row.notes = body.notes
     row.status = "certified"
@@ -2351,9 +2356,31 @@ def _environment_resource_kind(session: Session, req: Request) -> str:
 
     Order matters: a managed database is the most specific delivery, so it wins
     over compute, which wins over the placeholder bucket."""
-    if (req.deployment_target or "").strip().lower() == "aws":
-        return "aws-bucket"
+    target = (req.deployment_target or "").strip().lower()
     codes = [c.technology_code for c in req.components if c.technology_code]
+
+    # A CERTIFIED blueprint decides what gets built. Same source as the catalogue
+    # badge — when these were separate, a certified Apache blueprint still
+    # provisioned an object-storage bucket because the technology row said so.
+    if codes:
+        certified = session.scalars(
+            select(Blueprint).where(
+                Blueprint.status == "certified",
+                Blueprint.deployment_target == target,
+                Blueprint.technology_code.in_(codes),
+                Blueprint.resource_kind != "",
+            )
+        ).all()
+        if certified:
+            # One resource per environment today, so a stack whose components
+            # carry different blueprints has to pick one. Deterministic by kind,
+            # and a genuine limitation of the single-resource model.
+            return sorted({b.resource_kind for b in certified})[0]
+
+    # No certified blueprint: the legacy derivation, which is what still drives
+    # the technologies whose recipes remain branches in the shared module.
+    if target == "aws":
+        return "aws-bucket"
     if not codes:
         return "oci-bucket"
     kinds = session.scalars(
