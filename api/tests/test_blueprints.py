@@ -153,31 +153,27 @@ def test_blueprints_are_admin_only(client, shipped, monkeypatch):
                              "blueprint_ref": "x"}).status_code == 403
 
 
-# --- Migration proof ---------------------------------------------------------
+# --- The registry drives the catalogue badge ---------------------------------
 
-def test_registry_agrees_with_todays_honesty_badge(client, session, shipped):
-    """Before the catalogue badge can be driven from this table, the two must
-    already give identical answers. This is the evidence that switching over
-    changes nothing a requester sees."""
+def test_certifying_a_blueprint_flips_the_catalogue_badge(client, session, shipped):
+    """The bug this closes: a blueprint was certified on the Blueprints page and
+    the request form still showed the technology as 'manual', because the badge
+    was computed from rules in code instead of from the registry."""
     from api import fulfilment
-    from db.models import Technology
 
-    # Certify everything the orchestrator ships, as the real registry would hold.
-    for bp in _SHIPPED:
-        for code in bp["builds"]:
-            client.post("/api/blueprints", json={
-                "technology_code": code, "deployment_target": bp["target"],
-                "blueprint_ref": bp["ref"]})
+    by_code = {t["code"]: t for t in client.get("/api/lookups").json()["technologies"]}
+    assert by_code["postgres16"]["automated_targets"] == []
 
-    from_registry = {(b["technology_code"], b["deployment_target"])
-                     for b in client.get("/api/blueprints").json()["blueprints"]
-                     if b["state"] == "certified"}
-    from_badge = {
-        (t.code, target)
-        for t in session.scalars(select(Technology)).all()
-        for target in ("onprem", "azure", "oci", "aws", "gcp")
-        if fulfilment.fulfilment_for(t, target)["mode"] == "automated"
-    }
-    assert from_registry == from_badge, (
-        f"registry and badge disagree:\n  only in registry: {sorted(from_registry - from_badge)}"
-        f"\n  only in badge   : {sorted(from_badge - from_registry)}")
+    client.post("/api/blueprints", json={"technology_code": "postgres16",
+                                         "deployment_target": "oci",
+                                         "blueprint_ref": "oci/postgres", "version": "2.0.1"})
+    fulfilment.invalidate_cache()
+
+    by_code = {t["code"]: t for t in client.get("/api/lookups").json()["technologies"]}
+    assert by_code["postgres16"]["automated_targets"] == ["oci"]
+
+    # ...and withdrawing it puts the technology back to manual.
+    client.delete("/api/blueprints/postgres16/oci")
+    fulfilment.invalidate_cache()
+    by_code = {t["code"]: t for t in client.get("/api/lookups").json()["technologies"]}
+    assert by_code["postgres16"]["automated_targets"] == []

@@ -876,6 +876,7 @@ def certify_blueprint(body: BlueprintIn, session: Session = Depends(get_session)
                  detail={"technology": code, "target": target,
                          "ref": row.blueprint_ref, "version": row.version})
     session.commit()
+    fulfilment.invalidate_cache()  # the catalogue badge follows certification
     return {"technology_code": code, "deployment_target": target, "state": "certified"}
 
 
@@ -892,6 +893,7 @@ def decertify_blueprint(technology_code: str, deployment_target: str,
     append_audit(session, "blueprint.decertified", actor=admin,
                  detail={"technology": technology_code, "target": deployment_target})
     session.commit()
+    fulfilment.invalidate_cache()
     return {"technology_code": technology_code, "deployment_target": deployment_target,
             "state": "available"}
 
@@ -1786,11 +1788,15 @@ class LookupsResponse(BaseModel):
     environments: list[EnvironmentOut]
 
 
-def _technology_out(tech: Technology) -> TechnologyOut:
+def _technology_out(tech: Technology, certified: set | None = None) -> TechnologyOut:
     """A catalogue entry plus the targets where it is genuinely automated, so the
-    form can tell the requester which items need the infrastructure team."""
+    form can tell the requester which items need the infrastructure team.
+
+    `certified` is the blueprint registry's certified (technology, target) pairs —
+    passed in so building the whole catalogue costs one lookup, not one per row.
+    """
     out = TechnologyOut.model_validate(tech)
-    out.automated_targets = fulfilment.automated_targets(tech, out.targets)
+    out.automated_targets = fulfilment.automated_targets(tech, out.targets, certified)
     return out
 
 
@@ -1805,7 +1811,7 @@ def lookups(session: Session = Depends(get_session)) -> LookupsResponse:
         subsidiaries=session.scalars(
             select(Subsidiary).where(Subsidiary.active.is_(True)).order_by(Subsidiary.name)
         ).all(),
-        technologies=[_technology_out(t) for t in
+        technologies=[_technology_out(t, fulfilment.certified_pairs(session)) for t in
                       session.scalars(select(Technology).order_by(Technology.name)).all()],
         environments=session.scalars(select(Environment).order_by(Environment.name)).all(),
     )
