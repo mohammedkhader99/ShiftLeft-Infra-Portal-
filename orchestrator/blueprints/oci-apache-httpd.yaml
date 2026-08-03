@@ -5,4 +5,12 @@ module: oci/apache-httpd
 version: 1.0.0
 builds: [apache]
 description: Apache HTTP Server on a private OCI Compute instance, installed and hardened at first boot.
-requires_env: [OCI_COMPUTE_SUBNET_OCID]
+requires_env: [OCI_COMPUTE_SUBNET_OCID, OCI_COMPUTE_IMAGE_OCID]
+# Module inputs the standard variable set does not carry. Declared here so the
+# provisioner needs to know nothing about this recipe's particulars.
+vars:
+  # The module can create its own NSG, but that requires a VCN OCID which the
+  # standard set doesn't pass. Off by default: the subnet's own security rules
+  # govern access. Supply vcn_ocid here and flip this to true to have the
+  # blueprint manage its own ingress.
+  create_nsg: false

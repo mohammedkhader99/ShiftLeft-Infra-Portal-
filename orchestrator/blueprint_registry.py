@@ -81,6 +81,10 @@ def discover(directory: Path | None = None) -> list[dict]:
             "version": str(manifest.get("version") or ""),
             "builds": [str(b) for b in manifest.get("builds") or []],
             "description": str(manifest.get("description") or ""),
+            # Module-specific inputs the standard variable set doesn't carry.
+            # Merged over it at provision time, so a recipe with unusual inputs
+            # stays a data change rather than a code change.
+            "vars": manifest.get("vars") if isinstance(manifest.get("vars"), dict) else {},
             "ready": ready,
             "missing_config": missing,
         })

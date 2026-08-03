@@ -20,7 +20,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from orchestrator import drift, scanner
+from orchestrator import blueprint_registry, drift, scanner
 
 MODULE_DIR = Path(__file__).resolve().parent / "terraform"
 STATE_ROOT = Path(os.getenv("TF_STATE_DIR", "/tfstate"))
@@ -109,6 +109,25 @@ def _require_dns() -> None:
             "DNS is not configured: set OCI_DNS_ZONE to the zone records are created "
             "in (e.g. internal.example.com)."
         )
+
+
+def _require_manifest(resource_kind: str) -> None:
+    """Enforce the preconditions a blueprint declares for itself.
+
+    A recipe added as a manifest has no hand-written gate here, so without this
+    it would reach Terraform and fail with a provider error instead of a sentence
+    naming the setting that is missing.
+    """
+    if not resource_kind:
+        return
+    manifest = blueprint_registry.for_resource_kind(resource_kind)
+    if not manifest or manifest.get("ready", True):
+        return
+    missing = ", ".join(manifest.get("missing_config") or [])
+    raise ProvisionError(
+        f"Blueprint '{manifest.get('ref', resource_kind)}' is not configured: set "
+        f"{missing}."
+    )
 
 
 def _oci_vars(name: str, tags: dict, resource_kind: str = "oci-bucket",
@@ -204,9 +223,24 @@ def _cloud_of(resource_kind: str) -> str:
     return "aws" if (resource_kind or "").startswith("aws-") else "oci"
 
 
-def _module_dir(cloud: str) -> Path:
-    """The Terraform module for a cloud. OCI is the flat (default) module; AWS has
-    its own subdir with its own provider."""
+def _module_dir(cloud: str, resource_kind: str = "") -> Path:
+    """Where this resource kind's Terraform lives.
+
+    A blueprint manifest may name its own module directory, and that takes
+    precedence — this is what makes blueprints pluggable: adding a recipe is
+    adding a folder and a manifest, not editing dispatch code.
+
+    Falls back to the legacy layout (AWS in its subdir, OCI in the flat root
+    module) when no manifest claims the kind, or when a manifest says `module: .`
+    because its recipe is still a branch inside the shared module.
+    """
+    if resource_kind:
+        manifest = blueprint_registry.for_resource_kind(resource_kind) or {}
+        module = (manifest.get("module") or "").strip()
+        if module and module != ".":
+            candidate = MODULE_DIR / module
+            if candidate.is_dir():
+                return candidate
     return MODULE_DIR / "aws" if cloud == "aws" else MODULE_DIR
 
 
@@ -236,23 +270,56 @@ def _require_cloud(cloud: str, resource_kind: str, creating: bool = True) -> Non
         _require_compute()
     elif resource_kind == "oci-postgres":
         _require_psql()
+    else:
+        _require_manifest(resource_kind)
 
 
 def _cloud_vars(cloud: str, name: str, tags: dict, resource_kind: str, sizing: dict | None) -> dict:
-    if cloud == "aws":
-        return _aws_vars(name, tags, resource_kind)
-    return _oci_vars(name, tags, resource_kind, sizing)
+    base = _aws_vars(name, tags, resource_kind) if cloud == "aws"         else _oci_vars(name, tags, resource_kind, sizing)
+    # A blueprint may set defaults its own module needs, without those having to
+    # be known by this code. Declared in the manifest, so adding a recipe with
+    # unusual inputs stays a data change.
+    manifest = blueprint_registry.for_resource_kind(resource_kind) or {} if resource_kind else {}
+    extra = manifest.get("vars")
+    if isinstance(extra, dict):
+        base = {**base, **extra}
+    return base
 
 
-def _workdir(reference: str, cloud: str = "oci") -> Path:
-    """Per-request working dir on the persistent volume, seeded with the cloud's
-    module. A workdir only ever holds one cloud's .tf (a request's cloud is fixed)."""
+def _workdir(reference: str, cloud: str = "oci", resource_kind: str = "") -> Path:
+    """Per-request working dir on the persistent volume, seeded with the module.
+
+    A workdir only ever holds one module (a request's cloud and kind are fixed).
+
+    A dedicated blueprint directory is copied WHOLE — templates, scripts and any
+    other support files — because a module that uses templatefile() would
+    otherwise arrive without the thing it renders. The legacy shared module is
+    still copied as *.tf only: its directory now contains the per-blueprint
+    subfolders, which must not be dragged into every workspace.
+    """
     workdir = STATE_ROOT / reference
     workdir.mkdir(parents=True, exist_ok=True)
-    for tf in _module_dir(cloud).glob("*.tf"):
-        dest = workdir / tf.name
-        if not dest.exists():
-            shutil.copy(tf, dest)
+    source = _module_dir(cloud, resource_kind)
+    legacy = source in (MODULE_DIR, MODULE_DIR / "aws")
+
+    if legacy:
+        for tf in source.glob("*.tf"):
+            dest = workdir / tf.name
+            if not dest.exists():
+                shutil.copy(tf, dest)
+        return workdir
+
+    for item in source.iterdir():
+        # Never copy provider caches or state from the source tree.
+        if item.name.startswith(".") or item.name.startswith("terraform.tfstate"):
+            continue
+        dest = workdir / item.name
+        if dest.exists():
+            continue
+        if item.is_dir():
+            shutil.copytree(item, dest)
+        else:
+            shutil.copy(item, dest)
     return workdir
 
 
@@ -289,7 +356,7 @@ def terraform_plan(reference: str, name: str, tags: dict,
     """Init + plan in the request's workspace, saving the plan. Creates nothing."""
     cloud = _cloud_of(resource_kind)
     _require_cloud(cloud, resource_kind)
-    workdir = _workdir(reference, cloud)
+    workdir = _workdir(reference, cloud, resource_kind)
     _write_tfvars(workdir, _cloud_vars(cloud, name, tags, resource_kind, sizing))
 
     init = _run(["init", "-input=false", "-no-color"], workdir)
@@ -327,7 +394,7 @@ def terraform_apply(reference: str, name: str, tags: dict,
         raise ProvisionError("apply is not enabled (PROVISION_MODE is not 'apply')")
     cloud = _cloud_of(resource_kind)
     _require_cloud(cloud, resource_kind)
-    workdir = _workdir(reference, cloud)
+    workdir = _workdir(reference, cloud, resource_kind)
     if not (workdir / PLAN_FILE).exists():
         raise ProvisionError("no saved plan for this request — approve (plan) it first")
 
@@ -362,7 +429,7 @@ def terraform_drift(reference: str, name: str, tags: dict,
     existing resource after the switch that created it has been turned off."""
     cloud = _cloud_of(resource_kind)
     _require_cloud(cloud, resource_kind, creating=False)
-    workdir = _workdir(reference, cloud)
+    workdir = _workdir(reference, cloud, resource_kind)
     _write_tfvars(workdir, _cloud_vars(cloud, name, tags, resource_kind, sizing))
 
     init = _run(["init", "-input=false", "-no-color"], workdir)
@@ -389,7 +456,7 @@ def terraform_destroy(reference: str, name: str, tags: dict,
     creation, or an expensive resource becomes stuck (see _require_cloud)."""
     cloud = _cloud_of(resource_kind)
     _require_cloud(cloud, resource_kind, creating=False)
-    workdir = _workdir(reference, cloud)
+    workdir = _workdir(reference, cloud, resource_kind)
     _write_tfvars(workdir, _cloud_vars(cloud, name, tags, resource_kind, sizing))
 
     _run(["init", "-input=false", "-no-color"], workdir)

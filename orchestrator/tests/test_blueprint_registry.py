@@ -133,3 +133,75 @@ def test_a_missing_directory_returns_empty_rather_than_raising(tmp_path):
     """Discovery must never fail closed — the portal would read an exception as
     'the orchestrator ships nothing'."""
     assert blueprint_registry.discover(tmp_path / "does-not-exist") == []
+
+
+# --- Dispatch: the manifest decides which module runs ------------------------
+
+def test_a_blueprint_with_its_own_directory_is_dispatched_to_it():
+    """The point of pluggable blueprints: adding a recipe is adding a folder and
+    a manifest, not editing dispatch code."""
+    from orchestrator import provisioner
+    module = provisioner._module_dir("oci", "oci-apache")
+    assert module.name == "apache-httpd"
+    assert (module / "main.tf").is_file()
+
+
+def test_legacy_kinds_still_use_the_shared_module():
+    """Existing provisioning must be untouched by the new dispatch."""
+    from orchestrator import provisioner
+    assert provisioner._module_dir("oci", "oci-bucket") == provisioner.MODULE_DIR
+    assert provisioner._module_dir("oci", "oci-instance") == provisioner.MODULE_DIR
+    assert provisioner._module_dir("oci", "oci-postgres") == provisioner.MODULE_DIR
+    assert provisioner._module_dir("aws", "aws-bucket") == provisioner.MODULE_DIR / "aws"
+    # An unknown kind falls back rather than failing.
+    assert provisioner._module_dir("oci", "no-such-kind") == provisioner.MODULE_DIR
+
+
+def test_manifest_vars_are_merged_over_the_standard_set(monkeypatch):
+    """A recipe's own inputs come from its manifest, so the provisioner needs to
+    know nothing about them."""
+    from orchestrator import provisioner
+    monkeypatch.setenv("OCI_TENANCY_OCID", "t")
+    monkeypatch.setenv("OCI_COMPARTMENT_OCID", "c")
+    monkeypatch.setenv("OCI_REGION", "me-dubai-1")
+    v = provisioner._cloud_vars("oci", "web", {"env": "uat"}, "oci-apache", {"ocpus": 2})
+    assert v["create_nsg"] is False          # from the manifest
+    assert v["instance_name"] == ""          # standard set still present
+    assert v["compartment_ocid"] == "c"
+
+
+def test_a_dedicated_module_is_copied_whole_including_templates(tmp_path, monkeypatch):
+    """A module using templatefile() would otherwise arrive without the file it
+    renders — a failure that only appears at apply time."""
+    from orchestrator import provisioner
+    monkeypatch.setattr(provisioner, "STATE_ROOT", tmp_path)
+    workdir = provisioner._workdir("REQ-TEST", "oci", "oci-apache")
+    assert (workdir / "main.tf").is_file()
+    assert (workdir / "templates").is_dir()
+    assert list((workdir / "templates").glob("*.tftpl"))
+
+
+def test_the_legacy_workdir_does_not_drag_in_blueprint_subfolders(tmp_path, monkeypatch):
+    """The shared module's directory now contains per-blueprint folders; copying
+    them into every workspace would be wrong and slow."""
+    from orchestrator import provisioner
+    monkeypatch.setattr(provisioner, "STATE_ROOT", tmp_path)
+    workdir = provisioner._workdir("REQ-LEGACY", "oci", "oci-bucket")
+    assert (workdir / "main.tf").is_file()
+    assert not (workdir / "oci").exists()
+    assert not (workdir / "aws").exists()
+
+
+def test_a_blueprint_that_is_not_configured_refuses_with_the_missing_setting(monkeypatch):
+    """Better than reaching Terraform and failing with a provider error."""
+    from orchestrator import provisioner
+    monkeypatch.setenv("OCI_TENANCY_OCID", "t")
+    monkeypatch.setenv("OCI_COMPARTMENT_OCID", "c")
+    monkeypatch.setenv("OCI_REGION", "me-dubai-1")
+    monkeypatch.delenv("OCI_COMPUTE_SUBNET_OCID", raising=False)
+    monkeypatch.delenv("OCI_COMPUTE_IMAGE_OCID", raising=False)
+    with pytest.raises(provisioner.ProvisionError) as exc:
+        provisioner._require_cloud("oci", "oci-apache", creating=True)
+    assert "OCI_COMPUTE_SUBNET_OCID" in str(exc.value)
+    # ...and destroying is never blocked by a spend/config gate.
+    provisioner._require_cloud("oci", "oci-apache", creating=False)
