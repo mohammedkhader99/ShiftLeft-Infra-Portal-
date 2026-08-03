@@ -497,6 +497,34 @@ class RoleMapping(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 
+class Blueprint(Base):
+    """A certified recipe for building one technology on one cloud (F-CAT-10).
+
+    The recipe itself lives in git (a Terraform module, Helm chart or playbook)
+    where it is reviewed and diffed. This row is the *pointer* plus the
+    certification record — the deliberate decision that a given version is
+    approved for building real infrastructure, and by whom.
+
+    Keyed on (technology, target) so the same technology can be certified on one
+    cloud and not another. A technology is 'automated' on a target precisely when
+    a certified row exists here, so the catalogue's honesty badge and the
+    execution layer can never drift apart.
+    """
+
+    __tablename__ = "blueprint"
+
+    technology_code: Mapped[str] = mapped_column(String(48), primary_key=True)
+    deployment_target: Mapped[str] = mapped_column(String(16), primary_key=True)
+    # Path of the module in the orchestrator, e.g. 'oci/postgres'.
+    blueprint_ref: Mapped[str] = mapped_column(String(160))
+    version: Mapped[str] = mapped_column(String(32), default="")
+    # certified = usable for real provisioning; draft = present but not approved.
+    status: Mapped[str] = mapped_column(String(16), default="draft")
+    certified_by: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    certified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    notes: Mapped[str | None] = mapped_column(String(400), nullable=True)
+
+
 class UserRole(Base):
     """A portal role granted to a named person (F-IAM-01).
 

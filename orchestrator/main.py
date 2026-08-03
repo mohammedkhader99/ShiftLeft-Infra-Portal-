@@ -59,6 +59,37 @@ def health() -> dict:
     return {"ok": True}
 
 
+@app.post("/blueprints")
+async def blueprints(request: Request) -> dict:
+    """Which build recipes THIS orchestrator actually ships.
+
+    Discovery, not configuration: the portal must never advertise a blueprint the
+    layer that executes doesn't have. The portal records which of these are
+    *certified* for use; this endpoint answers only 'what is present'.
+
+    Today the recipes are branches inside the Terraform modules rather than
+    separate directories, so they are declared here. As the library grows this
+    becomes a directory scan and the list stops being hand-maintained.
+    """
+    body = await request.body()
+    if not verify(WEBHOOK_SECRET, body, request.headers.get("X-Signature", "")):
+        raise HTTPException(status_code=401, detail="Invalid webhook signature.")
+    return {"available": [
+        {"ref": "oci/compute-instance", "target": "oci", "resource_kind": "oci-instance",
+         "builds": ["compute-vm", "rhel9", "win2019"],
+         "description": "Private-only OCI Compute VM, flex-shape sized from the request."},
+        {"ref": "oci/object-storage", "target": "oci", "resource_kind": "oci-bucket",
+         "builds": ["oci-objectstorage"],
+         "description": "OCI Object Storage bucket, versioned, optional customer-managed key."},
+        {"ref": "oci/postgres", "target": "oci", "resource_kind": "oci-postgres",
+         "builds": ["postgres16"],
+         "description": "Managed OCI Database with PostgreSQL; admin password by vault reference."},
+        {"ref": "aws/s3", "target": "aws", "resource_kind": "aws-bucket",
+         "builds": ["aws-s3"],
+         "description": "Private, versioned S3 bucket with public access blocked."},
+    ]}
+
+
 @app.post("/posture")
 async def posture(request: Request) -> dict:
     """Report which execution gates are open in THIS process, for the admin

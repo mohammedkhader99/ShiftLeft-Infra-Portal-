@@ -867,6 +867,48 @@ export type AdminSettings = {
   execution_available: boolean
   note: string
 }
+// Blueprint registry (F-CAT-10): which technology can be built on which cloud.
+// 'certified' = the portal builds it automatically; 'available' = the recipe
+// exists but nobody has approved it; 'missing' = certified here but the
+// orchestrator no longer ships it.
+export type BlueprintRow = {
+  technology_code: string
+  deployment_target: string
+  blueprint_ref: string
+  version: string
+  state: 'certified' | 'available' | 'missing' | 'draft'
+  certified_by: string | null
+  certified_at: string | null
+  description: string
+}
+export type BlueprintMatrix = {
+  orchestrator_available: boolean
+  blueprints: BlueprintRow[]
+  certified: number
+  missing: number
+  targets: string[]
+}
+export async function getBlueprints(): Promise<BlueprintMatrix | 'forbidden' | null> {
+  const r = await fetch('/api/blueprints')
+  if (r.status === 403) return 'forbidden'
+  return r.ok ? r.json() : null
+}
+export async function certifyBlueprint(
+  technology_code: string, deployment_target: string, blueprint_ref: string, version: string,
+): Promise<{ status: number; body: any }> {
+  const r = await fetch('/api/blueprints', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ technology_code, deployment_target, blueprint_ref, version }),
+  })
+  return { status: r.status, body: await r.json().catch(() => ({})) }
+}
+export async function decertifyBlueprint(technology_code: string, deployment_target: string): Promise<number> {
+  const r = await fetch(`/api/blueprints/${encodeURIComponent(technology_code)}/${encodeURIComponent(deployment_target)}`,
+    { method: 'DELETE' })
+  return r.status
+}
+
 // Portal-managed roles (F-IAM-01). There is no external source here — Entra is
 // login only and Jira has no group model the portal can read — so authorisation
 // is maintained in the portal while identity stays federated.

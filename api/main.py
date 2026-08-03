@@ -71,10 +71,11 @@ from api.policy import PolicyUnavailable, get_policy_evaluator
 from api.pricing import estimate_cost
 from api import roles as roles_mod
 from api.sizing import resolve_components
-from api.validation import CREATE_LIKE_TYPES, validate_submission
+from api.validation import CREATE_LIKE_TYPES, DEPLOYMENT_TARGETS, validate_submission
 from common.security import install_rate_limit, install_security_headers
 from common.signing import sign
 from db.models import (
+    Blueprint,
     AccessGrant,
     ActualCost,
     ApiKey,
@@ -737,6 +738,142 @@ def list_settings(_auth: str = Depends(require_action("manage_settings"))) -> di
         "note": ("Secrets (API keys, credentials) and security/provisioning switches "
                  "are managed in .env / the vault and are never editable here."),
     }
+
+
+def _orchestrator_blueprints() -> list[dict] | None:
+    """The build recipes the orchestrator actually ships, or None if unreachable.
+
+    Read from the executing layer rather than assumed, so the portal can never
+    advertise a blueprint that isn't there — and can flag the reverse, a
+    certified blueprint the orchestrator has lost, which is the dangerous state.
+    """
+    payload = {"issued_at": datetime.now(timezone.utc).isoformat(), "operation": "blueprints"}
+    raw = json.dumps(payload, sort_keys=True).encode()
+    response, _err = _post_to_orchestrator(raw, sign(WEBHOOK_SECRET, raw), path="/blueprints")
+    if response is None or response.status_code != 200:
+        return None
+    try:
+        return (response.json() or {}).get("available") or []
+    except ValueError:
+        return None
+
+
+class BlueprintIn(BaseModel):
+    technology_code: str
+    deployment_target: str
+    blueprint_ref: str
+    version: str = ""
+    notes: str | None = None
+
+
+@app.get("/api/blueprints")
+def list_blueprints(session: Session = Depends(get_session),
+                    _auth: str = Depends(require_action("manage_settings"))) -> dict:
+    """The technology → blueprint map, per cloud (F-CAT-10).
+
+    Merges what the orchestrator SHIPS with what an admin has CERTIFIED, so the
+    page shows three distinct states rather than a flat list:
+      certified  — approved; the portal builds this automatically
+      available  — the recipe exists but nobody has approved it yet
+      missing    — certified here but absent from the orchestrator (a red flag)
+    """
+    shipped = _orchestrator_blueprints()
+    certified = {(b.technology_code, b.deployment_target): b
+                 for b in session.scalars(select(Blueprint)).all()}
+
+    # What each shipped recipe can build, flattened to (technology, target).
+    available: dict[tuple[str, str], dict] = {}
+    for bp in shipped or []:
+        for code in bp.get("builds", []):
+            available[(code, bp.get("target"))] = bp
+
+    rows = []
+    for key in sorted(set(available) | set(certified)):
+        code, target = key
+        row_cert, row_avail = certified.get(key), available.get(key)
+        if row_cert and row_cert.status == "certified":
+            state = "certified" if row_avail else "missing"
+        elif row_avail:
+            state = "available"
+        else:
+            state = "draft"
+        rows.append({
+            "technology_code": code,
+            "deployment_target": target,
+            "blueprint_ref": (row_cert.blueprint_ref if row_cert else (row_avail or {}).get("ref", "")),
+            "version": row_cert.version if row_cert else "",
+            "state": state,
+            "certified_by": row_cert.certified_by if row_cert else None,
+            "certified_at": row_cert.certified_at.isoformat() if row_cert and row_cert.certified_at else None,
+            "description": (row_avail or {}).get("description", ""),
+        })
+    return {
+        "orchestrator_available": shipped is not None,
+        "blueprints": rows,
+        "certified": sum(1 for r in rows if r["state"] == "certified"),
+        "missing": sum(1 for r in rows if r["state"] == "missing"),
+        "targets": sorted(DEPLOYMENT_TARGETS),
+    }
+
+
+@app.post("/api/blueprints")
+def certify_blueprint(body: BlueprintIn, session: Session = Depends(get_session),
+                      admin: str = Depends(require_action("manage_settings"))) -> dict:
+    """Certify a blueprint for real provisioning (F-CAT-10). Audited.
+
+    A deliberate human act: it is what turns a recipe the orchestrator merely has
+    into one the portal will use to build real infrastructure.
+    """
+    code = (body.technology_code or "").strip()
+    target = (body.deployment_target or "").strip().lower()
+    if target not in DEPLOYMENT_TARGETS:
+        raise HTTPException(status_code=422, detail=f"Unknown deployment target '{target}'.")
+    if session.scalar(select(Technology).where(Technology.code == code)) is None:
+        raise HTTPException(status_code=422, detail=f"Unknown technology '{code}'.")
+    # Refuse to certify something the orchestrator doesn't have — that would be
+    # advertising a capability that cannot run.
+    shipped = _orchestrator_blueprints()
+    if shipped is None:
+        raise HTTPException(status_code=503,
+                            detail="The orchestrator is unreachable, so its blueprints can't be confirmed.")
+    if not any(code in bp.get("builds", []) and bp.get("target") == target for bp in shipped):
+        raise HTTPException(
+            status_code=422,
+            detail=f"The orchestrator ships no blueprint building '{code}' on {target}.")
+
+    row = session.get(Blueprint, (code, target))
+    now = datetime.now(timezone.utc)
+    if row is None:
+        row = Blueprint(technology_code=code, deployment_target=target)
+        session.add(row)
+    row.blueprint_ref = (body.blueprint_ref or "").strip()
+    row.version = (body.version or "").strip()
+    row.notes = body.notes
+    row.status = "certified"
+    row.certified_by = admin
+    row.certified_at = now
+    append_audit(session, "blueprint.certified", actor=admin,
+                 detail={"technology": code, "target": target,
+                         "ref": row.blueprint_ref, "version": row.version})
+    session.commit()
+    return {"technology_code": code, "deployment_target": target, "state": "certified"}
+
+
+@app.delete("/api/blueprints/{technology_code}/{deployment_target}")
+def decertify_blueprint(technology_code: str, deployment_target: str,
+                        session: Session = Depends(get_session),
+                        admin: str = Depends(require_action("manage_settings"))) -> dict:
+    """Withdraw certification. The recipe stays in the orchestrator; the portal
+    stops treating it as automated. Audited."""
+    row = session.get(Blueprint, (technology_code, deployment_target.lower()))
+    if row is None:
+        raise HTTPException(status_code=404, detail="That blueprint is not certified.")
+    session.delete(row)
+    append_audit(session, "blueprint.decertified", actor=admin,
+                 detail={"technology": technology_code, "target": deployment_target})
+    session.commit()
+    return {"technology_code": technology_code, "deployment_target": deployment_target,
+            "state": "available"}
 
 
 class UserRoleIn(BaseModel):
