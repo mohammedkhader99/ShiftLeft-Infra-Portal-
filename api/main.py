@@ -66,6 +66,7 @@ from api.jira import (
     transition_issue,
 )
 from api.plan_preview import build_plan_preview
+from api import policy
 from api.policy import PolicyUnavailable, get_policy_evaluator
 from api.pricing import estimate_cost
 from api import roles as roles_mod
@@ -735,6 +736,24 @@ def list_settings(_auth: str = Depends(require_action("manage_settings"))) -> di
         "note": ("Secrets (API keys, credentials) and security/provisioning switches "
                  "are managed in .env / the vault and are never editable here."),
     }
+
+
+@app.get("/api/admin/policies")
+def list_policies(_auth: str = Depends(require_action("manage_settings"))) -> dict:
+    """The governance rules OPA currently enforces (F-GOV-03).
+
+    Read from the RUNNING OPA, with each rule's description taken from its own
+    `# METADATA` annotation — so the page shows what is actually loaded, and a
+    description cannot drift from the rule it describes. Read-only: policy is
+    code, reviewed and deployed; editing the governance authority from a browser
+    is the same category as editing the approval gate.
+    """
+    try:
+        return {**policy.describe_policies(), "available": True}
+    except policy.PolicyUnavailable as exc:
+        # Never imply "no rules" when the truth is "cannot tell".
+        return {"available": False, "error": str(exc), "overview": None,
+                "rules": [], "blocking": 0, "advisory": 0, "modules": []}
 
 
 @app.put("/api/admin/settings/{key}")

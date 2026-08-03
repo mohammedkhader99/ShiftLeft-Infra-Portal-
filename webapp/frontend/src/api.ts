@@ -867,6 +867,30 @@ export type AdminSettings = {
   execution_available: boolean
   note: string
 }
+// The governance rules OPA currently enforces (F-GOV-03). Descriptions come from
+// each rule's own METADATA annotation in the loaded policy, so they cannot drift.
+export type PolicyRule = {
+  title: string
+  description: string
+  feature: string
+  effect: string
+  applies_to: string
+  module: string
+}
+export type PolicyCatalogue = {
+  available: boolean
+  error?: string
+  overview: PolicyRule | null
+  rules: PolicyRule[]
+  blocking: number
+  advisory: number
+  modules: string[]
+}
+export async function getPolicies(): Promise<{ status: number; body: any }> {
+  const r = await fetch('/api/admin/policies')
+  return { status: r.status, body: await r.json().catch(() => ({})) }
+}
+
 export async function getAdminSettings(): Promise<{ status: number; body: any }> {
   const r = await fetch('/api/admin/settings')
   return { status: r.status, body: await r.json().catch(() => ({})) }
