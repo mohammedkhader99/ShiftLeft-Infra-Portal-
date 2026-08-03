@@ -1,0 +1,42 @@
+#cloud-config
+# Cloud-init configuration that installs and configures Apache HTTP Server.
+# Rendered by Terraform (templatefile) and passed as base64 user_data.
+
+package_update: true
+package_upgrade: false
+
+packages:
+  - httpd
+%{ if enable_https ~}
+  - mod_ssl
+  - openssl
+%{ endif ~}
+
+write_files:
+  - path: /var/www/html/index.html
+    encoding: b64
+    content: ${index_html_b64}
+    owner: root:root
+    permissions: '0644'
+
+runcmd:
+  # Optional ServerName
+%{ if server_name != "" ~}
+  - grep -q '^ServerName ' /etc/httpd/conf/httpd.conf || echo 'ServerName ${server_name}' >> /etc/httpd/conf/httpd.conf
+%{ endif ~}
+  # Enable and start the web server
+  - systemctl enable --now httpd
+  # Open the OS firewall (firewalld is present on Oracle Linux platform images)
+  - firewall-cmd --permanent --add-service=http || true
+%{ if enable_https ~}
+  - firewall-cmd --permanent --add-service=https || true
+  # Generate a self-signed certificate at the paths mod_ssl uses by default
+  - |
+    openssl req -x509 -nodes -newkey rsa:2048 -days 365 \
+      -keyout /etc/pki/tls/private/localhost.key \
+      -out /etc/pki/tls/certs/localhost.crt \
+      -subj "/CN=${server_name != "" ? server_name : "localhost"}"
+  - chmod 600 /etc/pki/tls/private/localhost.key
+%{ endif ~}
+  - firewall-cmd --reload || true
+  - systemctl restart httpd

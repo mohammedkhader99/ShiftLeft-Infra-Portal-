@@ -19,15 +19,34 @@ def _write(tmp_path, name, body):
 
 # --- The shipped manifests ---------------------------------------------------
 
-def test_the_real_directory_describes_the_four_recipes():
+def test_the_real_directory_describes_the_shipped_recipes():
+    """Asserts the PROPERTIES of what ships, not an exact list — pinning the exact
+    set would break on every blueprint added, which is the opposite of the point.
+    """
     found = {b["ref"]: b for b in blueprint_registry.discover()}
-    assert set(found) == {"oci/compute-instance", "oci/object-storage",
-                          "oci/postgres", "aws/s3"}
+    # The recipes the execution layer genuinely has must all be present.
+    assert {"oci/compute-instance", "oci/object-storage", "oci/postgres",
+            "aws/s3", "oci/apache-httpd"} <= set(found)
     assert set(found["oci/compute-instance"]["builds"]) == {"compute-vm", "rhel9", "win2019"}
     assert found["oci/postgres"]["resource_kind"] == "oci-postgres"
     assert found["aws/s3"]["target"] == "aws"
-    # Every shipped manifest carries a version an admin can pin.
-    assert all(b["version"] for b in found.values())
+    assert found["oci/apache-httpd"]["builds"] == ["apache"]
+    # Every shipped manifest must carry the fields the portal relies on.
+    for ref, bp in found.items():
+        assert bp["version"], f"{ref} has no version for an admin to pin"
+        assert bp["target"] and bp["resource_kind"], f"{ref} is incomplete"
+        assert bp["builds"], f"{ref} builds nothing"
+
+
+def test_a_blueprint_module_directory_that_is_named_actually_exists():
+    """A manifest pointing at a module that isn't there would certify a recipe
+    that cannot run."""
+    from pathlib import Path
+    tf_root = Path(blueprint_registry.BLUEPRINT_DIR).parent / "terraform"
+    for bp in blueprint_registry.discover():
+        module = (tf_root / bp["module"]).resolve()
+        assert module.is_dir(), f"{bp['ref']} names module '{bp['module']}' which does not exist"
+        assert list(module.glob("*.tf")), f"{bp['ref']} module '{bp['module']}' has no .tf files"
 
 
 def test_no_manifest_is_malformed():

@@ -1,0 +1,8 @@
+ref: oci/apache-httpd
+target: oci
+resource_kind: oci-apache
+module: oci/apache-httpd
+version: 1.0.0
+builds: [apache]
+description: Apache HTTP Server on a private OCI Compute instance, installed and hardened at first boot.
+requires_env: [OCI_COMPUTE_SUBNET_OCID]
