@@ -787,16 +787,30 @@ def list_blueprints(session: Session = Depends(get_session),
         for code in bp.get("builds", []):
             available[(code, bp.get("target"))] = bp
 
+    # Every (technology, target) the catalogue actually offers — so a gap shows as
+    # a row with status 'none' rather than being invisible. Respects each
+    # technology's own targets, so nonsense pairs (S3 on OCI) never appear.
+    offered: set[tuple[str, str]] = set()
+    for tech in session.scalars(select(Technology).where(Technology.lifecycle_state != "eol")).all():
+        for target in (tech.targets or "").split(","):
+            target = target.strip()
+            if target in DEPLOYMENT_TARGETS:
+                offered.add((tech.code, target))
+
     rows = []
-    for key in sorted(set(available) | set(certified)):
+    for key in sorted(offered | set(available) | set(certified)):
         code, target = key
         row_cert, row_avail = certified.get(key), available.get(key)
         if row_cert and row_cert.status == "certified":
+            # Certified but the orchestrator no longer ships it — the dangerous
+            # direction, surfaced rather than quietly dropped.
             state = "certified" if row_avail else "missing"
         elif row_avail:
-            state = "available"
-        else:
+            state = "draft"        # recipe exists, nobody has approved it
+        elif row_cert:
             state = "draft"
+        else:
+            state = "none"         # no recipe at all — fulfilled by hand
         rows.append({
             "technology_code": code,
             "deployment_target": target,

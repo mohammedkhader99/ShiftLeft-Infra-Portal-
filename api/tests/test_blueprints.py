@@ -66,11 +66,11 @@ def shipped(monkeypatch):
 
 # --- The matrix --------------------------------------------------------------
 
-def test_uncertified_recipes_show_as_available_not_automated(client, shipped):
+def test_uncertified_recipes_show_as_draft_not_automated(client, shipped):
     """Shipping a recipe is not the same as approving it for use."""
     body = client.get("/api/blueprints").json()
     states = {(b["technology_code"], b["deployment_target"]): b["state"] for b in body["blueprints"]}
-    assert states[("postgres16", "oci")] == "available"
+    assert states[("postgres16", "oci")] == "draft"
     assert body["certified"] == 0
 
 
@@ -84,19 +84,20 @@ def test_certifying_flips_the_state_and_is_audited(client, session, shipped):
     assert session.scalars(select(AuditLog).where(AuditLog.event == "blueprint.certified")).all()
 
     body = client.get("/api/blueprints").json()
-    entry = next(b for b in body["blueprints"] if b["technology_code"] == "postgres16")
+    entry = next(b for b in body["blueprints"]
+                 if b["technology_code"] == "postgres16" and b["deployment_target"] == "oci")
     assert entry["state"] == "certified" and entry["version"] == "2.0.1"
     assert body["certified"] == 1
 
 
-def test_decertifying_returns_it_to_available(client, session, shipped):
+def test_decertifying_returns_it_to_draft(client, session, shipped):
     client.post("/api/blueprints", json={"technology_code": "postgres16",
                                          "deployment_target": "oci", "blueprint_ref": "oci/postgres"})
     assert client.delete("/api/blueprints/postgres16/oci").status_code == 200
     assert session.get(Blueprint, ("postgres16", "oci")) is None
     entry = next(b for b in client.get("/api/blueprints").json()["blueprints"]
-                 if b["technology_code"] == "postgres16")
-    assert entry["state"] == "available"  # the recipe still exists, it just isn't approved
+                 if b["technology_code"] == "postgres16" and b["deployment_target"] == "oci")
+    assert entry["state"] == "draft"  # the recipe still exists, it just isn't approved
 
 
 # --- The two safety properties ----------------------------------------------
@@ -119,7 +120,8 @@ def test_certified_but_missing_from_the_orchestrator_is_flagged(client, session,
     monkeypatch.setattr(main, "_orchestrator_blueprints",
                         lambda: [b for b in _SHIPPED if b["ref"] != "oci/postgres"])
     body = client.get("/api/blueprints").json()
-    entry = next(b for b in body["blueprints"] if b["technology_code"] == "postgres16")
+    entry = next(b for b in body["blueprints"]
+                 if b["technology_code"] == "postgres16" and b["deployment_target"] == "oci")
     assert entry["state"] == "missing"
     assert body["missing"] == 1
 
