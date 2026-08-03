@@ -210,15 +210,32 @@ def _module_dir(cloud: str) -> Path:
     return MODULE_DIR / "aws" if cloud == "aws" else MODULE_DIR
 
 
-def _require_cloud(cloud: str, resource_kind: str) -> None:
+def _require_cloud(cloud: str, resource_kind: str, creating: bool = True) -> None:
+    """Check what this operation needs.
+
+    CREDENTIALS are always required — nothing can talk to a cloud without them.
+
+    The per-service OPT-IN switches (compute, managed PostgreSQL) are
+    **create-only**. They exist to stop the portal accidentally creating
+    something billable; applying them to destroy would trap an expensive resource:
+    turn the switch off after provisioning — the natural thing to do — and you
+    could no longer tear the resource down through the portal, only by hand in the
+    cloud console, losing the audit trail. Destroying is the safe direction: it
+    stops cost, it never starts it. The same applies to a read-only drift check.
+
+    So `creating=False` (destroy / drift) keeps the credential requirement and
+    skips the spend gates.
+    """
     if cloud == "aws":
         _require_aws()
-    else:
-        _require_oci()
-        if resource_kind == "oci-instance":
-            _require_compute()
-        elif resource_kind == "oci-postgres":
-            _require_psql()
+        return
+    _require_oci()
+    if not creating:
+        return
+    if resource_kind == "oci-instance":
+        _require_compute()
+    elif resource_kind == "oci-postgres":
+        _require_psql()
 
 
 def _cloud_vars(cloud: str, name: str, tags: dict, resource_kind: str, sizing: dict | None) -> dict:
@@ -340,9 +357,11 @@ def terraform_apply(reference: str, name: str, tags: dict,
 def terraform_drift(reference: str, name: str, tags: dict,
                     resource_kind: str = "oci-bucket", sizing: dict | None = None) -> dict:
     """Re-plan a provisioned request's existing workspace and detect drift from
-    the applied state (F-LCM-09). Read-only — a plan creates nothing."""
+    the applied state (F-LCM-09). Read-only — a plan creates nothing, so the
+    spend gates don't apply (creating=False): you must still be able to inspect an
+    existing resource after the switch that created it has been turned off."""
     cloud = _cloud_of(resource_kind)
-    _require_cloud(cloud, resource_kind)
+    _require_cloud(cloud, resource_kind, creating=False)
     workdir = _workdir(reference, cloud)
     _write_tfvars(workdir, _cloud_vars(cloud, name, tags, resource_kind, sizing))
 
@@ -364,9 +383,12 @@ def terraform_drift(reference: str, name: str, tags: dict,
 
 def terraform_destroy(reference: str, name: str, tags: dict,
                       resource_kind: str = "oci-bucket", sizing: dict | None = None) -> dict:
-    """Destroy the resources for this request from its own state."""
+    """Destroy the resources for this request from its own state.
+
+    creating=False: tearing down must never be blocked by the switch that gated
+    creation, or an expensive resource becomes stuck (see _require_cloud)."""
     cloud = _cloud_of(resource_kind)
-    _require_cloud(cloud, resource_kind)
+    _require_cloud(cloud, resource_kind, creating=False)
     workdir = _workdir(reference, cloud)
     _write_tfvars(workdir, _cloud_vars(cloud, name, tags, resource_kind, sizing))
 

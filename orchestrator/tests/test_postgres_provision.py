@@ -62,6 +62,47 @@ def test_fully_configured_passes(monkeypatch):
     provisioner._require_psql()  # does not raise
 
 
+def test_spend_gate_is_create_only_so_teardown_is_never_blocked(monkeypatch):
+    """The opt-in switch exists to stop something billable being CREATED. If it
+    also blocked destroy, turning it off after provisioning — the natural thing to
+    do — would strand an expensive database: removable only by hand in the cloud
+    console, outside the audit trail. Destroying only ever stops cost."""
+    monkeypatch.setenv("OCI_TENANCY_OCID", "ocid1.tenancy.oc1..t")
+    monkeypatch.setenv("OCI_COMPARTMENT_OCID", "ocid1.compartment.oc1..c")
+    monkeypatch.setenv("OCI_REGION", "me-dubai-1")
+    # Switch OFF (and unconfigured) — the state after someone disables it again.
+    assert provisioner.psql_enabled() is False
+
+    # Creating is still blocked: the protection is intact.
+    with pytest.raises(provisioner.ProvisionError, match="disabled"):
+        provisioner._require_cloud("oci", "oci-postgres", creating=True)
+
+    # Destroying and drift-checking are allowed: the safe directions.
+    provisioner._require_cloud("oci", "oci-postgres", creating=False)
+
+
+def test_create_only_gate_still_requires_credentials(monkeypatch):
+    """Skipping the spend gate must not skip the credential check — you cannot
+    destroy a cloud resource without being able to talk to the cloud."""
+    for k in ("OCI_TENANCY_OCID", "OCI_COMPARTMENT_OCID", "OCI_REGION"):
+        monkeypatch.delenv(k, raising=False)
+    with pytest.raises(provisioner.ProvisionError, match="OCI not configured"):
+        provisioner._require_cloud("oci", "oci-postgres", creating=False)
+
+
+def test_compute_gate_is_create_only_too(monkeypatch):
+    """Same trap, same fix: a VM must be destroyable after the image/subnet
+    settings that created it have been removed."""
+    monkeypatch.setenv("OCI_TENANCY_OCID", "ocid1.tenancy.oc1..t")
+    monkeypatch.setenv("OCI_COMPARTMENT_OCID", "ocid1.compartment.oc1..c")
+    monkeypatch.setenv("OCI_REGION", "me-dubai-1")
+    for k in ("OCI_COMPUTE_SUBNET_OCID", "OCI_COMPUTE_IMAGE_OCID", "OCI_COMPUTE_IMAGE_MAP"):
+        monkeypatch.delenv(k, raising=False)
+    with pytest.raises(provisioner.ProvisionError, match="not configured"):
+        provisioner._require_cloud("oci", "oci-instance", creating=True)
+    provisioner._require_cloud("oci", "oci-instance", creating=False)
+
+
 def test_gate_is_wired_into_require_cloud(monkeypatch):
     """The routing must actually reach the Postgres gate for oci-postgres."""
     monkeypatch.setenv("OCI_TENANCY_OCID", "ocid1.tenancy.oc1..t")
