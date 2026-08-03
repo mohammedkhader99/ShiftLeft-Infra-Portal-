@@ -124,29 +124,35 @@ Each UX increment keeps every existing control/validation/integration and its ba
 
 ### UX brief — full traceability (`UX Portal Design.docx`)
 
-Every section of the brief is mapped here so nothing is dropped (traceability pass, 2026-07-29). The reskin (UX.1–UX.5) delivered the **look-and-feel**; the added **breadth and features** land as backend/catalog increments sequenced *after* the reskin — pointers name the target phase. Legend: **✅ done · ◐ partial · ⬜ planned (not started) · ⛔ deliberate deviation.**
+Every section of the brief is mapped here so nothing is dropped (traceability pass, 2026-07-29; **status refreshed 2026-08-03**). The reskin (UX.1–UX.5) delivered the **look-and-feel**; the added **breadth and features** land as backend/catalog increments sequenced *after* the reskin — pointers name the target phase. Legend: **✅ done · ◐ partial · ⬜ planned (not started) · ⛔ deliberate deviation.**
+
+> **Where the live roadmap lives.** This section tracks the UX brief. The current
+> build sequence — turning the portal from "records provisioning intent" into
+> self-service infrastructure — is in **[GAP-ANALYSIS.md](GAP-ANALYSIS.md) §7**,
+> with a progress log in §10. Read that for what is being built now; read this for
+> whether the brief has been covered.
 
 **Platform & design language**
 - ⛔ *"Built on Backstage.io"* — **declined**; React + IBM Carbon via a BFF instead (ARCHITECTURE.md §14.1). The brief's design *language* is still followed.
 - ✅ Premium enterprise look: sharp edges, blue/white, large type, minimal palette, Carbon icons, **dark/light**, WCAG 2.2, enterprise data tables, no rounded buttons.
 - ◐ Per-breakpoint **mobile/tablet** optimisation (Carbon grid is responsive but not yet audited); animation/pixel polish — ongoing.
 
-**Page layout panels** — ✅ top nav · left nav · main form · validation messages. ◐ live cost panel (totals now; breakdown → E3). ⬜ environment-summary panel · approval-summary panel · multi-step wizard/progress · sticky submit → *Portal UI polish*. ⬜ AI Assistant panel → **E4**.
+**Page layout panels** — ✅ top nav · left nav · main form · validation messages · live cost panel **with breakdown (6.4/6.5)** · **environment-summary panel · approval-summary panel · multi-step wizard progress · sticky submit** (all delivered in the Portal UI polish increments) · **AI Assistant panel** (Draft with AI + Recommend cloud & size, E4).
 
-**Header** — ✅ logo · app name · notifications *icon* · user avatar · help *icon*. ⬜ **Search**, working notifications (→E2), profile page, AI assistant (→E4).
+**Header** — ✅ logo · app name · notifications *icon* · user avatar · help *icon* · **Search** (delivered). ✅ AI assistant — its own **Assistant** page (natural-language approvals + portal help). ⬜ working notifications (→E2), profile page.
 
 **Requester Information (~30 fields, auto from Entra)**
 - ✅ email · roles · cost centre · project code (on the form today).
 - ⬜ identity-derived (name, employee ID, business unit, department, designation, phone, manager name/email, country, location, time zone, organization, division, company, auth method, privilege level) → **requester profile enrichment via Microsoft Graph (E1)**.
 - ✅ owner/metadata: business justification, priority, business criticality, required delivery date, and the four owner roles — **delivered in increment 6.1** (validated, stored, shown in the Jira ticket + costing PDF + request detail). ⬜ request date auto-stamp is a trivial follow-up.
 
-**Request Type (10)** — ✅ Create · Add Component · Decommission; ◐ Increase Capacity (=resize) · Remove Component (=decommission-by-reference). ⬜ Reduce Capacity · Clone · Disaster Recovery · Sandbox · Temporary → **catalog expansion**.
+**Request Type (10)** — ✅ Create · Add Component · Decommission · **Reduce Capacity · Clone · Disaster Recovery · Sandbox · Temporary** (catalog expansion, delivered) · Refresh · Restore · **DNS** (new, GAP-ANALYSIS step 5). ◐ Increase Capacity (=resize) · Remove Component (=decommission-by-reference).
 
-**Target Platform (7)** — ✅ Azure · OCI · On-Premises. ⬜ AWS · Google Cloud · Hybrid · Multi-Cloud → **multi-cloud phase** (one pricing/provisioning adapter each; large).
+**Target Platform (7)** — ✅ Azure · OCI · On-Premises · **AWS · Google Cloud** (all five selectable and **priced**; the catalogue is target-aware). ◐ Real *provisioning* exists for OCI (bucket, compute VM, managed PostgreSQL) and AWS (S3, gated + unverified); Azure/GCP provisioning **deferred by the customer**. ⬜ Hybrid · Multi-Cloud.
 
 **Target Environment (7: Dev/Test/SIT/UAT/PreProd/Prod/DR)** — ✅ **delivered in 6.2**: the full tier ladder is a required-on-create field (`environment_tier`), validated + shown in the ticket/PDF/detail.
 
-**Technology Stack (~24, cards w/ icons)** — ✅ **21 in the catalog after 6.2** (added Oracle DB, SQL Server, MongoDB, Kafka, RabbitMQ, Elastic/OpenSearch, Java, .NET, Node.js, Python, Apache, OpenShift, Vault, Keycloak; Oracle/SQL Server carry licences). ⬜ Istio/Service Mesh, Monitoring, Logging, Backup (platform-service add-ons) → later catalog. ✅ **card-with-icon presentation delivered in 6.3** (generic Carbon category icons, not brand logos). *(Catalog entry is cheap; real per-technology provisioning is the deferred heavy work — an apply still creates a placeholder resource.)*
+**Technology Stack (~24, cards w/ icons)** — ✅ **21 in the catalog after 6.2** (added Oracle DB, SQL Server, MongoDB, Kafka, RabbitMQ, Elastic/OpenSearch, Java, .NET, Node.js, Python, Apache, OpenShift, Vault, Keycloak; Oracle/SQL Server carry licences). ✅ **Istio/Service Mesh, Monitoring, Logging, Backup add-ons delivered** — the catalogue is now **46 technologies** including cloud-native services (RDS, S3, EKS, Lambda, Azure SQL, OCI ADB, GCP CloudSQL…), each scoped to the targets it runs on. ✅ **card-with-icon presentation delivered in 6.3**. *(Catalogue entry is cheap; real per-technology provisioning is the heavy work. **6 of 46 are genuinely automated** today — compute VM/RHEL/Windows and object storage on OCI, S3 on AWS, and managed PostgreSQL on OCI. Every other entry is honestly badged **manual** in the form — see GAP-ANALYSIS step 1.)*
 
 **Environment Size (5, cards w/ specs)** — ✅ Small/Medium/Large **+ XLarge (6.2)**, server-side sizing anchors + auto-pricing. ✅ **spec cards delivered in 6.3** (each size card shows vCPU · RAM · storage). ⬜ Custom (user-typed resources) → catalog. ⬜ per-card HA / recommended-use-case hints → later polish.
 
@@ -154,7 +160,7 @@ Every section of the brief is mapped here so nothing is dropped (traceability pa
 
 **Live Cost Panel** — ✅ one-time/monthly/annual totals, live update, **compute/storage/licence split (6.4)**, **+ backup/monitoring/support lines driven by advanced options (6.5)**, **+ "Explain this cost" — plain-English cost drivers + optimization tips (F-RPT-07)**. ⬜ network (usage-based, not estimated).
 
-**AI Assistant (8 capabilities)** — ✅ **request drafting from plain English (F-RPT-06)**, ✅ **cost explanation + optimization tips (F-RPT-07)**, ✅ **failure triage / diagnosis (F-RPT-08)**; ⬜ the rest (recommend sizing/cloud, detect gaps, predict time, compliance) → **E4**, **recommend-only per hard-rule P3** (never decides, executes, or holds credentials).
+**AI Assistant (8 capabilities)** — ✅ **request drafting (F-RPT-06)** · ✅ **cost explanation + optimisation tips (F-RPT-07)** · ✅ **failure triage (F-RPT-08)** · ✅ **recommend cloud & sizing** with a cross-cloud price comparison · ✅ **natural-language approvals bot** (interpret-only; approve/reject always confirm first) · ✅ **portal help** ("what does this page do?", grounded in a curated knowledge base). ⬜ detect gaps · predict time · compliance advice. All **recommend-only per hard-rule P3** — the AI never decides, executes, prices authoritatively, or holds credentials.
 
 **Bottom Actions** — ✅ Save Draft · Submit · (Cancel trivial) · **Generate Cost Sheet — PDF and Excel (6.4)**. ⬜ Validate Request · Preview Environment → small increments.
 
@@ -162,7 +168,7 @@ Every section of the brief is mapped here so nothing is dropped (traceability pa
 
 **Design-process outputs (Figma mockup, wireframe, component hierarchy, palette, typography, icons, journey, a11y, responsive, mobile/tablet/desktop)** — ✅ satisfied by *building on Carbon* (its design system, palette, typography, icon set, accessibility and responsive grid) instead of separate Figma artefacts. ⬜ standalone mockup/wireframe/user-journey documents were not produced (we built the working UI) — revisit only if a formal design sign-off deliverable is required.
 
-**Portal UI polish (small, newly tracked here)** — ✅ **technology & size cards** with icons/specs (6.3). ⬜ header **Search**; on-form **Environment** & **Approval** summary panels; **multi-step wizard** progress; **sticky submit** bar. Low effort; not tied to a backend phase.
+**Portal UI polish (small, newly tracked here)** — ✅ **all delivered**: technology & size cards with icons/specs (6.3), header **Search**, on-form **Environment** and **Approval** summary panels, **multi-step wizard** progress, **sticky submit** bar, and deployment-target cards on a single row.
 
 > Roll-up to enterprise phases: requester enrichment → **E1** · approvers/notifications/SLA → **E2** · cost breakdown + Excel → **E3** · AI Copilot → **E4** · catalog/advanced-options + multi-cloud → **catalog/multi-cloud increments** · Validate/Preview + UI polish → **small increments**.
 
