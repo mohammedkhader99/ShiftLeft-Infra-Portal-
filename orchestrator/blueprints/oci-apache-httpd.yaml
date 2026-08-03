@@ -5,10 +5,21 @@ module: oci/apache-httpd
 version: 1.0.0
 builds: [apache]
 description: Apache HTTP Server on a private OCI Compute instance, installed and hardened at first boot.
-requires_env: [OCI_COMPUTE_SUBNET_OCID, OCI_COMPUTE_IMAGE_OCID]
+# The image is NOT required: this module looks up the latest Oracle Linux itself
+# (see vars below), so only the subnet must be configured.
+requires_env: [OCI_COMPUTE_SUBNET_OCID]
+# The Terraform variable this module names its instance with.
+name_var: instance_name
 # Module inputs the standard variable set does not carry. Declared here so the
 # provisioner needs to know nothing about this recipe's particulars.
 vars:
+  # Empty means "look up the latest Oracle Linux 9 image that fits the shape".
+  # Deliberate: the first-boot script installs httpd via yum/systemd/firewalld,
+  # so it needs a Red Hat-family image, and the shared OCI_COMPUTE_IMAGE_OCID
+  # default is a custom Ubuntu image that would let the VM build and leave no
+  # web server on it. An admin who wants a specific image for Apache sets it in
+  # OCI_COMPUTE_IMAGE_MAP, which still wins over this.
+  image_ocid: ""
   # The module can create its own NSG, but that requires a VCN OCID which the
   # standard set doesn't pass. Off by default: the subnet's own security rules
   # govern access. Supply vcn_ocid here and flip this to true to have the

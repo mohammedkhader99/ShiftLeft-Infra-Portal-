@@ -4,5 +4,7 @@ resource_kind: aws-bucket
 module: aws
 version: 1.0.0
 builds: [aws-s3]
+# The Terraform variable this module names its resource with.
+name_var: bucket_name
 description: Private, versioned S3 bucket with public access blocked.
 requires_env: [AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY]

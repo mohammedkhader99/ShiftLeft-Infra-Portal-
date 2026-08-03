@@ -4,6 +4,8 @@ resource_kind: oci-postgres
 module: .
 version: 1.0.0
 builds: [postgres16]
+# The Terraform variable this module names its resource with.
+name_var: db_name
 description: Managed OCI Database with PostgreSQL; admin password by vault reference.
 enable_flag: OCI_PSQL_ENABLED
 requires_env: [OCI_PSQL_SUBNET_OCID, OCI_PSQL_ADMIN_SECRET_OCID]

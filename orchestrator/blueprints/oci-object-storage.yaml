@@ -4,4 +4,6 @@ resource_kind: oci-bucket
 module: .
 version: 1.0.0
 builds: [oci-objectstorage]
+# The Terraform variable this module names its resource with.
+name_var: bucket_name
 description: OCI Object Storage bucket — versioned, optional customer-managed key.

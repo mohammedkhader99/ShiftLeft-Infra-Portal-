@@ -283,6 +283,18 @@ def _cloud_vars(cloud: str, name: str, tags: dict, resource_kind: str, sizing: d
     extra = manifest.get("vars")
     if isinstance(extra, dict):
         base = {**base, **extra}
+    # Which variable carries the environment name is the module's business, so
+    # the manifest names it. Applied AFTER the merge: the per-request name must
+    # beat any static default. Without this a new blueprint got "" and failed at
+    # plan time on its own name validation.
+    name_var = manifest.get("name_var")
+    if name_var:
+        base[name_var] = name
+    # Same precedence for the OS image: an admin's per-technology choice is a
+    # deliberate decision and beats the blueprint's own default, which in turn
+    # beats the shared compute default already in the base set.
+    if sizing and sizing.get("image_ocid_explicit"):
+        base["image_ocid"] = sizing["image_ocid_explicit"]
     return base
 
 

@@ -81,6 +81,10 @@ def discover(directory: Path | None = None) -> list[dict]:
             "version": str(manifest.get("version") or ""),
             "builds": [str(b) for b in manifest.get("builds") or []],
             "description": str(manifest.get("description") or ""),
+            # Which Terraform variable carries the environment's name. Modules
+            # disagree (bucket_name, instance_name, db_name...), and hard-coding
+            # the mapping meant a new recipe silently received an empty name.
+            "name_var": str(manifest.get("name_var") or ""),
             # Module-specific inputs the standard variable set doesn't carry.
             # Merged over it at provision time, so a recipe with unusual inputs
             # stays a data change rather than a code change.

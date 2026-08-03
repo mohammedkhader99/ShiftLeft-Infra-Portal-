@@ -226,10 +226,15 @@ def _instance_sizing(payload: dict) -> dict:
     return {"ocpus": best[0], "memory_gb": best[1]}
 
 
-def _image_for(payload: dict) -> str:
-    """The OS image for this request's compute component: a per-technology image
-    from OCI_COMPUTE_IMAGE_MAP (JSON: technology_code -> image OCID) if one
-    matches a component, else the default OCI_COMPUTE_IMAGE_OCID."""
+def _mapped_image(payload: dict) -> str:
+    """An image chosen DELIBERATELY for one of this request's technologies via
+    OCI_COMPUTE_IMAGE_MAP (JSON: technology_code -> image OCID), or "".
+
+    Kept separate from the shared default because a blueprint that resolves its
+    own image (Apache looks up the latest Oracle Linux for its shape) must be
+    able to tell "an admin picked this image for this technology" from "nobody
+    said, so here is the default for the shared compute module".
+    """
     try:
         mapping = json.loads(os.getenv("OCI_COMPUTE_IMAGE_MAP", "") or "{}")
     except (ValueError, TypeError):
@@ -239,7 +244,14 @@ def _image_for(payload: dict) -> str:
             code = c.get("technology_code")
             if code and mapping.get(code):
                 return mapping[code]
-    return os.getenv("OCI_COMPUTE_IMAGE_OCID", "")
+    return ""
+
+
+def _image_for(payload: dict) -> str:
+    """The OS image for this request's compute component: a per-technology image
+    from OCI_COMPUTE_IMAGE_MAP if one matches a component, else the default
+    OCI_COMPUTE_IMAGE_OCID."""
+    return _mapped_image(payload) or os.getenv("OCI_COMPUTE_IMAGE_OCID", "")
 
 
 def _psql_shape(sizing: dict) -> str:
@@ -260,6 +272,9 @@ def _compute_spec(payload: dict) -> dict:
     return {
         **sizing,
         "image_ocid": _image_for(payload),
+        # Carried separately so a blueprint with its own image lookup can honour
+        # a deliberate per-technology image while ignoring the shared default.
+        "image_ocid_explicit": _mapped_image(payload),
         "user_data": configure.render(components),
         # The managed-PostgreSQL shape for the same sizing, so a database scales
         # with the request like a VM does. Unused for non-database resources.

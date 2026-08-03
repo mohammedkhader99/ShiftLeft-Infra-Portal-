@@ -166,8 +166,64 @@ def test_manifest_vars_are_merged_over_the_standard_set(monkeypatch):
     monkeypatch.setenv("OCI_REGION", "me-dubai-1")
     v = provisioner._cloud_vars("oci", "web", {"env": "uat"}, "oci-apache", {"ocpus": 2})
     assert v["create_nsg"] is False          # from the manifest
-    assert v["instance_name"] == ""          # standard set still present
-    assert v["compartment_ocid"] == "c"
+    assert v["compartment_ocid"] == "c"      # standard set still present
+
+
+# --- Naming: the manifest says which variable carries the name ---------------
+
+def _oci_env(monkeypatch):
+    monkeypatch.setenv("OCI_TENANCY_OCID", "t")
+    monkeypatch.setenv("OCI_COMPARTMENT_OCID", "c")
+    monkeypatch.setenv("OCI_REGION", "me-dubai-1")
+
+
+def test_a_blueprint_names_its_resource_from_the_manifest(monkeypatch):
+    """REQ-2026-0092: Apache planned with instance_name = "" and failed its own
+    name validation, because the name was hard-coded to the compute kind. Which
+    variable holds the name is the module's business, so the manifest says."""
+    _oci_env(monkeypatch)
+    v = provisioner_vars(monkeypatch, "oci", "web-uat", "oci-apache")
+    assert v["instance_name"] == "web-uat"
+
+
+def test_every_shipped_blueprint_names_its_resource(monkeypatch):
+    """The guard: a new manifest without name_var would repeat REQ-2026-0092 —
+    a plan that fails on an empty name, only at apply time."""
+    _oci_env(monkeypatch)
+    monkeypatch.setenv("AWS_REGION", "me-south-1")
+    for bp in blueprint_registry.discover():
+        assert bp["name_var"], f"{bp['ref']} does not say which variable carries the name"
+        v = provisioner_vars(monkeypatch, bp["target"], "env-name", bp["resource_kind"])
+        assert v[bp["name_var"]] == "env-name", f"{bp['ref']} did not receive the name"
+
+
+def provisioner_vars(monkeypatch, cloud, name, kind, sizing=None):
+    from orchestrator import provisioner
+    return provisioner._cloud_vars(cloud, name, {"env": "uat"}, kind, sizing or {})
+
+
+# --- Images: whose choice wins ------------------------------------------------
+
+def test_a_blueprint_that_resolves_its_own_image_ignores_the_shared_default(monkeypatch):
+    """Apache's first-boot script is yum/systemd/firewalld, so it needs a Red Hat
+    family image and looks one up itself. Handing it the shared default (a custom
+    Ubuntu image) would build a VM with no web server on it — a success that
+    isn't one."""
+    _oci_env(monkeypatch)
+    monkeypatch.setenv("OCI_COMPUTE_IMAGE_OCID", "ocid1.image..ubuntu-custom")
+    assert provisioner_vars(monkeypatch, "oci", "web", "oci-apache")["image_ocid"] == ""
+    # ...while the shared compute module still gets it.
+    assert provisioner_vars(
+        monkeypatch, "oci", "vm", "oci-instance")["image_ocid"] == "ocid1.image..ubuntu-custom"
+
+
+def test_a_deliberate_per_technology_image_beats_the_blueprint_default(monkeypatch):
+    """An admin who maps an image for apache in OCI_COMPUTE_IMAGE_MAP means it."""
+    _oci_env(monkeypatch)
+    monkeypatch.setenv("OCI_COMPUTE_IMAGE_OCID", "ocid1.image..ubuntu-custom")
+    v = provisioner_vars(monkeypatch, "oci", "web", "oci-apache",
+                         {"image_ocid_explicit": "ocid1.image..chosen"})
+    assert v["image_ocid"] == "ocid1.image..chosen"
 
 
 def test_a_dedicated_module_is_copied_whole_including_templates(tmp_path, monkeypatch):
