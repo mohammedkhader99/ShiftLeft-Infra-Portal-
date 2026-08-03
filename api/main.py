@@ -820,6 +820,12 @@ def list_blueprints(session: Session = Depends(get_session),
             "certified_by": row_cert.certified_by if row_cert else None,
             "certified_at": row_cert.certified_at.isoformat() if row_cert and row_cert.certified_at else None,
             "description": (row_avail or {}).get("description", ""),
+            # From the manifest: whether this recipe's own preconditions are met.
+            # Lets the page say 'certified but not configured' rather than the
+            # request discovering it at apply time.
+            "ready": (row_avail or {}).get("ready", True),
+            "missing_config": (row_avail or {}).get("missing_config", []),
+            "available_version": (row_avail or {}).get("version", ""),
         })
     return {
         "orchestrator_available": shipped is not None,

@@ -1,0 +1,8 @@
+ref: oci/compute-instance
+target: oci
+resource_kind: oci-instance
+module: .
+version: 1.0.0
+builds: [compute-vm, rhel9, win2019]
+description: Private-only OCI Compute VM, flex-shape sized from the request.
+requires_env: [OCI_COMPUTE_SUBNET_OCID, OCI_COMPUTE_IMAGE_OCID]

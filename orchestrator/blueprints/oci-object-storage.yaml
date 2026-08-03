@@ -1,0 +1,7 @@
+ref: oci/object-storage
+target: oci
+resource_kind: oci-bucket
+module: .
+version: 1.0.0
+builds: [oci-objectstorage]
+description: OCI Object Storage bucket — versioned, optional customer-managed key.

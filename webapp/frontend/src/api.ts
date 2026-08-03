@@ -880,6 +880,9 @@ export type BlueprintRow = {
   certified_by: string | null
   certified_at: string | null
   description: string
+  ready: boolean
+  missing_config: string[]
+  available_version: string
 }
 export type BlueprintMatrix = {
   orchestrator_available: boolean

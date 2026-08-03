@@ -32,6 +32,8 @@ export default function Blueprints() {
   // Version to pin at certification, per row. "Certified" should mean THIS
   // version was reviewed — not whatever the orchestrator happens to ship later.
   const [versions, setVersions] = useState<Record<string, string>>({})
+  // The version each manifest declares, used when the admin doesn't override it.
+  const defaultVersions: Record<string, string> = {}
 
   function reload() {
     getBlueprints().then((d) => { if (d && d !== 'forbidden') setData(d) })
@@ -41,7 +43,7 @@ export default function Blueprints() {
   async function onCertify(code: string, target: string, ref: string) {
     const key = `${code}:${target}`
     setBusy(true)
-    const { status, body } = await certifyBlueprint(code, target, ref, (versions[key] || '').trim())
+    const { status, body } = await certifyBlueprint(code, target, ref, (versions[key] ?? defaultVersions[key] ?? '').trim())
     setBusy(false)
     setMsg(status === 200
       ? { ok: true, text: `${code} certified on ${target}.` }
@@ -58,6 +60,9 @@ export default function Blueprints() {
 
   if (!data) return null
 
+  for (const b of data.blueprints) {
+    defaultVersions[`${b.technology_code}:${b.deployment_target}`] = b.available_version || ''
+  }
   const withBlueprint = data.blueprints.filter((b) => b.state !== 'none')
   const rows = showGaps ? data.blueprints : withBlueprint
   const gaps = data.blueprints.length - withBlueprint.length
@@ -144,7 +149,7 @@ export default function Blueprints() {
                       id={`v-${b.technology_code}-${b.deployment_target}`}
                       labelText="" size="sm" placeholder="e.g. 1.2.0"
                       style={{ width: '7rem' }}
-                      value={versions[`${b.technology_code}:${b.deployment_target}`] || ''}
+                      value={versions[`${b.technology_code}:${b.deployment_target}`] ?? b.available_version ?? ''}
                       onChange={(e) => setVersions((v) => ({
                         ...v, [`${b.technology_code}:${b.deployment_target}`]: e.target.value }))}
                     />
@@ -154,6 +159,14 @@ export default function Blueprints() {
                 </td>
                 <td style={td}>
                   <Tag type={STATUS_TAG[b.state] || 'gray'} size="sm" style={{ margin: 0 }}>{b.state}</Tag>
+                  {b.state !== 'none' && b.ready === false && (
+                    <div style={{ marginTop: '0.2rem' }}>
+                      <Tag type="magenta" size="sm" style={{ margin: 0 }}
+                           title={`Not configured: ${(b.missing_config || []).join(', ')}`}>
+                        not configured
+                      </Tag>
+                    </div>
+                  )}
                 </td>
                 <td style={td}>
                   {b.certified_by || <span style={{ color: 'var(--cds-text-secondary)' }}>—</span>}
