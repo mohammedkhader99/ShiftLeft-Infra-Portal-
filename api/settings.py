@@ -120,6 +120,18 @@ READ_ONLY_ENV: dict[str, str] = {
     "WEBHOOKS_ENABLED": "Outbound webhooks",
     "SUBSIDIARY_SYNC_ENABLED": "Subsidiary sync from Jira",
     "CLOUD_STATE_SYNC_ENABLED": "Background cloud-state sync",
+    # Jira workflow status mapping — which Jira status carries which meaning.
+    # Visible because a workflow RENAME in Jira silently breaks approval
+    # detection, and the console is where that should be noticeable.
+    #
+    # Read-only on purpose, despite being non-secret: "which status means
+    # approved" IS the approval gate. Editing it from a browser would let someone
+    # redefine what counts as an approval — and with autonomous apply mode that
+    # would provision unapproved requests. It stays a deploy-time decision.
+    "JIRA_APPROVED_STATUSES": "Jira status meaning APPROVED (the provisioning gate)",
+    "JIRA_REJECTED_STATUSES": "Jira status meaning rejected",
+    "JIRA_INPROGRESS_STATUS": "Jira status set while provisioning",
+    "JIRA_RESOLVED_STATUS": "Jira status set when finished",
 }
 
 _CACHE_TTL = 3.0  # seconds — brief, so panel edits show up fast without hammering the DB

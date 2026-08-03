@@ -89,10 +89,6 @@ EXCLUDED: dict[str, str] = {
     "JIRA_BASE_URL": "service address",
     "JIRA_PROJECT_KEY": "Jira schema detail",
     "JIRA_ISSUE_TYPE": "Jira schema detail",
-    "JIRA_APPROVED_STATUSES": "Jira workflow mapping",
-    "JIRA_REJECTED_STATUSES": "Jira workflow mapping",
-    "JIRA_INPROGRESS_STATUS": "Jira workflow mapping",
-    "JIRA_RESOLVED_STATUS": "Jira workflow mapping",
     "JIRA_RESOLVE_FIELDS": "Jira field mapping",
     "JIRA_EXTRA_FIELDS": "Jira field mapping",
     "JIRA_TEMPLATE_ISSUE": "Jira schema detail",
@@ -165,6 +161,23 @@ def test_no_secret_is_ever_registered_for_display():
         assert not any(t in name for t in ("SECRET", "TOKEN", "PASSWORD", "_KEY", "PAT")), (
             f"{name} looks like a secret but is registered for display in the console"
         )
+
+
+def test_jira_workflow_mapping_is_visible_but_never_editable():
+    """The Jira status mapping is shown because a workflow rename silently breaks
+    approval detection, and the console is where that should be noticeable.
+
+    It must stay READ-ONLY. 'Which Jira status means approved' IS the provisioning
+    gate: making it editable would let someone redefine what counts as an approval
+    from a browser and — with autonomous apply mode — provision unapproved
+    requests. That is a deploy-time decision, not a console toggle.
+    """
+    mapping = {"JIRA_APPROVED_STATUSES", "JIRA_REJECTED_STATUSES",
+               "JIRA_INPROGRESS_STATUS", "JIRA_RESOLVED_STATUS"}
+    assert mapping <= set(settings.READ_ONLY_ENV), "the workflow mapping must be visible"
+    assert not (mapping & set(settings.ALLOWLIST)), (
+        "the Jira workflow status mapping must NEVER be editable from the console — "
+        "it defines what counts as an approval")
 
 
 def test_execution_gate_labels_cover_every_reported_gate():
