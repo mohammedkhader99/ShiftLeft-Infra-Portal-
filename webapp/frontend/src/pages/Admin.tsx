@@ -12,7 +12,6 @@ import {
   type Shutdown, type ShutdownPolicy, type WebhookRow, type RoleMapRow, type UserRow,
 } from '../api'
 import SettingsEditor from '../components/SettingsEditor'
-import PolicyCatalogue from '../components/PolicyCatalogue'
 
 function Flag({ on, onLabel, offLabel }: { on: boolean; onLabel?: string; offLabel?: string }) {
   return (
@@ -258,8 +257,6 @@ export default function Admin() {
       )}
 
       <SettingsEditor />
-
-      <PolicyCatalogue />
 
       <Tile>
         <h4 style={{ fontSize: '0.95rem', fontWeight: 500, marginBottom: '0.25rem' }}>

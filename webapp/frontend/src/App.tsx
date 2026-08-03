@@ -26,6 +26,7 @@ import {
   Settings,
   Activity as ActivityIcon,
   Chat,
+  Rule,
 } from '@carbon/icons-react'
 import RequestForm from './pages/RequestForm'
 import MyRequests from './pages/MyRequests'
@@ -35,6 +36,7 @@ import Reports from './pages/Reports'
 import Admin from './pages/Admin'
 import Activity from './pages/Activity'
 import Assistant from './pages/Assistant'
+import Policies from './pages/Policies'
 import HeaderSearch from './components/HeaderSearch'
 
 type Me = { email: string; roles: string[] }
@@ -96,6 +98,7 @@ export default function App() {
     !route.startsWith('#/reports') &&
     !route.startsWith('#/activity') &&
     !route.startsWith('#/assistant') &&
+    !route.startsWith('#/opa') &&
     !route.startsWith('#/admin')
   const isAdmin = !!me && me.roles.includes('platform_admin')
   const oversight = !!me && me.roles.some((r) => ['platform_admin', 'auditor', 'finops'].includes(r))
@@ -119,6 +122,9 @@ export default function App() {
   } else if (route.startsWith('#/assistant')) {
     title = 'Assistant'
     page = <Assistant />
+  } else if (route.startsWith('#/opa')) {
+    title = 'OPA policies'
+    page = <Policies />
   } else if (route.startsWith('#/admin')) {
     title = 'Admin console'
     page = <Admin />
@@ -187,6 +193,11 @@ export default function App() {
             <SideNavLink renderIcon={Chat} href="#/assistant" isActive={route.startsWith('#/assistant')}>
               Assistant
             </SideNavLink>
+            {isAdmin && (
+              <SideNavLink renderIcon={Rule} href="#/opa" isActive={route.startsWith('#/opa')}>
+                OPA
+              </SideNavLink>
+            )}
             {isAdmin && (
               <SideNavLink renderIcon={Settings} href="#/admin" isActive={route.startsWith('#/admin')}>
                 Admin
