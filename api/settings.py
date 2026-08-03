@@ -111,6 +111,10 @@ READ_ONLY_ENV: dict[str, str] = {
     "PROVISION_MODE": "Provisioning mode",
     "AUTO_PROVISION": "Auto-provision poller",
     "ROLE_SOURCE": "Role source",
+    # The break-glass administrator list. Visible so it is never a hidden back
+    # door, read-only because it is the one thing that can restore access if the
+    # role table is emptied — editable, it could also be used to grant it.
+    "PORTAL_BOOTSTRAP_ADMINS": "Break-glass administrators (.env only)",
     "JIRA_MODE": "Jira mode",
     "RATE_LIMIT_BACKEND": "Rate-limit backend",
     "IAC_SCAN_ENFORCE": "IaC scan enforcement (orchestrator)",

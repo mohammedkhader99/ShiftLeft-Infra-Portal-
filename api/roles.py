@@ -46,7 +46,15 @@ _CACHE_TTL = 300.0  # seconds — avoid calling Jira on every click
 
 
 def role_source() -> str:
-    """'jira' resolves roles from live Jira groups; 'mock' uses ROLE_MAP config."""
+    """Where a signed-in user's portal roles come from.
+
+    - 'portal' : the portal's own person -> role table (Admin -> Access control).
+                 Used here because Entra provides login only and Jira has no
+                 group model the portal can read.
+    - 'jira'   : Jira group membership, via the group -> role map.
+    - 'mock'   : ROLE_MAP config; unmapped users get FULL access, so it is for
+                 local development only and must not be used in a live portal.
+    """
     return os.getenv("ROLE_SOURCE", "mock").strip().lower()
 
 
@@ -93,7 +101,43 @@ def _group_role_map() -> dict:
 def _default_roles() -> set[str]:
     """Roles for a user with no explicit mapping. Mock/dev: full access so local
     work and tests aren't blocked. Live: the least-privilege floor."""
+    if role_source() == "portal":
+        # Authenticated but unlisted. They passed Entra, and raising a request is
+        # harmless because Jira still approves it — so `requester`, never admin.
+        return {REQUESTER}
     return set(ALL_ROLES) if role_source() != "jira" else {READ_ONLY}
+
+
+def bootstrap_admins() -> set[str]:
+    """Emails always treated as platform_admin, from PORTAL_BOOTSTRAP_ADMINS.
+
+    Solves the chicken-and-egg of the portal role source: with an empty table
+    nobody could reach the Admin console to grant the first role. Also the
+    break-glass if the table is ever emptied. Deploy-time only (.env), never
+    editable from the console — it is the one thing that can restore access.
+    """
+    raw = os.getenv("PORTAL_BOOTSTRAP_ADMINS", "")
+    return {e.strip().lower() for e in raw.split(",") if e.strip()}
+
+
+def _portal_roles(email: str) -> set[str]:
+    """Roles granted to this person in the portal's own table. Returns an empty
+    set if unlisted; on a DB error returns empty so the caller falls back to the
+    default rather than granting anything."""
+    try:
+        from sqlalchemy import select
+
+        from db.models import UserRole
+        session = SessionLocal()
+        try:
+            rows = session.scalars(
+                select(UserRole).where(UserRole.email == email.strip().lower())
+            ).all()
+            return {r.role for r in rows if r.role in ALL_ROLES}
+        finally:
+            session.close()
+    except Exception:  # noqa: BLE001 — never grant on an error path
+        return set()
 
 
 def _jira_groups(email: str) -> list[str]:
@@ -167,6 +211,12 @@ def resolve_roles(email: str) -> set[str]:
     Live: mapped from Jira group membership (cached), read-only on any failure."""
     if not email:
         return {READ_ONLY}
+
+    if role_source() == "portal":
+        # Bootstrap admins are unconditional, so access can always be restored.
+        if email.strip().lower() in bootstrap_admins():
+            return {PLATFORM_ADMIN}
+        return _portal_roles(email) or _default_roles()
 
     if role_source() != "jira":
         mapped = _mock_role_map().get(email)

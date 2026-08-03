@@ -497,6 +497,27 @@ class RoleMapping(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 
+class UserRole(Base):
+    """A portal role granted to a named person (F-IAM-01).
+
+    The portal's roles have no external source here: Entra provides login only
+    (no group claims), and Jira's authority model is per-ticket Assignment
+    Groups, which answer 'who may act on this ticket' rather than 'who may
+    administer the portal'. So authorisation is maintained in the portal itself
+    while identity stays federated.
+
+    One row per (email, role) so a person can hold several. Anyone authenticated
+    but unlisted falls back to the default role — deliberately NOT an admin.
+    """
+
+    __tablename__ = "user_role"
+
+    email: Mapped[str] = mapped_column(String(160), primary_key=True)
+    role: Mapped[str] = mapped_column(String(40), primary_key=True)
+    granted_by: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    granted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
 class Setting(Base):
     """A runtime override for a NON-SECRET governance/FinOps/AI setting (F-OPS-09).
 

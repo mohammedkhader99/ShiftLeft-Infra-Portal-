@@ -95,6 +95,7 @@ from db.models import (
     RequestComponent,
     Setting,
     SizingAnchor,
+    UserRole,
     Subsidiary,
     Technology,
     WebhookDelivery,
@@ -736,6 +737,73 @@ def list_settings(_auth: str = Depends(require_action("manage_settings"))) -> di
         "note": ("Secrets (API keys, credentials) and security/provisioning switches "
                  "are managed in .env / the vault and are never editable here."),
     }
+
+
+class UserRoleIn(BaseModel):
+    email: str
+    role: str
+
+
+@app.get("/api/access/user-roles")
+def list_user_roles(session: Session = Depends(get_session),
+                    _auth: str = Depends(require_action("manage_access"))) -> dict:
+    """Who holds which portal role (F-IAM-01).
+
+    The portal's own person -> role list. It exists because there is no external
+    source here: Entra provides login only, and Jira's authority model is
+    per-ticket Assignment Groups, which cannot answer 'who may administer the
+    portal'. Identity stays federated; authorisation is maintained here.
+    """
+    rows = session.scalars(select(UserRole).order_by(UserRole.email, UserRole.role)).all()
+    people: dict[str, list[str]] = {}
+    for row in rows:
+        people.setdefault(row.email, []).append(row.role)
+    return {
+        "role_source": roles_mod.role_source(),
+        "default_role": sorted(roles_mod._default_roles()),
+        "bootstrap_admins": sorted(roles_mod.bootstrap_admins()),
+        "roles": sorted(roles_mod.ALL_ROLES),
+        "users": [{"email": e, "roles": sorted(r)} for e, r in sorted(people.items())],
+    }
+
+
+@app.post("/api/access/user-roles")
+def grant_user_role(body: UserRoleIn, session: Session = Depends(get_session),
+                    admin: str = Depends(require_action("manage_access"))) -> dict:
+    """Grant a portal role to a person. Audited (`access.role_granted`)."""
+    email = (body.email or "").strip().lower()
+    role = (body.role or "").strip()
+    if "@" not in email:
+        raise HTTPException(status_code=422, detail="Enter the person's email address.")
+    if role not in roles_mod.ALL_ROLES:
+        raise HTTPException(status_code=422,
+                            detail=f"Unknown role. Choose one of: {', '.join(sorted(roles_mod.ALL_ROLES))}.")
+    if session.get(UserRole, (email, role)) is None:
+        session.add(UserRole(email=email, role=role, granted_by=admin))
+        append_audit(session, "access.role_granted", actor=admin,
+                     detail={"email": email, "role": role})
+        session.commit()
+    return {"email": email, "role": role, "granted": True}
+
+
+@app.delete("/api/access/user-roles/{email}/{role}")
+def revoke_user_role(email: str, role: str, session: Session = Depends(get_session),
+                     admin: str = Depends(require_action("manage_access"))) -> dict:
+    """Remove a portal role from a person. Audited (`access.role_revoked`).
+
+    Removing every role does not lock the person out — they fall back to the
+    default role — and PORTAL_BOOTSTRAP_ADMINS always restores administrator
+    access, so the console can never be locked away entirely.
+    """
+    email = (email or "").strip().lower()
+    row = session.get(UserRole, (email, role))
+    if row is None:
+        raise HTTPException(status_code=404, detail="That person does not hold that role.")
+    session.delete(row)
+    append_audit(session, "access.role_revoked", actor=admin,
+                 detail={"email": email, "role": role})
+    session.commit()
+    return {"email": email, "role": role, "granted": False}
 
 
 @app.get("/api/admin/policies")
