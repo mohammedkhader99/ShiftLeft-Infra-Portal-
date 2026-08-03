@@ -88,6 +88,7 @@ async def posture(request: Request) -> dict:
         "backup_mode": backups.backup_mode(),
         "restore_mode": backups.restore_mode(),
         "reduce_mode": os.getenv("REDUCE_MODE", "mock").strip().lower(),
+        "refresh_mode": os.getenv("REFRESH_MODE", "mock").strip().lower(),
     }
 
 

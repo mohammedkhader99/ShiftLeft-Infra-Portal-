@@ -652,6 +652,7 @@ _EXECUTION_GATE_LABELS = {
     "backup_mode": "Backup mode",
     "restore_mode": "Restore mode",
     "reduce_mode": "Capacity reduction mode",
+    "refresh_mode": "Data refresh mode",
     "cloud_state_mode": "Cloud-state sync mode",
     "actuate_enabled": "Real stop/start allowed",
 }

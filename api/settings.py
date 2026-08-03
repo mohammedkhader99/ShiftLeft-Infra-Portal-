@@ -76,6 +76,24 @@ ALLOWLIST: dict[str, dict] = {
     "QUOTA_ENFORCE": {"label": "Block over-quota requests", "type": "bool", "default": "false",
                       "group": "FinOps",
                       "help": "When on, a create over its project's environment quota is blocked (else warned)."},
+    "TTL_DAYS_SANDBOX": {"label": "Sandbox lifetime (days)", "type": "int", "default": "3", "min": 1,
+                         "group": "FinOps",
+                         "help": "How long a throwaway sandbox environment lives before expiry."},
+    "COST_DRIFT_THRESHOLD": {"label": "Cost drift threshold (%)", "type": "float", "default": "10",
+                             "min": 0, "group": "FinOps",
+                             "help": "Flag an environment whose cost has drifted this far from its estimate."},
+    # Scheduled shutdown
+    "SHUTDOWN_ENABLED": {"label": "Record scheduled shutdown", "type": "bool", "default": "false",
+                         "group": "Scheduled shutdown",
+                         "help": "Record off-hours pause/resume for non-prod (portal-side; stops no real resource)."},
+    "SHUTDOWN_DAYS": {"label": "Business days", "type": "str", "default": "mon-fri",
+                      "group": "Scheduled shutdown", "help": "e.g. mon-fri."},
+    "SHUTDOWN_START": {"label": "Business hours start", "type": "str", "default": "08:00",
+                       "group": "Scheduled shutdown", "help": "24h time; outside these hours is off-hours."},
+    "SHUTDOWN_END": {"label": "Business hours end", "type": "str", "default": "20:00",
+                     "group": "Scheduled shutdown", "help": "24h time."},
+    "SHUTDOWN_TZ": {"label": "Business hours timezone", "type": "str", "default": "UTC",
+                    "group": "Scheduled shutdown", "help": "e.g. Asia/Dubai."},
     # AI
     "AI_MODE": {"label": "AI mode", "type": "enum", "default": "mock", "choices": ["mock", "live"],
                 "group": "AI",
@@ -96,6 +114,12 @@ READ_ONLY_ENV: dict[str, str] = {
     "JIRA_MODE": "Jira mode",
     "RATE_LIMIT_BACKEND": "Rate-limit backend",
     "IAC_SCAN_ENFORCE": "IaC scan enforcement (orchestrator)",
+    # Integration + background-worker switches: visible so the posture is complete,
+    # but deploy-time decisions rather than policy knobs.
+    "VAULT_MODE": "Credential delivery mode",
+    "WEBHOOKS_ENABLED": "Outbound webhooks",
+    "SUBSIDIARY_SYNC_ENABLED": "Subsidiary sync from Jira",
+    "CLOUD_STATE_SYNC_ENABLED": "Background cloud-state sync",
 }
 
 _CACHE_TTL = 3.0  # seconds — brief, so panel edits show up fast without hammering the DB
