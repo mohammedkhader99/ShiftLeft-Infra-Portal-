@@ -867,6 +867,35 @@ export type AdminSettings = {
   execution_available: boolean
   note: string
 }
+// Portal-managed roles (F-IAM-01). There is no external source here — Entra is
+// login only and Jira has no group model the portal can read — so authorisation
+// is maintained in the portal while identity stays federated.
+export type UserRoles = {
+  role_source: string
+  default_role: string[]
+  bootstrap_admins: string[]
+  roles: string[]
+  users: { email: string; roles: string[] }[]
+}
+export async function getUserRoles(): Promise<UserRoles | 'forbidden' | null> {
+  const r = await fetch('/api/access/user-roles')
+  if (r.status === 403) return 'forbidden'
+  return r.ok ? r.json() : null
+}
+export async function grantUserRole(email: string, role: string): Promise<{ status: number; body: any }> {
+  const r = await fetch('/api/access/user-roles', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, role }),
+  })
+  return { status: r.status, body: await r.json().catch(() => ({})) }
+}
+export async function revokeUserRole(email: string, role: string): Promise<number> {
+  const r = await fetch(`/api/access/user-roles/${encodeURIComponent(email)}/${encodeURIComponent(role)}`,
+    { method: 'DELETE' })
+  return r.status
+}
+
 // The governance rules OPA currently enforces (F-GOV-03). Descriptions come from
 // each rule's own METADATA annotation in the loaded policy, so they cannot drift.
 export type PolicyRule = {

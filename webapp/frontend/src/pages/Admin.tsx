@@ -12,6 +12,7 @@ import {
   type Shutdown, type ShutdownPolicy, type WebhookRow, type RoleMapRow, type UserRow,
 } from '../api'
 import SettingsEditor from '../components/SettingsEditor'
+import UserRolesPanel from '../components/UserRolesPanel'
 
 function Flag({ on, onLabel, offLabel }: { on: boolean; onLabel?: string; offLabel?: string }) {
   return (
@@ -258,6 +259,9 @@ export default function Admin() {
 
       <SettingsEditor />
 
+      <UserRolesPanel />
+
+      {roleSource === 'jira' && (
       <Tile>
         <h4 style={{ fontSize: '0.95rem', fontWeight: 500, marginBottom: '0.25rem' }}>
           Access control — group → role map (F-IAM-01){' '}
@@ -328,6 +332,7 @@ export default function Admin() {
           )}
         </div>
       </Tile>
+      )}
 
       <Tile>
         <h4 style={{ fontSize: '0.95rem', fontWeight: 500, marginBottom: '0.25rem' }}>
