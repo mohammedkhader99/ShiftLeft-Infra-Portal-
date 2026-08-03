@@ -93,6 +93,24 @@ def _require_psql() -> None:
         )
 
 
+def dns_enabled() -> bool:
+    return os.getenv("OCI_DNS_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _require_dns() -> None:
+    """Creating a real DNS record needs the opt-in and a zone to create it in.
+    Without both, refuse rather than plan a record into an empty zone name."""
+    if not dns_enabled():
+        raise ProvisionError(
+            "DNS record creation is disabled. Set OCI_DNS_ENABLED=true to allow it."
+        )
+    if not os.getenv("OCI_DNS_ZONE"):
+        raise ProvisionError(
+            "DNS is not configured: set OCI_DNS_ZONE to the zone records are created "
+            "in (e.g. internal.example.com)."
+        )
+
+
 def _oci_vars(name: str, tags: dict, resource_kind: str = "oci-bucket",
               sizing: dict | None = None) -> dict:
     sizing = sizing or {}
@@ -145,6 +163,15 @@ def _oci_vars(name: str, tags: dict, resource_kind: str = "oci-bucket",
         "db_admin_username": os.getenv("OCI_PSQL_ADMIN_USERNAME", "pgadmin"),
         "db_admin_secret_ocid": os.getenv("OCI_PSQL_ADMIN_SECRET_OCID", ""),
         "db_admin_secret_version": int(os.getenv("OCI_PSQL_ADMIN_SECRET_VERSION", "1")),
+        # --- DNS record (GAP-ANALYSIS step 5) ---------------------------------
+        # Blank dns_name = no record, so every existing environment plans exactly
+        # as before until a DNS request supplies one.
+        "dns_name": sizing.get("dns_name", ""),
+        "dns_type": sizing.get("dns_type", "") or "A",
+        "dns_value": sizing.get("dns_value", ""),
+        "dns_zone": os.getenv("OCI_DNS_ZONE", ""),
+        "dns_ttl": int(os.getenv("OCI_DNS_TTL", "300")),
+        "dns_compartment_ocid": os.getenv("OCI_DNS_COMPARTMENT_OCID", ""),
     }
 
 

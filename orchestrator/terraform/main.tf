@@ -137,10 +137,45 @@ resource "oci_psql_db_system" "env" {
   freeform_tags = var.tags
 }
 
+# --- DNS record (GAP-ANALYSIS step 5) ----------------------------------------
+# A name for an environment, created in the SAME workspace as the environment it
+# names. That is deliberate: the record then shares the environment's lifecycle,
+# so tearing the environment down removes its name too, instead of leaving a
+# dangling record pointing at nothing.
+#
+# Created only when a name is supplied, so every existing environment plans
+# unchanged until one is requested.
+
+resource "oci_dns_rrset" "env" {
+  count           = var.dns_name != "" ? 1 : 0
+  zone_name_or_id = var.dns_zone
+  domain          = "${var.dns_name}.${var.dns_zone}"
+  rtype           = var.dns_type
+  compartment_id  = var.dns_compartment_ocid != "" ? var.dns_compartment_ocid : var.compartment_ocid
+
+  items {
+    domain = "${var.dns_name}.${var.dns_zone}"
+    rtype  = var.dns_type
+    ttl    = var.dns_ttl
+    # Point at the supplied value, or fall back to the instance's own private IP
+    # so the name follows the environment without anyone copying an address.
+    rdata = var.dns_value != "" ? var.dns_value : try(oci_core_instance.env[0].private_ip, "")
+  }
+}
+
 # `try(...)` returns "" for the resource that wasn't created (count = 0) instead
 # of erroring on an out-of-range index.
 output "bucket_name" {
   value = try(oci_objectstorage_bucket.env[0].name, "")
+}
+
+# The instance's private address — what a DNS A record points at.
+output "instance_private_ip" {
+  value = try(oci_core_instance.env[0].private_ip, "")
+}
+
+output "dns_domain" {
+  value = try(oci_dns_rrset.env[0].domain, "")
 }
 
 output "postgres_ocid" {

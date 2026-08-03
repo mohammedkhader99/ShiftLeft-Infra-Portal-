@@ -1634,6 +1634,9 @@ REQUEST_FIELDS = (
     "source_reference",
     "refresh_from_reference",
     "restore_backup_id",
+    "dns_name",
+    "dns_type",
+    "dns_value",
     "data_classification",
     # Governance metadata (increment 6.1).
     "business_justification",
@@ -1677,6 +1680,9 @@ class DraftIn(BaseModel):
     source_reference: str | None = None
     refresh_from_reference: str | None = None
     restore_backup_id: int | None = None
+    dns_name: str | None = None
+    dns_type: str | None = None
+    dns_value: str | None = None
     data_classification: str | None = None
     # Governance metadata (increment 6.1). All optional at draft time.
     business_justification: str | None = None
@@ -1760,6 +1766,9 @@ class RequestOut(BaseModel):
     source_reference: str | None = None
     refresh_from_reference: str | None = None
     restore_backup_id: int | None = None
+    dns_name: str | None = None
+    dns_type: str | None = None
+    dns_value: str | None = None
     data_classification: str | None = None
     # Governance metadata (increment 6.1).
     business_justification: str | None = None
@@ -2645,6 +2654,10 @@ def approve(jira_key: str, session: Session = Depends(get_session),
     # Reduce scales chosen components of the target down (F-CAT).
     if req.request_type == "reduce":
         return _reduce(session, req, actor="approver")
+
+    # DNS gives the target environment a name (GAP-ANALYSIS step 5).
+    if req.request_type == "dns":
+        return _dns(session, req, actor="approver")
 
     # Signed, versioned handoff. The signature is authenticity; the orchestrator
     # re-checks authority (approval + policy) and re-validates cost itself.
@@ -4260,6 +4273,80 @@ def _reduce_handoff(req: Request, target: Request, reductions: list[dict],
     return body, sign(WEBHOOK_SECRET, body)
 
 
+def _dns_handoff(req: Request, target: Request, resource_kind: str) -> tuple[bytes, str]:
+    """Build + sign the DNS handoff — the target environment and the record."""
+    payload = {
+        "contract_version": CONTRACT_VERSION,
+        "idempotency_key": f"{req.approval.jira_key}:dns:{req.dns_name}",
+        "issued_at": datetime.now(timezone.utc).isoformat(),
+        "jira_key": req.approval.jira_key,
+        "reference": req.reference,
+        "operation": "dns",
+        "target": {"reference": target.reference, "policy_input": _policy_input(target),
+                   "resource_kind": resource_kind},
+        "record": {"name": req.dns_name, "type": (req.dns_type or "A"),
+                   "value": req.dns_value or ""},
+    }
+    body = json.dumps(payload, sort_keys=True).encode()
+    return body, sign(WEBHOOK_SECRET, body)
+
+
+def _dns(session: Session, req: Request, actor: str) -> dict:
+    """Create a DNS name for the target environment (source_reference).
+
+    Governed + orchestrator-executed, mirroring reduce. The record is planned into
+    the target's own Terraform workspace so it shares that environment's
+    lifecycle. The target stays provisioned.
+    """
+    target = session.scalar(select(Request).where(Request.reference == req.source_reference))
+    if target is None:
+        req.status = "dns-failed"
+        req.status_detail = f"DNS target {req.source_reference} not found."
+        append_audit(session, "dns.target_missing", reference=req.reference,
+                     jira_key=req.approval.jira_key, detail={"target": req.source_reference})
+        session.commit()
+        return {"approval": "approved", "created": False, "error": req.status_detail}
+
+    _transition_jira(session, req, inprogress_status(), "jira.in_progress")
+    session.commit()
+
+    body, signature = _dns_handoff(req, target, _environment_resource_kind(session, target))
+    append_audit(session, "dns.handoff", reference=req.reference,
+                 jira_key=req.approval.jira_key, actor=actor,
+                 detail={"target": target.reference, "name": req.dns_name,
+                         "type": req.dns_type})
+    session.commit()
+
+    response, error = _post_to_orchestrator(body, signature, path="/dns")
+    if response is None or response.status_code != 200:
+        raw = error or (response.text if response else "")
+        reason = _short_reason(raw)
+        req.status = "dns-failed"
+        req.status_detail = reason
+        append_audit(session, "dns.failed", reference=req.reference,
+                     jira_key=req.approval.jira_key,
+                     detail={"target": target.reference, "name": req.dns_name, "error": raw})
+        add_comment(req.approval.jira_key,
+                    f"⚠️ Automated DNS record creation failed; no record was created.\n\n{reason}")
+        session.commit()
+        return {"approval": "approved", "created": False, "error": reason}
+
+    result = response.json()
+    domain = result.get("domain") or req.dns_name
+    req.status = "dns-created"
+    req.status_detail = (f"{domain} → {result['points_to']}"
+                         if result.get("points_to") else None)
+    _transition_jira(session, req, resolved_status(), "jira.resolved")
+    append_audit(session, "dns.created", reference=req.reference,
+                 jira_key=req.approval.jira_key,
+                 detail={"target": target.reference, "domain": domain,
+                         "points_to": result.get("points_to", ""),
+                         "summary": result.get("summary")})
+    session.commit()
+    return {"approval": "approved", "created": True, "target": target.reference,
+            "domain": domain, "message": result.get("summary")}
+
+
 def _reduce(session: Session, req: Request, actor: str) -> dict:
     """Scale chosen components of the target (source_reference) DOWN (F-CAT).
     Governed + orchestrator-executed, mirroring refresh. Mock records it; live is a
@@ -4431,6 +4518,10 @@ def _advance_request(session: Session, req: Request) -> str:
         # Reduce scales chosen components of the target down (F-CAT).
         if req.request_type == "reduce":
             _reduce(session, req, actor="poller")
+            return req.status
+        # DNS gives the target environment a name (GAP-ANALYSIS step 5).
+        if req.request_type == "dns":
+            _dns(session, req, actor="poller")
             return req.status
         body, signature = _handoff_payload(req)
         append_audit(session, "orchestrator.handoff", reference=req.reference,

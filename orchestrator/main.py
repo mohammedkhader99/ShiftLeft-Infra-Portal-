@@ -383,6 +383,59 @@ async def refresh(request: Request) -> dict:
                         + (" (sensitive data masked)" if masked else "") + " — no data copied.")}
 
 
+@app.post("/dns")
+async def dns(request: Request) -> dict:
+    """Create a DNS record naming a provisioned environment (GAP-ANALYSIS step 5).
+
+    Signature-verified. The record is planned into the TARGET environment's own
+    Terraform workspace, so it shares that environment's lifecycle — tearing the
+    environment down removes its name too, rather than leaving a record pointing
+    at nothing. Mock records the intent; live creates a real record.
+    """
+    body = await request.body()
+    if not verify(WEBHOOK_SECRET, body, request.headers.get("X-Signature", "")):
+        raise HTTPException(status_code=401, detail="Invalid webhook signature.")
+    payload = json.loads(body)
+    target = payload.get("target") or {}
+    record = payload.get("record") or {}
+    tgt = target.get("reference")
+    fqdn_part = f"{record.get('name', '')}"
+
+    if os.getenv("DNS_MODE", "mock").strip().lower() != "live":
+        return {"created": True, "mock": True,
+                "summary": f"Mock DNS record '{fqdn_part}' for {tgt} — nothing created."}
+
+    try:
+        provisioner._require_dns()
+    except provisioner.ProvisionError as exc:
+        raise HTTPException(status_code=501, detail=str(exc))
+
+    synthetic = {"policy_input": target.get("policy_input") or {}, "reference": tgt}
+    name, tags = _bucket_and_tags(synthetic)
+    rkind = target.get("resource_kind") or "oci-bucket"
+    sizing = {
+        **_compute_spec(synthetic),
+        "dns_name": record.get("name", ""),
+        "dns_type": record.get("type", "A"),
+        "dns_value": record.get("value", ""),
+    }
+    try:
+        plan = provisioner.terraform_plan(tgt, name, tags, rkind, sizing)
+        applied = provisioner.terraform_apply(tgt, name, tags, rkind, sizing)
+    except provisioner.ProvisionError as exc:
+        raise HTTPException(status_code=400, detail=f"DNS record creation failed: {exc}")
+    outputs = applied.get("outputs", {})
+    return {
+        "created": True,
+        "mock": False,
+        "domain": outputs.get("dns_domain", ""),
+        "points_to": record.get("value") or outputs.get("instance_private_ip", ""),
+        "plan_summary": plan.get("summary"),
+        "summary": (f"Created DNS record {outputs.get('dns_domain') or fqdn_part} for {tgt}. "
+                    f"{applied.get('summary', 'apply complete')}"),
+    }
+
+
 @app.post("/backup")
 async def backup(request: Request) -> dict:
     """Take a backup of a provisioned environment's managed database (F-LCM-06).

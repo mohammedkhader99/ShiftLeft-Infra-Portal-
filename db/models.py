@@ -258,6 +258,13 @@ class Request(Base):
     # For 'restore' (F-LCM-06): the Backup id to restore the target
     # (source_reference) to. Null for other request types.
     restore_backup_id: Mapped[int | None] = mapped_column(nullable=True)
+    # For 'dns' (GAP-ANALYSIS step 5): the record to create for the target
+    # environment (source_reference). `dns_value` is what it points at — left
+    # blank, the orchestrator uses the environment's own recorded address, so the
+    # record follows the thing it names. Null for other request types.
+    dns_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    dns_type: Mapped[str | None] = mapped_column(String(8), nullable=True)  # A|CNAME
+    dns_value: Mapped[str | None] = mapped_column(String(255), nullable=True)
     data_classification: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
     # Governance metadata captured on the form (increment 6.1, from the UX

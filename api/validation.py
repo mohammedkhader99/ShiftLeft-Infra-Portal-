@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from db.models import Backup, CostCentre, Environment, Project, Request, Subsidiary, Technology
 
-REQUEST_TYPES = {"create", "add", "resize", "decommission", "refresh", "restore",
+REQUEST_TYPES = {"dns", "create", "add", "resize", "decommission", "refresh", "restore",
                  "clone", "sandbox", "temporary", "reduce", "dr"}
 SIZES = {"small", "medium", "large", "xlarge"}
 # Size ladder for the reduce-capacity guardrail (F-CAT): new size must rank below.
@@ -95,7 +95,7 @@ def validate_submission(data: dict, session: Session) -> dict[str, str]:
 
     # Cost centre is required for every type except those that operate on an
     # existing provisioned request (they inherit its context).
-    if request_type not in ("decommission", "refresh", "restore", "reduce"):
+    if request_type not in ("decommission", "refresh", "restore", "reduce", "dns"):
         cost_centre = (data.get("cost_centre_code") or "").strip()
         if not cost_centre:
             errors["cost_centre_code"] = (
@@ -129,6 +129,8 @@ def validate_submission(data: dict, session: Session) -> dict[str, str]:
         _validate_restore_fields(data, session, errors)
     elif request_type == "reduce":
         _validate_reduce_fields(data, session, errors)
+    elif request_type == "dns":
+        _validate_dns_fields(data, session, errors)
     else:  # add | resize
         target = (data.get("target_environment") or "").strip()
         if not target:
@@ -398,6 +400,51 @@ def _validate_dr_fields(data: dict, session: Session, errors: dict[str, str]) ->
         errors["source_reference"] = (
             f"{source_ref} is not provisioned (status: {source.status}); only a provisioned "
             "environment can have a DR replica.")
+
+
+# A DNS label: letters, digits and hyphens, not starting or ending with a hyphen.
+# Each dot-separated part is validated, so "app.egate" is fine but "-app" is not.
+DNS_TYPES = {"A", "CNAME"}
+_DNS_LABEL = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
+
+
+def _validate_dns_fields(data: dict, session: Session, errors: dict[str, str]) -> None:
+    """A DNS request (GAP-ANALYSIS step 5) names a PROVISIONED environment. The
+    record points at that environment's own address unless an explicit value is
+    given, so the name follows the thing it names."""
+    source_ref = (data.get("source_reference") or "").strip()
+    if not source_ref:
+        errors["source_reference"] = "Select the provisioned environment this name is for."
+    else:
+        source = session.scalar(select(Request).where(Request.reference == source_ref))
+        if source is None:
+            errors["source_reference"] = f"Unknown request '{source_ref}'."
+        elif source.status != "provisioned":
+            errors["source_reference"] = (
+                f"{source_ref} is not provisioned (status: {source.status}); only a "
+                "provisioned environment can be given a DNS name.")
+
+    name = (data.get("dns_name") or "").strip().lower()
+    if not name:
+        errors["dns_name"] = "Enter the host name to create, e.g. 'egate-uat'."
+    elif len(name) > 120:
+        errors["dns_name"] = "That host name is too long (120 characters maximum)."
+    elif not all(_DNS_LABEL.match(part) for part in name.split(".") if True):
+        errors["dns_name"] = (
+            "Use letters, digits and hyphens only, separated by dots — no leading or "
+            "trailing hyphen (e.g. 'egate-uat' or 'api.egate').")
+
+    rtype = (data.get("dns_type") or "A").strip().upper()
+    if rtype not in DNS_TYPES:
+        errors["dns_type"] = f"Choose a record type: {', '.join(sorted(DNS_TYPES))}."
+
+    # An explicit value is optional (blank = point at the environment), but a
+    # CNAME has nothing sensible to infer, so it must be given.
+    value = (data.get("dns_value") or "").strip()
+    if rtype == "CNAME" and not value:
+        errors["dns_value"] = "A CNAME needs the target host name it points to."
+    if value and len(value) > 255:
+        errors["dns_value"] = "That target is too long (255 characters maximum)."
 
 
 def _validate_reduce_fields(data: dict, session: Session, errors: dict[str, str]) -> None:

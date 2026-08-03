@@ -145,3 +145,39 @@ variable "db_admin_secret_version" {
   type    = number
   default = 1
 }
+
+# --- DNS record (GAP-ANALYSIS step 5) ----------------------------------------
+# Empty dns_name means no record is created, so existing environments are
+# unaffected until a DNS request asks for one.
+variable "dns_name" {
+  type    = string
+  default = ""
+}
+
+# The DNS zone the record is created in (e.g. internal.example.com).
+variable "dns_zone" {
+  type    = string
+  default = ""
+}
+
+variable "dns_type" {
+  type    = string
+  default = "A"
+}
+
+# What the record points at. Empty falls back to the instance's private IP.
+variable "dns_value" {
+  type    = string
+  default = ""
+}
+
+variable "dns_ttl" {
+  type    = number
+  default = 300
+}
+
+# Optional: the compartment the DNS zone lives in (empty = compartment_ocid).
+variable "dns_compartment_ocid" {
+  type    = string
+  default = ""
+}
