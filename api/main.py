@@ -639,6 +639,43 @@ class SettingIn(BaseModel):
     value: str
 
 
+# Execution gates live in the ORCHESTRATOR's environment, not the API's. Labels
+# for the console; the values come from the orchestrator itself (see below).
+_EXECUTION_GATE_LABELS = {
+    "provision_mode": "Provisioning mode",
+    "psql_enabled": "Managed PostgreSQL allowed",
+    "psql_configured": "Managed PostgreSQL configured (subnet + vault secret)",
+    "dns_mode": "DNS mode",
+    "dns_enabled": "DNS record creation allowed",
+    "dns_zone_set": "DNS zone configured",
+    "config_enabled": "First-boot configuration",
+    "backup_mode": "Backup mode",
+    "restore_mode": "Restore mode",
+    "reduce_mode": "Capacity reduction mode",
+    "cloud_state_mode": "Cloud-state sync mode",
+    "actuate_enabled": "Real stop/start allowed",
+}
+
+
+def _orchestrator_posture() -> dict | None:
+    """Ask the orchestrator which execution gates are open.
+
+    Returns None if it can't be reached. The caller shows that as 'unavailable'
+    rather than substituting the API's own environment — these switches are read
+    by a different process, so guessing would display a confident falsehood about
+    whether the portal can create billable infrastructure.
+    """
+    payload = {"issued_at": datetime.now(timezone.utc).isoformat(), "operation": "posture"}
+    raw = json.dumps(payload, sort_keys=True).encode()
+    response, _error = _post_to_orchestrator(raw, sign(WEBHOOK_SECRET, raw), path="/posture")
+    if response is None or response.status_code != 200:
+        return None
+    try:
+        return response.json()
+    except ValueError:
+        return None
+
+
 @app.get("/api/admin/settings")
 def list_settings(_auth: str = Depends(require_action("manage_settings"))) -> dict:
     """The editable runtime settings + the read-only .env-managed posture (F-OPS-09).
@@ -671,9 +708,29 @@ def list_settings(_auth: str = Depends(require_action("manage_settings"))) -> di
         }
         for key, label in settings.READ_ONLY_ENV.items()
     ]
+    # The execution gates that decide whether real, billable infrastructure can be
+    # created. They live in the orchestrator's environment, so they are fetched
+    # from it rather than guessed — and reported as unavailable if it is down.
+    posture = _orchestrator_posture()
+    execution: list[dict] = []
+    for key, label in _EXECUTION_GATE_LABELS.items():
+        if posture is None:
+            value, source = "unavailable", "unreachable"
+        elif key not in posture:
+            # An orchestrator that predates this gate (mid-rollout, or a version
+            # skew). Say so rather than rendering a bare None as if it were a value.
+            value, source = "unknown", "orchestrator (older version)"
+        else:
+            raw = posture[key]
+            value = ("on" if raw else "off") if isinstance(raw, bool) else str(raw)
+            source = "orchestrator .env"
+        execution.append({"key": key, "label": label, "value": value, "source": source})
+
     return {
         "editable": editable,
         "read_only": read_only,
+        "execution": execution,
+        "execution_available": posture is not None,
         "note": ("Secrets (API keys, credentials) and security/provisioning switches "
                  "are managed in .env / the vault and are never editable here."),
     }

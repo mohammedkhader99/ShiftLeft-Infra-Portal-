@@ -112,6 +112,94 @@ def test_list_settings_separates_editable_from_readonly(client):
         assert secret not in all_keys
 
 
+def test_execution_gates_come_from_the_orchestrator(client, monkeypatch):
+    """The gates that decide whether billable infrastructure can be created live
+    in the ORCHESTRATOR's environment, so the console must read them from there."""
+    import api.main as main
+
+    class _Resp:
+        status_code = 200
+
+        def json(self):
+            return {"provision_mode": "apply", "psql_enabled": True, "dns_mode": "mock",
+                    "config_enabled": False, "backup_mode": "live", "reduce_mode": "mock"}
+
+    monkeypatch.setattr(main, "_post_to_orchestrator", lambda *a, **k: (_Resp(), None))
+    body = client.get("/api/admin/settings").json()
+    assert body["execution_available"] is True
+    gates = {g["key"]: g["value"] for g in body["execution"]}
+    assert gates["psql_enabled"] == "on"        # booleans render as on/off
+    assert gates["config_enabled"] == "off"
+    assert gates["provision_mode"] == "apply"   # modes render verbatim
+    assert gates["backup_mode"] == "live"
+    reported = {"provision_mode", "psql_enabled", "dns_mode", "config_enabled",
+                "backup_mode", "reduce_mode"}
+    by_key = {g["key"]: g for g in body["execution"]}
+    assert all(by_key[k]["source"] == "orchestrator .env" for k in reported)
+
+
+def test_unreachable_orchestrator_reports_unavailable_never_guesses(client, monkeypatch):
+    """A posture view that guesses is worse than none: the API must not fall back
+    to its OWN environment, or it would confidently display the wrong answer to
+    'can this portal create a database right now?'."""
+    import api.main as main
+    import os
+
+    # The API's own environment says one thing...
+    monkeypatch.setenv("OCI_PSQL_ENABLED", "true")
+    monkeypatch.setenv("PROVISION_MODE", "apply")
+    # ...but the orchestrator can't be reached.
+    monkeypatch.setattr(main, "_post_to_orchestrator", lambda *a, **k: (None, "connection refused"))
+
+    body = client.get("/api/admin/settings").json()
+    assert body["execution_available"] is False
+    values = {g["value"] for g in body["execution"]}
+    assert values == {"unavailable"}            # nothing inferred from os.environ
+    assert all(g["source"] == "unreachable" for g in body["execution"])
+    assert os.getenv("OCI_PSQL_ENABLED") == "true"  # the API's own env was ignored
+
+
+def test_execution_gates_report_values_not_identifiers(client, monkeypatch):
+    """The posture view reports booleans and mode names only — never the OCIDs or
+    secrets behind them. (Labels may mention 'vault secret' descriptively; it is
+    the VALUES that must never carry one.)"""
+    import api.main as main
+
+    class _Resp:
+        status_code = 200
+
+        def json(self):
+            return {"psql_enabled": False, "psql_configured": True, "dns_zone_set": False}
+
+    monkeypatch.setattr(main, "_post_to_orchestrator", lambda *a, **k: (_Resp(), None))
+    body = client.get("/api/admin/settings").json()
+    values = " ".join(g["value"] for g in body["execution"]).lower()
+    for leak in ("ocid1.", "password", "token", "http"):
+        assert leak not in values
+    # 'configured' is reported as a yes/no, not by echoing the OCIDs.
+    gates = {g["key"]: g["value"] for g in body["execution"]}
+    assert gates["psql_configured"] == "on" and gates["dns_zone_set"] == "off"
+
+
+def test_partial_posture_reports_unknown_not_none(client, monkeypatch):
+    """A gate the orchestrator didn't report (older version mid-rollout) must read
+    'unknown' — rendering a bare None would look like a real value."""
+    import api.main as main
+
+    class _Resp:
+        status_code = 200
+
+        def json(self):
+            return {"psql_enabled": True}  # an orchestrator that knows only this gate
+
+    monkeypatch.setattr(main, "_post_to_orchestrator", lambda *a, **k: (_Resp(), None))
+    gates = {g["key"]: g for g in client.get("/api/admin/settings").json()["execution"]}
+    assert gates["psql_enabled"]["value"] == "on"
+    assert gates["dns_mode"]["value"] == "unknown"
+    assert "older version" in gates["dns_mode"]["source"]
+    assert "none" not in {g["value"] for g in gates.values()}
+
+
 def test_put_setting_persists_and_audits(client, session):
     r = client.put("/api/admin/settings/SOD_ENFORCED", json={"value": "false"})
     assert r.status_code == 200

@@ -194,6 +194,38 @@ export default function SettingsEditor() {
         ))}
       </div>
 
+      <div style={groupTitle}>
+        Execution gates — can real infrastructure be created? (read-only)
+      </div>
+      {!data.execution_available && (
+        <InlineNotification
+          kind="warning"
+          lowContrast
+          hideCloseButton
+          title="Orchestrator unreachable"
+          subtitle="These gates are read from the orchestrator. Its state is unknown right now — the values below are not being guessed."
+          style={{ marginBottom: '0.4rem', maxWidth: 'none' }}
+        />
+      )}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(18rem, 1fr))', gap: '0.15rem 2rem' }}>
+        {(data.execution || []).map((r) => {
+          // 'off'/'mock' is the safe state; anything else means a live path is open.
+          const live = !['off', 'mock', 'unavailable'].includes(r.value)
+          return (
+            <div key={r.key} style={{ display: 'flex', justifyContent: 'space-between', gap: '0.5rem', fontSize: '0.8rem', padding: '0.15rem 0' }}>
+              <span style={{ color: 'var(--cds-text-secondary)' }}>{r.label}</span>
+              <Tag size="sm" type={r.value === 'unavailable' ? 'red' : live ? 'magenta' : 'gray'}>
+                {r.value}
+              </Tag>
+            </div>
+          )
+        })}
+      </div>
+      <p style={{ fontSize: '0.7rem', color: 'var(--cds-text-secondary)', margin: '0.4rem 0 0' }}>
+        Read from the orchestrator's own environment, not this service's — so what you see is what
+        actually governs provisioning. Changing these is a deploy-time action on the orchestrator.
+      </p>
+
       <div style={groupTitle}>Managed in .env (read-only)</div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(16rem, 1fr))', gap: '0.15rem 2rem' }}>
         {data.read_only.map((r) => (

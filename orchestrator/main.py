@@ -59,6 +59,38 @@ def health() -> dict:
     return {"ok": True}
 
 
+@app.post("/posture")
+async def posture(request: Request) -> dict:
+    """Report which execution gates are open in THIS process, for the admin
+    console's posture view.
+
+    The API cannot answer this itself: these switches are read by the
+    orchestrator's environment, not the API's, so the API would be guessing — and
+    a posture view that guesses is worse than none. Signature-verified because it
+    enumerates configuration; it returns only booleans and mode names, never a
+    credential, an OCID or a secret.
+    """
+    body = await request.body()
+    if not verify(WEBHOOK_SECRET, body, request.headers.get("X-Signature", "")):
+        raise HTTPException(status_code=401, detail="Invalid webhook signature.")
+    return {
+        "provision_mode": provisioner.provision_mode(),
+        "cloud_state_mode": os.getenv("CLOUD_STATE_MODE", "mock").strip().lower(),
+        "actuate_enabled": os.getenv("OCI_ACTUATE_ENABLED", "false").strip().lower()
+                           in ("1", "true", "yes", "on"),
+        "psql_enabled": provisioner.psql_enabled(),
+        "psql_configured": bool(os.getenv("OCI_PSQL_SUBNET_OCID")
+                                and os.getenv("OCI_PSQL_ADMIN_SECRET_OCID")),
+        "dns_mode": os.getenv("DNS_MODE", "mock").strip().lower(),
+        "dns_enabled": provisioner.dns_enabled(),
+        "dns_zone_set": bool(os.getenv("OCI_DNS_ZONE")),
+        "config_enabled": configure.enabled(),
+        "backup_mode": backups.backup_mode(),
+        "restore_mode": backups.restore_mode(),
+        "reduce_mode": os.getenv("REDUCE_MODE", "mock").strip().lower(),
+    }
+
+
 def _current_monthly(policy_input: dict) -> float | None:
     body = {
         "deployment_target": policy_input.get("deployment_target"),

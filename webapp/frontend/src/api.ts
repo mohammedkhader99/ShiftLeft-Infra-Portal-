@@ -860,6 +860,11 @@ export type AdminSetting = {
 export type AdminSettings = {
   editable: AdminSetting[]
   read_only: { key: string; label: string; value: string; source: string }[]
+  // Execution gates read from the ORCHESTRATOR's environment (whether real,
+  // billable infrastructure can be created). Reported as unavailable rather than
+  // guessed when the orchestrator can't be reached.
+  execution: { key: string; label: string; value: string; source: string }[]
+  execution_available: boolean
   note: string
 }
 export async function getAdminSettings(): Promise<{ status: number; body: any }> {
