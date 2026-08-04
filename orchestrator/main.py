@@ -238,11 +238,21 @@ def _merge_scans(scans: list[dict]) -> dict:
             "high": counts["high"], "ok": counts["high"] == 0}
 
 
-def _resource_name(base: str, kind: str, kinds: list[str]) -> str:
-    """The resource's own name. A single-resource request keeps the bare request
-    name exactly as before — renaming it would orphan every existing workspace.
-    Only a multi-resource stack needs its parts told apart."""
-    if len(kinds) < 2:
+def _resource_name(base: str, kind: str, reference: str, primary: str) -> str:
+    """The resource's own name.
+
+    A stack needs its parts told apart, but a resource that ALREADY EXISTS must
+    keep the name it was built with. Terraform reads a rename as a change to live
+    infrastructure — and for a compute instance the hostname change can force
+    replacement, destroying and rebuilding a running machine.
+
+    Which is why this cannot key off "how many kinds does the request derive
+    today": REQ-2026-0094 was built when it derived one kind and now derives two,
+    so that rule proposed renaming its running VM. The legacy flat workspace is
+    the durable record that a resource predates suffixed names, and it holds
+    exactly one resource — the primary kind.
+    """
+    if kind == primary and "" in provisioner.existing_workspaces(reference):
         return base
     suffix = kind.split("-", 1)[1] if "-" in kind else kind
     return f"{base}-{suffix}"
@@ -351,7 +361,7 @@ async def provision(request: Request) -> dict:
         for kind in kinds:
             try:
                 plans.append((kind, provisioner.terraform_plan(
-                    reference, _resource_name(name, kind, kinds), tags, kind, sizing)))
+                    reference, _resource_name(name, kind, reference, rkind), tags, kind, sizing)))
             except provisioner.ProvisionError as exc:
                 raise HTTPException(status_code=400,
                                     detail=f"Terraform plan failed for {kind}: {exc}")
@@ -399,6 +409,7 @@ async def apply(request: Request) -> dict:
         return {**_provisioned[key], "idempotent": True}
 
     name, tags = _bucket_and_tags(payload)
+    rkind = _resource_kind(payload)
     kinds = _resource_kinds(payload)
     sizing = _compute_spec(payload)
 
@@ -407,7 +418,7 @@ async def apply(request: Request) -> dict:
     # of created infrastructure leaves it running with nobody aware of it.
     created: list[dict] = []
     for kind in kinds:
-        rname = _resource_name(name, kind, kinds)
+        rname = _resource_name(name, kind, reference, rkind)
         try:
             result = provisioner.terraform_apply(reference, rname, tags, kind, sizing)
         except provisioner.ProvisionError as exc:
@@ -445,6 +456,7 @@ async def drift(request: Request) -> dict:
     payload = _authorise(body, request.headers.get("X-Signature", ""))
     reference = payload["reference"]
     name, tags = _bucket_and_tags(payload)
+    rkind = _resource_kind(payload)
     kinds = _resource_kinds(payload)
     sizing = _compute_spec(payload)
     # Only what was actually built: a stack provisioned before multi-resource has
@@ -457,7 +469,7 @@ async def drift(request: Request) -> dict:
     for kind in checked:
         try:
             result = provisioner.terraform_drift(
-                reference, _resource_name(name, kind, kinds), tags, kind, sizing)
+                reference, _resource_name(name, kind, reference, rkind), tags, kind, sizing)
         except provisioner.ProvisionError as exc:
             raise HTTPException(status_code=400, detail=f"Drift check failed for {kind}: {exc}")
         changes.extend(result.get("changes") or [])
@@ -702,6 +714,7 @@ async def destroy(request: Request) -> dict:
     payload = json.loads(body)
     name, tags = _bucket_and_tags(payload)
     reference = payload["reference"]
+    rkind = _resource_kind(payload)
     kinds = _resource_kinds(payload)
     sizing = _compute_spec(payload)
 
@@ -725,7 +738,7 @@ async def destroy(request: Request) -> dict:
     for kind in targets:
         try:
             result = provisioner.terraform_destroy(
-                reference, _resource_name(name, kind, kinds), tags, kind, sizing)
+                reference, _resource_name(name, kind, reference, rkind), tags, kind, sizing)
         except provisioner.ProvisionError as exc:
             raise HTTPException(
                 status_code=400,

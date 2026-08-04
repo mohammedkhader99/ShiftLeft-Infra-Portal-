@@ -37,15 +37,27 @@ def test_an_older_portal_that_sends_one_kind_still_works():
 
 # --- Naming ------------------------------------------------------------------
 
-def test_a_single_resource_keeps_the_bare_request_name():
-    """Renaming would orphan every workspace and resource already provisioned."""
-    assert omain._resource_name("test-req-1", "oci-apache", ["oci-apache"]) == "test-req-1"
+def test_a_stack_names_its_resources_apart(tmp_path, monkeypatch):
+    monkeypatch.setattr(provisioner, "STATE_ROOT", tmp_path)
+    assert omain._resource_name("r1", "oci-apache", "REQ-N", "oci-apache") == "r1-apache"
+    assert omain._resource_name("r1", "oci-instance", "REQ-N", "oci-apache") == "r1-instance"
 
 
-def test_a_stack_names_its_resources_apart():
-    kinds = ["oci-apache", "oci-instance"]
-    assert omain._resource_name("test-req-1", "oci-apache", kinds) == "test-req-1-apache"
-    assert omain._resource_name("test-req-1", "oci-instance", kinds) == "test-req-1-instance"
+def test_a_resource_already_built_keeps_the_name_it_was_built_with(tmp_path, monkeypatch):
+    """REQ-2026-0094 was applied when it derived ONE kind, so its instance is
+    named without a suffix. It now derives two. Keying the name off today's kind
+    count proposed renaming a RUNNING VM — and a hostname change can force
+    Terraform to destroy and rebuild it."""
+    monkeypatch.setattr(provisioner, "STATE_ROOT", tmp_path)
+    legacy = tmp_path / "REQ-OLD"
+    legacy.mkdir()
+    (legacy / "terraform.tfstate").write_text("{}", encoding="utf-8")
+
+    # The resource that exists keeps its bare name...
+    assert omain._resource_name("r1", "oci-apache", "REQ-OLD", "oci-apache") == "r1"
+    # ...while a kind added to the same request later is new, and is named apart
+    # so it cannot collide with it.
+    assert omain._resource_name("r1", "oci-instance", "REQ-OLD", "oci-apache") == "r1-instance"
 
 
 # --- Workspace layout: the part that can strand real infrastructure ----------
