@@ -28,16 +28,25 @@ from __future__ import annotations
 import json
 import os
 
-# technology code -> {packages, services}. Deliberately a small, defensible set of
-# services installable from the base repositories; adding one is a data change.
-# `services` are enabled + started after install.
+# technology code -> {packages, services, ports}. Deliberately a small, defensible
+# set of services installable from the base repositories; adding one is a data
+# change. `services` are enabled + started after install. `ports` are opened in
+# the OS firewall AND drive the network rules, from this one declaration, so the
+# two cannot disagree.
+#
+# A technology with no `ports` is installed and running but reachable only from
+# the machine itself. That is a deliberate choice, not an omission — see redis7.
 TEMPLATES: dict[str, dict] = {
-    "nginx": {"packages": ["nginx"], "services": ["nginx"]},
-    "apache": {"packages": ["httpd"], "services": ["httpd"]},
-    "redis7": {"packages": ["redis"], "services": ["redis"]},
-    "java21": {"packages": ["java-21-openjdk-headless"], "services": []},
-    "python312": {"packages": ["python3", "python3-pip"], "services": []},
-    "nodejs20": {"packages": ["nodejs", "npm"], "services": []},
+    "nginx": {"packages": ["nginx"], "services": ["nginx"], "ports": [80]},
+    "apache": {"packages": ["httpd"], "services": ["httpd"], "ports": [80]},
+    # No port: Redis ships with no authentication, and opening 6379 to the subnet
+    # would publish an unauthenticated data store to every host that can route to
+    # it. Usable as a local cache today; exposing it needs a password, which is a
+    # deliberate follow-up rather than a default.
+    "redis7": {"packages": ["redis"], "services": ["redis"], "ports": []},
+    "java21": {"packages": ["java-21-openjdk-headless"], "services": [], "ports": []},
+    "python312": {"packages": ["python3", "python3-pip"], "services": [], "ports": []},
+    "nodejs20": {"packages": ["nodejs", "npm"], "services": [], "ports": []},
 }
 
 # Codes whose first-boot configuration has been PROVEN on a real VM. Empty until
@@ -79,7 +88,24 @@ def profile_for(code: str) -> dict | None:
     if not isinstance(prof, dict):
         return None
     return {"packages": list(prof.get("packages") or []),
-            "services": list(prof.get("services") or [])}
+            "services": list(prof.get("services") or []),
+            "ports": [int(p) for p in (prof.get("ports") or [])]}
+
+
+def ports_for(components: list[dict]) -> list[int]:
+    """Every TCP port the request's technologies listen on, de-duplicated.
+
+    The blueprint opens exactly these in the network rules and `render()` opens
+    exactly these in the OS firewall, so a service can never be running behind a
+    closed port (or reachable on one nobody declared).
+    """
+    ports: list[int] = []
+    for c in components or []:
+        prof = profile_for(c.get("technology_code") or "")
+        for p in (prof or {}).get("ports", []):
+            if p not in ports:
+                ports.append(p)
+    return ports
 
 
 def configurable_codes() -> set[str]:
@@ -110,6 +136,7 @@ def render(components: list[dict]) -> str:
 
     packages: list[str] = []
     services: list[str] = []
+    ports: list[int] = []
     for _code, prof in profiles:
         for pkg in prof["packages"]:
             if pkg not in packages:
@@ -117,6 +144,9 @@ def render(components: list[dict]) -> str:
         for svc in prof["services"]:
             if svc not in services:
                 services.append(svc)
+        for port in prof["ports"]:
+            if port not in ports:
+                ports.append(port)
 
     install = _INSTALL[os_family()]
     configured = ", ".join(code for code, _ in profiles)
@@ -142,5 +172,12 @@ def render(components: list[dict]) -> str:
         lines.append(f"  - {install} {' '.join(packages)} || echo 'PORTAL: package install FAILED' >> /var/log/infra-portal.log")
     for svc in services:
         lines.append(f"  - systemctl enable --now {svc} || echo 'PORTAL: {svc} failed to start' >> /var/log/infra-portal.log")
+    # The OS firewall, from the same declaration that drives the network rules.
+    # Without this a service starts correctly and is still unreachable — which
+    # looks exactly like a broken install.
+    for port in ports:
+        lines.append(f"  - firewall-cmd --permanent --add-port={port}/tcp || echo 'PORTAL: could not open {port}/tcp' >> /var/log/infra-portal.log")
+    if ports:
+        lines.append("  - firewall-cmd --reload || true")
     lines.append("  - echo 'PORTAL: first-boot configuration finished' >> /var/log/infra-portal.log")
     return "\n".join(lines) + "\n"

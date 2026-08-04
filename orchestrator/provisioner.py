@@ -164,6 +164,9 @@ def _oci_vars(name: str, tags: dict, resource_kind: str = "oci-bucket",
         # orchestrator rendered one; otherwise the static env default, so existing
         # deployments behave exactly as before.
         "user_data": sizing.get("user_data") or os.getenv("OCI_COMPUTE_USER_DATA", ""),
+        # Ports the generic service blueprint opens. Empty for every other kind,
+        # whose modules do not declare the variable and ignore it.
+        "service_ports": list(sizing.get("service_ports") or []),
         "tags": tags,
         # Customer-managed encryption key for sensitive data (F-SEC-04); empty
         # falls back to Oracle-managed encryption in the module.

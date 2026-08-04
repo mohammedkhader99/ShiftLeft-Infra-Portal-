@@ -276,6 +276,9 @@ def _compute_spec(payload: dict) -> dict:
         # a deliberate per-technology image while ignoring the shared default.
         "image_ocid_explicit": _mapped_image(payload),
         "user_data": configure.render(components),
+        # The ports the installed service listens on, from the same profiles that
+        # produced user_data — so the network rules and the OS firewall agree.
+        "service_ports": configure.ports_for(components),
         # The managed-PostgreSQL shape for the same sizing, so a database scales
         # with the request like a VM does. Unused for non-database resources.
         "db_shape": _psql_shape(sizing),

@@ -1,0 +1,31 @@
+ref: oci/service-vm
+target: oci
+resource_kind: oci-service-vm
+module: oci/service-vm
+version: 1.0.0
+# One blueprint, many technologies: what differs between these is a package, a
+# systemd unit and a port, all declared in orchestrator/configure.py. Adding a
+# technology here is a data change — but it is NOT free: each one needs its
+# package name checked against the image and a real boot test before it earns a
+# place in configure.VERIFIED_CODES.
+builds: [nginx, redis7]
+description: A service installed on a private OCI Compute instance at first boot — package, systemd unit and firewall port from the technology's profile.
+# The Terraform variable this module names its resource with.
+name_var: instance_name
+# Without first-boot configuration this blueprint builds a bare VM with nothing
+# installed on it and reports success. Refusing up front is the whole point of
+# declaring the flag: an unconfigured build is a silent failure, not a partial one.
+enable_flag: CONFIG_ENABLED
+requires_env: [OCI_COMPUTE_SUBNET_OCID]
+vars:
+  # Empty means "look up the latest Oracle Linux 9 image that fits the shape".
+  # The first-boot script uses dnf, systemctl and firewall-cmd, so the image must
+  # stay Red Hat family; the shared OCI_COMPUTE_IMAGE_OCID default is a custom
+  # Ubuntu image and would install nothing. A per-technology entry in
+  # OCI_COMPUTE_IMAGE_MAP still wins over this.
+  image_ocid: ""
+  # The module can manage its own security group, but that needs a VCN OCID the
+  # standard variable set does not carry. Off by default: the subnet's own rules
+  # govern access. Supply vcn_ocid here and flip this to true to have the
+  # blueprint open the service's ports itself.
+  create_nsg: false
