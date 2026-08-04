@@ -301,6 +301,43 @@ def _cloud_vars(cloud: str, name: str, tags: dict, resource_kind: str, sizing: d
     return base
 
 
+def workspace_path(reference: str, resource_kind: str = "") -> Path:
+    """Where this request's Terraform state for one resource kind lives.
+
+    A stack has one workspace per resource, under <reference>/<kind>. Terraform
+    only reads .tf files in its own directory, so the subdirectories are
+    invisible to each other.
+
+    LEGACY: requests provisioned before this layout keep their flat
+    <reference> directory forever. Their state file is there, and a workspace
+    that cannot find its state believes the resource does not exist — it would
+    plan to create a second one and could never destroy the first. Real, running
+    infrastructure is on the other end of this decision, so the flat layout wins
+    whenever a state file is sitting in it.
+    """
+    flat = STATE_ROOT / reference
+    if (flat / "terraform.tfstate").exists():
+        return flat
+    return flat / resource_kind if resource_kind else flat
+
+
+def existing_workspaces(reference: str) -> dict[str, Path]:
+    """Resource kind -> workspace, for every workspace this request actually has
+    state in. Used by destroy and drift so an operation can never silently skip a
+    resource, and never fail on one that was never built."""
+    found: dict[str, Path] = {}
+    flat = STATE_ROOT / reference
+    if not flat.is_dir():
+        return found
+    if (flat / "terraform.tfstate").exists():
+        found[""] = flat          # legacy flat layout: the kind is the request's
+        return found
+    for child in sorted(flat.iterdir()):
+        if child.is_dir() and (child / "terraform.tfstate").exists():
+            found[child.name] = child
+    return found
+
+
 def _workdir(reference: str, cloud: str = "oci", resource_kind: str = "") -> Path:
     """Per-request working dir on the persistent volume, seeded with the module.
 
@@ -312,7 +349,7 @@ def _workdir(reference: str, cloud: str = "oci", resource_kind: str = "") -> Pat
     still copied as *.tf only: its directory now contains the per-blueprint
     subfolders, which must not be dragged into every workspace.
     """
-    workdir = STATE_ROOT / reference
+    workdir = workspace_path(reference, resource_kind)
     workdir.mkdir(parents=True, exist_ok=True)
     source = _module_dir(cloud, resource_kind)
     legacy = source in (MODULE_DIR, MODULE_DIR / "aws")

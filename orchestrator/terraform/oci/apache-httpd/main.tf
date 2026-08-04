@@ -171,4 +171,17 @@ resource "oci_core_instance" "apache" {
     ssh_authorized_keys = var.ssh_authorized_key
     user_data           = local.user_data
   }
+
+  lifecycle {
+    # OCI stamps Oracle-Tags.CreatedBy and CreatedOn on every resource it
+    # creates. This module does not set them, so Terraform sees them as
+    # unwanted and proposes removing them on EVERY plan — which made the drift
+    # check report a change forever and the triage flag a healthy environment as
+    # failing. Ignoring these two keys specifically leaves a deliberate change to
+    # any other defined tag still detectable.
+    ignore_changes = [
+      defined_tags["Oracle-Tags.CreatedBy"],
+      defined_tags["Oracle-Tags.CreatedOn"],
+    ]
+  }
 }

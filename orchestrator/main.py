@@ -203,8 +203,49 @@ _SIZES = {"small": (2, 4), "medium": (4, 16), "large": (8, 64), "xlarge": (16, 1
 
 
 def _resource_kind(payload: dict) -> str:
-    """oci-bucket (default) | oci-instance — what this request provisions/acts on."""
+    """The PRIMARY kind. Operations that act on one resource (stop/start, DNS)
+    still use this; provisioning uses _resource_kinds."""
     return payload.get("resource_kind", "oci-bucket")
+
+
+def _resource_kinds(payload: dict) -> list[str]:
+    """Every resource this request builds, in a stable order.
+
+    A stack is more than one thing. An older portal sends only `resource_kind`,
+    so fall back to it rather than refusing the handoff.
+    """
+    kinds = payload.get("resource_kinds")
+    if isinstance(kinds, list):
+        clean = [str(k) for k in kinds if k]
+        if clean:
+            return clean
+    return [_resource_kind(payload)]
+
+
+def _merge_scans(scans: list[dict]) -> dict:
+    """Combine the IaC scan results of a stack into one verdict. A high-severity
+    finding on ANY resource has to reach the gate, so findings and counts add up
+    rather than the last one winning."""
+    if not scans:
+        return {}
+    findings: list[dict] = []
+    counts = {"high": 0, "medium": 0, "low": 0}
+    for s in scans:
+        findings.extend(s.get("findings") or [])
+        for sev, n in (s.get("counts") or {}).items():
+            counts[sev] = counts.get(sev, 0) + n
+    return {"findings": findings, "counts": counts,
+            "high": counts["high"], "ok": counts["high"] == 0}
+
+
+def _resource_name(base: str, kind: str, kinds: list[str]) -> str:
+    """The resource's own name. A single-resource request keeps the bare request
+    name exactly as before — renaming it would orphan every existing workspace.
+    Only a multi-resource stack needs its parts told apart."""
+    if len(kinds) < 2:
+        return base
+    suffix = kind.split("-", 1)[1] if "-" in kind else kind
+    return f"{base}-{suffix}"
 
 
 def _instance_sizing(payload: dict) -> dict:
@@ -300,14 +341,21 @@ async def provision(request: Request) -> dict:
     verified = {"approval": True, "policy": True, "cost": True}
     name, tags = _bucket_and_tags(payload)
     rkind = _resource_kind(payload)
+    kinds = _resource_kinds(payload)
     sizing = _compute_spec(payload)
 
     if mode in ("plan", "apply"):
-        try:
-            plan = provisioner.terraform_plan(reference, name, tags, rkind, sizing)
-        except provisioner.ProvisionError as exc:
-            raise HTTPException(status_code=400, detail=f"Terraform plan failed: {exc}")
-        scan = plan.get("scan", {})
+        # Every resource in the stack is planned. A failure on any one fails the
+        # whole handoff: a stack that is half-plannable must not look ready.
+        plans = []
+        for kind in kinds:
+            try:
+                plans.append((kind, provisioner.terraform_plan(
+                    reference, _resource_name(name, kind, kinds), tags, kind, sizing)))
+            except provisioner.ProvisionError as exc:
+                raise HTTPException(status_code=400,
+                                    detail=f"Terraform plan failed for {kind}: {exc}")
+        scan = _merge_scans([p["scan"] for _k, p in plans if p.get("scan")])
         # IaC scan gate (F-SEC-03/04): block on HIGH findings only when enforced;
         # otherwise the findings are reported in the response and audited by the API.
         if scan.get("high", 0) > 0 and _iac_scan_enforce():
@@ -315,11 +363,13 @@ async def provision(request: Request) -> dict:
                 status_code=409,
                 detail=(f"IaC scan blocked: {scan['high']} high-severity finding(s) in the "
                         f"terraform plan."))
+        summary = "; ".join(f"{k}: {p['summary']}" for k, p in plans)
         return {
             "provisioned": False, "planned": True, "reference": reference, "jira_key": jira_key,
-            "verified": verified, "plan_summary": plan["summary"], "plan_output": plan["output"],
-            "scan": scan,
-            "message": f"Terraform plan for {reference}: {plan['summary']} — nothing created.",
+            "verified": verified, "plan_summary": summary,
+            "plan_output": "\n\n".join(p["output"] for _k, p in plans),
+            "scan": scan, "resource_kinds": kinds,
+            "message": f"Terraform plan for {reference}: {summary} — nothing created.",
         }
 
     provisioned = {
@@ -349,19 +399,35 @@ async def apply(request: Request) -> dict:
         return {**_provisioned[key], "idempotent": True}
 
     name, tags = _bucket_and_tags(payload)
-    rkind = _resource_kind(payload)
-    try:
-        result = provisioner.terraform_apply(reference, name, tags, rkind, _compute_spec(payload))
-    except provisioner.ProvisionError as exc:
-        raise HTTPException(status_code=400, detail=f"Terraform apply failed: {exc}")
+    kinds = _resource_kinds(payload)
+    sizing = _compute_spec(payload)
 
+    # Apply each resource in turn. If a later one fails, the earlier ones are
+    # already REAL — so they are reported, not hidden: an error that loses track
+    # of created infrastructure leaves it running with nobody aware of it.
+    created: list[dict] = []
+    for kind in kinds:
+        rname = _resource_name(name, kind, kinds)
+        try:
+            result = provisioner.terraform_apply(reference, rname, tags, kind, sizing)
+        except provisioner.ProvisionError as exc:
+            detail = f"Terraform apply failed for {kind}: {exc}"
+            if created:
+                detail += (f" — {len(created)} resource(s) WERE created and are live: "
+                           + ", ".join(f"{c['kind']} {c['name']}" for c in created))
+            raise HTTPException(status_code=400, detail=detail)
+        created.append({"kind": kind, "name": rname, "region": os.getenv("OCI_REGION"),
+                        "outputs": result["outputs"], "summary": result["summary"]})
+
+    summary = "; ".join(f"{c['kind']}: {c['summary']}" for c in created)
     provisioned = {
         "provisioned": True, "reference": reference, "jira_key": jira_key,
         "verified": {"approval": True, "policy": True, "cost": True},
-        "resource": {"kind": rkind, "name": name,
-                     "region": os.getenv("OCI_REGION"), "outputs": result["outputs"]},
-        "summary": result["summary"],
-        "message": f"Provisioned {reference}: {result['summary']}",
+        # `resource` stays for older callers; `resources` is the whole stack.
+        "resource": created[0] if created else None,
+        "resources": created,
+        "summary": summary,
+        "message": f"Provisioned {reference}: {summary}",
     }
     _provisioned[key] = provisioned
     return provisioned
@@ -379,12 +445,26 @@ async def drift(request: Request) -> dict:
     payload = _authorise(body, request.headers.get("X-Signature", ""))
     reference = payload["reference"]
     name, tags = _bucket_and_tags(payload)
-    try:
-        result = provisioner.terraform_drift(reference, name, tags, _resource_kind(payload),
-                                             _compute_spec(payload))
-    except provisioner.ProvisionError as exc:
-        raise HTTPException(status_code=400, detail=f"Drift check failed: {exc}")
-    return {"reference": reference, **result}
+    kinds = _resource_kinds(payload)
+    sizing = _compute_spec(payload)
+    # Only what was actually built: a stack provisioned before multi-resource has
+    # one workspace, and checking a kind that was never applied would report a
+    # whole environment as broken because of a resource that does not exist.
+    built = provisioner.existing_workspaces(reference)
+    checked = [k for k in kinds if k in built] or ([kinds[0]] if built else [])
+
+    changes, summaries = [], []
+    for kind in checked:
+        try:
+            result = provisioner.terraform_drift(
+                reference, _resource_name(name, kind, kinds), tags, kind, sizing)
+        except provisioner.ProvisionError as exc:
+            raise HTTPException(status_code=400, detail=f"Drift check failed for {kind}: {exc}")
+        changes.extend(result.get("changes") or [])
+        summaries.append(f"{kind}: {result.get('summary', '')}")
+    return {"reference": reference, "drift": bool(changes), "changes": changes,
+            "count": len(changes),
+            "summary": "; ".join(summaries) or "nothing provisioned"}
 
 
 @app.post("/state")
@@ -621,10 +701,36 @@ async def destroy(request: Request) -> dict:
         raise HTTPException(status_code=401, detail="Invalid webhook signature.")
     payload = json.loads(body)
     name, tags = _bucket_and_tags(payload)
-    try:
-        result = provisioner.terraform_destroy(payload["reference"], name, tags,
-                                               _resource_kind(payload), _compute_spec(payload))
-    except provisioner.ProvisionError as exc:
-        raise HTTPException(status_code=400, detail=f"Terraform destroy failed: {exc}")
+    reference = payload["reference"]
+    kinds = _resource_kinds(payload)
+    sizing = _compute_spec(payload)
+
+    # Destroy is driven by the workspaces that EXIST, not by what the request
+    # asked for. A stack whose kinds changed since it was built would otherwise
+    # leave the old resource running with nothing tracking it, and still bill for
+    # it. Anything on disk gets torn down.
+    built = provisioner.existing_workspaces(reference)
+    if "" in built:  # legacy flat workspace holds exactly one resource
+        targets = [_resource_kind(payload)]
+    else:
+        targets = ([k for k in kinds if k in built]
+                   + [k for k in built if k not in kinds])
+
+    if not targets:
+        _provisioned.pop(payload.get("idempotency_key", ""), None)
+        return {"destroyed": True, "reference": reference,
+                "summary": "nothing to destroy — no Terraform state for this request"}
+
+    summaries = []
+    for kind in targets:
+        try:
+            result = provisioner.terraform_destroy(
+                reference, _resource_name(name, kind, kinds), tags, kind, sizing)
+        except provisioner.ProvisionError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=(f"Terraform destroy failed for {kind}: {exc}"
+                        + (f" — already destroyed: {'; '.join(summaries)}" if summaries else "")))
+        summaries.append(f"{kind}: {result['summary']}")
     _provisioned.pop(payload.get("idempotency_key", ""), None)
-    return {"destroyed": True, "reference": payload["reference"], "summary": result["summary"]}
+    return {"destroyed": True, "reference": reference, "summary": "; ".join(summaries)}

@@ -12,7 +12,7 @@ against an in-memory database in the tests.
 
 from datetime import date, datetime, timezone
 
-from sqlalchemy import JSON, Boolean, Date, DateTime, ForeignKey, Numeric, String
+from sqlalchemy import JSON, Boolean, Date, DateTime, ForeignKey, Integer, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from db.session import Base
@@ -226,6 +226,11 @@ class Request(Base):
     # A short human-readable reason for the current status (e.g. why an apply
     # failed), surfaced in the portal. Null unless there's something to explain.
     status_detail: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # Consecutive failed handoffs to the orchestrator. The poller retries every
+    # cycle, which is right for a transient error and wrong for a permanent one:
+    # a request needing a setting nobody has set retried forever, several times a
+    # minute, for as long as it existed. Reset on success and on a manual retry.
+    provision_attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     requester: Mapped[str] = mapped_column(String(120))
     # The requester's display name, captured from the sign-in identity at
     # creation (the requester column holds the email/username).

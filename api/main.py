@@ -2348,20 +2348,19 @@ def _shutdown_out(session: Session, req: Request) -> dict | None:
             "effective": autoshutdown.effective_policy(session, req)}
 
 
-def _environment_resource_kind(session: Session, req: Request) -> str:
-    """The cloud resource this environment provisions, from its target + components.
-    AWS: an S3 bucket (aws-bucket) — AWS compute is a follow-on. OCI: a managed
-    PostgreSQL system ('oci-postgres') if any component is one, else 'oci-instance'
-    for a compute technology, else 'oci-bucket'.
+def _environment_resource_kinds(session: Session, req: Request) -> list[str]:
+    """EVERY cloud resource this environment provisions, in a stable order.
 
-    Order matters: a managed database is the most specific delivery, so it wins
-    over compute, which wins over the placeholder bucket."""
+    A request is a stack: "Apache and a VM" is two resources, not one. This used
+    to collapse to a single kind and the extras were dropped without a word — the
+    request still reported success, so REQ-2026-0094 asked for Apache plus a VM,
+    built Apache alone, and closed its Jira ticket as Resolved.
+
+    Ordering is by kind so a workspace layout stays stable across re-plans.
+    """
     target = (req.deployment_target or "").strip().lower()
     codes = [c.technology_code for c in req.components if c.technology_code]
 
-    # A CERTIFIED blueprint decides what gets built. Same source as the catalogue
-    # badge — when these were separate, a certified Apache blueprint still
-    # provisioned an object-storage bucket because the technology row said so.
     if codes:
         certified = session.scalars(
             select(Blueprint).where(
@@ -2372,13 +2371,18 @@ def _environment_resource_kind(session: Session, req: Request) -> str:
             )
         ).all()
         if certified:
-            # One resource per environment today, so a stack whose components
-            # carry different blueprints has to pick one. Deterministic by kind,
-            # and a genuine limitation of the single-resource model.
-            return sorted({b.resource_kind for b in certified})[0]
+            return sorted({b.resource_kind for b in certified})
 
-    # No certified blueprint: the legacy derivation, which is what still drives
-    # the technologies whose recipes remain branches in the shared module.
+    # No certified blueprint anywhere in the stack: the legacy derivation, which
+    # yields exactly one kind.
+    return [_legacy_resource_kind(session, req)]
+
+
+def _legacy_resource_kind(session: Session, req: Request) -> str:
+    """The pre-blueprint derivation, still driving technologies whose recipes are
+    branches in the shared module rather than a blueprint of their own."""
+    target = (req.deployment_target or "").strip().lower()
+    codes = [c.technology_code for c in req.components if c.technology_code]
     if target == "aws":
         return "aws-bucket"
     if not codes:
@@ -2389,6 +2393,33 @@ def _environment_resource_kind(session: Session, req: Request) -> str:
     if "oci-postgres" in kinds:
         return "oci-postgres"
     return "oci-instance" if "oci-instance" in kinds else "oci-bucket"
+
+
+def _unautomated_components(session: Session, req: Request) -> list[str]:
+    """Components this request cannot provision automatically, in request order.
+
+    The catalogue already tells a requester this before they submit; until now
+    provisioning ignored it and reported success regardless, so a request for
+    Kafka quietly received an object-storage bucket and closed as Resolved.
+    Same source of truth as the catalogue badge, so the two cannot disagree.
+    """
+    target = (req.deployment_target or "").strip().lower()
+    certified = fulfilment.certified_pairs(session)
+    unmet: list[str] = []
+    for c in req.components:
+        code = (c.technology_code or "").strip()
+        if not code or code in unmet:
+            continue
+        if (code, target) not in certified:  # the same test the catalogue badge makes
+            unmet.append(code)
+    return unmet
+
+
+def _environment_resource_kind(session: Session, req: Request) -> str:
+    """The PRIMARY resource kind, for the places that still name a single one
+    (the request row, a DNS or reduce handoff). Provisioning uses the full list —
+    see _environment_resource_kinds."""
+    return _environment_resource_kinds(session, req)[0]
 
 
 @app.get("/api/requests/{reference}", response_model=RequestOut)
@@ -2861,6 +2892,16 @@ def _four_eyes_ok(session: Session, req: Request) -> bool:
                              "requester": req.requester})
         session.commit()
     return False
+
+
+def _max_provision_attempts() -> int:
+    """How many failed handoffs before the poller stops retrying a request.
+    Default 3: enough to ride out a transient error, few enough that a permanent
+    one stops hammering the orchestrator within a minute or two."""
+    try:
+        return max(1, int(settings.env("PROVISION_MAX_ATTEMPTS", "3")))
+    except (ValueError, TypeError):
+        return 3
 
 
 def _approval_quorum() -> int:
@@ -3415,8 +3456,19 @@ def _short_reason(text: str, limit: int = 300) -> str:
 
 
 def _handoff_payload(req: Request, *, ttl_expiry: str | None = None,
-                     action: str | None = None) -> tuple[bytes, str]:
-    """Build and sign the orchestrator handoff for a request."""
+                     action: str | None = None,
+                     resource_kinds: list[str] | None = None) -> tuple[bytes, str]:
+    """Build and sign the orchestrator handoff for a request.
+
+    The full resource list is derived here rather than at each call site, so
+    plan, apply, drift, state and destroy cannot disagree about what a request
+    consists of — the kind of split that lost REQ-2026-0094's second resource.
+    """
+    if resource_kinds is None:
+        from sqlalchemy.orm import object_session
+        session = object_session(req)
+        if session is not None:
+            resource_kinds = _environment_resource_kinds(session, req)
     payload = {
         "contract_version": CONTRACT_VERSION,
         "idempotency_key": req.approval.jira_key,
@@ -3427,6 +3479,11 @@ def _handoff_payload(req: Request, *, ttl_expiry: str | None = None,
         "approved_monthly": float(req.estimate.monthly) if req.estimate else None,
         # Which cloud resource to provision/act on: oci-bucket | oci-instance.
         "resource_kind": req.resource_kind or "oci-bucket",
+        # EVERY resource this request builds. A stack is more than one thing, and
+        # sending only the primary is how REQ-2026-0094 lost its VM. Older
+        # orchestrators ignore this and still see resource_kind, so the contract
+        # stays backward compatible.
+        "resource_kinds": resource_kinds or [req.resource_kind or "oci-bucket"],
     }
     if ttl_expiry:
         payload["ttl_expiry"] = ttl_expiry
@@ -3453,6 +3510,38 @@ def _transition_jira(session: Session, req: Request, target: str, event: str) ->
                      detail={"jira_status": target})
 
 
+def _result_resources(result: dict) -> list[dict]:
+    """Every resource an orchestrator response reports. `resources` is the stack;
+    `resource` is the single-resource form older responses use."""
+    resources = result.get("resources")
+    if isinstance(resources, list) and resources:
+        return [r for r in resources if isinstance(r, dict)]
+    one = result.get("resource")
+    return [one] if isinstance(one, dict) and one else []
+
+
+def _record_unautomated(session: Session, req: Request, jira_key: str | None) -> str | None:
+    """Record, audit and put on the Jira ticket anything the portal did NOT build.
+
+    Returns the request's status_detail: a plain sentence naming what is still
+    outstanding, or None when the stack was fully provisioned. Reporting a
+    partially delivered request as a clean success is how a requester ends up
+    waiting for something nobody is going to build.
+    """
+    unmet = _unautomated_components(session, req)
+    if not unmet:
+        return None
+    listed = ", ".join(unmet)
+    append_audit(session, "fulfilment.partial", reference=req.reference, jira_key=jira_key,
+                 detail={"not_automated": unmet})
+    if jira_key:
+        add_comment(jira_key, "⚠️ This request was provisioned, but the following "
+                              f"component(s) were NOT built automatically and still need "
+                              f"manual fulfilment: {listed}.")
+    return (f"Provisioned, but {len(unmet)} component(s) were not built automatically "
+            f"and still need manual fulfilment: {listed}.")
+
+
 def _provision_in_background(reference: str, jira_key: str, body: bytes, signature: str,
                             ttl_expiry_iso: str) -> None:
     """Run the real apply, then set Jira Resolved + status provisioned (or failed)."""
@@ -3475,18 +3564,41 @@ def _provision_in_background(reference: str, jira_key: str, body: bytes, signatu
             return
 
         result = response.json()
-        res = result.get("resource", {})
-        session.add(ProvisionedResource(
-            reference=reference, kind=res.get("kind", "resource"), name=res.get("name", ""),
-            region=res.get("region"), details=res.get("outputs", {}),
-            ttl_expiry=datetime.fromisoformat(ttl_expiry_iso) if ttl_expiry_iso else None,
-            lifecycle_state="active",
-        ))
+        ttl_dt = datetime.fromisoformat(ttl_expiry_iso) if ttl_expiry_iso else None
+        for res in _result_resources(result):
+            session.add(ProvisionedResource(
+                reference=reference, kind=res.get("kind", "resource"), name=res.get("name", ""),
+                region=res.get("region"), details=res.get("outputs", {}) or {},
+                ttl_expiry=ttl_dt, lifecycle_state="active",
+            ))
         _transition_jira(session, req, resolved_status(), "jira.resolved")
         req.status = "provisioned"
-        req.status_detail = None
+        req.status_detail = _record_unautomated(session, req, jira_key)
         append_audit(session, "provisioned", reference=reference, jira_key=jira_key, detail=result)
         session.commit()
+
+
+@app.post("/api/requests/{reference}/retry")
+def retry_request(reference: str, session: Session = Depends(get_session),
+                  _auth: str = Depends(require_action("execute"))):
+    """Resume a request the portal stopped retrying.
+
+    Clears the failure counter so the next poll cycle picks it up again. Deciding
+    that the cause is fixed is a human judgement, which is exactly why halting is
+    not self-clearing: an automatic reset would just resume the same loop.
+    """
+    req = _load_request(reference, session)
+    attempts = req.provision_attempts or 0
+    if attempts == 0:
+        return {"status": req.status, "message": f"{reference} is not being held."}
+    req.provision_attempts = 0
+    req.status_detail = None
+    append_audit(session, "provision.retry", reference=reference,
+                 jira_key=req.approval.jira_key if req.approval else None,
+                 actor=_auth, detail={"cleared_attempts": attempts})
+    session.commit()
+    return {"status": req.status,
+            "message": f"{reference} will be retried on the next cycle."}
 
 
 @app.post("/api/requests/{reference}/apply")
@@ -4858,6 +4970,10 @@ def _advance_request(session: Session, req: Request) -> str:
         if req.request_type == "dns":
             _dns(session, req, actor="poller")
             return req.status
+        # A permanent failure must not be retried forever (see provision_attempts).
+        max_attempts = _max_provision_attempts()
+        if (req.provision_attempts or 0) >= max_attempts:
+            return req.status  # held; a manual retry clears the counter
         body, signature = _handoff_payload(req)
         append_audit(session, "orchestrator.handoff", reference=req.reference,
                      jira_key=jira_key, detail={"contract": CONTRACT_VERSION})
@@ -4865,23 +4981,38 @@ def _advance_request(session: Session, req: Request) -> str:
         response, error = _post_to_orchestrator(body, signature)
         if response is None or response.status_code != 200:
             raw = error or (response.text if response else "")
-            req.status_detail = _short_reason(raw)  # surface why (e.g. an IaC scan block)
+            reason = _short_reason(raw)
+            req.provision_attempts = (req.provision_attempts or 0) + 1
             append_audit(session, "plan.failed", reference=req.reference, jira_key=jira_key,
-                         detail={"error": raw})
+                         detail={"error": raw, "attempt": req.provision_attempts})
+            if req.provision_attempts >= max_attempts:
+                req.status_detail = (
+                    f"Held after {req.provision_attempts} failed attempts — the portal has "
+                    f"stopped retrying. Fix the cause and use Retry to resume. {reason}")
+                append_audit(session, "provision.halted", reference=req.reference,
+                             jira_key=jira_key,
+                             detail={"attempts": req.provision_attempts, "reason": reason})
+                if jira_key:
+                    add_comment(jira_key, "⚠️ Automated provisioning has been halted after "
+                                          f"{req.provision_attempts} failed attempts. Nothing "
+                                          f"was created.\n\n{reason}")
+            else:
+                req.status_detail = _short_reason(raw)  # e.g. an IaC scan block
             session.commit()
-            return req.status  # still 'submitted' — retried next cycle
+            return req.status  # still 'submitted' — retried next cycle unless held
+        req.provision_attempts = 0  # a good handoff clears the history
         result = response.json()
         _record_scan(session, req, jira_key, result.get("scan"))  # IaC findings (F-SEC-03/04)
         if result.get("provisioned"):  # mock mode fully provisions on the handoff
-            res = result.get("resource")
-            if res:  # mock now records the resource, so the registry + control plane work
-                ttl_dt = _ttl_for(req)
+            ttl_dt = _ttl_for(req)
+            for res in _result_resources(result):
                 session.add(ProvisionedResource(
                     reference=req.reference, kind=res.get("kind", "resource"),
                     name=res.get("name", ""), region=res.get("region"),
                     details=res.get("outputs", {}) or {}, ttl_expiry=ttl_dt,
                     lifecycle_state="active",
                 ))
+            req.status_detail = _record_unautomated(session, req, jira_key)
             req.status = "provisioned"
             append_audit(session, "provisioned", reference=req.reference, jira_key=jira_key,
                          detail=result)

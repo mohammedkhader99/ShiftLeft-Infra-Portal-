@@ -37,6 +37,11 @@ ALLOWLIST: dict[str, dict] = {
     "FOUR_EYES_ENFORCED": {"label": "Enforce four-eyes approval", "type": "bool", "default": "true",
                            "group": "Governance",
                            "help": "The Jira approver must differ from the requester."},
+    "PROVISION_MAX_ATTEMPTS": {"label": "Max provisioning attempts", "type": "int",
+                               "default": "3", "min": 1, "max": 20, "group": "Governance",
+                               "help": ("Stop retrying a request after this many failed "
+                                        "handoffs. A permanent failure otherwise retries "
+                                        "every poll cycle indefinitely.")},
     "APPROVAL_QUORUM": {"label": "Approval quorum", "type": "int", "default": "1", "min": 1,
                         "group": "Governance",
                         "help": "Number of distinct approvers required before provisioning."},

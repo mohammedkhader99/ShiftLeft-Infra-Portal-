@@ -151,4 +151,15 @@ resource "oci_core_instance" "service" {
     var.ssh_authorized_key != "" ? { ssh_authorized_keys = var.ssh_authorized_key } : {},
     var.user_data != "" ? { user_data = base64encode(var.user_data) } : {},
   )
+
+  lifecycle {
+    # OCI stamps these two on every resource it creates; this module does not set
+    # them, so without this every plan proposes removing them and the drift check
+    # reports a healthy environment as changed. See the same block in
+    # oci/apache-httpd, where it was first diagnosed.
+    ignore_changes = [
+      defined_tags["Oracle-Tags.CreatedBy"],
+      defined_tags["Oracle-Tags.CreatedOn"],
+    ]
+  }
 }
