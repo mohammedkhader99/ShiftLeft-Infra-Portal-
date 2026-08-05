@@ -30,6 +30,7 @@ from api import ai_recommend
 from api import ai_triage
 from api import fulfilment
 from api import portal_help
+from api import resource_details
 from api import settings
 from api import anomalies as anomaly_detect
 from api import apikeys
@@ -2128,6 +2129,10 @@ class RequestOut(BaseModel):
     shutdown: dict | None = None
     # Backup restore-points (F-LCM-06) for a provisioned environment, newest first.
     backups: list | None = None
+    # What was actually built (F-INT-04): per resource, its OCID, display name,
+    # private IP, hostname and URL. Terraform has always recorded these; until now
+    # nothing showed them, so a requester could not find their own server.
+    resources: list | None = None
     # Active JIT access grants (F-IAM-07) for a provisioned environment — metadata
     # only, never the credential.
     access_grants: list | None = None
@@ -2243,6 +2248,7 @@ def list_requests(
     ttl_map: dict[str, datetime] = {}
     actual_map: dict[str, float] = {}
     power_map: dict[str, list[str]] = {}
+    resource_map: dict[str, list[dict]] = {}
     if refs:
         for ref, exp in session.execute(
             select(ProvisionedResource.reference, func.min(ProvisionedResource.ttl_expiry))
@@ -2265,6 +2271,15 @@ def list_requests(
                    ProvisionedResource.kind == "oci-instance")
         ).all():
             power_map.setdefault(ref, []).append(ps)
+        # What each request actually built. Batched with the rest rather than
+        # queried per row: this list is polled every few seconds.
+        for res in session.scalars(
+            select(ProvisionedResource)
+            .where(ProvisionedResource.reference.in_(refs))
+            .order_by(ProvisionedResource.created_at.desc())
+        ).all():
+            resource_map.setdefault(res.reference, []).append(
+                resource_details.summarise(res))
     outs = []
     for r in results:
         out = RequestOut.model_validate(r)
@@ -2280,6 +2295,7 @@ def list_requests(
         out.shutdown = _shutdown_out(session, r)
         out.backups = _backups_out(session, r)
         out.access_grants = _access_out(session, r)
+        out.resources = resource_map.get(r.reference) or None
         outs.append(out)
     return outs
 
@@ -2439,7 +2455,23 @@ def get_request(reference: str, session: Session = Depends(get_session)) -> Requ
     out.shutdown = _shutdown_out(session, req)
     out.backups = _backups_out(session, req)
     out.access_grants = _access_out(session, req)
+    out.resources = _resources_out(session, reference)
     return out
+
+
+def _resources_out(session: Session, reference: str) -> list | None:
+    """What this request actually built, for the request view (F-INT-04).
+
+    Includes decommissioned rows: a torn-down environment should still show what
+    it had, and hiding them makes a decommission look like nothing was ever
+    provisioned. Newest first.
+    """
+    rows = session.scalars(
+        select(ProvisionedResource)
+        .where(ProvisionedResource.reference == reference)
+        .order_by(ProvisionedResource.created_at.desc())
+    ).all()
+    return [resource_details.summarise(r) for r in rows] or None
 
 
 def _min_active_ttl(session: Session, reference: str) -> datetime | None:

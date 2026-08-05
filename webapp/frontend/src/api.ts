@@ -206,6 +206,30 @@ export type RequestRow = {
   backups?: BackupRow[] | null
   // Active JIT access grants (F-IAM-07) — metadata only, never the credential.
   access_grants?: AccessGrantRow[] | null
+  // What was actually built (F-INT-04): the details Terraform recorded, so a
+  // requester can find their own server without asking anyone.
+  resources?: ProvisionedResourceRow[] | null
+}
+
+export type ProvisionedResourceRow = {
+  kind: string
+  name: string
+  region?: string | null
+  lifecycle_state?: string | null
+  power_state?: string | null
+  created_at?: string | null
+  ocids?: string[]
+  names?: string[]
+  private_ips?: string[]
+  public_ips?: string[]
+  hostnames?: string[]
+  urls?: string[]
+  dns?: string[]
+  // Build facts rather than identity (e.g. the ports a service listens on).
+  info?: Record<string, unknown>
+  // Outputs from a blueprint the portal doesn't know by name. Shown raw rather
+  // than dropped, so a new recipe's outputs never disappear silently.
+  other?: Record<string, unknown>
 }
 
 export type BackupRow = { id: number; label: string; created_by?: string | null; created_at?: string | null }

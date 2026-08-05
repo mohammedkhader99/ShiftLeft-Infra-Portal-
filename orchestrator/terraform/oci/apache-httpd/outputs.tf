@@ -13,6 +13,11 @@ output "private_ips" {
   value       = oci_core_instance.apache[*].private_ip
 }
 
+output "hostname_labels" {
+  description = "DNS hostname labels — what the instances answer to inside the VCN. Read from the VNIC rather than recomputed, so it cannot drift from what was actually created."
+  value       = [for i in oci_core_instance.apache : i.create_vnic_details[0].hostname_label]
+}
+
 output "public_ips" {
   description = "Public IP addresses of the instances (empty when assign_public_ip = false)."
   value       = oci_core_instance.apache[*].public_ip

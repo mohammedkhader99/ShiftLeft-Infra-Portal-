@@ -114,6 +114,57 @@ function BackupControl({ r, onChange }: { r: RequestRow; onChange: () => void })
   )
 }
 
+// What was actually built (F-INT-04). Terraform records each resource's real
+// identity; until this panel existed the portal stored it and showed none of it,
+// so "provisioned" told a requester nothing about where their server was.
+function ProvisionedResources({ r }: { r: RequestRow }) {
+  const resources = r.resources ?? []
+  if (!resources.length) return null
+  const row = (label: string, values?: string[]) =>
+    values && values.length
+      ? (
+        <div key={label} style={{ display: 'flex', gap: '0.5rem', lineHeight: 1.6 }}>
+          <span style={{ color: 'var(--cds-text-secondary)', minWidth: '7.5rem' }}>{label}</span>
+          <span style={{ fontFamily: 'var(--cds-code-01-font-family, monospace)', wordBreak: 'break-all' }}>
+            {values.join(', ')}
+          </span>
+        </div>
+      )
+      : null
+  return (
+    <div style={{ marginTop: '1rem', fontSize: '0.82rem' }}>
+      <strong>What was built</strong>
+      {resources.map((res, i) => {
+        const gone = res.lifecycle_state && res.lifecycle_state !== 'active'
+        return (
+          <div key={`${res.name}-${i}`} style={{
+            marginTop: '0.5rem', padding: '0.5rem 0.75rem',
+            borderLeft: '3px solid var(--cds-border-subtle)', opacity: gone ? 0.6 : 1,
+          }}>
+            <div style={{ marginBottom: '0.25rem' }}>
+              <strong>{res.name}</strong>
+              <span style={{ color: 'var(--cds-text-secondary)' }}> · {res.kind}</span>
+              {res.region && <span style={{ color: 'var(--cds-text-secondary)' }}> · {res.region}</span>}
+              {gone && <span style={{ color: 'var(--cds-support-warning)' }}> · {res.lifecycle_state}</span>}
+            </div>
+            {row('Display name', res.names)}
+            {row('Private IP', res.private_ips)}
+            {row('Public IP', res.public_ips)}
+            {row('Hostname', res.hostnames)}
+            {row('URL', res.urls)}
+            {row('DNS', res.dns)}
+            {row('OCID', res.ocids)}
+            {res.info && Object.keys(res.info).length > 0
+              && row('Configured', Object.entries(res.info).map(([k, v]) => `${k}=${JSON.stringify(v)}`))}
+            {res.other && Object.keys(res.other).length > 0
+              && row('Other', Object.entries(res.other).map(([k, v]) => `${k}=${JSON.stringify(v)}`))}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 // Just-in-time access (F-IAM-07 / F-INT-05): an approver grants time-bound access;
 // the vault returns a ONE-TIME link shown once here — never stored by the portal.
 function AccessControl({ r, onChange }: { r: RequestRow; onChange: () => void }) {
@@ -771,6 +822,7 @@ export default function MyRequests({ route }: { route: string }) {
                         {canActuate && r.power && <ShutdownControl r={r} onChange={refresh} />}
                         </>
                       )}
+                      <ProvisionedResources r={r} />
                       {r.health && r.health.factors.length > 0 && (
                         <div style={{ marginTop: '1rem', fontSize: '0.85rem' }}>
                           <span style={{ color: 'var(--cds-text-secondary)' }}>
