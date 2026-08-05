@@ -55,7 +55,11 @@ class FakeCompute:
     def get_instance(self, ocid):
         return _Data(FakeInstance(id=ocid))
 
-    def list_instances(self, compartment_id, display_name):
+    def list_instances(self, compartment_id, display_name=None):
+        # display_name is optional in the real SDK: omitting it lists the
+        # compartment, which is how an indexed name (<name>-01) is found.
+        if display_name is None:
+            return _Data(list(self._instances))
         return _Data([i for i in self._instances if i.display_name == display_name])
 
     def instance_action(self, instance_id, action):

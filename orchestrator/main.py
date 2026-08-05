@@ -222,6 +222,20 @@ def _resource_kinds(payload: dict) -> list[str]:
     return [_resource_kind(payload)]
 
 
+def _resource_list(payload: dict, base_name: str) -> list[dict]:
+    """The request's resources as {kind, name} — the shape the cloud-state layer
+    describes and actuates.
+
+    Built from the SAME naming rule provisioning uses. When it was not, reconcile
+    looked for a name nothing had been created under and reported a healthy,
+    running environment as deleted out-of-band (REQ-2026-0095). It also reported
+    only the primary kind, so the rest of a stack was invisible to it.
+    """
+    reference, primary = payload["reference"], _resource_kind(payload)
+    return [{"kind": k, "name": _resource_name(base_name, k, reference, primary)}
+            for k in _resource_kinds(payload)]
+
+
 def _merge_scans(scans: list[dict]) -> dict:
     """Combine the IaC scan results of a stack into one verdict. A high-severity
     finding on ANY resource has to reach the gate, so findings and counts add up
@@ -491,7 +505,7 @@ async def state(request: Request) -> dict:
     reference = payload["reference"]
     name, _ = _bucket_and_tags(payload)
     try:
-        actual = cloud_state.describe(reference, [{"kind": _resource_kind(payload), "name": name}])
+        actual = cloud_state.describe(reference, _resource_list(payload, name))
     except cloud_state.CloudStateUnavailable as exc:
         raise HTTPException(status_code=501, detail=str(exc))
     return {"reference": reference, "resources": actual, "mode": cloud_state.mode()}
@@ -516,7 +530,7 @@ async def actuate(request: Request) -> dict:
     reference = payload["reference"]
     name, _ = _bucket_and_tags(payload)
     try:
-        result = cloud_state.actuate(reference, [{"kind": _resource_kind(payload), "name": name}], action)
+        result = cloud_state.actuate(reference, _resource_list(payload, name), action)
     except cloud_state.CloudStateUnavailable as exc:
         raise HTTPException(status_code=501, detail=str(exc))
     return {"reference": reference, "action": action, "resources": result,

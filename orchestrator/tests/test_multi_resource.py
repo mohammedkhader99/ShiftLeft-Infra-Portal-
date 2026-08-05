@@ -233,6 +233,57 @@ def test_a_failed_second_apply_still_reports_what_is_already_live(monkeypatch):
     assert "-apache" in detail  # named, so the live resource can be found and cleaned up
 
 
+# --- Cloud-state must use the same names provisioning used --------------------
+
+def test_reconcile_looks_for_the_names_that_were_actually_created(tmp_path, monkeypatch):
+    """REQ-2026-0095: apply created 'vision-...-apache' while reconcile asked about
+    'vision-...'. Nothing existed under that name, so a healthy, running VM was
+    reported as deleted out-of-band. The two must share one naming rule."""
+    monkeypatch.setattr(provisioner, "STATE_ROOT", tmp_path)
+    payload = _stack_payload()
+    listed = omain._resource_list(payload, "env-req")
+    assert [r["kind"] for r in listed] == ["oci-apache", "oci-instance"]
+    assert [r["name"] for r in listed] == ["env-req-apache", "env-req-instance"]
+    # ...and it covers the WHOLE stack, not just the primary kind.
+    assert len(listed) == len(omain._resource_kinds(payload))
+
+
+def test_reconcile_of_a_legacy_single_resource_keeps_the_bare_name(tmp_path, monkeypatch):
+    monkeypatch.setattr(provisioner, "STATE_ROOT", tmp_path)
+    legacy = tmp_path / "REQ-OLD"
+    legacy.mkdir()
+    (legacy / "terraform.tfstate").write_text("{}", encoding="utf-8")
+    payload = {"reference": "REQ-OLD", "resource_kind": "oci-bucket"}
+    assert omain._resource_list(payload, "env-req") == [
+        {"kind": "oci-bucket", "name": "env-req"}]
+
+
+def test_the_live_lookup_finds_an_instance_the_module_numbered():
+    """Compute modules name instances <name>-01 because a blueprint may build
+    several. An exact-match lookup finds nothing and calls a running VM missing."""
+    from orchestrator import cloud_state
+
+    class _Inst:
+        def __init__(self, n, state="RUNNING"):
+            self.display_name, self.lifecycle_state = n, state
+
+    class _Client:
+        def list_instances(self, compartment_id, display_name=None):
+            class R:
+                pass
+            r = R()
+            everything = [_Inst("web-apache-01"), _Inst("web-apache-staging"),
+                          _Inst("web-apache-02"), _Inst("other-01")]
+            r.data = ([i for i in everything if i.display_name == display_name]
+                      if display_name else everything)
+            return r
+
+    found = cloud_state._find_instance(_Client(), "comp", "web-apache")
+    assert found and found.display_name == "web-apache-01"   # lowest index wins
+    # ...and the anchor stops a loose prefix matching a different environment.
+    assert cloud_state._find_instance(_Client(), "comp", "web") is None
+
+
 # --- Scans across a stack ----------------------------------------------------
 
 def test_a_high_finding_on_any_resource_reaches_the_gate():

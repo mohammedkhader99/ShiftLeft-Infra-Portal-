@@ -23,6 +23,7 @@ Modes (CLOUD_STATE_MODE), mirroring the other adapters:
 """
 
 import os
+import re
 
 
 class CloudStateUnavailable(RuntimeError):
@@ -136,12 +137,28 @@ def _bucket_state(client, namespace: str, name: str) -> tuple[str, bool]:
 
 
 def _find_instance(client, compartment: str, name: str):
-    """Locate a compute instance by OCID (if `name` is one) or by display name."""
+    """Locate a compute instance by OCID (if `name` is one) or by display name.
+
+    The compute modules name instances `<name>-01`, `-02`, … because a blueprint
+    can build more than one. An exact-match lookup therefore finds nothing and
+    reports a running environment as deleted, so an indexed name is matched too.
+    Anchored on purpose: a loose prefix would match `web-staging` for `web`.
+    """
     if name and name.startswith("ocid1.instance"):
         return client.get_instance(name).data
-    resp = client.list_instances(compartment_id=compartment, display_name=name)
-    live = [i for i in (resp.data or [])
-            if getattr(i, "lifecycle_state", "") not in ("TERMINATED", "TERMINATING")]
+
+    def _alive(items):
+        return [i for i in (items or [])
+                if getattr(i, "lifecycle_state", "") not in ("TERMINATED", "TERMINATING")]
+
+    live = _alive(client.list_instances(compartment_id=compartment, display_name=name).data)
+    if not live and name:
+        indexed = re.compile(rf"^{re.escape(name)}-\d+$")
+        live = sorted(
+            _alive(i for i in client.list_instances(compartment_id=compartment).data
+                   if indexed.match(getattr(i, "display_name", "") or "")),
+            key=lambda i: i.display_name,
+        )
     return live[0] if live else None
 
 
