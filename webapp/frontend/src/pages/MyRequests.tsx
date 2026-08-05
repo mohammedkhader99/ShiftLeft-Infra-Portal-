@@ -18,6 +18,8 @@ import {
   Button,
   TextInput,
   Toggle,
+  Accordion,
+  AccordionItem,
 } from '@carbon/react'
 import { WarningAltFilled, Renew, UserFollow, Search, Pause, Play } from '@carbon/icons-react'
 import { getMe, getRequests, getAudit, renewRequest, transferOwner, checkDrift, reconcileState, triageFailure, actuate, setRequestShutdown, createBackup, grantAccess, revokeAccess, setOwnerGroup, type RequestRow, type ShutdownPolicy } from '../api'
@@ -133,34 +135,42 @@ function ProvisionedResources({ r }: { r: RequestRow }) {
       : null
   return (
     <div style={{ marginTop: '1rem', fontSize: '0.82rem' }}>
-      <strong>What was built</strong>
-      {resources.map((res, i) => {
-        const gone = res.lifecycle_state && res.lifecycle_state !== 'active'
-        return (
-          <div key={`${res.name}-${i}`} style={{
-            marginTop: '0.5rem', padding: '0.5rem 0.75rem',
-            borderLeft: '3px solid var(--cds-border-subtle)', opacity: gone ? 0.6 : 1,
-          }}>
-            <div style={{ marginBottom: '0.25rem' }}>
+      <strong>What was built ({resources.length})</strong>
+      <Accordion size="sm">
+        {resources.map((res, i) => {
+          const gone = res.lifecycle_state && res.lifecycle_state !== 'active'
+          // The one fact worth reading without expanding: how you reach it.
+          const headline = res.private_ips?.[0] ?? res.urls?.[0] ?? res.names?.[0] ?? ''
+          const title = (
+            <span style={{ fontSize: '0.82rem', opacity: gone ? 0.6 : 1 }}>
               <strong>{res.name}</strong>
               <span style={{ color: 'var(--cds-text-secondary)' }}> · {res.kind}</span>
-              {res.region && <span style={{ color: 'var(--cds-text-secondary)' }}> · {res.region}</span>}
+              {headline && <span> · {headline}</span>}
               {gone && <span style={{ color: 'var(--cds-support-warning)' }}> · {res.lifecycle_state}</span>}
-            </div>
-            {row('Display name', res.names)}
-            {row('Private IP', res.private_ips)}
-            {row('Public IP', res.public_ips)}
-            {row('Hostname', res.hostnames)}
-            {row('URL', res.urls)}
-            {row('DNS', res.dns)}
-            {row('OCID', res.ocids)}
-            {res.info && Object.keys(res.info).length > 0
-              && row('Configured', Object.entries(res.info).map(([k, v]) => `${k}=${JSON.stringify(v)}`))}
-            {res.other && Object.keys(res.other).length > 0
-              && row('Other', Object.entries(res.other).map(([k, v]) => `${k}=${JSON.stringify(v)}`))}
-          </div>
-        )
-      })}
+            </span>
+          )
+          return (
+            <AccordionItem key={`${res.name}-${i}`} title={title}>
+              <div style={{ fontSize: '0.82rem', opacity: gone ? 0.6 : 1 }}>
+                {row('Display name', res.names)}
+                {row('Private IP', res.private_ips)}
+                {row('Public IP', res.public_ips)}
+                {row('Hostname', res.hostnames)}
+                {row('URL', res.urls)}
+                {row('DNS', res.dns)}
+                {row('OCID', res.ocids)}
+                {res.region && row('Region', [res.region])}
+                {res.power_state && row('Power', [res.power_state])}
+                {res.created_at && row('Created', [fmtWhen(res.created_at)])}
+                {res.info && Object.keys(res.info).length > 0
+                  && row('Configured', Object.entries(res.info).map(([k, v]) => `${k}=${JSON.stringify(v)}`))}
+                {res.other && Object.keys(res.other).length > 0
+                  && row('Other', Object.entries(res.other).map(([k, v]) => `${k}=${JSON.stringify(v)}`))}
+              </div>
+            </AccordionItem>
+          )
+        })}
+      </Accordion>
     </div>
   )
 }
