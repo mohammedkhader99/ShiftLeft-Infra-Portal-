@@ -167,6 +167,18 @@ def _oci_vars(name: str, tags: dict, resource_kind: str = "oci-bucket",
         # Ports the generic service blueprint opens. Empty for every other kind,
         # whose modules do not declare the variable and ignore it.
         "service_ports": list(sizing.get("service_ports") or []),
+        # How many nodes a clustered resource gets, from the request's size. A
+        # single-machine blueprint ignores it; without it a Kubernetes node pool
+        # would silently use its own default and the size the approver priced
+        # would mean nothing.
+        "node_count": int(sizing.get("node_count", 1)),
+        # --- OKE (Kubernetes) -------------------------------------------------
+        # This blueprint builds its own VCN, so it takes network inputs of its own
+        # rather than the shared compute subnet.
+        "oke_bastion_allowed_cidr": os.getenv("OCI_OKE_BASTION_CIDR", ""),
+        "oke_vcn_cidr": os.getenv("OCI_OKE_VCN_CIDR", ""),
+        "oke_kubernetes_version": os.getenv("OCI_OKE_KUBERNETES_VERSION", ""),
+        "oke_cluster_type": os.getenv("OCI_OKE_CLUSTER_TYPE", ""),
         "tags": tags,
         # Customer-managed encryption key for sensitive data (F-SEC-04); empty
         # falls back to Oracle-managed encryption in the module.
@@ -379,13 +391,34 @@ def _write_tfvars(workdir: Path, variables: dict) -> None:
     (workdir / "terraform.tfvars.json").write_text(json.dumps(variables), encoding="utf-8")
 
 
-def _run(args: list[str], workdir: Path) -> subprocess.CompletedProcess:
+DEFAULT_COMMAND_TIMEOUT = 600
+
+
+def _timeout_for(resource_kind: str) -> int:
+    """How long a single Terraform command may run for this blueprint.
+
+    Ten minutes suits a VM or a bucket and is far too short for a Kubernetes
+    cluster, which OCI takes 10-20 minutes to build. A timeout that fires part
+    way through an apply is the worst outcome available: the resources exist and
+    are billing, but Terraform never recorded them, so a later destroy cannot
+    find them. Each blueprint declares what it needs.
+    """
+    manifest = blueprint_registry.for_resource_kind(resource_kind) if resource_kind else None
+    try:
+        return max(60, int((manifest or {}).get("command_timeout_seconds")
+                           or DEFAULT_COMMAND_TIMEOUT))
+    except (TypeError, ValueError):
+        return DEFAULT_COMMAND_TIMEOUT
+
+
+def _run(args: list[str], workdir: Path,
+         timeout: int = DEFAULT_COMMAND_TIMEOUT) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["terraform", *args],
         cwd=str(workdir),
         capture_output=True,
         text=True,
-        timeout=600,
+        timeout=timeout,
     )
 
 
@@ -409,13 +442,14 @@ def terraform_plan(reference: str, name: str, tags: dict,
     cloud = _cloud_of(resource_kind)
     _require_cloud(cloud, resource_kind)
     workdir = _workdir(reference, cloud, resource_kind)
+    tmo = _timeout_for(resource_kind)
     _write_tfvars(workdir, _cloud_vars(cloud, name, tags, resource_kind, sizing))
 
-    init = _run(["init", "-input=false", "-no-color"], workdir)
+    init = _run(["init", "-input=false", "-no-color"], workdir, timeout=tmo)
     if init.returncode != 0:
         raise ProvisionError(f"terraform init failed: {init.stderr[-800:]}")
 
-    plan = _run(["plan", "-input=false", "-no-color", f"-out={PLAN_FILE}"], workdir)
+    plan = _run(["plan", "-input=false", "-no-color", f"-out={PLAN_FILE}"], workdir, timeout=tmo)
     if plan.returncode != 0:
         raise ProvisionError(f"terraform plan failed: {plan.stderr[-800:]}")
 
@@ -431,7 +465,7 @@ def _scan_saved_plan(workdir: Path, classification: str | None) -> dict:
     """Best-effort IaC scan of the saved plan (F-SEC-03/04) via `terraform show
     -json`. Never breaks the plan — a scan hiccup returns an empty (ok) result."""
     try:
-        show = _run(["show", "-json", PLAN_FILE], workdir)
+        show = _run(["show", "-json", PLAN_FILE], workdir, timeout=tmo)
         if show.returncode != 0:
             return {**_EMPTY_SCAN, "error": "terraform show failed"}
         return scanner.scan_plan(json.loads(show.stdout), classification)
@@ -447,19 +481,20 @@ def terraform_apply(reference: str, name: str, tags: dict,
     cloud = _cloud_of(resource_kind)
     _require_cloud(cloud, resource_kind)
     workdir = _workdir(reference, cloud, resource_kind)
+    tmo = _timeout_for(resource_kind)
     if not (workdir / PLAN_FILE).exists():
         raise ProvisionError("no saved plan for this request — approve (plan) it first")
 
-    init = _run(["init", "-input=false", "-no-color"], workdir)
+    init = _run(["init", "-input=false", "-no-color"], workdir, timeout=tmo)
     if init.returncode != 0:
         raise ProvisionError(f"terraform init failed: {init.stderr[-800:]}")
 
-    apply = _run(["apply", "-input=false", "-no-color", PLAN_FILE], workdir)
+    apply = _run(["apply", "-input=false", "-no-color", PLAN_FILE], workdir, timeout=tmo)
     if apply.returncode != 0:
         raise ProvisionError(f"terraform apply failed: {apply.stderr[-1200:]}")
 
     outputs = {}
-    out = _run(["output", "-json"], workdir)
+    out = _run(["output", "-json"], workdir, timeout=tmo)
     if out.returncode == 0:
         try:
             outputs = {k: v.get("value") for k, v in json.loads(out.stdout).items()}
@@ -482,17 +517,18 @@ def terraform_drift(reference: str, name: str, tags: dict,
     cloud = _cloud_of(resource_kind)
     _require_cloud(cloud, resource_kind, creating=False)
     workdir = _workdir(reference, cloud, resource_kind)
+    tmo = _timeout_for(resource_kind)
     _write_tfvars(workdir, _cloud_vars(cloud, name, tags, resource_kind, sizing))
 
-    init = _run(["init", "-input=false", "-no-color"], workdir)
+    init = _run(["init", "-input=false", "-no-color"], workdir, timeout=tmo)
     if init.returncode != 0:
         raise ProvisionError(f"terraform init failed: {init.stderr[-800:]}")
 
-    plan = _run(["plan", "-input=false", "-no-color", f"-out={PLAN_FILE}"], workdir)
+    plan = _run(["plan", "-input=false", "-no-color", f"-out={PLAN_FILE}"], workdir, timeout=tmo)
     if plan.returncode != 0:
         raise ProvisionError(f"terraform plan failed: {plan.stderr[-800:]}")
 
-    show = _run(["show", "-json", PLAN_FILE], workdir)
+    show = _run(["show", "-json", PLAN_FILE], workdir, timeout=tmo)
     if show.returncode != 0:
         raise ProvisionError(f"terraform show failed: {show.stderr[-800:]}")
 
@@ -509,10 +545,11 @@ def terraform_destroy(reference: str, name: str, tags: dict,
     cloud = _cloud_of(resource_kind)
     _require_cloud(cloud, resource_kind, creating=False)
     workdir = _workdir(reference, cloud, resource_kind)
+    tmo = _timeout_for(resource_kind)
     _write_tfvars(workdir, _cloud_vars(cloud, name, tags, resource_kind, sizing))
 
-    _run(["init", "-input=false", "-no-color"], workdir)
-    destroy = _run(["destroy", "-input=false", "-no-color", "-auto-approve"], workdir)
+    _run(["init", "-input=false", "-no-color"], workdir, timeout=tmo)
+    destroy = _run(["destroy", "-input=false", "-no-color", "-auto-approve"], workdir, timeout=tmo)
     if destroy.returncode != 0:
         raise ProvisionError(f"terraform destroy failed: {destroy.stderr[-1200:]}")
     return {

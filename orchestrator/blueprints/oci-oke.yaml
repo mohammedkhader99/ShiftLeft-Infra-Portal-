@@ -1,0 +1,26 @@
+ref: oci/oke
+target: oci
+resource_kind: oci-oke
+module: oci/oke
+version: 1.0.0
+builds: [oci-oke]
+description: OCI Container Engine for Kubernetes — private API endpoint, VCN-native pod networking, its own VCN and subnets, a worker node pool sized from the request, and a bastion for access.
+# The Terraform variable this module names its resources with.
+name_var: instance_name
+# OCI takes 10-20 minutes to build a cluster. The default 600s would kill the
+# apply part way through, leaving real, billing resources that Terraform never
+# recorded and a later destroy cannot find.
+command_timeout_seconds: 2700
+# The bastion range has no safe default: it is the public door to a private
+# Kubernetes API endpoint. Declaring it here means the portal reports
+# "certified but not configured" instead of building something exposed.
+requires_env: [OCI_OKE_BASTION_CIDR]
+vars:
+  # This blueprint builds its own VCN, so it takes none of the shared compute
+  # network settings. Nothing to declare here — the network inputs arrive as
+  # OCI_OKE_* environment settings.
+  #
+  # KNOWN LIMITATION: every cluster gets the same VCN CIDR unless
+  # OCI_OKE_VCN_CIDR is changed. Two concurrent clusters would overlap, and
+  # nothing here allocates ranges. Change it before requesting a second cluster.
+  max_pods_per_node: 31

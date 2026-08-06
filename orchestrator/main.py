@@ -291,6 +291,21 @@ def _instance_sizing(payload: dict) -> dict:
     return {"ocpus": best[0], "memory_gb": best[1]}
 
 
+# size -> how many nodes a clustered resource gets. A Kubernetes node pool sized
+# purely by CPU and memory would build the same number of nodes for every request,
+# so the size an approver saw priced would not be the size that got built.
+_NODE_COUNTS = {"small": 2, "medium": 3, "large": 5, "xlarge": 7}
+
+
+def _node_count(payload: dict) -> int:
+    """Node count for the LARGEST component size in the request, matching how
+    _instance_sizing picks the shape."""
+    sizes = [str(c.get("size", "")).strip().lower()
+             for c in payload.get("policy_input", {}).get("components", [])]
+    known = [_NODE_COUNTS[s] for s in sizes if s in _NODE_COUNTS]
+    return max(known) if known else 1
+
+
 def _mapped_image(payload: dict) -> str:
     """An image chosen DELIBERATELY for one of this request's technologies via
     OCI_COMPUTE_IMAGE_MAP (JSON: technology_code -> image OCID), or "".
@@ -344,6 +359,8 @@ def _compute_spec(payload: dict) -> dict:
         # The ports the installed service listens on, from the same profiles that
         # produced user_data — so the network rules and the OS firewall agree.
         "service_ports": configure.ports_for(components),
+        # How many nodes a clustered resource gets for this request's size.
+        "node_count": _node_count(payload),
         # The managed-PostgreSQL shape for the same sizing, so a database scales
         # with the request like a VM does. Unused for non-database resources.
         "db_shape": _psql_shape(sizing),

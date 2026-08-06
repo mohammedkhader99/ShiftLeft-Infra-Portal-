@@ -85,6 +85,10 @@ def discover(directory: Path | None = None) -> list[dict]:
             # disagree (bucket_name, instance_name, db_name...), and hard-coding
             # the mapping meant a new recipe silently received an empty name.
             "name_var": str(manifest.get("name_var") or ""),
+            # How long a single Terraform command may run. A Kubernetes cluster
+            # takes far longer to build than a VM, and a timeout that fires part
+            # way through an apply strands real, billing resources outside state.
+            "command_timeout_seconds": manifest.get("command_timeout_seconds"),
             # Module-specific inputs the standard variable set doesn't carry.
             # Merged over it at provision time, so a recipe with unusual inputs
             # stays a data change rather than a code change.
