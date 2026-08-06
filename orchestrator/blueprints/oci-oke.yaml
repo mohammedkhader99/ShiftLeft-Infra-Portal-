@@ -15,12 +15,27 @@ command_timeout_seconds: 2700
 # Kubernetes API endpoint. Declaring it here means the portal reports
 # "certified but not configured" instead of building something exposed.
 requires_env: [OCI_OKE_BASTION_CIDR]
+#
+# ARCHITECTURALLY NON-COMPLIANT, deliberately and visibly.
+#
+# docs/architecture (LANDING-ZONE) rules that a workload module creates ZERO
+# networking and consumes a resolved network contract from a landing-zone spoke
+# VCN. This module builds its own VCN, subnets, gateways and route tables — the
+# pattern that document names as a known failure mode.
+#
+# It stays as written because there is nothing yet to be compliant WITH: the
+# tenancy has no hub, no spoke VCNs and no IPAM — five ad-hoc VCNs in four flat
+# compartments, and this VCN is not even attached to the one DRG that exists.
+# A contract-consuming rewrite has no contract to consume.
+#
+# Usable for a sandbox proof. Not the production path, and not certified.
+# The guard test in test_workload_modules_create_no_networking.py records this
+# exception by name, so it cannot be forgotten.
 vars:
   # This blueprint builds its own VCN, so it takes none of the shared compute
-  # network settings. Nothing to declare here — the network inputs arrive as
-  # OCI_OKE_* environment settings.
+  # network settings. The network inputs arrive as OCI_OKE_* settings.
   #
-  # KNOWN LIMITATION: every cluster gets the same VCN CIDR unless
-  # OCI_OKE_VCN_CIDR is changed. Two concurrent clusters would overlap, and
-  # nothing here allocates ranges. Change it before requesting a second cluster.
+  # KNOWN LIMITATION: nothing allocates CIDRs. The default is merely clear of
+  # every range currently in the tenancy; a SECOND cluster still needs
+  # OCI_OKE_VCN_CIDR set to something different, chosen by hand.
   max_pods_per_node: 31

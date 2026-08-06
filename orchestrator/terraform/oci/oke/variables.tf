@@ -174,8 +174,24 @@ variable "oke_vcn_cidr" {
 }
 
 variable "default_vcn_cidr" {
+  description = <<-EOT
+    Used when oke_vcn_cidr is empty.
+
+    NOT 10.0.0.0/16, which is the OCI default and therefore the collision. Three
+    VCNs in this tenancy already sit on it — Codeium-POC-VCN,
+    oke-vcn-quick-OKE_cluster_A10 and llama-vllm-ray-vcn — so that default would
+    have created a fourth. Overlapping CIDRs can never be routed to each other or
+    to on-premises over a DRG.
+
+    10.56.64.0/18 is clear of everything observed: 10.56.0.0/20 (AI-SC-POC-VCN),
+    10.56.6.0/24 (Codeium secondary) and 10.56.32.0/19 (AI-ShiftLeft-DEV-VCN).
+
+    This is a safer default, not an allocation. Nothing here checks the range is
+    still free, and a second cluster still needs a different value. Only an IPAM
+    allocator fixes that properly.
+  EOT
   type    = string
-  default = "10.0.0.0/16"
+  default = "10.56.64.0/18"
 }
 
 variable "oke_bastion_allowed_cidr" {
