@@ -104,6 +104,13 @@ async def posture(request: Request) -> dict:
         "dns_enabled": provisioner.dns_enabled(),
         "dns_zone_set": bool(os.getenv("OCI_DNS_ZONE")),
         "config_enabled": configure.enabled(),
+        # OKE. The CIDRs are reported as set/not-set rather than by value: an
+        # admin needs to know whether the cluster can be built, not to read the
+        # network topology off a status page.
+        "oke_bastion_cidr_set": bool(os.getenv("OCI_OKE_BASTION_CIDR")),
+        "oke_vcn_cidr_set": bool(os.getenv("OCI_OKE_VCN_CIDR")),
+        "oke_kubernetes_version": os.getenv("OCI_OKE_KUBERNETES_VERSION", "") or "(module default)",
+        "oke_cluster_type": os.getenv("OCI_OKE_CLUSTER_TYPE", "") or "BASIC_CLUSTER",
         "backup_mode": backups.backup_mode(),
         "restore_mode": backups.restore_mode(),
         "reduce_mode": os.getenv("REDUCE_MODE", "mock").strip().lower(),

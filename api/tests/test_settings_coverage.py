@@ -34,6 +34,10 @@ _GATE_ENV = {
     "PROVISION_MODE", "CLOUD_STATE_MODE", "OCI_ACTUATE_ENABLED", "OCI_PSQL_ENABLED",
     "DNS_MODE", "OCI_DNS_ENABLED", "CONFIG_ENABLED", "BACKUP_MODE", "RESTORE_MODE",
     "REDUCE_MODE", "REFRESH_MODE",
+    # OKE: reported as oke_bastion_cidr_set / oke_vcn_cidr_set (set-or-not, not
+    # the ranges themselves) plus the version and cluster type.
+    "OCI_OKE_BASTION_CIDR", "OCI_OKE_VCN_CIDR", "OCI_OKE_KUBERNETES_VERSION",
+    "OCI_OKE_CLUSTER_TYPE",
 }
 
 # Deliberately NOT in the console, each for a stated reason. Adding to this list
