@@ -1,0 +1,110 @@
+#cloud-config
+# Installs Apache Kafka in KRaft mode. Rendered per node by Terraform
+# (templatefile) and passed as base64 user_data.
+#
+# Kafka is not in the OS repositories: it is an archive fetched from
+# source_url. The JDK is, so it comes from dnf.
+
+package_update: true
+package_upgrade: false
+
+packages:
+  - ${java_package}
+  - tar
+
+write_files:
+  # The broker's configuration. node_id and advertised.listeners differ per node;
+  # the quorum voter list and cluster id are identical across the cluster.
+  - path: /opt/kafka-portal/server.properties
+    owner: root:root
+    permissions: '0644'
+    content: |
+      process.roles=broker,controller
+      node.id=${node_id}
+      controller.quorum.voters=${quorum_voters}
+      controller.listener.names=CONTROLLER
+      listeners=PLAINTEXT://:${client_port},CONTROLLER://:${controller_port}
+      advertised.listeners=PLAINTEXT://${advertised_host}:${client_port}
+      listener.security.protocol.map=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      inter.broker.listener.name=PLAINTEXT
+      log.dirs=/var/lib/kafka/data
+      num.partitions=${num_partitions}
+      default.replication.factor=${replication_factor}
+      offsets.topic.replication.factor=${replication_factor}
+      transaction.state.log.replication.factor=${replication_factor}
+      transaction.state.log.min.isr=${min_isr}
+      auto.create.topics.enable=true
+
+  - path: /etc/kafka-portal.env
+    owner: root:root
+    permissions: '0644'
+    content: |
+      KAFKA_HEAP_OPTS=${heap_opts}
+
+  - path: /etc/systemd/system/kafka.service
+    owner: root:root
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=Apache Kafka (KRaft)
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=simple
+      User=kafka
+      Group=kafka
+      EnvironmentFile=/etc/kafka-portal.env
+      ExecStart=/opt/kafka/bin/kafka-server-start.sh /opt/kafka/config/server.properties
+      ExecStop=/opt/kafka/bin/kafka-server-stop.sh
+      Restart=on-failure
+      RestartSec=15
+      LimitNOFILE=100000
+
+      [Install]
+      WantedBy=multi-user.target
+
+  # A script rather than a list of runcmd entries, so a failure half way stops
+  # the rest instead of leaving a half-installed broker that looks started.
+  - path: /opt/kafka-portal/install.sh
+    owner: root:root
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      set -euo pipefail
+      exec >>/var/log/infra-portal.log 2>&1
+      echo "PORTAL: kafka install starting $(date -Is)"
+
+      id kafka >/dev/null 2>&1 || useradd --system --shell /sbin/nologin kafka
+      mkdir -p /var/lib/kafka/data
+
+      # Retries because a boot-time fetch races the network coming up.
+      echo "PORTAL: fetching ${source_url}"
+      curl -fsSL --retry 5 --retry-delay 10 --retry-connrefused \
+        -o /tmp/kafka.tgz "${source_url}"
+
+      tar -xzf /tmp/kafka.tgz -C /opt
+      rm -f /tmp/kafka.tgz
+      ln -sfn /opt/${archive_name} /opt/kafka
+      install -m 0644 /opt/kafka-portal/server.properties /opt/kafka/config/server.properties
+      chown -R kafka:kafka /opt/${archive_name} /var/lib/kafka
+
+      # Formatting is once-only: doing it again would wipe the log directory, so
+      # a reboot must not repeat it.
+      if [ ! -f /var/lib/kafka/data/meta.properties ]; then
+        echo "PORTAL: formatting storage with cluster id ${cluster_id}"
+        runuser -u kafka -- /opt/kafka/bin/kafka-storage.sh format \
+          -t "${cluster_id}" -c /opt/kafka/config/server.properties
+      else
+        echo "PORTAL: storage already formatted, leaving it alone"
+      fi
+
+      systemctl daemon-reload
+      systemctl enable --now kafka
+      echo "PORTAL: kafka install finished $(date -Is)"
+
+runcmd:
+  - /opt/kafka-portal/install.sh || echo 'PORTAL: kafka install FAILED - see /var/log/infra-portal.log' >> /var/log/infra-portal.log
+  - firewall-cmd --permanent --add-port=${client_port}/tcp || echo 'PORTAL: could not open ${client_port}/tcp' >> /var/log/infra-portal.log
+  - firewall-cmd --permanent --add-port=${controller_port}/tcp || echo 'PORTAL: could not open ${controller_port}/tcp' >> /var/log/infra-portal.log
+  - firewall-cmd --reload || true
