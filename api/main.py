@@ -1447,6 +1447,55 @@ def _quota_message(q: dict) -> str:
     return f"Project {p} is now at its environment quota: {q['projected']} of {q['limit']}."
 
 
+def _project_expiry_enforce() -> bool:
+    """Whether a request against an EXPIRED project is a hard block. Off by
+    default, matching the budget and quota gates: an expiry date that silently
+    started refusing work would be a surprise, and expiry arrives by the calendar
+    rather than by anyone's decision. Disabling a project refuses regardless —
+    that is deliberate, this is not."""
+    return settings.env("PROJECT_EXPIRY_ENFORCED", "false").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
+def _project_expiry_warn_days() -> int:
+    try:
+        return max(0, int(settings.env("PROJECT_EXPIRY_WARN_DAYS", "30")))
+    except (ValueError, TypeError):
+        return 30
+
+
+def _project_expiry_status(session: Session, project_code: str | None) -> dict | None:
+    """Where a project stands against its expiry date.
+
+    None when there is no project, no such project, or no expiry set — most
+    projects should have none, and an absent date must never gate anything.
+    """
+    if not project_code:
+        return None
+    row = session.scalar(select(Project).where(Project.code == project_code))
+    if row is None or row.expires_at is None:
+        return None
+    days_left = (row.expires_at - date.today()).days
+    if days_left < 0:
+        status = "expired"
+    elif days_left <= _project_expiry_warn_days():
+        status = "expiring"
+    else:
+        status = "ok"
+    return {"project": project_code, "expires_at": row.expires_at.isoformat(),
+            "days_left": days_left, "status": status,
+            "owner": row.owner_email or ""}
+
+
+def _project_expiry_message(p: dict) -> str:
+    owner = f" Owner: {p['owner']}." if p["owner"] else ""
+    if p["status"] == "expired":
+        return (f"Project {p['project']} expired on {p['expires_at']} "
+                f"({abs(p['days_left'])} days ago).{owner}")
+    return (f"Project {p['project']} expires on {p['expires_at']} "
+            f"(in {p['days_left']} days).{owner}")
+
+
 class QuotaIn(BaseModel):
     project_code: str
     max_environments: int
@@ -1810,7 +1859,13 @@ def _technology_out(tech: Technology, certified: set | None = None) -> Technolog
 def lookups(session: Session = Depends(get_session)) -> LookupsResponse:
     """Read-only reference data for the guided-request form's dropdowns."""
     return LookupsResponse(
-        projects=session.scalars(select(Project).order_by(Project.name)).all(),
+        # Active only. The flag existed but was ignored here, so a project
+        # disabled in the admin console still appeared in the form — the switch
+        # was there and did nothing. Subsidiaries below always filtered; projects
+        # did not.
+        projects=session.scalars(
+            select(Project).where(Project.active.is_(True)).order_by(Project.name)
+        ).all(),
         cost_centres=session.scalars(select(CostCentre).order_by(CostCentre.name)).all(),
         # Subsidiaries are synced from Jira (customfield_36200) in live mode; show
         # only the active ones (Jira-removed ones are deactivated, not deleted).
@@ -2686,6 +2741,21 @@ def submit_request(
         if qstatus is not None and qstatus["status"] in ("over", "near"):
             budget_warnings.append(_quota_message(qstatus))
             append_audit(session, "quota.warning", reference=req.reference, detail=qstatus)
+
+    # Project lifetime. An expired project hard-blocks only when enforcement is
+    # on; otherwise expiring or expired is an advisory warning. A project with no
+    # expiry date is ungated, which is most of them. Nothing here touches what the
+    # project already owns — a record reaching its date must never tear down
+    # running infrastructure.
+    pstatus = _project_expiry_status(session, req.project_code)
+    if pstatus is not None and pstatus["status"] == "expired" and _project_expiry_enforce():
+        append_audit(session, "project.blocked", reference=req.reference, detail=pstatus)
+        session.commit()
+        return JSONResponse(status_code=422,
+                            content={"project_error": _project_expiry_message(pstatus)})
+    if pstatus is not None and pstatus["status"] in ("expired", "expiring"):
+        budget_warnings.append(_project_expiry_message(pstatus))
+        append_audit(session, "project.warning", reference=req.reference, detail=pstatus)
 
     req.status = "submitted"
     # Denormalise the resource kind now that components are final, so the handoff

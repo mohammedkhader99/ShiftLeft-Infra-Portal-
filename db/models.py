@@ -24,14 +24,39 @@ def _utcnow() -> datetime:
 
 
 class Project(Base):
-    """A project that can own infrastructure requests (a lookup)."""
+    """A project that can own infrastructure requests.
+
+    More than a lookup: a project carries an owner to chase, a lifetime, and the
+    identity of whoever asked for it. Environments and quotas hang off it, so a
+    project nobody owns is a set of resources nobody is accountable for.
+    """
 
     __tablename__ = "project"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     code: Mapped[str] = mapped_column(String(32), unique=True)
     name: Mapped[str] = mapped_column(String(120))
+    # Disabling is a deliberate act, so it hides the project from the form AND
+    # refuses a submission naming it. Expiry, below, is softer: it arrives by the
+    # calendar rather than by decision.
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    description: Mapped[str | None] = mapped_column(String(400), nullable=True)
+    # Who to chase when this expires. A project with no owner is nobody's problem.
+    owner_email: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    # Captured from the signed-in identity, never typed, so it cannot be wrong.
+    requested_by: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    requested_by_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    # Null means no expiry, which is right for most projects. A date here does
+    # NOT touch anything already provisioned — a record expiring must never tear
+    # down infrastructure.
+    expires_at: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # Prefills the request form and heads off the commonest data-quality error:
+    # right project, wrong cost centre.
+    cost_centre_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
 
 
 class CostCentre(Base):

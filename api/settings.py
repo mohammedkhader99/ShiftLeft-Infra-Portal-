@@ -37,6 +37,15 @@ ALLOWLIST: dict[str, dict] = {
     "FOUR_EYES_ENFORCED": {"label": "Enforce four-eyes approval", "type": "bool", "default": "true",
                            "group": "Governance",
                            "help": "The Jira approver must differ from the requester."},
+    "PROJECT_EXPIRY_ENFORCED": {"label": "Block requests on expired projects",
+                                "type": "bool", "default": "false", "group": "Governance",
+                                "help": ("When on, a request naming a project past its "
+                                         "expiry date is blocked; otherwise it warns. "
+                                         "A DISABLED project is refused either way.")},
+    "PROJECT_EXPIRY_WARN_DAYS": {"label": "Project expiry warning lead (days)",
+                                 "type": "int", "default": "30", "min": 0, "max": 365,
+                                 "group": "Governance",
+                                 "help": "Warn this many days before a project expires."},
     "PROVISION_MAX_ATTEMPTS": {"label": "Max provisioning attempts", "type": "int",
                                "default": "3", "min": 1, "max": 20, "group": "Governance",
                                "help": ("Stop retrying a request after this many failed "

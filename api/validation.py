@@ -332,8 +332,18 @@ def _validate_create_fields(data: dict, session: Session, errors: dict[str, str]
     project = (data.get("project_code") or "").strip()
     if not project:
         errors["project_code"] = "Select the project this environment belongs to."
-    elif session.scalar(select(Project).where(Project.code == project)) is None:
-        errors["project_code"] = f"Unknown project '{project}'."
+    else:
+        row = session.scalar(select(Project).where(Project.code == project))
+        if row is None:
+            errors["project_code"] = f"Unknown project '{project}'."
+        elif not row.active:
+            # Disabling is a deliberate act by an administrator, so it refuses
+            # here rather than merely hiding the project from the dropdown — the
+            # form is a convenience, not the boundary.
+            errors["project_code"] = (
+                f"Project '{project}' is disabled and cannot take new requests. "
+                "Ask a platform administrator to re-enable it."
+            )
 
     name = (data.get("environment_name") or "").strip()
     if not name:
