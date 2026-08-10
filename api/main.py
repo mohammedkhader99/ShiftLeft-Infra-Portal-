@@ -1,6 +1,7 @@
 import hmac
 import json
 import os
+import re
 import threading
 import time
 from collections import Counter
@@ -19,7 +20,7 @@ from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
 from fastapi import Request as HTTPRequest
 from fastapi import Response
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, ConfigDict, computed_field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
 from sqlalchemy import func, or_, select, text
 from sqlalchemy.orm import Session
 
@@ -1494,6 +1495,132 @@ def _project_expiry_message(p: dict) -> str:
                 f"({abs(p['days_left'])} days ago).{owner}")
     return (f"Project {p['project']} expires on {p['expires_at']} "
             f"(in {p['days_left']} days).{owner}")
+
+
+class ProjectIn(BaseModel):
+    """A project as an administrator supplies it.
+
+    `requested_by` is deliberately absent: it comes from the signed-in identity,
+    so it records who actually did this rather than who claimed to.
+    """
+    code: str = Field(min_length=1, max_length=32)
+    name: str = Field(min_length=1, max_length=120)
+    description: str | None = Field(default=None, max_length=400)
+    owner_email: str | None = Field(default=None, max_length=160)
+    cost_centre_code: str | None = Field(default=None, max_length=32)
+    expires_at: date | None = None
+    active: bool = True
+
+    @field_validator("code")
+    @classmethod
+    def _code_shape(cls, v: str) -> str:
+        v = v.strip().upper()
+        if not re.fullmatch(r"[A-Z0-9][A-Z0-9-]{0,31}", v):
+            raise ValueError("Code must be letters, digits and hyphens, starting "
+                             "with a letter or digit.")
+        return v
+
+
+def _project_out(p: Project, session: Session) -> dict:
+    """A project plus the facts an administrator needs before changing it: what it
+    already owns, and where it stands against its expiry date."""
+    expiry = _project_expiry_status(session, p.code)
+    return {
+        "code": p.code, "name": p.name, "description": p.description,
+        "owner_email": p.owner_email, "cost_centre_code": p.cost_centre_code,
+        "requested_by": p.requested_by, "requested_by_name": p.requested_by_name,
+        "expires_at": p.expires_at.isoformat() if p.expires_at else None,
+        "active": bool(p.active),
+        "created_at": p.created_at.isoformat() if p.created_at else None,
+        "expiry_status": (expiry or {}).get("status", "none"),
+        "days_left": (expiry or {}).get("days_left"),
+        # What would be affected by disabling or deleting it.
+        "request_count": session.scalar(
+            select(func.count()).select_from(Request)
+            .where(Request.project_code == p.code)) or 0,
+        "environment_count": session.scalar(
+            select(func.count()).select_from(Environment)
+            .where(Environment.project_id == p.id)) or 0,
+    }
+
+
+@app.get("/api/projects")
+def list_projects(session: Session = Depends(get_session),
+                  _auth: str = Depends(require_action("view_overview"))) -> dict:
+    """Every project, including disabled ones — the console must show what it can
+    re-enable. The request form's dropdown is a different list (/api/lookups) and
+    shows only active projects."""
+    rows = session.scalars(select(Project).order_by(Project.code)).all()
+    return {"projects": [_project_out(p, session) for p in rows]}
+
+
+@app.post("/api/projects")
+def set_project(body: ProjectIn, session: Session = Depends(get_session),
+                _auth: str = Depends(require_action("execute")),
+                requester_name: str | None = Depends(get_requester_name)) -> dict:
+    """Create or update a project. platform_admin.
+
+    Upsert by code, matching how budgets and quotas behave. `requested_by` is
+    stamped from the signed-in identity on FIRST creation only — it records who
+    asked for the project, not who last edited it; edits are in the audit trail.
+    """
+    row = session.scalar(select(Project).where(Project.code == body.code))
+    created = row is None
+    if created:
+        row = Project(code=body.code)
+        row.requested_by = _auth
+        row.requested_by_name = requester_name
+        session.add(row)
+
+    before = None if created else {
+        "name": row.name, "active": bool(row.active),
+        "expires_at": row.expires_at.isoformat() if row.expires_at else None,
+        "owner_email": row.owner_email,
+    }
+    row.name = body.name
+    row.description = body.description
+    row.owner_email = body.owner_email
+    row.cost_centre_code = body.cost_centre_code
+    row.expires_at = body.expires_at
+    row.active = body.active
+
+    append_audit(session, "project.created" if created else "project.updated",
+                 actor=_auth,
+                 detail={"code": row.code, "name": row.name, "active": row.active,
+                         "expires_at": row.expires_at.isoformat() if row.expires_at else None,
+                         "owner_email": row.owner_email, "before": before})
+    session.commit()
+    return _project_out(row, session)
+
+
+@app.delete("/api/projects/{code}")
+def delete_project(code: str, session: Session = Depends(get_session),
+                   _auth: str = Depends(require_action("execute"))) -> dict:
+    """Delete a project. platform_admin.
+
+    REFUSED once anything references it. Requests carry the project code as part
+    of their permanent record and environments hold a foreign key to it, so
+    deleting would either break that key or leave history pointing at a project
+    that no longer exists. Disabling is the operation that was actually wanted:
+    it stops new requests and keeps the record intact.
+    """
+    row = session.scalar(select(Project).where(Project.code == code.strip().upper()))
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"No project {code}.")
+    requests = session.scalar(select(func.count()).select_from(Request)
+                              .where(Request.project_code == row.code)) or 0
+    envs = session.scalar(select(func.count()).select_from(Environment)
+                          .where(Environment.project_id == row.id)) or 0
+    if requests or envs:
+        raise HTTPException(
+            status_code=409,
+            detail=(f"Project {row.code} is referenced by {requests} request(s) and "
+                    f"{envs} environment(s), so deleting it would break that history. "
+                    "Disable it instead — that stops new requests and keeps the record."))
+    session.delete(row)
+    append_audit(session, "project.deleted", actor=_auth, detail={"code": row.code})
+    session.commit()
+    return {"deleted": True, "code": row.code}
 
 
 class QuotaIn(BaseModel):

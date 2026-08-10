@@ -153,3 +153,89 @@ def test_the_settings_are_registered_for_the_admin_console():
     from api import settings
     assert "PROJECT_EXPIRY_ENFORCED" in settings.ALLOWLIST
     assert "PROJECT_EXPIRY_WARN_DAYS" in settings.ALLOWLIST
+
+
+# --- Managing projects through the API ---------------------------------------
+
+@pytest.fixture()
+def client(session):
+    from fastapi.testclient import TestClient
+    from api.main import app, get_session
+
+    def override():
+        yield session
+    app.dependency_overrides[get_session] = override
+    yield TestClient(app)
+    app.dependency_overrides.clear()
+
+
+def test_creating_a_project_records_who_asked_for_it(client, session):
+    """requested_by is stamped from the signed-in identity, not accepted from the
+    body — so it records who actually did it rather than who claimed to."""
+    r = client.post("/api/projects", json={
+        "code": "pay", "name": "Payments", "owner_email": "owner@example.com",
+        "description": "Card processing", "cost_centre_code": "IMD-2002"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["code"] == "PAY"            # normalised
+    assert body["owner_email"] == "owner@example.com"
+    assert body["requested_by"], "the signed-in identity should have been recorded"
+    assert body["active"] is True
+
+
+def test_a_new_project_appears_in_the_form_and_a_disabled_one_does_not(client):
+    client.post("/api/projects", json={"code": "NEWP", "name": "New"})
+    codes = {p["code"] for p in client.get("/api/lookups").json()["projects"]}
+    assert "NEWP" in codes
+
+    client.post("/api/projects", json={"code": "NEWP", "name": "New", "active": False})
+    codes = {p["code"] for p in client.get("/api/lookups").json()["projects"]}
+    assert "NEWP" not in codes
+    # ...but the console still lists it, or an administrator could never re-enable it.
+    assert "NEWP" in {p["code"] for p in client.get("/api/projects").json()["projects"]}
+
+
+def test_editing_does_not_rewrite_who_originally_asked(client, session):
+    """requested_by is the origin of the project, not its last editor. Edits are
+    in the audit trail."""
+    first = client.post("/api/projects", json={"code": "ORIG", "name": "One"}).json()
+    again = client.post("/api/projects", json={"code": "ORIG", "name": "Renamed"}).json()
+    assert again["name"] == "Renamed"
+    assert again["requested_by"] == first["requested_by"]
+
+
+def test_the_console_shows_what_a_project_already_owns(client, session):
+    """An administrator about to disable a project should see the blast radius
+    before they do it."""
+    row = next(p for p in client.get("/api/projects").json()["projects"]
+               if p["code"] == "EGATE")
+    assert row["environment_count"] >= 1
+
+
+def test_deleting_a_referenced_project_is_refused_with_the_alternative(client):
+    """Requests carry the project code permanently and environments hold a
+    foreign key to it. Deleting would break that history, so it refuses and names
+    the operation that was actually wanted."""
+    r = client.delete("/api/projects/EGATE")
+    assert r.status_code == 409
+    assert "disable" in r.json()["detail"].lower()
+
+
+def test_an_unreferenced_project_can_be_deleted(client):
+    client.post("/api/projects", json={"code": "TEMP", "name": "Temporary"})
+    assert client.delete("/api/projects/TEMP").status_code == 200
+    assert "TEMP" not in {p["code"] for p in client.get("/api/projects").json()["projects"]}
+    assert client.delete("/api/projects/TEMP").status_code == 404
+
+
+def test_a_malformed_code_is_rejected(client):
+    assert client.post("/api/projects", json={"code": "bad code!", "name": "x"}).status_code == 422
+
+
+def test_every_change_is_audited(client, session):
+    from db.models import AuditLog
+    client.post("/api/projects", json={"code": "AUD", "name": "Audited"})
+    client.post("/api/projects", json={"code": "AUD", "name": "Audited", "active": False})
+    events = [e.event for e in session.scalars(
+        select(AuditLog).where(AuditLog.event.like("project.%"))).all()]
+    assert "project.created" in events and "project.updated" in events
