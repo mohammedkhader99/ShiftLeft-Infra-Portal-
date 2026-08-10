@@ -5576,6 +5576,62 @@ def _sweep_ttls(session: Session) -> None:
             _ttl_warn(session, req, expiry)
 
 
+def _sweep_project_expiry(session: Session) -> None:
+    """Announce a project crossing into 'expiring' or 'expired', once per stage.
+
+    Records it and nothing more. A project reaching its date must never touch
+    what it already owns — that would be a database row deciding to tear down a
+    production environment. The point is that somebody finds out before the date
+    passes, not that anything happens automatically.
+    """
+    for p in session.scalars(select(Project).where(Project.expires_at.is_not(None))):
+        status = (_project_expiry_status(session, p.code) or {}).get("status")
+        if status not in ("expiring", "expired"):
+            # Date pushed out, or removed: allow it to warn again next time.
+            if p.expiry_notified is not None:
+                p.expiry_notified = None
+            continue
+        if p.expiry_notified == status:
+            continue  # already said, at this stage
+        p.expiry_notified = status
+        owned = session.scalar(
+            select(func.count()).select_from(Request)
+            .where(Request.project_code == p.code, Request.status == "provisioned")) or 0
+        append_audit(session, f"project.{status}", actor="poller",
+                     detail={"project": p.code, "owner": p.owner_email or "",
+                             "expires_at": p.expires_at.isoformat(),
+                             "provisioned_environments": owned})
+
+
+@app.get("/api/projects/expiring")
+def expiring_projects(session: Session = Depends(get_session),
+                      _auth: str = Depends(require_action("view_overview"))) -> dict:
+    """Projects at or near their expiry date, with what each still owns.
+
+    The count of live environments is the point. 'PAY expires in nine days' is a
+    diary note; 'PAY expires in nine days and owns four provisioned environments'
+    is a decision someone has to make.
+    """
+    out = []
+    for p in session.scalars(select(Project).where(Project.expires_at.is_not(None))
+                             .order_by(Project.expires_at)):
+        st = _project_expiry_status(session, p.code)
+        if st is None or st["status"] == "ok":
+            continue
+        envs = session.scalars(
+            select(Request).where(Request.project_code == p.code,
+                                  Request.status == "provisioned")).all()
+        out.append({
+            "code": p.code, "name": p.name, "owner_email": p.owner_email,
+            "expires_at": p.expires_at.isoformat(), "days_left": st["days_left"],
+            "status": st["status"], "active": bool(p.active),
+            "environments": [{"reference": r.reference,
+                              "environment_name": r.environment_name,
+                              "tier": r.environment_tier} for r in envs],
+        })
+    return {"projects": out, "warn_days": _project_expiry_warn_days()}
+
+
 def _sweep_orphans(session: Session) -> None:
     """Flag newly-orphaned provisioned environments once (F-LCM-10), and clear the
     flag when an environment gets an owner again. Best-effort Jira note for ops."""
@@ -5643,6 +5699,20 @@ def _poll_once() -> None:
         try:
             with SessionLocal() as session:
                 append_audit(session, "ttl.sweep.error", detail={"error": str(exc)})
+                session.commit()
+        except Exception:  # noqa: BLE001
+            pass
+
+    # Project expiry: announce a project crossing into expiring/expired, once.
+    # Isolated like the others so it can never abort the sweeps around it.
+    try:
+        with SessionLocal() as session:
+            _sweep_project_expiry(session)
+            session.commit()
+    except Exception as exc:  # noqa: BLE001
+        try:
+            with SessionLocal() as session:
+                append_audit(session, "project.sweep.error", detail={"error": str(exc)})
                 session.commit()
         except Exception:  # noqa: BLE001
             pass

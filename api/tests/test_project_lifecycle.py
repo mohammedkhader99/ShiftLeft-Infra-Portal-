@@ -232,6 +232,101 @@ def test_a_malformed_code_is_rejected(client):
     assert client.post("/api/projects", json={"code": "bad code!", "name": "x"}).status_code == 422
 
 
+# --- Surfacing an expiry before the date passes -------------------------------
+
+def test_the_sweep_announces_each_stage_once(session, monkeypatch):
+    """Announcing every cycle would make the audit log unreadable and train people
+    to ignore it."""
+    from db.models import AuditLog
+    monkeypatch.setenv("PROJECT_EXPIRY_WARN_DAYS", "30")
+    _project(session, "SOON", active=True, expires_at=date.today() + timedelta(days=5))
+
+    for _ in range(3):
+        main._sweep_project_expiry(session)
+        session.commit()
+
+    events = [e for e in session.scalars(
+        select(AuditLog).where(AuditLog.event == "project.expiring")).all()]
+    assert len(events) == 1, "should announce once, not once per sweep"
+    assert events[0].detail["project"] == "SOON"
+
+
+def test_crossing_from_expiring_to_expired_is_announced_again(session):
+    """Two different facts. The second one matters more."""
+    from db.models import AuditLog
+    p = _project(session, "GONE", active=True, expires_at=date.today() + timedelta(days=1))
+    main._sweep_project_expiry(session)
+    session.commit()
+
+    p.expires_at = date.today() - timedelta(days=1)   # the date passes
+    session.commit()
+    main._sweep_project_expiry(session)
+    session.commit()
+
+    events = {e.event for e in session.scalars(select(AuditLog)).all()}
+    assert "project.expiring" in events and "project.expired" in events
+
+
+def test_renewing_a_project_lets_it_warn_again_later(session):
+    """Otherwise a project renewed once would never warn again."""
+    p = _project(session, "RENEW", active=True, expires_at=date.today() + timedelta(days=2))
+    main._sweep_project_expiry(session)
+    session.commit()
+    assert p.expiry_notified == "expiring"
+
+    p.expires_at = date.today() + timedelta(days=400)   # renewed
+    session.commit()
+    main._sweep_project_expiry(session)
+    session.commit()
+    session.refresh(p)
+    assert p.expiry_notified is None
+
+
+def test_a_project_with_no_expiry_is_never_swept(session):
+    from db.models import AuditLog
+    _project(session, "FOREVER", active=True, expires_at=None)
+    main._sweep_project_expiry(session)
+    session.commit()
+    assert not session.scalars(
+        select(AuditLog).where(AuditLog.event.like("project.expir%"))).all()
+
+
+def test_the_sweep_never_touches_what_the_project_owns(session):
+    """The whole point. A record reaching its date must not tear anything down."""
+    from db.models import Request
+    _project(session, "GONE", active=True, expires_at=date.today() - timedelta(days=1))
+    session.add(Request(reference="REQ-OWNED", status="provisioned", requester="t@x.com",
+                        request_type="create", deployment_target="oci", project_code="GONE"))
+    session.commit()
+    main._sweep_project_expiry(session)
+    session.commit()
+    req = session.scalar(select(Request).where(Request.reference == "REQ-OWNED"))
+    assert req.status == "provisioned", "an expiring project must not change its environments"
+
+
+def test_the_expiring_view_shows_what_each_project_still_owns(client, session):
+    """'PAY expires in nine days' is a diary note. 'PAY expires in nine days and
+    owns four environments' is a decision."""
+    from db.models import Request
+    _project(session, "SOON", active=True, expires_at=date.today() + timedelta(days=3))
+    session.add(Request(reference="REQ-A", status="provisioned", requester="t@x.com",
+                        request_type="create", deployment_target="oci",
+                        project_code="SOON", environment_name="pay-uat",
+                        environment_tier="uat"))
+    session.commit()
+
+    body = client.get("/api/projects/expiring").json()
+    row = next(p for p in body["projects"] if p["code"] == "SOON")
+    assert row["status"] == "expiring" and row["days_left"] == 3
+    assert [e["reference"] for e in row["environments"]] == ["REQ-A"]
+
+
+def test_projects_with_time_left_are_not_in_the_expiring_view(client, session):
+    _project(session, "FINE", active=True, expires_at=date.today() + timedelta(days=300))
+    codes = {p["code"] for p in client.get("/api/projects/expiring").json()["projects"]}
+    assert "FINE" not in codes
+
+
 def test_every_change_is_audited(client, session):
     from db.models import AuditLog
     client.post("/api/projects", json={"code": "AUD", "name": "Audited"})

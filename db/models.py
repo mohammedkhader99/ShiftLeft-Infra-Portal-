@@ -57,6 +57,10 @@ class Project(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
+    # Which expiry stage has already been announced ('expiring' | 'expired'), so
+    # the sweep says it once rather than every cycle. Cleared if the date is
+    # pushed out, so a renewed project can warn again later.
+    expiry_notified: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
 
 class CostCentre(Base):
