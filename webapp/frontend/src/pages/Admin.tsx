@@ -8,8 +8,10 @@ import {
   getShutdown, setShutdownPolicy,
   getWebhooks, createWebhook, deleteWebhook, testWebhook,
   getRoleMap, setRoleMap, deleteRoleMap, resolveAccess, getUsers,
+  getProjects, saveProject, deleteProject,
   type SystemConfig, type BudgetRow, type Lookups, type OrphanRow, type QuotaRow, type ApiKeyRow,
   type Shutdown, type ShutdownPolicy, type WebhookRow, type RoleMapRow, type UserRow,
+  type ProjectRow,
 } from '../api'
 import SettingsEditor from '../components/SettingsEditor'
 import UserRolesPanel from '../components/UserRolesPanel'
@@ -41,6 +43,153 @@ function Group({ title, children }: { title: string; children: ReactNode }) {
 }
 
 const money = (n: number) => `${n.toLocaleString(undefined, { maximumFractionDigits: 0 })} AED`
+
+// Projects (F-CAT-02). Defining a project here is what puts it in the request
+// form's dropdown; disabling it takes it out AND refuses new requests naming it.
+// Expiry is softer — it warns unless PROJECT_EXPIRY_ENFORCED is on — and neither
+// ever touches infrastructure the project already owns.
+function ProjectsPanel() {
+  const [rows, setRows] = useState<ProjectRow[]>([])
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+  const [editing, setEditing] = useState<Partial<ProjectRow> | null>(null)
+
+  function reload() {
+    getProjects().then((p) => p && p !== 'forbidden' && setRows(p.projects)).catch(() => {})
+  }
+  useEffect(reload, [])
+
+  async function save(p: Partial<ProjectRow>) {
+    setBusy(true); setErr(null)
+    try {
+      const r = await saveProject({
+        code: (p.code || '').trim(), name: (p.name || '').trim(),
+        description: p.description || null, owner_email: p.owner_email || null,
+        cost_centre_code: p.cost_centre_code || null,
+        expires_at: p.expires_at || null, active: p.active !== false,
+      })
+      if (r.status !== 200) {
+        setErr(typeof r.body?.detail === 'string' ? r.body.detail : 'Could not save the project.')
+        return
+      }
+      setEditing(null); reload()
+    } finally { setBusy(false) }
+  }
+
+  async function remove(code: string) {
+    setBusy(true); setErr(null)
+    try {
+      const r = await deleteProject(code)
+      // 409 means it is referenced — the message names disabling as the way out.
+      if (r.status !== 200) setErr(typeof r.body?.detail === 'string' ? r.body.detail : 'Could not delete.')
+      else reload()
+    } finally { setBusy(false) }
+  }
+
+  const expiryTag = (p: ProjectRow) => {
+    if (p.expiry_status === 'expired') return <Tag type="red" size="sm">expired</Tag>
+    if (p.expiry_status === 'expiring') return <Tag type="magenta" size="sm">{p.days_left}d left</Tag>
+    if (p.expires_at) return <Tag type="gray" size="sm">{p.expires_at}</Tag>
+    return <span style={{ color: 'var(--cds-text-secondary)' }}>—</span>
+  }
+
+  const cell = { padding: '0.3rem 0.5rem' } as const
+
+  return (
+    <Tile>
+      <h4 style={{ fontSize: '0.95rem', fontWeight: 500, marginBottom: '0.25rem' }}>Projects</h4>
+      <p style={{ fontSize: '0.8rem', color: 'var(--cds-text-secondary)', marginBottom: '0.75rem' }}>
+        A project must be defined here before it can be chosen on a request. Disabling one removes it
+        from the form and refuses new requests naming it; it never touches environments the project
+        already owns.
+      </p>
+
+      {err && (
+        <InlineNotification kind="error" lowContrast title="" subtitle={err}
+          onCloseButtonClick={() => setErr(null)} style={{ marginBottom: '0.75rem' }} />
+      )}
+
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
+        <thead>
+          <tr style={{ textAlign: 'left', color: 'var(--cds-text-secondary)', borderBottom: '1px solid var(--cds-border-subtle)' }}>
+            <th style={cell}>Code</th>
+            <th style={cell}>Name</th>
+            <th style={cell}>Owner</th>
+            <th style={cell}>Expires</th>
+            <th style={{ ...cell, textAlign: 'right' }}>In use</th>
+            <th style={cell}>Enabled</th>
+            <th style={cell} />
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((p) => (
+            <tr key={p.code} style={{ borderBottom: '1px solid var(--cds-border-subtle-01)', opacity: p.active ? 1 : 0.55 }}>
+              <td style={{ ...cell, fontWeight: 500 }}>{p.code}</td>
+              <td style={cell}>{p.name}</td>
+              <td style={cell}>{p.owner_email || <span style={{ color: 'var(--cds-support-warning)' }}>no owner</span>}</td>
+              <td style={cell}>{expiryTag(p)}</td>
+              <td style={{ ...cell, textAlign: 'right' }} title="requests / environments">
+                {p.request_count} / {p.environment_count}
+              </td>
+              <td style={cell}>
+                <Toggle id={`proj-${p.code}`} size="sm" hideLabel labelText=""
+                  toggled={p.active} disabled={busy}
+                  onToggle={(on: boolean) => save({ ...p, active: on })} />
+              </td>
+              <td style={{ ...cell, textAlign: 'right', whiteSpace: 'nowrap' }}>
+                <Button kind="ghost" size="sm" disabled={busy} onClick={() => setEditing(p)}>Edit</Button>
+                <Button hasIconOnly kind="ghost" size="sm" renderIcon={TrashCan}
+                  iconDescription={`Delete ${p.code}`} disabled={busy}
+                  onClick={() => remove(p.code)} />
+              </td>
+            </tr>
+          ))}
+          {rows.length === 0 && (
+            <tr><td colSpan={7} style={{ padding: '0.5rem', color: 'var(--cds-text-secondary)' }}>No projects defined.</td></tr>
+          )}
+        </tbody>
+      </table>
+
+      <div style={{ marginTop: '0.75rem' }}>
+        {!editing && (
+          <Button size="sm" renderIcon={Add} disabled={busy}
+            onClick={() => setEditing({ active: true })}>Add project</Button>
+        )}
+      </div>
+
+      {editing && (
+        <div style={{ marginTop: '0.75rem', padding: '0.75rem', border: '1px solid var(--cds-border-subtle)', borderRadius: '4px' }}>
+          <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', alignItems: 'flex-end' }}>
+            <TextInput id="p-code" labelText="Code" size="sm" style={{ maxWidth: '9rem' }}
+              value={editing.code || ''} disabled={!!editing.created_at}
+              onChange={(e) => setEditing({ ...editing, code: e.target.value })} />
+            <TextInput id="p-name" labelText="Name" size="sm" style={{ maxWidth: '14rem' }}
+              value={editing.name || ''}
+              onChange={(e) => setEditing({ ...editing, name: e.target.value })} />
+            <TextInput id="p-owner" labelText="Owner email" size="sm" style={{ maxWidth: '15rem' }}
+              value={editing.owner_email || ''}
+              onChange={(e) => setEditing({ ...editing, owner_email: e.target.value })} />
+            <TextInput id="p-cc" labelText="Cost centre" size="sm" style={{ maxWidth: '10rem' }}
+              value={editing.cost_centre_code || ''}
+              onChange={(e) => setEditing({ ...editing, cost_centre_code: e.target.value })} />
+            <TextInput id="p-exp" labelText="Expires (YYYY-MM-DD, blank = never)" size="sm"
+              style={{ maxWidth: '16rem' }} placeholder="2027-12-31"
+              value={editing.expires_at || ''}
+              onChange={(e) => setEditing({ ...editing, expires_at: e.target.value })} />
+          </div>
+          <TextInput id="p-desc" labelText="Description" size="sm" style={{ marginTop: '0.5rem' }}
+            value={editing.description || ''}
+            onChange={(e) => setEditing({ ...editing, description: e.target.value })} />
+          <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.75rem' }}>
+            <Button size="sm" renderIcon={Save} disabled={busy || !editing.code || !editing.name}
+              onClick={() => save(editing)}>{busy ? 'Saving…' : 'Save'}</Button>
+            <Button size="sm" kind="ghost" disabled={busy} onClick={() => { setEditing(null); setErr(null) }}>Cancel</Button>
+          </div>
+        </div>
+      )}
+    </Tile>
+  )
+}
 
 export default function Admin() {
   const [cfg, setCfg] = useState<SystemConfig | null>(null)
@@ -417,6 +566,8 @@ export default function Admin() {
           </Button>
         </div>
       </Tile>
+
+      <ProjectsPanel />
 
       <Tile>
         <h4 style={{ fontSize: '0.95rem', fontWeight: 500, marginBottom: '0.75rem' }}>Project quotas</h4>

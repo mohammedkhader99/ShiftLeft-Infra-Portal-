@@ -800,6 +800,48 @@ export async function deleteQuota(projectCode: string): Promise<{ status: number
   return { status: r.status }
 }
 
+// Projects (F-CAT-02). The console lists DISABLED projects too — it has to be
+// able to re-enable what it disabled. The request form uses /api/lookups, which
+// returns only active ones.
+export type ProjectRow = {
+  code: string
+  name: string
+  description?: string | null
+  owner_email?: string | null
+  cost_centre_code?: string | null
+  requested_by?: string | null
+  requested_by_name?: string | null
+  expires_at?: string | null
+  active: boolean
+  created_at?: string | null
+  // none | ok | expiring | expired
+  expiry_status: string
+  days_left?: number | null
+  // What disabling or deleting would affect.
+  request_count: number
+  environment_count: number
+}
+export async function getProjects(): Promise<{ projects: ProjectRow[] } | 'forbidden' | null> {
+  const r = await fetch('/api/projects')
+  if (r.status === 403) return 'forbidden'
+  return r.ok ? r.json() : null
+}
+export async function saveProject(p: {
+  code: string; name: string; description?: string | null; owner_email?: string | null
+  cost_centre_code?: string | null; expires_at?: string | null; active?: boolean
+}): Promise<{ status: number; body: any }> {
+  const r = await fetch('/api/projects', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(p),
+  })
+  return { status: r.status, body: await r.json().catch(() => ({})) }
+}
+export async function deleteProject(code: string): Promise<{ status: number; body: any }> {
+  const r = await fetch(`/api/projects/${code}`, { method: 'DELETE' })
+  return { status: r.status, body: await r.json().catch(() => ({})) }
+}
+
 // API keys (E1, F-INT-01).
 export type ApiKeyRow = { id: number; label: string; identity: string; active: boolean; created_at?: string | null; last_used_at?: string | null }
 export async function getApiKeys(): Promise<{ keys: ApiKeyRow[] } | null> {
