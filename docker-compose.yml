@@ -330,6 +330,26 @@ services:
       OCI_DNS_ZONE: ${OCI_DNS_ZONE:-}
       OCI_DNS_TTL: ${OCI_DNS_TTL:-300}
       OCI_DNS_COMPARTMENT_OCID: ${OCI_DNS_COMPARTMENT_OCID:-}
+      # OKE. Without these lines the orchestrator cannot see them at all, however
+      # carefully they are set in .env — a blueprint would report "not configured"
+      # forever with no way to fix it.
+      OCI_OKE_BASTION_CIDR: ${OCI_OKE_BASTION_CIDR:-}
+      OCI_OKE_VCN_CIDR: ${OCI_OKE_VCN_CIDR:-}
+      OCI_OKE_KUBERNETES_VERSION: ${OCI_OKE_KUBERNETES_VERSION:-}
+      OCI_OKE_CLUSTER_TYPE: ${OCI_OKE_CLUSTER_TYPE:-}
+      # Kafka: a pre-authenticated Object Storage URL for the release archive.
+      OCI_KAFKA_SOURCE_URL: ${OCI_KAFKA_SOURCE_URL:-}
+      # AWS. Terraform's AWS provider reads these from the environment, so
+      # without them the aws/s3 blueprint can never work however they are set.
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_REGION: ${AWS_REGION:-}
+      AWS_KMS_KEY_ARN: ${AWS_KMS_KEY_ARN:-}
+      # Reported by /posture, so it must be settable — otherwise the console
+      # shows a value the container could never have received.
+      REFRESH_MODE: ${REFRESH_MODE:-mock}
+      COST_DRIFT_THRESHOLD: ${COST_DRIFT_THRESHOLD:-0.10}
+      TF_STATE_DIR: ${TF_STATE_DIR:-/tfstate}
     ports:
       - "9091:9091"
     volumes:

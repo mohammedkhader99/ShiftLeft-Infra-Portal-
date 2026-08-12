@@ -179,6 +179,12 @@ def _oci_vars(name: str, tags: dict, resource_kind: str = "oci-bucket",
         "oke_vcn_cidr": os.getenv("OCI_OKE_VCN_CIDR", ""),
         "oke_kubernetes_version": os.getenv("OCI_OKE_KUBERNETES_VERSION", ""),
         "oke_cluster_type": os.getenv("OCI_OKE_CLUSTER_TYPE", ""),
+        # --- Kafka ------------------------------------------------------------
+        # Where the Kafka archive is fetched from. It is a pre-authenticated URL
+        # into Object Storage, so it lives in the environment rather than in the
+        # manifest: a manifest is committed to git, and this grants read access
+        # to a bucket.
+        "kafka_source_url": os.getenv("OCI_KAFKA_SOURCE_URL", ""),
         "tags": tags,
         # Customer-managed encryption key for sensitive data (F-SEC-04); empty
         # falls back to Oracle-managed encryption in the module.

@@ -38,6 +38,9 @@ _GATE_ENV = {
     # the ranges themselves) plus the version and cluster type.
     "OCI_OKE_BASTION_CIDR", "OCI_OKE_VCN_CIDR", "OCI_OKE_KUBERNETES_VERSION",
     "OCI_OKE_CLUSTER_TYPE",
+    # Kafka: reported as kafka_source_set — the value is a
+    # pre-authenticated Object Storage URL, so it is never displayed.
+    "OCI_KAFKA_SOURCE_URL",
 }
 
 # Deliberately NOT in the console, each for a stated reason. Adding to this list
@@ -193,3 +196,24 @@ def test_execution_gate_labels_cover_every_reported_gate():
                 "refresh_mode"}
     assert reported <= set(_EXECUTION_GATE_LABELS), (
         f"unlabelled gates: {sorted(reported - set(_EXECUTION_GATE_LABELS))}")
+
+
+def test_every_reported_gate_is_actually_displayed():
+    """Reporting a gate through /posture is not the same as showing it.
+
+    The standing rule is that a setting must APPEAR in the console. Gates added
+    for OKE were reported by the orchestrator and had no label, so they were
+    fetched and then silently dropped — registered by the letter of the rule and
+    invisible by its purpose. This reads the keys the orchestrator's posture
+    actually returns and requires a label for each.
+    """
+    src = (_ROOT / "orchestrator" / "main.py").read_text(encoding="utf-8")
+    body = src.split("async def posture", 1)[1].split("\ndef ", 1)[0]
+    reported = set(re.findall(r'^\s{8}"([a-z0-9_]+)":', body, re.M))
+    assert reported, "could not read the posture keys — has the endpoint moved?"
+    missing = sorted(reported - set(_EXECUTION_GATE_LABELS))
+    assert not missing, (
+        "The orchestrator reports these gates but the console has no label for "
+        f"them, so they are never shown:\n  {missing}\n\n"
+        "Add each to _EXECUTION_GATE_LABELS in api/main.py."
+    )

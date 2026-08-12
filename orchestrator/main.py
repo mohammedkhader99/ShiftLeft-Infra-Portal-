@@ -111,6 +111,8 @@ async def posture(request: Request) -> dict:
         "oke_vcn_cidr_set": bool(os.getenv("OCI_OKE_VCN_CIDR")),
         "oke_kubernetes_version": os.getenv("OCI_OKE_KUBERNETES_VERSION", "") or "(module default)",
         "oke_cluster_type": os.getenv("OCI_OKE_CLUSTER_TYPE", "") or "BASIC_CLUSTER",
+        # Set-or-not: the value is a pre-authenticated URL, which is a credential.
+        "kafka_source_set": bool(os.getenv("OCI_KAFKA_SOURCE_URL")),
         "backup_mode": backups.backup_mode(),
         "restore_mode": backups.restore_mode(),
         "reduce_mode": os.getenv("REDUCE_MODE", "mock").strip().lower(),

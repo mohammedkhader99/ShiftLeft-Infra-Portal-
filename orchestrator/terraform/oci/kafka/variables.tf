@@ -158,9 +158,19 @@ variable "java_package" {
 ###############################################################################
 
 variable "kafka_version" {
-  description = "Apache Kafka version to install."
-  type        = string
-  default     = "3.9.0"
+  description = <<-EOT
+    Apache Kafka version to install.
+
+    4.x removes ZooKeeper entirely and requires KRaft, which is what this module
+    builds, so it is the right family here. It needs Java 17 or newer — the
+    java_package default satisfies that.
+
+    Was 3.9.0, which the Apache CDN no longer carries: it only serves current
+    releases, so that default had started returning 404. Verify a version is
+    still published before pinning it.
+  EOT
+  type    = string
+  default = "4.3.1"
 }
 
 variable "scala_version" {

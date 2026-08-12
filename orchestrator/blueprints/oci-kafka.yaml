@@ -7,7 +7,13 @@ builds: [kafka]
 description: Apache Kafka in KRaft mode on private OCI Compute instances — no ZooKeeper, one node for development or three for a fault-tolerant quorum.
 # The Terraform variable this module names its brokers with.
 name_var: instance_name
-requires_env: [OCI_COMPUTE_SUBNET_OCID]
+# OCI_KAFKA_SOURCE_URL is REQUIRED, not optional. Kafka is not in the OS
+# repositories — it is an archive — and this subnet reaches Oracle's services
+# but not the public internet, so the Apache CDN is unreachable. Without a
+# reachable source this blueprint reported "ready", built a healthy VM, installed
+# nothing, and called it a success. Declaring it required turns that into a
+# refusal with the setting named.
+requires_env: [OCI_COMPUTE_SUBNET_OCID, OCI_KAFKA_SOURCE_URL]
 # Module inputs the standard variable set does not carry.
 vars:
   # Empty means "look up the latest Oracle Linux 9 image that fits the shape".
@@ -23,10 +29,8 @@ vars:
   # survives losing a broker, but it is also three times the cost, so growing to
   # it is a deliberate act rather than something a request does by accident.
   broker_count: 1
-  # WHERE THE KAFKA ARCHIVE COMES FROM — the setting most likely to be wrong.
-  # Empty derives the public Apache CDN URL, which needs a NAT or internet
-  # gateway. A subnet with only a SERVICE gateway cannot reach it: stage the
-  # archive in OCI Object Storage (which a service gateway does reach) and put a
-  # pre-authenticated request URL here. Getting this wrong produces a running
-  # machine with no Kafka on it, reported as a success.
-  kafka_source_url: ""
+  # NOTE: kafka_source_url is deliberately NOT set here. It arrives from
+  # OCI_KAFKA_SOURCE_URL instead, because a pre-authenticated Object Storage URL
+  # grants read access to a bucket and manifests are committed to git. Setting it
+  # here would also silently override the environment, since manifest vars are
+  # merged over the standard set.
