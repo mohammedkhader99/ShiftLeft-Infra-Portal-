@@ -233,6 +233,77 @@ def test_a_failed_second_apply_still_reports_what_is_already_live(monkeypatch):
     assert "-apache" in detail  # named, so the live resource can be found and cleaned up
 
 
+# --- Each resource installs only its own software -----------------------------
+
+def _three_component_payload():
+    return {"policy_input": {"components": [{"technology_code": "apache", "size": "small"},
+                                            {"technology_code": "nginx", "size": "small"},
+                                            {"technology_code": "redis7", "size": "small"}]}}
+
+
+def test_a_resource_is_only_told_to_install_what_it_builds(monkeypatch):
+    """REQ-2026-0105: a request for Apache, nginx and Redis rendered ALL THREE
+    into every VM. The service-vm therefore installed httpd as well, httpd took
+    port 80 first, and nginx failed to start — while the portal reported the
+    request provisioned. Verified on the machines, not inferred.
+
+    The manifests already say what each builds; that is the filter.
+    """
+    monkeypatch.setenv("CONFIG_ENABLED", "true")
+    payload = _three_component_payload()
+
+    apache = omain._components_for(payload, "oci-apache")
+    assert [c["technology_code"] for c in apache] == ["apache"]
+
+    svc = omain._components_for(payload, "oci-service-vm")
+    assert [c["technology_code"] for c in svc] == ["nginx", "redis7"]
+
+
+def test_the_first_boot_script_matches_the_resource(monkeypatch):
+    """The consequence that actually broke: httpd must not appear in the
+    service-vm's script, and nginx must not appear in Apache's."""
+    monkeypatch.setenv("CONFIG_ENABLED", "true")
+    monkeypatch.delenv("CONFIG_PACKAGE_MAP", raising=False)
+    payload = _three_component_payload()
+
+    apache_ud = omain._compute_spec(payload, "oci-apache")["user_data"]
+    assert "httpd" in apache_ud
+    assert "nginx" not in apache_ud and "redis" not in apache_ud
+
+    svc_ud = omain._compute_spec(payload, "oci-service-vm")["user_data"]
+    assert "nginx" in svc_ud and "redis" in svc_ud
+    assert "httpd" not in svc_ud, "installing httpd here steals port 80 from nginx"
+
+
+def test_ports_are_scoped_to_the_resource_too(monkeypatch):
+    """Otherwise the service-vm opens a port for software it does not run."""
+    monkeypatch.setenv("CONFIG_ENABLED", "true")
+    payload = {"policy_input": {"components": [{"technology_code": "redis7", "size": "small"},
+                                               {"technology_code": "apache", "size": "small"}]}}
+    # Redis declares no port on purpose; Apache's 80 must not leak onto its VM.
+    assert omain._compute_spec(payload, "oci-service-vm")["service_ports"] == []
+    assert omain._compute_spec(payload, "oci-apache")["service_ports"] == [80]
+
+
+def test_an_unknown_kind_keeps_every_component(monkeypatch):
+    """The fallback. A kind with no manifest has nothing to filter by, so it must
+    behave as it did before rather than silently receiving an empty
+    configuration."""
+    monkeypatch.setenv("CONFIG_ENABLED", "true")
+    payload = _three_component_payload()
+    assert len(omain._components_for(payload, "")) == 3
+    assert len(omain._components_for(payload, "no-such-kind")) == 3
+
+
+def test_a_resource_that_runs_no_software_is_told_to_install_nothing(monkeypatch):
+    """Object storage has a manifest but builds none of these technologies, so it
+    filters to nothing — correct, because a bucket does not boot."""
+    monkeypatch.setenv("CONFIG_ENABLED", "true")
+    payload = _three_component_payload()
+    assert omain._components_for(payload, "oci-bucket") == []
+    assert omain._compute_spec(payload, "oci-bucket")["user_data"] == ""
+
+
 # --- Cloud-state must use the same names provisioning used --------------------
 
 def test_reconcile_looks_for_the_names_that_were_actually_created(tmp_path, monkeypatch):

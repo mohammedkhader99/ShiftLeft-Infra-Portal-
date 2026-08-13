@@ -351,12 +351,37 @@ def _psql_shape(sizing: dict) -> str:
     return f"{family}.{int(sizing.get('ocpus', 1))}.{int(sizing.get('memory_gb', 8))}GB"
 
 
-def _compute_spec(payload: dict) -> dict:
+def _components_for(payload: dict, resource_kind: str) -> list[dict]:
+    """The request's components that THIS resource is responsible for.
+
+    A stack builds several resources, and each must be told to install only its
+    own software. Rendering the whole request's components into every VM put
+    Apache on the nginx machine, where httpd took port 80 first and nginx failed
+    to start — a request that reported success with a third of it dead.
+
+    The manifest already answers this: each declares what it builds. A resource
+    kind with no manifest (the legacy shared module) keeps every component, which
+    is what it did before and is correct for it — it branches internally.
+    """
+    components = payload.get("policy_input", {}).get("components", [])
+    manifest = blueprint_registry.for_resource_kind(resource_kind) if resource_kind else None
+    builds = set(manifest.get("builds") or []) if manifest else set()
+    if not builds:
+        return components
+    return [c for c in components if c.get("technology_code") in builds]
+
+
+def _compute_spec(payload: dict, resource_kind: str = "") -> dict:
     """The compute instance's Terraform inputs: sizing, the resolved OS image, and
     the first-boot configuration that turns a bare VM into a working service
     (GAP-ANALYSIS step 4). user_data is "" when configuration is off or no chosen
-    technology has a template, which leaves the previous behaviour untouched."""
-    components = payload.get("policy_input", {}).get("components", [])
+    technology has a template, which leaves the previous behaviour untouched.
+
+    `resource_kind` scopes the first-boot configuration to the components this
+    resource actually builds. Sizing stays whole-request: the largest component
+    sets the shape, as before.
+    """
+    components = _components_for(payload, resource_kind)
     sizing = _instance_sizing(payload)
     return {
         **sizing,
@@ -392,7 +417,6 @@ async def provision(request: Request) -> dict:
     name, tags = _bucket_and_tags(payload)
     rkind = _resource_kind(payload)
     kinds = _resource_kinds(payload)
-    sizing = _compute_spec(payload)
 
     if mode in ("plan", "apply"):
         # Every resource in the stack is planned. A failure on any one fails the
@@ -401,7 +425,8 @@ async def provision(request: Request) -> dict:
         for kind in kinds:
             try:
                 plans.append((kind, provisioner.terraform_plan(
-                    reference, _resource_name(name, kind, reference, rkind), tags, kind, sizing)))
+                    reference, _resource_name(name, kind, reference, rkind), tags, kind,
+                    _compute_spec(payload, kind))))
             except provisioner.ProvisionError as exc:
                 raise HTTPException(status_code=400,
                                     detail=f"Terraform plan failed for {kind}: {exc}")
@@ -451,7 +476,6 @@ async def apply(request: Request) -> dict:
     name, tags = _bucket_and_tags(payload)
     rkind = _resource_kind(payload)
     kinds = _resource_kinds(payload)
-    sizing = _compute_spec(payload)
 
     # Apply each resource in turn. If a later one fails, the earlier ones are
     # already REAL — so they are reported, not hidden: an error that loses track
@@ -460,7 +484,8 @@ async def apply(request: Request) -> dict:
     for kind in kinds:
         rname = _resource_name(name, kind, reference, rkind)
         try:
-            result = provisioner.terraform_apply(reference, rname, tags, kind, sizing)
+            result = provisioner.terraform_apply(reference, rname, tags, kind,
+                                                 _compute_spec(payload, kind))
         except provisioner.ProvisionError as exc:
             detail = f"Terraform apply failed for {kind}: {exc}"
             if created:
@@ -498,7 +523,6 @@ async def drift(request: Request) -> dict:
     name, tags = _bucket_and_tags(payload)
     rkind = _resource_kind(payload)
     kinds = _resource_kinds(payload)
-    sizing = _compute_spec(payload)
     # Only what was actually built: a stack provisioned before multi-resource has
     # one workspace, and checking a kind that was never applied would report a
     # whole environment as broken because of a resource that does not exist.
@@ -509,7 +533,8 @@ async def drift(request: Request) -> dict:
     for kind in checked:
         try:
             result = provisioner.terraform_drift(
-                reference, _resource_name(name, kind, reference, rkind), tags, kind, sizing)
+                reference, _resource_name(name, kind, reference, rkind), tags, kind,
+                _compute_spec(payload, kind))
         except provisioner.ProvisionError as exc:
             raise HTTPException(status_code=400, detail=f"Drift check failed for {kind}: {exc}")
         changes.extend(result.get("changes") or [])
@@ -756,7 +781,6 @@ async def destroy(request: Request) -> dict:
     reference = payload["reference"]
     rkind = _resource_kind(payload)
     kinds = _resource_kinds(payload)
-    sizing = _compute_spec(payload)
 
     # Destroy is driven by the workspaces that EXIST, not by what the request
     # asked for. A stack whose kinds changed since it was built would otherwise
@@ -778,7 +802,8 @@ async def destroy(request: Request) -> dict:
     for kind in targets:
         try:
             result = provisioner.terraform_destroy(
-                reference, _resource_name(name, kind, reference, rkind), tags, kind, sizing)
+                reference, _resource_name(name, kind, reference, rkind), tags, kind,
+                _compute_spec(payload, kind))
         except provisioner.ProvisionError as exc:
             raise HTTPException(
                 status_code=400,
