@@ -151,6 +151,45 @@ def test_redis_enables_the_module_stream_before_installing(monkeypatch):
         "is already resolved and the wrong major version comes down")
 
 
+def test_the_chosen_version_becomes_the_module_stream(monkeypatch):
+    """The component detail form's whole justification.
+
+    A version dropdown that does not change what gets installed is the
+    Redis-6-sold-as-7 bug with a menu in front of it: the catalogue, the price and
+    the approval all say 1.24 and the machine runs 1.20. The chosen version has to
+    reach the install command or it should not be offered at all.
+    """
+    import yaml
+    monkeypatch.setenv("CONFIG_ENABLED", "true")
+    monkeypatch.delenv("CONFIG_PACKAGE_MAP", raising=False)
+    runcmd = yaml.safe_load(
+        configure.render([{"technology_code": "nginx", "version": "1.24"}]))["runcmd"]
+    enable = [c for c in runcmd if "module enable" in c]
+    assert enable, "a chosen version must enable the matching module stream"
+    assert "nginx:1.24" in enable[0]
+    assert "nginx:1.20" not in " ".join(runcmd), "the default stream must not win"
+
+
+def test_a_version_the_requester_did_not_choose_falls_back_to_the_pinned_stream(monkeypatch):
+    """Every request raised before the detail form carries no version, and must
+    still get the stream the profile pins — this is what keeps Redis on 7."""
+    import yaml
+    monkeypatch.setenv("CONFIG_ENABLED", "true")
+    monkeypatch.delenv("CONFIG_PACKAGE_MAP", raising=False)
+    runcmd = yaml.safe_load(configure.render([{"technology_code": "redis7"}]))["runcmd"]
+    assert any("redis:7" in c for c in runcmd)
+
+
+def test_the_marker_file_records_the_version_that_was_asked_for(monkeypatch):
+    """So a machine running the wrong version can be told apart from a machine
+    that was asked for the wrong version — the first is our bug, the second is
+    not, and on the VM they look identical."""
+    monkeypatch.setenv("CONFIG_ENABLED", "true")
+    monkeypatch.delenv("CONFIG_PACKAGE_MAP", raising=False)
+    text = configure.render([{"technology_code": "nginx", "version": "1.24"}])
+    assert "technologies=nginx 1.24" in text
+
+
 def test_a_technology_without_a_module_stream_emits_none(monkeypatch):
     """Most technologies need no stream; an empty declaration must add nothing."""
     import yaml

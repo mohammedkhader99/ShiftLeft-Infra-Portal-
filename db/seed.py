@@ -19,6 +19,7 @@ from db.models import (
     Environment,
     Project,
     RateCard,
+    ComponentOption,
     SizingAnchor,
     Subsidiary,
     Technology,
@@ -120,6 +121,33 @@ SIZES = {
     "medium": (4, 16, 200),
     "large": (8, 64, 500),
     "xlarge": (16, 128, 1000),
+}
+
+# Versions offered on the component detail form: {code: [(value, is_default)]}.
+#
+# This list is deliberately SHORT. A version dropdown the machine ignores is the
+# Redis-6-sold-as-7 bug with a menu in front of it, so a version appears here
+# only where the platform has a proven way to deliver it — today, the Oracle
+# Linux 9 dnf module streams verified in GAP-ANALYSIS step 9, plus packages whose
+# name already pins the version. A technology absent from this map simply gets no
+# version dropdown; that is the honest answer, not an omission.
+#
+# The hourly cloud-option fetch (next increment) adds rows with source="oci-live"
+# alongside these, and replaces only its own.
+COMPONENT_VERSIONS = {
+    # dnf module streams available on OL9 — a genuine choice.
+    "nginx": [("1.20", True), ("1.22", False), ("1.24", False)],
+    # The catalogue entry is "Redis 7"; the redis:7 stream is what delivers it.
+    # Offering 6 here would contradict the name of the thing being requested.
+    "redis7": [("7", True)],
+    # OL9 ships one httpd, with no module streams. One honest option.
+    "apache": [("2.4", True)],
+    # Version-pinned package names — the version is the package.
+    "java21": [("21", True)],
+    "python312": [("3.12", True)],
+    # nodejs:20 stream; OL9's default stream is 18, so the stream is what makes
+    # the catalogue's "Node.js 20" true.
+    "nodejs20": [("20", True)],
 }
 
 RATE_CARDS = [
@@ -230,6 +258,27 @@ def seed(session: Session) -> None:
                         version=1,
                     )
                 )
+
+    # Version options for the component detail form. Match on the whole natural
+    # key so re-runs don't duplicate, and so a version withdrawn from the map
+    # above is left in place rather than silently deleted — removing an offered
+    # version is a catalogue decision, not a side effect of re-seeding.
+    for code, versions in COMPONENT_VERSIONS.items():
+        for order, (value, is_default) in enumerate(versions):
+            exists = session.scalar(
+                select(ComponentOption).where(
+                    ComponentOption.deployment_target == "",
+                    ComponentOption.technology_code == code,
+                    ComponentOption.field == "version",
+                    ComponentOption.value == value,
+                )
+            )
+            if exists is None:
+                session.add(ComponentOption(
+                    deployment_target="", technology_code=code, field="version",
+                    value=value, label=value, is_default=is_default,
+                    sort_order=order, source="seed",
+                ))
 
     # Rate cards (F-FIN-04): match on item+kind so re-runs don't duplicate.
     for row in RATE_CARDS:

@@ -29,6 +29,7 @@ from api import ai_drafter
 from api import ai_explainer
 from api import ai_recommend
 from api import ai_triage
+from api import component_options
 from api import fulfilment
 from api import portal_help
 from api import resource_details
@@ -85,6 +86,7 @@ from db.models import (
     AuditLog,
     Backup,
     Budget,
+    ComponentOption,
     CostCentre,
     Quota,
     Environment,
@@ -597,8 +599,33 @@ def search_requests(q: str = "", requester: str = Depends(_authed_requester),
     } for r in rows]}
 
 
+def _catalogue_options_posture(session: Session) -> dict:
+    """What the component detail form is currently able to offer.
+
+    Catalogue data rather than a setting, but a platform admin still needs to see
+    it from the console: "how many technologies can a requester choose a version
+    for, and where did those options come from?" is exactly the question that
+    goes unanswered until someone reads the seed file.
+    """
+    rows = session.scalars(select(ComponentOption)).all()
+    versioned = {r.technology_code for r in rows if r.field == "version"}
+    return {
+        "technologies_total": session.scalar(
+            select(func.count()).select_from(Technology)) or 0,
+        "with_version_choice": len(versioned),
+        "options_total": len(rows),
+        # Where the rows came from. "seed" is the curated catalogue; the hourly
+        # cloud fetch will add "oci-live" rows in the next increment.
+        "sources": sorted({r.source for r in rows}),
+        # Numeric options are derived from the sizing anchors rather than stored,
+        # so every technology has a working detail form with no catalogue entry.
+        "shape_options_from": "sizing anchors (F-CAT-07)",
+    }
+
+
 @app.get("/api/config")
-def system_config(_auth: str = Depends(require_action("execute"))) -> dict:
+def system_config(session: Session = Depends(get_session),
+                  _auth: str = Depends(require_action("execute"))) -> dict:
     """The effective governance & FinOps posture (F-OPS-09), read server-side.
 
     Powers the admin console's posture panel — a platform admin can see how every
@@ -637,6 +664,7 @@ def system_config(_auth: str = Depends(require_action("execute"))) -> dict:
             "variance_alert_pct": _variance_alert_pct(),
             "departed_owners_count": len(_departed_owners()),
         },
+        "catalogue": _catalogue_options_posture(session),
     }
 
 
@@ -2010,6 +2038,22 @@ def lookups(session: Session = Depends(get_session)) -> LookupsResponse:
     )
 
 
+@app.get("/api/catalogue/component-options")
+def component_option_list(
+    technology: str,
+    target: str = "",
+    session: Session = Depends(get_session),
+) -> dict:
+    """What the component detail form may offer for one technology on one target.
+
+    Deliberately the SAME function that validation calls, so the dropdowns and
+    the rules cannot drift apart. `presets` are the size anchors, which the form
+    uses to fill the boxes when a size button is clicked — previously a
+    hard-coded table in the browser that could disagree with what was priced.
+    """
+    return component_options.options_for(session, technology, target)
+
+
 @app.post("/api/lookups/subsidiaries/sync")
 def sync_subsidiaries_now(requester: str = Depends(_authed_requester)) -> dict:
     """Trigger an immediate subsidiary sync from Jira (customfield_36200).
@@ -2158,12 +2202,24 @@ REQUEST_FIELDS = (
 class ComponentIn(BaseModel):
     technology_code: str | None = None
     size: str | None = None
+    # Component detail form. All optional: a draft mid-way through the form, and
+    # every request raised before the form existed, carries none of them and
+    # resolves from the size anchor. Values are checked against what the server
+    # offers in api.component_options — never trusted as sent.
+    version: str | None = None
+    vcpu: int | None = None
+    memory_gb: int | None = None
+    storage_gb: int | None = None
 
 
 class ComponentOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     technology_code: str | None = None
     size: str | None = None
+    version: str | None = None
+    vcpu: int | None = None
+    memory_gb: int | None = None
+    storage_gb: int | None = None
 
 
 class DraftIn(BaseModel):
@@ -2373,7 +2429,10 @@ def save_draft(
     # If components were sent, replace the request's component list with them.
     if body.components is not None:
         req.components = [
-            RequestComponent(technology_code=c.technology_code, size=c.size)
+            RequestComponent(
+                technology_code=c.technology_code, size=c.size, version=c.version,
+                vcpu=c.vcpu, memory_gb=c.memory_gb, storage_gb=c.storage_gb,
+            )
             for c in body.components
         ]
 
@@ -2811,9 +2870,7 @@ def submit_request(
             req.environment_tier = req.environment_tier or target.environment_tier
             req.data_classification = req.data_classification or target.data_classification
 
-    components_data = [
-        {"technology_code": c.technology_code, "size": c.size} for c in req.components
-    ]
+    components_data = [component_options.as_dict(c) for c in req.components]
     data = {field: _jsonable(getattr(req, field)) for field in REQUEST_FIELDS}
     data["components"] = components_data
     errors = validate_submission(data, session)
@@ -2957,10 +3014,9 @@ class SizingIn(BaseModel):
 @app.post("/api/sizing")
 def sizing(body: SizingIn, session: Session = Depends(get_session)) -> dict:
     """Resolve CPU/RAM/storage per component and the environment totals."""
-    components = [
-        {"technology_code": c.technology_code, "size": c.size} for c in body.components
-    ]
-    return resolve_components(components, session)
+    # model_dump carries the detail fields too, so the live sizing panel reflects
+    # an explicitly chosen shape rather than the size anchor it overrides.
+    return resolve_components([c.model_dump() for c in body.components], session)
 
 
 # --- Cost estimation (increment 1.5) -----------------------------------------
@@ -2975,10 +3031,10 @@ class CostIn(BaseModel):
 @app.post("/api/cost")
 def cost(body: CostIn, session: Session = Depends(get_session)) -> dict:
     """Estimate one-time/monthly/annual cost for the components on a target."""
-    components = [
-        {"technology_code": c.technology_code, "size": c.size} for c in body.components
-    ]
-    return estimate_cost(components, body.deployment_target, session, body.advanced_options)
+    # The detail fields ride along, so the price the requester sees while filling
+    # the form is the price of the shape they actually chose.
+    return estimate_cost([c.model_dump() for c in body.components],
+                         body.deployment_target, session, body.advanced_options)
 
 
 @app.post("/api/cost/explain")
@@ -3026,9 +3082,7 @@ def _jsonable(value):
 
 def _policy_input(req: Request) -> dict:
     data = {field: _jsonable(getattr(req, field)) for field in REQUEST_FIELDS}
-    data["components"] = [
-        {"technology_code": c.technology_code, "size": c.size} for c in req.components
-    ]
+    data["components"] = [component_options.as_dict(c) for c in req.components]
     return {k: v for k, v in data.items() if v is not None}
 
 
@@ -3622,7 +3676,7 @@ def request_evidence(reference: str, session: Session = Depends(get_session),
     """Download the governance evidence pack for a request (F-GOV-10): request +
     cost + approval + full audit trail + a re-verified tamper-evidence attestation."""
     req = _load_request(reference, session)
-    components = [{"technology_code": c.technology_code, "size": c.size} for c in req.components]
+    components = [component_options.as_dict(c) for c in req.components]
     if req.estimate and req.estimate.breakdown:
         breakdown = req.estimate.breakdown
     else:
@@ -3653,7 +3707,7 @@ def request_costsheet(reference: str, session: Session = Depends(get_session)) -
     open access as GET /api/requests/{reference}, which already exposes the cost.
     """
     req = _load_request(reference, session)
-    components = [{"technology_code": c.technology_code, "size": c.size} for c in req.components]
+    components = [component_options.as_dict(c) for c in req.components]
     if req.estimate and req.estimate.breakdown:
         breakdown = req.estimate.breakdown
     else:

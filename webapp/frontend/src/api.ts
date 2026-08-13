@@ -11,7 +11,37 @@ export type Lookups = {
   environments: { name: string; environment_class: string }[]
 }
 
-export type Component = { technology_code: string; size: string }
+// The detail fields are optional everywhere: a component that carries none
+// resolves from its size anchor server-side, exactly as before this form existed.
+export type Component = {
+  technology_code: string
+  size: string
+  version?: string
+  vcpu?: number
+  memory_gb?: number
+  storage_gb?: number
+}
+
+// What the server is willing to offer for one component's detail fields, and
+// the size presets that fill them in. The browser renders this; it never decides
+// it — every value comes back through server-side validation on submit.
+export type ComponentOptions = {
+  technology_code: string | null
+  technology_name: string | null
+  fields: Record<
+    string,
+    { label: string; options: { value: string; label: string }[]; default: string }
+  >
+  presets: Record<string, { vcpu: number; memory_gb: number; storage_gb: number }>
+}
+
+export async function getComponentOptions(
+  technology: string,
+  target: string,
+): Promise<ComponentOptions> {
+  const q = new URLSearchParams({ technology, target })
+  return json<ComponentOptions>(await fetch(`/api/catalogue/component-options?${q}`))
+}
 
 export type Cost = {
   currency: string
@@ -751,6 +781,15 @@ export type SystemConfig = {
   governance: { sod_enforced: boolean; four_eyes_enforced: boolean; approval_quorum: number; approval_sla_hours: number; audit_hmac: boolean }
   change_window: { enabled: boolean; open_now: boolean; days: string; start: string; end: string; tz: string }
   finops: { ttl_days_nonprod: number; ttl_warn_days: number; ttl_enforce: boolean; budget_enforce: boolean; budget_warn_pct: number; variance_alert_pct: number; departed_owners_count: number }
+  // What the component detail form can currently offer. Catalogue data, not a
+  // setting — but an admin still needs to see it without reading the seed file.
+  catalogue: {
+    technologies_total: number
+    with_version_choice: number
+    options_total: number
+    sources: string[]
+    shape_options_from: string
+  }
 }
 
 export async function getConfig(): Promise<SystemConfig | 'forbidden' | null> {

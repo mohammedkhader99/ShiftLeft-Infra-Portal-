@@ -391,6 +391,11 @@ class RequestComponent(Base):
     """One technology + its size within a request (1.3a).
 
     Sizing (1.4) and cost (1.5) are resolved per component, then summed.
+
+    The four columns below carry the requester's explicit choices from the
+    component detail form. All are nullable: a request raised before the form
+    existed, or a draft that has not reached the detail step, resolves from the
+    size anchor exactly as it always did.
     """
 
     __tablename__ = "request_component"
@@ -399,8 +404,47 @@ class RequestComponent(Base):
     request_id: Mapped[int] = mapped_column(ForeignKey("request.id"))
     technology_code: Mapped[str | None] = mapped_column(String(48), nullable=True)
     size: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # The technology version to install, e.g. "1.24" for nginx. Only versions the
+    # platform can actually deliver are offered — a version the machine ignores is
+    # the Redis-6-sold-as-7 bug with a dropdown in front of it.
+    version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # Explicit shape. When set these OVERRIDE the size anchor for sizing, pricing
+    # and the built machine, so what the approver sees priced is what gets built.
+    vcpu: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    memory_gb: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    storage_gb: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     request: Mapped["Request"] = relationship(back_populates="components")
+
+
+class ComponentOption(Base):
+    """A value the portal is willing to offer for one component detail field.
+
+    This table is the *authority* for the component detail form: the browser may
+    render whatever it likes, but a submitted value is only accepted if it
+    appears here (or in the sizing anchors, which supply the numeric options for
+    free — see api/component_options.py). That keeps the "client holds no
+    authority" rule intact for a form whose whole purpose is free choice.
+
+    `deployment_target` empty means "on every target". `source` records who put
+    the row here — "seed" for catalogue data, and later the hourly cloud fetch
+    replaces only its own rows, leaving hand-curated ones alone.
+    """
+
+    __tablename__ = "component_option"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    deployment_target: Mapped[str] = mapped_column(String(16), default="")
+    technology_code: Mapped[str] = mapped_column(String(48))
+    # version | vcpu | memory_gb | storage_gb
+    field: Mapped[str] = mapped_column(String(16))
+    # Held as text so one table covers versions and numbers; numeric fields are
+    # cast on the way out.
+    value: Mapped[str] = mapped_column(String(64))
+    label: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    source: Mapped[str] = mapped_column(String(16), default="seed")
 
 
 class Estimate(Base):

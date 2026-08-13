@@ -153,6 +153,10 @@ def _oci_vars(name: str, tags: dict, resource_kind: str = "oci-bucket",
         "instance_shape": os.getenv("OCI_COMPUTE_SHAPE", "VM.Standard.E4.Flex"),
         "instance_ocpus": int(sizing.get("ocpus", 1)),
         "instance_memory_gb": int(sizing.get("memory_gb", 8)),
+        # The requested disk. The modules already declared this variable and
+        # defaulted it; nothing ever supplied a value, so storage was priced and
+        # approved and then quietly ignored at build time.
+        "boot_volume_size_in_gbs": int(sizing.get("boot_volume_gb", 50)),
         "subnet_ocid": os.getenv("OCI_COMPUTE_SUBNET_OCID", ""),
         # Per-technology image resolved by the orchestrator (sizing["image_ocid"]);
         # falls back to the default image env for a plain/legacy call.

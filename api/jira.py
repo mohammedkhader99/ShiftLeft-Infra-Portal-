@@ -354,7 +354,24 @@ def build_ticket_body(req: Request, estimate: dict, plan_preview: str) -> str:
     lines.append("")
     lines.append("Technologies to decommission:" if is_decommission else "Components:")
     for comp in req.components:
-        lines.append(f"  - {comp.technology_code} ({comp.size})")
+        # The approver is signing off a machine, so show the machine. Detail
+        # fields are optional, and a request that carries none reads exactly as
+        # it always did.
+        detail = []
+        if comp.version:
+            detail.append(f"v{comp.version}")
+        if comp.vcpu:
+            detail.append(f"{comp.vcpu} vCPU")
+        if comp.memory_gb:
+            detail.append(f"{comp.memory_gb} GB RAM")
+        if comp.storage_gb:
+            detail.append(f"{comp.storage_gb} GB disk")
+        suffix = f" - {', '.join(detail)}" if detail else ""
+        lines.append(f"  - {comp.technology_code} ({comp.size}){suffix}")
+    if any(c.vcpu or c.memory_gb or c.storage_gb for c in req.components):
+        lines.append("")
+        lines.append("  Shapes above are the requester's explicit choices and are "
+                     "what will be built.")
 
     totals = estimate.get("totals", {})
     lines.append("")

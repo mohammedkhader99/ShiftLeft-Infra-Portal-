@@ -61,6 +61,14 @@ variable "instance_memory_gb" {
   default = 8
 }
 
+# Boot volume for the instance, from the request's chosen disk. OCI's minimum is
+# 50 GB. The dedicated blueprints already had this; the shared module did not, so
+# a "large" request paid for 500 GB of storage and booted on the image default.
+variable "boot_volume_size_in_gbs" {
+  type    = number
+  default = 50
+}
+
 # An existing subnet the instance is placed in (private-only — no public IP).
 variable "subnet_ocid" {
   type    = string

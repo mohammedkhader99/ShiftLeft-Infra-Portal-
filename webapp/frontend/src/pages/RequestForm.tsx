@@ -43,8 +43,10 @@ import {
   draftWithAI,
   recommendWithAI,
   getApprovalInfo,
+  getComponentOptions,
   type Lookups,
   type Component,
+  type ComponentOptions,
   type Cost,
   type RequestRow,
   type ApprovalInfo,
@@ -205,6 +207,12 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
   const [targetEnv, setTargetEnv] = useState('')
   const [classification, setClassification] = useState('')
   const [components, setComponents] = useState<Component[]>([])
+  // What the SERVER offers for each chosen technology's detail fields, keyed by
+  // technology code. Fetched per component because the answer depends on the
+  // technology and the deployment target. The browser renders these; validation
+  // on submit re-checks every value against the same source, so a tampered form
+  // cannot widen what is allowed.
+  const [techOptions, setTechOptions] = useState<Record<string, ComponentOptions>>({})
 
   // Governance metadata (increment 6.1).
   const [justification, setJustification] = useState('')
@@ -361,6 +369,48 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [target])
 
+  // Fetch the detail options for every chosen technology, and fill in the
+  // defaults for a component that has none yet. Re-runs when the target changes,
+  // because what can be offered depends on where it runs.
+  const chosenCodes = components.map((c) => c.technology_code).filter(Boolean).join(',')
+  useEffect(() => {
+    const codes = chosenCodes ? chosenCodes.split(',') : []
+    if (!codes.length) return
+    let cancelled = false
+    Promise.all(
+      codes.map((code) =>
+        getComponentOptions(code, target).then(
+          (o) => [code, o] as const,
+          // A failed fetch must not wedge the form: the component keeps its size
+          // and the server fills the shape from the anchor, which is exactly the
+          // pre-form behaviour.
+          () => null,
+        ),
+      ),
+    ).then((results) => {
+      if (cancelled) return
+      const fetched = Object.fromEntries(
+        results.filter((r): r is readonly [string, ComponentOptions] => r !== null),
+      )
+      setTechOptions(fetched)
+      // Seed any component that has no detail values yet from its current size,
+      // so the boxes are never blank and what is shown is what is priced.
+      setComponents((cs) =>
+        cs.map((c) => {
+          const opts = fetched[c.technology_code]
+          if (!opts || c.vcpu) return c
+          const preset = opts.presets?.[c.size]
+          const version = opts.fields?.version?.default
+          return { ...c, ...(preset ?? {}), ...(version ? { version } : {}) }
+        }),
+      )
+    })
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chosenCodes, target])
+
   const techName = (code: string) =>
     lookups?.technologies.find((t) => t.code === code)?.name ?? code
 
@@ -372,8 +422,47 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
         : [...cs, { technology_code: code, size: 'medium' }],
     )
   }
+
+  // Choosing a size FILLS IN the detail boxes rather than replacing them: the
+  // preset is a shortcut, and the four values are what actually get priced and
+  // built. Presets come from the server's sizing anchors — they used to be a
+  // table hard-coded here, which could show one shape while the server priced
+  // another.
   function setSize(code: string, size: string) {
-    setComponents((cs) => cs.map((c) => (c.technology_code === code ? { ...c, size } : c)))
+    const preset = techOptions[code]?.presets?.[size]
+    setComponents((cs) =>
+      cs.map((c) =>
+        c.technology_code === code ? { ...c, size, ...(preset ?? {}) } : c,
+      ),
+    )
+  }
+
+  // One detail field on one component. Numeric fields are stored as numbers so
+  // they serialise correctly for the API.
+  function setDetail(code: string, field: string, value: string) {
+    setComponents((cs) =>
+      cs.map((c) =>
+        c.technology_code === code
+          ? { ...c, [field]: field === 'version' ? value : Number(value) }
+          : c,
+      ),
+    )
+  }
+
+  // Which preset (if any) a component's current numbers match. "Custom" is not
+  // an error — it is shown so the requester knows they have left the standard
+  // shapes, the same thing the approver is told.
+  function presetName(c: Component): string {
+    // Before the options load — and for a component carrying no explicit shape
+    // at all — the size IS the shape, so report it rather than flashing
+    // "Custom" at a requester who has chosen nothing unusual.
+    if (c.vcpu == null) return c.size
+    const presets = techOptions[c.technology_code]?.presets ?? {}
+    const match = Object.entries(presets).find(
+      ([, p]) =>
+        p.vcpu === c.vcpu && p.memory_gb === c.memory_gb && p.storage_gb === c.storage_gb,
+    )
+    return match ? match[0] : 'custom'
   }
   function toggleSelected(c: Component, checked: boolean) {
     setSelected((s) => {
@@ -1031,20 +1120,74 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
                               Remove
                             </Button>
                           </div>
-                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(8rem, 1fr))', gap: '0.5rem' }}>
-                            {SIZES.map((s) => {
-                              const spec = SIZE_SPECS[s]
-                              const sel = c.size === s
-                              return (
-                                <button key={s} type="button" aria-pressed={sel} onClick={() => setSize(c.technology_code, s)} style={cardStyle(sel)}>
-                                  <span style={{ fontWeight: 500, textTransform: 'capitalize', fontSize: '0.85rem' }}>{s}</span>
-                                  <span style={{ fontSize: '0.72rem', color: 'var(--cds-text-secondary)', lineHeight: 1.5 }}>
-                                    {spec.vcpu} vCPU · {spec.mem} GB RAM<br />{spec.storage} GB storage
-                                  </span>
-                                </button>
-                              )
-                            })}
-                          </div>
+                          {(() => {
+                            const opts = techOptions[c.technology_code]
+                            const presets = opts?.presets ?? {}
+                            const active = presetName(c)
+                            return (
+                              <>
+                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(8rem, 1fr))', gap: '0.5rem' }}>
+                                  {SIZES.map((s) => {
+                                    // Server presets when we have them; the static
+                                    // table only until the fetch lands, so the card
+                                    // is never blank on first paint.
+                                    const spec = presets[s] ?? {
+                                      vcpu: SIZE_SPECS[s].vcpu,
+                                      memory_gb: SIZE_SPECS[s].mem,
+                                      storage_gb: SIZE_SPECS[s].storage,
+                                    }
+                                    const sel = active === s
+                                    return (
+                                      <button key={s} type="button" aria-pressed={sel} onClick={() => setSize(c.technology_code, s)} style={cardStyle(sel)}>
+                                        <span style={{ fontWeight: 500, textTransform: 'capitalize', fontSize: '0.85rem' }}>{s}</span>
+                                        <span style={{ fontSize: '0.72rem', color: 'var(--cds-text-secondary)', lineHeight: 1.5 }}>
+                                          {spec.vcpu} vCPU · {spec.memory_gb} GB RAM<br />{spec.storage_gb} GB storage
+                                        </span>
+                                      </button>
+                                    )
+                                  })}
+                                </div>
+
+                                {/* The detail fields. Every option here came from
+                                    the server and is re-checked on submit. */}
+                                {opts && (
+                                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(9rem, 1fr))', gap: '0.75rem', marginTop: '0.75rem' }}>
+                                    {['version', 'vcpu', 'memory_gb', 'storage_gb'].map((field) => {
+                                      const spec = opts.fields[field]
+                                      if (!spec) return null  // nothing honest to offer
+                                      const value = String(
+                                        (c as unknown as Record<string, unknown>)[field] ?? '',
+                                      )
+                                      const errKey = `component_${components.findIndex((x) => x.technology_code === c.technology_code)}_${field}`
+                                      return (
+                                        <Select
+                                          key={field}
+                                          id={`detail-${c.technology_code}-${field}`}
+                                          labelText={spec.label}
+                                          size="sm"
+                                          value={value}
+                                          invalid={!!errors[errKey]}
+                                          invalidText={errors[errKey]}
+                                          onChange={(e) => setDetail(c.technology_code, field, e.target.value)}
+                                        >
+                                          {spec.options.map((o) => (
+                                            <SelectItem key={o.value} value={o.value} text={o.label} />
+                                          ))}
+                                        </Select>
+                                      )
+                                    })}
+                                  </div>
+                                )}
+
+                                {active === 'custom' && (
+                                  <p style={{ fontSize: '0.72rem', color: 'var(--cds-text-secondary)', marginTop: '0.4rem' }}>
+                                    Custom shape — not one of the standard sizes. Allowed, priced
+                                    as configured, and flagged for the approver.
+                                  </p>
+                                )}
+                              </>
+                            )
+                          })()}
                         </div>
                       )
                     })}

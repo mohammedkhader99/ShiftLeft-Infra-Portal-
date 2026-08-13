@@ -82,8 +82,9 @@ resource "oci_core_instance" "env" {
   }
 
   source_details {
-    source_type = "image"
-    source_id   = var.image_ocid
+    source_type             = "image"
+    source_id               = var.image_ocid
+    boot_volume_size_in_gbs = var.boot_volume_size_in_gbs
   }
 
   # Access is image-dependent, so include only what's supplied: an SSH key and/or

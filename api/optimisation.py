@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from api import component_options
 from api.pricing import estimate_cost
 from db.models import Request
 
@@ -43,7 +44,11 @@ def _recommendations(session: Session, req: Request) -> list[dict]:
     if tier not in NONPROD_TIERS or not target:
         return []  # prod/DR (or untargeted) — leave it
 
-    components = [{"technology_code": c.technology_code, "size": c.size} for c in req.components]
+    # The CURRENT shape, explicit values included — otherwise a component sized
+    # off-anchor is compared at its anchor price and the saving is fiction. The
+    # smaller hypothetical below stays anchor-based, which is what "drop a size"
+    # means.
+    components = [component_options.as_dict(c) for c in req.components]
     advanced = dict(req.advanced_options or {})
     recs: list[dict] = []
 

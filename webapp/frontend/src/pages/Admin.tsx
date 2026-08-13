@@ -402,6 +402,14 @@ export default function Admin() {
               <Row label="Variance alert">±{cfg.finops.variance_alert_pct}%</Row>
               <Row label="Departed owners">{cfg.finops.departed_owners_count}</Row>
             </Group>
+            <Group title="Component catalogue">
+              <Row label="Version choice offered">
+                {cfg.catalogue?.with_version_choice ?? 0} of {cfg.catalogue?.technologies_total ?? 0} technologies
+              </Row>
+              <Row label="Catalogued options">{cfg.catalogue?.options_total ?? 0}</Row>
+              <Row label="Option sources">{(cfg.catalogue?.sources ?? []).join(', ') || '—'}</Row>
+              <Row label="Shape options from">{cfg.catalogue?.shape_options_from ?? '—'}</Row>
+            </Group>
           </div>
         </Tile>
       )}

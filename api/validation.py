@@ -14,6 +14,7 @@ from datetime import date, datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from api import component_options
 from db.models import Backup, CostCentre, Environment, Project, Request, Subsidiary, Technology
 
 REQUEST_TYPES = {"dns", "create", "add", "resize", "decommission", "refresh", "restore",
@@ -565,3 +566,14 @@ def _validate_components(data: dict, session: Session, errors: dict[str, str]) -
                 )
         if size not in SIZES:
             errors[f"component_{index}_size"] = "Choose a size: small, medium or large."
+
+        # The component detail fields (version / vCPU / memory / disk). Every
+        # value must be one the SERVER offers for this technology on this target
+        # — the form's dropdowns are a convenience, not the rule. A request
+        # hand-crafted against the API asking for a shape nobody offers is
+        # refused here, which is the only place it can be refused honestly.
+        if technology:
+            for field, message in component_options.validate(
+                session, technology, target, component
+            ).items():
+                errors[f"component_{index}_{field}"] = message

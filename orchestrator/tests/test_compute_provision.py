@@ -28,6 +28,61 @@ def test_instance_sizing_has_a_safe_minimum():
     assert omain._instance_sizing({"policy_input": {"components": []}}) == {"ocpus": 1, "memory_gb": 8}
 
 
+# --- The component detail form's numbers reach the machine -------------------
+
+def test_an_explicitly_chosen_shape_beats_the_size():
+    """The requester asked for 16 vCPU / 128 GB on a component labelled 'small'.
+    The API priced 16/128, so the machine must be 16/128 — otherwise the approved
+    cost describes something nobody built."""
+    payload = {"policy_input": {"components": [
+        {"technology_code": "nginx", "size": "small", "vcpu": 16, "memory_gb": 128},
+    ]}}
+    assert omain._instance_sizing(payload) == {"ocpus": 8, "memory_gb": 128}
+
+
+def test_a_component_with_no_explicit_shape_still_sizes_from_its_size():
+    """Every request raised before the detail form existed."""
+    payload = {"policy_input": {"components": [{"technology_code": "rhel9", "size": "large"}]}}
+    assert omain._instance_sizing(payload) == {"ocpus": 4, "memory_gb": 64}
+
+
+def test_the_requested_disk_reaches_terraform():
+    """Storage has been priced since the first increment and never reached the
+    module: there was no disk input at all, so a 'large' request paid for 500 GB
+    and booted on whatever the image happened to be. The variable existed in three
+    blueprints; nothing ever filled it in."""
+    payload = {"policy_input": {"components": [{"technology_code": "rhel9", "size": "large"}]}}
+    assert omain._boot_volume_gb(payload) == 500
+    assert omain._compute_spec(payload)["boot_volume_gb"] == 500
+
+    explicit = {"policy_input": {"components": [
+        {"technology_code": "rhel9", "size": "small", "storage_gb": 1000},
+    ]}}
+    assert omain._boot_volume_gb(explicit) == 1000
+
+
+def test_the_disk_is_the_largest_any_component_asks_for():
+    """One machine, several components: the disk has to hold all of them."""
+    payload = {"policy_input": {"components": [
+        {"technology_code": "nginx", "size": "small"},      # 50
+        {"technology_code": "redis7", "size": "large"},     # 500
+    ]}}
+    assert omain._boot_volume_gb(payload) == 500
+
+
+def test_a_request_naming_no_disk_gets_ocis_minimum():
+    assert omain._boot_volume_gb({"policy_input": {"components": []}}) == 50
+
+
+def test_the_disk_is_passed_to_the_module_as_a_terraform_variable(monkeypatch):
+    """The last hop. _compute_spec producing the right number is worthless if
+    _oci_vars drops it before writing terraform.tfvars.json."""
+    monkeypatch.setenv("OCI_COMPUTE_SUBNET_OCID", "ocid1.subnet..x")
+    variables = provisioner._cloud_vars(
+        "oci", "web", {"env": "uat"}, "oci-instance", {"boot_volume_gb": 500})
+    assert variables["boot_volume_size_in_gbs"] == 500
+
+
 # --- Compute-config gate -----------------------------------------------------
 
 def _clear_compute_env(monkeypatch):

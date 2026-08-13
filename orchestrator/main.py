@@ -210,6 +210,10 @@ def _bucket_and_tags(payload: dict) -> tuple[str, dict]:
 # flex shape when a request provisions an oci-instance.
 _SIZES = {"small": (2, 4), "medium": (4, 16), "large": (8, 64), "xlarge": (16, 128)}
 
+# size -> boot volume GB, the third column of db.seed.SIZES. Kept separate
+# because the shape and the disk are different Terraform inputs.
+_SIZE_STORAGE = {"small": 50, "medium": 200, "large": 500, "xlarge": 1000}
+
 
 def _resource_kind(payload: dict) -> str:
     """The PRIMARY kind. Operations that act on one resource (stop/start, DNS)
@@ -281,23 +285,70 @@ def _resource_name(base: str, kind: str, reference: str, primary: str) -> str:
     return f"{base}-{suffix}"
 
 
-def _instance_sizing(payload: dict) -> dict:
-    """OCI flex-shape sizing (ocpus, memory_gb) from the largest component size.
+def _explicit_int(component: dict, field: str) -> int | None:
+    """An explicit number from the component detail form, or None if unset."""
+    raw = component.get(field)
+    if raw is None or str(raw).strip() == "":
+        return None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
 
-    The fallback applies only when NO component resolves to a known size. It used
-    to be a floor applied to every request, which meant a 'small' environment —
+
+def _component_shape(component: dict) -> tuple[int, int]:
+    """(vcpu, memory_gb) for one component: its explicit choice, else its size.
+
+    The explicit values come from the component detail form and are already the
+    ones the API priced, so preferring them here is what keeps the approved cost
+    and the built machine the same thing.
+    """
+    vcpu, mem = _SIZES.get((component.get("size") or "").lower(), (0, 0))
+    return (_explicit_int(component, "vcpu") or vcpu,
+            _explicit_int(component, "memory_gb") or mem)
+
+
+def _instance_sizing(payload: dict) -> dict:
+    """OCI flex-shape sizing (ocpus, memory_gb) from the largest component.
+
+    The fallback applies only when NO component resolves to a shape. It used to
+    be a floor applied to every request, which meant a 'small' environment —
     priced by the catalogue at 2 vCPU / 4 GB — was actually built with 8 GB, and a
     reduction down to 'small' silently changed nothing while reporting success.
     Sizing now matches what the catalogue prices.
     """
     best: tuple[int, int] | None = None
     for c in payload.get("policy_input", {}).get("components", []):
-        vcpu, mem = _SIZES.get((c.get("size") or "").lower(), (0, 0))
+        vcpu, mem = _component_shape(c)
         if mem and (best is None or mem > best[1]):
             best = (max(1, round(vcpu / 2)), mem)  # 1 OCPU ~ 2 vCPUs on x86 flex
     if best is None:
         best = (1, 8)  # nothing recognisable — a safe default, not a floor
     return {"ocpus": best[0], "memory_gb": best[1]}
+
+
+# Boot volume when a request names no disk. OCI's own minimum is 50 GB, and the
+# modules previously had no disk input at all, so every machine got the image
+# default regardless of the size that was priced.
+_DEFAULT_BOOT_VOLUME_GB = 50
+
+
+def _boot_volume_gb(payload: dict) -> int:
+    """Boot volume for the instance: the largest disk any component asks for.
+
+    Storage was priced from the first increment and never reached Terraform, so a
+    'large' request paid for 500 GB and was built on the image default. The
+    offered values all clear OCI's 50 GB minimum because they come from the
+    sizing anchors.
+    """
+    sizes = []
+    for c in payload.get("policy_input", {}).get("components", []):
+        explicit = _explicit_int(c, "storage_gb")
+        anchored = _SIZE_STORAGE.get((c.get("size") or "").lower())
+        if explicit or anchored:
+            sizes.append(explicit or anchored)
+    return max(sizes) if sizes else _DEFAULT_BOOT_VOLUME_GB
 
 
 # size -> how many nodes a clustered resource gets. A Kubernetes node pool sized
@@ -385,6 +436,9 @@ def _compute_spec(payload: dict, resource_kind: str = "") -> dict:
     sizing = _instance_sizing(payload)
     return {
         **sizing,
+        # The disk the request was priced for. Previously never sent, so every
+        # machine got the image default however much storage was paid for.
+        "boot_volume_gb": _boot_volume_gb(payload),
         "image_ocid": _image_for(payload),
         # Carried separately so a blueprint with its own image lookup can honour
         # a deliberate per-technology image while ignoring the shared default.

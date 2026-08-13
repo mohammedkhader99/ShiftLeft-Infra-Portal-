@@ -36,8 +36,18 @@ import os
 #
 # A technology with no `ports` is installed and running but reachable only from
 # the machine itself. That is a deliberate choice, not an omission — see redis7.
+#
+# `module_name` is the OS module this technology comes from. Combined with the
+# version the requester chose on the component detail form it becomes the stream
+# to enable — `module_name: "nginx"` + version "1.24" -> `nginx:1.24`. Without a
+# chosen version the fixed `module` below applies, so nothing changes for a
+# request that names no version.
 TEMPLATES: dict[str, dict] = {
-    "nginx": {"packages": ["nginx"], "services": ["nginx"], "ports": [80]},
+    # OL9 offers nginx 1.20 (default), 1.22 and 1.24 as module streams, so the
+    # version on the form is a real choice rather than a label.
+    "nginx": {"packages": ["nginx"], "services": ["nginx"], "ports": [80],
+              "module_name": "nginx"},
+    # OL9 ships a single httpd with no streams — one honest version.
     "apache": {"packages": ["httpd"], "services": ["httpd"], "ports": [80]},
     # No port: Redis ships with no authentication, and opening 6379 to the subnet
     # would publish an unauthenticated data store to every host that can route to
@@ -49,10 +59,15 @@ TEMPLATES: dict[str, dict] = {
     # "Redis 7" delivered Redis 6. Verified on a real VM: with the stream
     # enabled it installs 7.2.14.
     "redis7": {"packages": ["redis"], "services": ["redis"], "ports": [],
-               "module": "redis:7"},
+               "module": "redis:7", "module_name": "redis"},
     "java21": {"packages": ["java-21-openjdk-headless"], "services": [], "ports": []},
     "python312": {"packages": ["python3", "python3-pip"], "services": [], "ports": []},
-    "nodejs20": {"packages": ["nodejs", "npm"], "services": [], "ports": []},
+    # Same failure as redis7, found while wiring version selection up: OL9's
+    # DEFAULT nodejs stream is 18, so `dnf install nodejs` under a catalogue entry
+    # named "Node.js 20" delivered 18. Pinning the stream makes the name true.
+    # Not boot-tested — it stays out of VERIFIED_CODES until it is.
+    "nodejs20": {"packages": ["nodejs", "npm"], "services": [], "ports": [],
+                 "module": "nodejs:20", "module_name": "nodejs"},
 }
 
 # Codes whose first-boot configuration has been PROVEN on a real VM: booted, and
@@ -116,7 +131,28 @@ def profile_for(code: str) -> dict | None:
             # Optional OS module stream to enable before installing, e.g.
             # "redis:7". Without it the default stream wins, which can be a
             # major version behind what the catalogue promises.
-            "module": (prof.get("module") or "").strip()}
+            "module": (prof.get("module") or "").strip(),
+            # The module this technology comes from, so a chosen version can be
+            # turned into a stream (see module_stream).
+            "module_name": (prof.get("module_name") or "").strip()}
+
+
+def module_stream(code: str, version: str = "") -> str:
+    """The OS module stream to enable for a technology at a chosen version.
+
+    A version the machine ignores is exactly the bug that shipped Redis 6.2 under
+    a catalogue entry called "Redis 7", so the component detail form's version is
+    resolved to a real stream here or it does not reach the machine at all.
+    Falls back to the profile's fixed stream when no version is chosen, which is
+    what every request raised before that form does.
+    """
+    prof = profile_for(code)
+    if not prof:
+        return ""
+    version = (version or "").strip()
+    if version and prof["module_name"]:
+        return f"{prof['module_name']}:{version}"
+    return prof["module"]
 
 
 def ports_for(components: list[dict]) -> list[int]:
@@ -155,9 +191,12 @@ def render(components: list[dict]) -> str:
     """
     if not enabled():
         return ""
-    codes = [c.get("technology_code") for c in (components or []) if c.get("technology_code")]
-    profiles = [(c, profile_for(c)) for c in codes]
-    profiles = [(c, p) for c, p in profiles if p]
+    # (code, chosen version) — the version comes from the component detail form
+    # and is "" for anything raised before it existed.
+    chosen = [(c.get("technology_code"), (c.get("version") or "").strip())
+              for c in (components or []) if c.get("technology_code")]
+    profiles = [(c, v, profile_for(c)) for c, v in chosen]
+    profiles = [(c, v, p) for c, v, p in profiles if p]
     if not profiles:
         return ""
 
@@ -165,9 +204,10 @@ def render(components: list[dict]) -> str:
     services: list[str] = []
     ports: list[int] = []
     modules: list[str] = []
-    for _code, prof in profiles:
-        if prof.get("module") and prof["module"] not in modules:
-            modules.append(prof["module"])
+    for code, version, prof in profiles:
+        stream = module_stream(code, version)
+        if stream and stream not in modules:
+            modules.append(stream)
         for pkg in prof["packages"]:
             if pkg not in packages:
                 packages.append(pkg)
@@ -179,7 +219,10 @@ def render(components: list[dict]) -> str:
                 ports.append(port)
 
     install = _INSTALL[os_family()]
-    configured = ", ".join(code for code, _ in profiles)
+    # Records the version alongside the technology, so the marker file on the
+    # machine says which version was ASKED for — the fastest way to tell a
+    # mis-installed version from a mis-requested one.
+    configured = ", ".join(f"{code} {version}".strip() for code, version, _ in profiles)
 
     def cmd(text: str) -> str:
         """One runcmd entry, quoted so YAML reads it as a command.
