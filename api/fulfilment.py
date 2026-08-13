@@ -38,8 +38,9 @@ from db.models import Blueprint
 # reason shown to the requester.
 CONFIGURABLE_CODES = {"nginx", "apache", "redis7", "java21", "python312", "nodejs20"}
 
-# Proven on a real VM. Empty until one actually is.
-CONFIG_VERIFIED_CODES: set[str] = set()
+# Proven on a real VM. Mirrors orchestrator/configure.VERIFIED_CODES, where the
+# evidence for each entry is recorded; a test asserts the two stay in step.
+CONFIG_VERIFIED_CODES: set[str] = {"nginx", "redis7"}
 
 _REASON_MANUAL = (
     "The portal validates, prices, approves and audits this request, then the "

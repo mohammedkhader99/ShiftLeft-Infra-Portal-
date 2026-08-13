@@ -136,7 +136,10 @@ def test_provisioner_falls_back_to_the_env_default(monkeypatch):
 
 # --- The honesty guard -------------------------------------------------------
 
-def test_nothing_is_claimed_verified_yet():
-    """VERIFIED_CODES must stay empty until a real VM has actually been booted and
-    checked. This test is the tripwire against quietly claiming otherwise."""
-    assert configure.VERIFIED_CODES == set()
+def test_only_what_was_actually_booted_is_claimed_verified():
+    """VERIFIED_CODES is a claim that someone booted a VM and asked the service
+    whether it worked. The tripwire against claiming it without doing it."""
+    # Exactly the two booted and checked on 11 Aug 2026 — see the evidence
+    # recorded beside the set. Anything else appearing here means someone claimed
+    # a technology works without booting one.
+    assert configure.VERIFIED_CODES == {"nginx", "redis7"}

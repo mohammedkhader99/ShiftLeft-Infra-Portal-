@@ -43,17 +43,40 @@ TEMPLATES: dict[str, dict] = {
     # would publish an unauthenticated data store to every host that can route to
     # it. Usable as a local cache today; exposing it needs a password, which is a
     # deliberate follow-up rather than a default.
-    "redis7": {"packages": ["redis"], "services": ["redis"], "ports": []},
+    # `module` selects an OS module stream before installing. Without it,
+    # `dnf install redis` on Oracle Linux 9 gives 6.2 — the modular packages are
+    # filtered out until the stream is enabled — so a catalogue entry called
+    # "Redis 7" delivered Redis 6. Verified on a real VM: with the stream
+    # enabled it installs 7.2.14.
+    "redis7": {"packages": ["redis"], "services": ["redis"], "ports": [],
+               "module": "redis:7"},
     "java21": {"packages": ["java-21-openjdk-headless"], "services": [], "ports": []},
     "python312": {"packages": ["python3", "python3-pip"], "services": [], "ports": []},
     "nodejs20": {"packages": ["nodejs", "npm"], "services": [], "ports": []},
 }
 
-# Codes whose first-boot configuration has been PROVEN on a real VM. Empty until
-# one is actually booted and checked — the catalogue must not claim a technology
-# is automated on the strength of an untested template (GAP-ANALYSIS step 1).
-# Adding a code here is a deliberate, reviewable claim.
-VERIFIED_CODES: set[str] = set()
+# Codes whose first-boot configuration has been PROVEN on a real VM: booted, and
+# the service asked whether it was working. Adding a code here is a deliberate,
+# reviewable claim, and it must be backed by evidence recorded below.
+#
+#   nginx   11 Aug 2026 — installed nginx-1.20.1, service active, listening on
+#           0.0.0.0:80, curl localhost returned 200.
+#   redis7  11 Aug 2026 — installed redis-7.2.14 via the redis:7 module stream,
+#           service active, redis-cli PONG, set/get round-tripped, and bound to
+#           127.0.0.1 only as the profile intends.
+#
+# Both were verified from the config this file GENERATES, not from hand-written
+# cloud-init, and both VMs were destroyed afterwards.
+#
+# `apache` is deliberately NOT here. The certified Apache blueprint renders its
+# own cloud-init from a Terraform template and never calls this module, so the
+# entry below is untested — proving REQ-2026-0100 proved that template, not this
+# one.
+VERIFIED_CODES: set[str] = {"nginx", "redis7"}
+
+# Enabling a module stream is a Red Hat family concept. The other families have
+# no equivalent, so a profile declaring a module simply has nothing emitted.
+_MODULE_ENABLE = {"rhel": "dnf module enable -y", "debian": "true", "suse": "true"}
 
 _INSTALL = {
     "rhel": "dnf install -y",
@@ -89,7 +112,11 @@ def profile_for(code: str) -> dict | None:
         return None
     return {"packages": list(prof.get("packages") or []),
             "services": list(prof.get("services") or []),
-            "ports": [int(p) for p in (prof.get("ports") or [])]}
+            "ports": [int(p) for p in (prof.get("ports") or [])],
+            # Optional OS module stream to enable before installing, e.g.
+            # "redis:7". Without it the default stream wins, which can be a
+            # major version behind what the catalogue promises.
+            "module": (prof.get("module") or "").strip()}
 
 
 def ports_for(components: list[dict]) -> list[int]:
@@ -137,7 +164,10 @@ def render(components: list[dict]) -> str:
     packages: list[str] = []
     services: list[str] = []
     ports: list[int] = []
+    modules: list[str] = []
     for _code, prof in profiles:
+        if prof.get("module") and prof["module"] not in modules:
+            modules.append(prof["module"])
         for pkg in prof["packages"]:
             if pkg not in packages:
                 packages.append(pkg)
@@ -150,6 +180,19 @@ def render(components: list[dict]) -> str:
 
     install = _INSTALL[os_family()]
     configured = ", ".join(code for code, _ in profiles)
+
+    def cmd(text: str) -> str:
+        """One runcmd entry, quoted so YAML reads it as a command.
+
+        Emitted bare, a command containing ': ' is parsed as a MAPPING, not a
+        string — `echo 'PORTAL: failed'` becomes {"echo 'PORTAL": "failed'"} and
+        cloud-init aborts the entire runcmd block with "Failed to shellify".
+        That is not hypothetical: it is why no service-vm ever installed anything.
+        json.dumps produces a correctly escaped double-quoted scalar, which YAML
+        accepts verbatim.
+        """
+        return f"  - {json.dumps(text)}"
+
     lines = [
         "#cloud-config",
         # Kept strictly ASCII: this is base64-encoded through Terraform into a
@@ -166,18 +209,23 @@ def render(components: list[dict]) -> str:
         "      note=Written before install; presence alone does not prove success.",
         "runcmd:",
     ]
+    # Module streams are enabled BEFORE the install, or the default stream is
+    # already resolved and the wrong major version comes down.
+    for mod in modules:
+        lines.append(cmd(f"{_MODULE_ENABLE[os_family()]} {mod} || echo 'PORTAL: could not "
+                         f"enable module {mod}' >> /var/log/infra-portal.log"))
     if packages:
         # `|| true` keeps a failed install from aborting the rest of cloud-init, so
         # the marker + log survive for diagnosis instead of a silent dead VM.
-        lines.append(f"  - {install} {' '.join(packages)} || echo 'PORTAL: package install FAILED' >> /var/log/infra-portal.log")
+        lines.append(cmd(f"{install} {' '.join(packages)} || echo 'PORTAL: package install FAILED' >> /var/log/infra-portal.log"))
     for svc in services:
-        lines.append(f"  - systemctl enable --now {svc} || echo 'PORTAL: {svc} failed to start' >> /var/log/infra-portal.log")
+        lines.append(cmd(f"systemctl enable --now {svc} || echo 'PORTAL: {svc} failed to start' >> /var/log/infra-portal.log"))
     # The OS firewall, from the same declaration that drives the network rules.
     # Without this a service starts correctly and is still unreachable — which
     # looks exactly like a broken install.
     for port in ports:
-        lines.append(f"  - firewall-cmd --permanent --add-port={port}/tcp || echo 'PORTAL: could not open {port}/tcp' >> /var/log/infra-portal.log")
+        lines.append(cmd(f"firewall-cmd --permanent --add-port={port}/tcp || echo 'PORTAL: could not open {port}/tcp' >> /var/log/infra-portal.log"))
     if ports:
-        lines.append("  - firewall-cmd --reload || true")
-    lines.append("  - echo 'PORTAL: first-boot configuration finished' >> /var/log/infra-portal.log")
+        lines.append(cmd("firewall-cmd --reload || true"))
+    lines.append(cmd("echo 'PORTAL: first-boot configuration finished' >> /var/log/infra-portal.log"))
     return "\n".join(lines) + "\n"

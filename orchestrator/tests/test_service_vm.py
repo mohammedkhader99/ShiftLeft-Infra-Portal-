@@ -95,6 +95,71 @@ def test_the_ports_opened_are_the_ports_declared(monkeypatch):
     assert v["user_data"] == user_data
 
 
+def test_the_rendered_cloud_config_is_valid_yaml(monkeypatch):
+    """It is fed to cloud-init, which parses it as YAML. Producing something that
+    only LOOKS like cloud-config gets you a booted VM that ran nothing."""
+    import yaml
+    monkeypatch.setenv("CONFIG_ENABLED", "true")
+    monkeypatch.delenv("CONFIG_PACKAGE_MAP", raising=False)
+    for codes in (["nginx"], ["redis7"], ["nginx", "redis7"], ["java21"]):
+        text = configure.render([{"technology_code": c} for c in codes])
+        doc = yaml.safe_load(text)
+        assert isinstance(doc, dict), f"{codes} did not parse as a mapping"
+        assert text.startswith("#cloud-config"), "cloud-init needs that first line"
+
+
+def test_every_runcmd_entry_is_a_command_not_a_mapping(monkeypatch):
+    """THE bug this file exists to prevent.
+
+    A bare YAML scalar containing ': ' is a MAPPING. `echo 'PORTAL: failed'`
+    became {"echo 'PORTAL": "failed'"}, cloud-init raised "Failed to shellify"
+    and abandoned the WHOLE runcmd block — so the marker file appeared, nothing
+    was installed, and the VM looked fine. Every message here contains a colon,
+    so this is not an edge case; it is the normal path.
+    """
+    import yaml
+    monkeypatch.setenv("CONFIG_ENABLED", "true")
+    monkeypatch.delenv("CONFIG_PACKAGE_MAP", raising=False)
+    doc = yaml.safe_load(configure.render([{"technology_code": "nginx"}]))
+    runcmd = doc.get("runcmd") or []
+    assert runcmd, "nginx should produce commands"
+    bad = [c for c in runcmd if not isinstance(c, str)]
+    assert not bad, f"these parsed as {type(bad[0]).__name__}, not commands: {bad}"
+    # ...and the colon survived into the command, rather than splitting it.
+    assert any("PORTAL: package install FAILED" in c for c in runcmd)
+
+
+def test_redis_enables_the_module_stream_before_installing(monkeypatch):
+    """Found by booting a VM, not by reading code.
+
+    `dnf install redis` on Oracle Linux 9 installs 6.2: the modular packages are
+    filtered out until the stream is enabled, so a catalogue entry named "Redis
+    7" delivered Redis 6 — installed, running, answering, and a major version
+    behind what was promised. With the stream enabled it installs 7.2.14,
+    confirmed on a real machine.
+    """
+    import yaml
+    monkeypatch.setenv("CONFIG_ENABLED", "true")
+    monkeypatch.delenv("CONFIG_PACKAGE_MAP", raising=False)
+    runcmd = yaml.safe_load(configure.render([{"technology_code": "redis7"}]))["runcmd"]
+    enable = [i for i, c in enumerate(runcmd) if "module enable" in c and "redis:7" in c]
+    install = [i for i, c in enumerate(runcmd) if "install -y redis" in c]
+    assert enable, "redis7 must enable the redis:7 module stream"
+    assert install, "redis7 must install redis"
+    assert enable[0] < install[0], (
+        "the stream has to be enabled BEFORE the install, or the default stream "
+        "is already resolved and the wrong major version comes down")
+
+
+def test_a_technology_without_a_module_stream_emits_none(monkeypatch):
+    """Most technologies need no stream; an empty declaration must add nothing."""
+    import yaml
+    monkeypatch.setenv("CONFIG_ENABLED", "true")
+    monkeypatch.delenv("CONFIG_PACKAGE_MAP", raising=False)
+    runcmd = yaml.safe_load(configure.render([{"technology_code": "nginx"}]))["runcmd"]
+    assert not [c for c in runcmd if "module enable" in c]
+
+
 def test_a_technology_with_no_declared_port_opens_none(monkeypatch):
     """Redis has no port on purpose: it ships without authentication, so opening
     6379 to the subnet would publish an unauthenticated data store. Installed and
@@ -129,8 +194,14 @@ def test_an_admin_can_correct_a_port_without_a_code_change(monkeypatch):
 
 # --- Nothing is claimed as proven --------------------------------------------
 
-def test_no_technology_claims_to_be_verified_without_a_real_boot():
+def test_only_booted_technologies_claim_to_be_verified():
     """VERIFIED_CODES is a claim that a human booted the VM and checked the
-    service answered. Generating a blueprint does not earn an entry in it."""
-    assert configure.VERIFIED_CODES == set(), (
+    service answered. Generating a blueprint does not earn an entry in it.
+
+    nginx and redis7 were booted on 11 Aug 2026 and asked directly — nginx
+    returned HTTP 200, redis returned PONG on 7.2.14 — with the evidence recorded
+    beside the set. Everything else this blueprint could build stays out until
+    the same is done for it.
+    """
+    assert configure.VERIFIED_CODES == {"nginx", "redis7"}, (
         "a code was marked verified — that claim needs a real boot test behind it")
