@@ -451,6 +451,12 @@ class ComponentOption(Base):
     is_default: Mapped[bool] = mapped_column(Boolean, default=False)
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     source: Mapped[str] = mapped_column(String(16), default="seed")
+    # Structured facts about the option that are not for display — a compute
+    # shape's OCPU and memory limits, for instance. Held here rather than encoded
+    # into `label` and parsed back out with a regex: a label is human-readable
+    # text that someone will reasonably reword one day, and validation must not
+    # break when they do.
+    attributes: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # When a fetched row was last confirmed to exist in the cloud. Null for
     # hand-curated rows, which have no refresh cycle. The console reads the
     # newest of these as "last refreshed", so a fetch that silently stopped

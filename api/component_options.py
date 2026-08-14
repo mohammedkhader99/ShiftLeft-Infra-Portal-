@@ -29,8 +29,6 @@ The hourly cloud-option fetch (next increment) writes into the same table with
 source="oci-live", so it appears here without this module changing.
 """
 
-import re
-
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -208,15 +206,26 @@ def cached_shapes(session: Session, deployment_target: str = "oci") -> list[dict
     ).all()
     shapes = []
     for row in rows:
-        # The limits live in the label, which is what the fetch wrote:
-        # "VM.Standard.E4.Flex (1-64 OCPU, 1-1024 GB)".
-        match = re.search(r"\((\d+)-(\d+) OCPU, (\d+)-(\d+) GB\)", row.label or "")
-        if not match:
-            continue
-        lo_o, hi_o, lo_m, hi_m = (int(g) for g in match.groups())
-        shapes.append({"name": row.value, "min_ocpus": lo_o, "max_ocpus": hi_o,
-                       "min_memory_gb": lo_m, "max_memory_gb": hi_m})
+        limits = row.attributes or {}
+        if not limits.get("max_ocpus"):
+            continue  # a shape row with no limits tells us nothing
+        shapes.append({"name": row.value, **limits})
     return shapes
+
+
+def _shape_hosts(shape: dict, ocpus: int, memory_gb: int) -> bool:
+    """Whether one shape can actually be built at this size."""
+    if not (shape.get("min_ocpus", 1) <= ocpus <= shape.get("max_ocpus", 1)):
+        return False
+    if not (shape.get("min_memory_gb", 1) <= memory_gb <= shape.get("max_memory_gb", 1)):
+        return False
+    # A flex shape also caps memory PER OCPU — 64 GB on E4.Flex. One OCPU with
+    # 128 GB is inside both ranges above and still cannot be built, so without
+    # this the check waves through exactly what it exists to stop.
+    per_ocpu = shape.get("max_memory_per_ocpu") or 0
+    if per_ocpu and memory_gb > ocpus * per_ocpu:
+        return False
+    return True
 
 
 def shape_fit_error(session: Session, deployment_target: str, vcpu, memory_gb) -> str:
@@ -234,14 +243,28 @@ def shape_fit_error(session: Session, deployment_target: str, vcpu, memory_gb) -
         memory = int(memory_gb)
     except (TypeError, ValueError):
         return ""
-    if any(s["min_ocpus"] <= ocpus <= s["max_ocpus"]
-           and s["min_memory_gb"] <= memory <= s["max_memory_gb"] for s in shapes):
+    if any(_shape_hosts(s, ocpus, memory) for s in shapes):
         return ""
-    largest = max(shapes, key=lambda s: (s["max_ocpus"], s["max_memory_gb"]))
-    return (f"No approved machine shape can provide {vcpu} vCPU with {memory} GB "
-            f"of memory. The largest available is {largest['name']} "
-            f"({largest['max_ocpus'] * _VCPU_PER_OCPU} vCPU, "
-            f"{largest['max_memory_gb']} GB).")
+
+    # Say which limit was hit. "Too big" and "too much memory for that many
+    # cores" need different fixes, and a message that does not distinguish them
+    # leaves the requester guessing.
+    fits_cpu = [s for s in shapes if s.get("min_ocpus", 1) <= ocpus <= s.get("max_ocpus", 1)]
+    if fits_cpu:
+        best = max(fits_cpu, key=lambda s: min(
+            s.get("max_memory_gb", 0),
+            ocpus * (s.get("max_memory_per_ocpu") or s.get("max_memory_gb", 0))))
+        ceiling = min(best.get("max_memory_gb", 0),
+                      ocpus * (best.get("max_memory_per_ocpu")
+                               or best.get("max_memory_gb", 0)))
+        return (f"{memory} GB of memory is more than any approved shape allows "
+                f"with {vcpu} vCPU. The most {best['name']} can pair with "
+                f"{vcpu} vCPU is {ceiling} GB — either lower the memory or raise "
+                f"the vCPU.")
+    largest = max(shapes, key=lambda s: s.get("max_ocpus", 0))
+    return (f"No approved machine shape can provide {vcpu} vCPU. The largest "
+            f"available is {largest['name']} at "
+            f"{largest['max_ocpus'] * _VCPU_PER_OCPU} vCPU.")
 
 
 def validate(session: Session, technology_code: str, deployment_target: str,

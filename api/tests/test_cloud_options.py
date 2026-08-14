@@ -40,11 +40,12 @@ def _fetched(**overrides) -> dict:
     return {
         "ok": True,
         "mode": "mock",
+        # Real numbers from a live tenancy listing, including the per-OCPU cap.
         "shapes": [
-            {"name": "VM.Standard.E4.Flex", "min_ocpus": 1, "max_ocpus": 64,
-             "min_memory_gb": 1, "max_memory_gb": 1024},
+            {"name": "VM.Standard.E4.Flex", "min_ocpus": 1, "max_ocpus": 114,
+             "min_memory_gb": 1, "max_memory_gb": 1760, "max_memory_per_ocpu": 64},
             {"name": "VM.Standard2.1", "min_ocpus": 1, "max_ocpus": 1,
-             "min_memory_gb": 15, "max_memory_gb": 15},
+             "min_memory_gb": 15, "max_memory_gb": 15, "max_memory_per_ocpu": 0},
         ],
         "images": [
             {"ocid": "ocid1.image..ol9", "name": "Oracle-Linux-9.4-2026.01.31-0",
@@ -183,12 +184,55 @@ def test_a_shape_that_cannot_hold_the_request_is_refused(db):
     Caught at request time rather than by a Terraform error after approval."""
     cloud_options.refresh(db, lambda: _fetched(
         shapes=[{"name": "VM.Standard2.1", "min_ocpus": 1, "max_ocpus": 1,
-                 "min_memory_gb": 15, "max_memory_gb": 15}]))
+                 "min_memory_gb": 15, "max_memory_gb": 15, "max_memory_per_ocpu": 0}]))
     errors = component_options.validate(db, "nginx", "oci",
                                         {"vcpu": "16", "memory_gb": "128"})
     assert "vcpu" in errors
     assert "No approved machine shape" in errors["vcpu"]
     assert "VM.Standard2.1" in errors["vcpu"]
+
+
+def test_too_much_memory_for_the_cores_is_refused(db):
+    """A flex shape caps memory PER OCPU — 64 GB on E4.Flex.
+
+    Both values below are on their own dropdowns, so this is a combination a
+    requester can really produce by clicking: 2 vCPU is 1 OCPU, and 128 GB is
+    twice what one OCPU may carry. It sits inside the shape's OCPU range AND
+    inside its 1–1760 GB memory range, so without the per-OCPU rule it passes
+    validation and fails at apply time, after approval.
+    """
+    cloud_options.refresh(db, lambda: _fetched())
+    errors = component_options.validate(db, "nginx", "oci",
+                                        {"vcpu": "2", "memory_gb": "128"})
+    assert "vcpu" in errors
+    # The message must say which limit was hit — "too big" and "too much memory
+    # for that many cores" need different fixes.
+    assert "more than any approved shape allows" in errors["vcpu"]
+    assert "64 GB" in errors["vcpu"], "it should name the ceiling for 2 vCPU"
+
+
+def test_the_same_memory_is_fine_with_enough_cores(db):
+    """The other half: 128 GB is not too much in itself, only too much for one
+    OCPU. At 4 vCPU (2 OCPUs) it is exactly the limit, and allowed."""
+    cloud_options.refresh(db, lambda: _fetched())
+    assert component_options.validate(db, "nginx", "oci",
+                                      {"vcpu": "4", "memory_gb": "128"}) == {}
+
+
+def test_the_limits_are_read_from_data_not_parsed_out_of_a_label(db):
+    """They used to be regex'd out of the display string. A label is text someone
+    will reword, and validation must not break when they do."""
+    cloud_options.refresh(db, lambda: _fetched())
+    row = db.scalars(select(ComponentOption).where(
+        ComponentOption.field == "shape",
+        ComponentOption.value == "VM.Standard.E4.Flex")).one()
+    assert row.attributes["max_memory_gb"] == 1760
+    assert row.attributes["max_memory_per_ocpu"] == 64
+
+    row.label = "anything at all"          # a human rewords the caption...
+    db.commit()
+    shapes = component_options.cached_shapes(db, "oci")
+    assert any(s["max_memory_gb"] == 1760 for s in shapes), "validation still works"
 
 
 def test_a_shape_that_fits_is_accepted(db):

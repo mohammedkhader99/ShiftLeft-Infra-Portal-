@@ -80,6 +80,7 @@ def _replace_live_rows(session: Session, rows: list[dict], now: datetime) -> int
             is_default=bool(row.get("is_default")),
             sort_order=order,
             source=LIVE_SOURCE,
+            attributes=row.get("attributes"),
             refreshed_at=now,
         ))
     session.commit()
@@ -114,6 +115,11 @@ def _rows_from(fetched: dict) -> list[dict]:
             "value": shape["name"],
             "label": (f"{shape['name']} ({shape['min_ocpus']}-{shape['max_ocpus']} OCPU, "
                       f"{shape['min_memory_gb']}-{shape['max_memory_gb']} GB)"),
+            # The numbers validation reads live here, NOT in the label above.
+            # The label is human-readable text someone will reword one day.
+            "attributes": {k: shape.get(k, 0) for k in
+                           ("min_ocpus", "max_ocpus", "min_memory_gb",
+                            "max_memory_gb", "max_memory_per_ocpu")},
             "deployment_target": "oci",
             "technology_code": ALL_TECHNOLOGIES,
         })
