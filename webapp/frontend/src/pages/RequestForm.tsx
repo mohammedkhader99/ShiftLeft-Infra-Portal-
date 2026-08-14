@@ -53,6 +53,10 @@ import {
   type AiRecommendation,
 } from '../api'
 
+// Detail fields whose value is text, not a number. Everything else is coerced
+// with Number(), which would turn an image OCID into NaN.
+const TEXT_DETAIL_FIELDS = new Set(['version', 'image'])
+
 const SIZES = ['small', 'medium', 'large', 'xlarge']
 const SIZE_INDEX: Record<string, number> = { small: 0, medium: 1, large: 2, xlarge: 3 }
 const CLASSIFICATIONS = ['public', 'internal', 'confidential', 'restricted']
@@ -400,8 +404,16 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
           const opts = fetched[c.technology_code]
           if (!opts || c.vcpu) return c
           const preset = opts.presets?.[c.size]
-          const version = opts.fields?.version?.default
-          return { ...c, ...(preset ?? {}), ...(version ? { version } : {}) }
+          // Seed every text field's default too. A dropdown renders its first
+          // option when the bound value is empty, so without this the form would
+          // SHOW an OS image that the state does not hold — and submit without
+          // one, silently falling back to the platform default.
+          const defaults: Record<string, string> = {}
+          for (const field of ['version', 'image']) {
+            const value = opts.fields?.[field]?.default
+            if (value) defaults[field] = value
+          }
+          return { ...c, ...(preset ?? {}), ...defaults }
         }),
       )
     })
@@ -443,7 +455,7 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
     setComponents((cs) =>
       cs.map((c) =>
         c.technology_code === code
-          ? { ...c, [field]: field === 'version' ? value : Number(value) }
+          ? { ...c, [field]: TEXT_DETAIL_FIELDS.has(field) ? value : Number(value) }
           : c,
       ),
     )
@@ -1152,7 +1164,7 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
                                     the server and is re-checked on submit. */}
                                 {opts && (
                                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(9rem, 1fr))', gap: '0.75rem', marginTop: '0.75rem' }}>
-                                    {['version', 'vcpu', 'memory_gb', 'storage_gb'].map((field) => {
+                                    {['version', 'image', 'vcpu', 'memory_gb', 'storage_gb'].map((field) => {
                                       const spec = opts.fields[field]
                                       if (!spec) return null  // nothing honest to offer
                                       const value = String(

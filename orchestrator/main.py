@@ -18,7 +18,14 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request
 
 from common.signing import verify
-from orchestrator import backups, blueprint_registry, cloud_state, configure, provisioner
+from orchestrator import (
+    backups,
+    blueprint_registry,
+    cloud_catalogue,
+    cloud_state,
+    configure,
+    provisioner,
+)
 
 API_URL = os.getenv("API_URL", "http://localhost:8081")
 OPA_URL = os.getenv("OPA_URL", "http://localhost:8181")
@@ -117,7 +124,38 @@ async def posture(request: Request) -> dict:
         "restore_mode": backups.restore_mode(),
         "reduce_mode": os.getenv("REDUCE_MODE", "mock").strip().lower(),
         "refresh_mode": os.getenv("REFRESH_MODE", "mock").strip().lower(),
+        # Cloud option catalogue (read-only listing for the request form). The
+        # allow-lists are reported as set-or-not AND by count, because "nothing
+        # is offered" and "the tenancy is unreachable" look identical otherwise.
+        "catalogue_mode": cloud_catalogue.mode(),
+        "catalogue_shapes_allowed": len(cloud_catalogue.shape_allowlist()),
+        "catalogue_image_filter_set": bool(cloud_catalogue.image_filter()),
     }
+
+
+@app.post("/catalogue/oci-options")
+async def catalogue_oci_options(request: Request) -> dict:
+    """What the tenancy actually offers: allowed compute shapes and OS images.
+
+    The API asks for this hourly and caches it, because listing shapes needs OCI
+    credentials and the API holds none — same reasoning as /posture, same signed
+    channel. **Read-only**: every call underneath is a list_*, so this endpoint
+    cannot create, change or destroy anything, and needs no execution gate.
+
+    What crosses the boundary is shape names, image OCIDs and display names. An
+    image OCID identifies a public Oracle image; it is not a credential.
+    """
+    body = await request.body()
+    if not verify(WEBHOOK_SECRET, body, request.headers.get("X-Signature", "")):
+        raise HTTPException(status_code=401, detail="Invalid webhook signature.")
+    try:
+        return {"ok": True, **cloud_catalogue.fetch()}
+    except cloud_catalogue.CloudCatalogueUnavailable as exc:
+        # A reachable orchestrator that cannot read the tenancy is a different
+        # thing from an unreachable one, and the admin console shows them
+        # differently — so answer 200 with the reason rather than erroring.
+        return {"ok": False, "reason": str(exc), "mode": cloud_catalogue.mode(),
+                "shapes": [], "images": []}
 
 
 def _current_monthly(policy_input: dict) -> float | None:
@@ -387,11 +425,32 @@ def _mapped_image(payload: dict) -> str:
     return ""
 
 
-def _image_for(payload: dict) -> str:
-    """The OS image for this request's compute component: a per-technology image
-    from OCI_COMPUTE_IMAGE_MAP if one matches a component, else the default
-    OCI_COMPUTE_IMAGE_OCID."""
-    return _mapped_image(payload) or os.getenv("OCI_COMPUTE_IMAGE_OCID", "")
+def _chosen_image(payload: dict, resource_kind: str = "") -> str:
+    """An OS image the REQUESTER picked on the component detail form, or "".
+
+    Scoped to the components this resource builds, so a stack whose two machines
+    were asked for different images gets each one right instead of the first one
+    twice. Where two components on the SAME machine disagree, the first wins —
+    there is only one machine, so something has to.
+    """
+    for c in _components_for(payload, resource_kind):
+        if (c.get("image") or "").strip():
+            return c["image"].strip()
+    return ""
+
+
+def _image_for(payload: dict, resource_kind: str = "") -> str:
+    """The OS image for this request's compute component, in precedence order:
+    what the requester chose on the form, then a per-technology image from
+    OCI_COMPUTE_IMAGE_MAP, then the default OCI_COMPUTE_IMAGE_OCID.
+
+    The requester's choice comes first because they were shown it, it was priced
+    and approved with the request, and silently substituting a different OS would
+    make the approval describe something other than what was built.
+    """
+    return (_chosen_image(payload, resource_kind)
+            or _mapped_image(payload)
+            or os.getenv("OCI_COMPUTE_IMAGE_OCID", ""))
 
 
 def _psql_shape(sizing: dict) -> str:
@@ -439,10 +498,12 @@ def _compute_spec(payload: dict, resource_kind: str = "") -> dict:
         # The disk the request was priced for. Previously never sent, so every
         # machine got the image default however much storage was paid for.
         "boot_volume_gb": _boot_volume_gb(payload),
-        "image_ocid": _image_for(payload),
+        "image_ocid": _image_for(payload, resource_kind),
         # Carried separately so a blueprint with its own image lookup can honour
-        # a deliberate per-technology image while ignoring the shared default.
-        "image_ocid_explicit": _mapped_image(payload),
+        # a deliberate choice while ignoring the shared default. The requester's
+        # own pick counts as deliberate — more so than an admin's map.
+        "image_ocid_explicit": (_chosen_image(payload, resource_kind)
+                                or _mapped_image(payload)),
         "user_data": configure.render(components),
         # The ports the installed service listens on, from the same profiles that
         # produced user_data — so the network rules and the OS firewall agree.

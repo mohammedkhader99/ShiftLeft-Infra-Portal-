@@ -83,6 +83,12 @@ services:
       JIRA_SUBSIDIARY_FIELD: ${JIRA_SUBSIDIARY_FIELD:-customfield_36200}
       SUBSIDIARY_SYNC_ENABLED: ${SUBSIDIARY_SYNC_ENABLED:-true}
       SUBSIDIARY_SYNC_INTERVAL_SECONDS: ${SUBSIDIARY_SYNC_INTERVAL_SECONDS:-3600}
+      # Hourly cloud option cache: asks the ORCHESTRATOR (which holds the OCI
+      # credentials) what shapes and images exist, and caches the answer so the
+      # request form reads the database rather than the cloud. Off by default —
+      # turning it on starts a thread that calls a real cloud API on a timer.
+      OCI_CATALOGUE_ENABLED: ${OCI_CATALOGUE_ENABLED:-false}
+      OCI_CATALOGUE_REFRESH_SECONDS: ${OCI_CATALOGUE_REFRESH_SECONDS:-3600}
       # ChatOps approvals bot (F-INT-08). The in-portal Assistant console works
       # out of the box; the Slack slash-command adapter turns on only when
       # SLACK_SIGNING_SECRET is set (secret via .env, never committed).
@@ -339,6 +345,13 @@ services:
       OCI_OKE_CLUSTER_TYPE: ${OCI_OKE_CLUSTER_TYPE:-}
       # Kafka: a pre-authenticated Object Storage URL for the release archive.
       OCI_KAFKA_SOURCE_URL: ${OCI_KAFKA_SOURCE_URL:-}
+      # Cloud option catalogue (read-only shape/image listing for the request
+      # form). Both allow-lists default to EMPTY on purpose: unset means offer
+      # nothing, so an unconfigured portal cannot put a bare-metal GPU shape on a
+      # dropdown. Setting them is a deliberate act.
+      OCI_CATALOGUE_MODE: ${OCI_CATALOGUE_MODE:-mock}
+      OCI_SHAPE_ALLOWLIST: ${OCI_SHAPE_ALLOWLIST:-}
+      OCI_IMAGE_FILTER: ${OCI_IMAGE_FILTER:-}
       # AWS. Terraform's AWS provider reads these from the environment, so
       # without them the aws/s3 blueprint can never work however they are set.
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}

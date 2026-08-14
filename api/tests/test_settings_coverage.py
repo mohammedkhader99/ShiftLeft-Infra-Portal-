@@ -38,6 +38,10 @@ _GATE_ENV = {
     # the ranges themselves) plus the version and cluster type.
     "OCI_OKE_BASTION_CIDR", "OCI_OKE_VCN_CIDR", "OCI_OKE_KUBERNETES_VERSION",
     "OCI_OKE_CLUSTER_TYPE",
+    # Cloud option catalogue: reported as catalogue_mode /
+    # catalogue_shapes_allowed (a count, not the list) /
+    # catalogue_image_filter_set.
+    "OCI_CATALOGUE_MODE", "OCI_SHAPE_ALLOWLIST", "OCI_IMAGE_FILTER",
     # Kafka: reported as kafka_source_set — the value is a
     # pre-authenticated Object Storage URL, so it is never displayed.
     "OCI_KAFKA_SOURCE_URL",

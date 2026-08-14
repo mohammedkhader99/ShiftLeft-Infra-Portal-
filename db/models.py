@@ -408,6 +408,9 @@ class RequestComponent(Base):
     # platform can actually deliver are offered — a version the machine ignores is
     # the Redis-6-sold-as-7 bug with a dropdown in front of it.
     version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # The OS image OCID the requester picked, from the hourly cloud cache. Null
+    # means "whatever the platform default is", which is how it worked before.
+    image: Mapped[str | None] = mapped_column(String(200), nullable=True)
     # Explicit shape. When set these OVERRIDE the size anchor for sizing, pricing
     # and the built machine, so what the approver sees priced is what gets built.
     vcpu: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -439,12 +442,21 @@ class ComponentOption(Base):
     # version | vcpu | memory_gb | storage_gb
     field: Mapped[str] = mapped_column(String(16))
     # Held as text so one table covers versions and numbers; numeric fields are
-    # cast on the way out.
-    value: Mapped[str] = mapped_column(String(64))
-    label: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # cast on the way out. Sized for an OCID (~100 chars) rather than for a
+    # version string: the fetched OS images are stored by OCID, and SQLite — what
+    # the tests run on — ignores VARCHAR limits, so a too-short column here would
+    # pass every test and fail only against the real Postgres.
+    value: Mapped[str] = mapped_column(String(200))
+    label: Mapped[str | None] = mapped_column(String(200), nullable=True)
     is_default: Mapped[bool] = mapped_column(Boolean, default=False)
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     source: Mapped[str] = mapped_column(String(16), default="seed")
+    # When a fetched row was last confirmed to exist in the cloud. Null for
+    # hand-curated rows, which have no refresh cycle. The console reads the
+    # newest of these as "last refreshed", so a fetch that silently stopped
+    # running shows up as a stale timestamp rather than as nothing at all.
+    refreshed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
 
 
 class Estimate(Base):

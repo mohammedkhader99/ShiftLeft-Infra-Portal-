@@ -132,6 +132,10 @@ READ_ONLY_ENV: dict[str, str] = {
     "JIRA_MODE": "Jira mode",
     "RATE_LIMIT_BACKEND": "Rate-limit backend",
     "IAC_SCAN_ENFORCE": "IaC scan enforcement (orchestrator)",
+    # The hourly cloud-option cache. Deploy-time rather than editable: turning
+    # it on starts a thread that calls a real cloud API on a schedule.
+    "OCI_CATALOGUE_ENABLED": "Hourly cloud option refresh",
+    "OCI_CATALOGUE_REFRESH_SECONDS": "Cloud option refresh interval (seconds)",
     # Integration + background-worker switches: visible so the posture is complete,
     # but deploy-time decisions rather than policy knobs.
     "VAULT_MODE": "Credential delivery mode",

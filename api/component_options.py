@@ -29,6 +29,8 @@ The hourly cloud-option fetch (next increment) writes into the same table with
 source="oci-live", so it appears here without this module changing.
 """
 
+import re
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -37,11 +39,20 @@ from db.models import ComponentOption, SizingAnchor, Technology
 # The detail fields, in the order the form shows them. `numeric` fields are
 # whole numbers and can be derived from the sizing anchors; `version` is text and
 # must be offered explicitly.
-FIELDS = ("version", "vcpu", "memory_gb", "storage_gb")
+FIELDS = ("version", "image", "vcpu", "memory_gb", "storage_gb")
 NUMERIC_FIELDS = ("vcpu", "memory_gb", "storage_gb")
 
-LABELS = {"version": "Version", "vcpu": "vCPU", "memory_gb": "Memory",
-          "storage_gb": "Disk"}
+LABELS = {"version": "Version", "image": "OS image", "vcpu": "vCPU",
+          "memory_gb": "Memory", "storage_gb": "Disk"}
+
+# An option row with this technology_code applies to every technology. Used for
+# things that belong to the machine rather than the software on it, like the OS
+# image the hourly cloud fetch caches.
+ALL_TECHNOLOGIES = ""
+
+# Cached shape rows are NOT offered as a dropdown — see cloud_options._rows_from.
+# They are read here to check that a requested shape can actually be built.
+_SHAPE_FIELD = "shape"
 
 # How a value reads on screen. Bare numbers are ambiguous once three numeric
 # dropdowns sit next to each other.
@@ -60,6 +71,7 @@ def as_dict(component) -> dict:
         "technology_code": component.technology_code,
         "size": component.size,
         "version": component.version,
+        "image": component.image,
         "vcpu": component.vcpu,
         "memory_gb": component.memory_gb,
         "storage_gb": component.storage_gb,
@@ -101,13 +113,16 @@ def presets(session: Session, technology_code: str) -> dict[str, dict]:
 def _stored(session: Session, technology_code: str, target: str) -> dict[str, list[ComponentOption]]:
     """Catalogue-held options for a technology, grouped by field.
 
-    An option with no deployment target applies everywhere; one naming a target
-    applies only there.
+    Two wildcards, both meaning "applies more widely than this row's key":
+    an empty deployment_target applies on every target, and an empty
+    technology_code applies to every technology. The second is how a fetched OS
+    image — a property of the machine, not of nginx — is stored once rather than
+    46 times.
     """
     rows = session.scalars(
         select(ComponentOption)
         .where(
-            ComponentOption.technology_code == technology_code,
+            ComponentOption.technology_code.in_((ALL_TECHNOLOGIES, technology_code)),
             ComponentOption.deployment_target.in_(("", (target or "").strip())),
         )
         .order_by(ComponentOption.sort_order, ComponentOption.id)
@@ -134,9 +149,15 @@ def options_for(session: Session, technology_code: str, deployment_target: str =
     for field in FIELDS:
         values: list[str] = []
         default = ""
+        # A stored row may carry its own display text. That is essential for an
+        # OS image, whose value is an OCID nobody can read — the requester picks
+        # by "Oracle-Linux-9.4-2026.01.31-0", not by ocid1.image..
+        captions: dict[str, str] = {}
         for row in stored.get(field, []):
             if row.value not in values:
                 values.append(row.value)
+            if row.label and row.label != row.value:
+                captions[row.value] = row.label
             if row.is_default and not default:
                 default = row.value
         if field in NUMERIC_FIELDS:
@@ -151,7 +172,8 @@ def options_for(session: Session, technology_code: str, deployment_target: str =
         fields[field] = {
             "label": LABELS[field],
             "options": [
-                {"value": v, "label": f"{v}{UNITS.get(field, '')}"} for v in values
+                {"value": v, "label": captions.get(v, f"{v}{UNITS.get(field, '')}")}
+                for v in values
             ],
             "default": default or values[0],
         }
@@ -163,6 +185,63 @@ def options_for(session: Session, technology_code: str, deployment_target: str =
         "fields": fields,
         "presets": presets(session, technology_code),
     }
+
+
+# One Oracle OCPU is two x86 vCPUs. The orchestrator converts the same way when
+# it sizes the flex shape (orchestrator/main._instance_sizing), so the check here
+# is against the number the machine will actually be asked for.
+_VCPU_PER_OCPU = 2
+
+
+def cached_shapes(session: Session, deployment_target: str = "oci") -> list[dict]:
+    """Compute shapes the hourly fetch cached, with their OCPU/memory limits.
+
+    Empty when the fetch has never run or nothing is allow-listed — in which case
+    the fit check below is skipped rather than failing everything. Absent data is
+    not evidence that a shape is too small.
+    """
+    rows = session.scalars(
+        select(ComponentOption).where(
+            ComponentOption.field == _SHAPE_FIELD,
+            ComponentOption.deployment_target.in_(("", (deployment_target or "").strip())),
+        )
+    ).all()
+    shapes = []
+    for row in rows:
+        # The limits live in the label, which is what the fetch wrote:
+        # "VM.Standard.E4.Flex (1-64 OCPU, 1-1024 GB)".
+        match = re.search(r"\((\d+)-(\d+) OCPU, (\d+)-(\d+) GB\)", row.label or "")
+        if not match:
+            continue
+        lo_o, hi_o, lo_m, hi_m = (int(g) for g in match.groups())
+        shapes.append({"name": row.value, "min_ocpus": lo_o, "max_ocpus": hi_o,
+                       "min_memory_gb": lo_m, "max_memory_gb": hi_m})
+    return shapes
+
+
+def shape_fit_error(session: Session, deployment_target: str, vcpu, memory_gb) -> str:
+    """"" if some allowed shape can host this, else why not.
+
+    Catches at request time what would otherwise fail at apply time, after
+    approval — the requester finding out from a Terraform error that the machine
+    they were promised cannot exist.
+    """
+    shapes = cached_shapes(session, deployment_target)
+    if not shapes or vcpu in (None, "") or memory_gb in (None, ""):
+        return ""
+    try:
+        ocpus = max(1, round(int(vcpu) / _VCPU_PER_OCPU))
+        memory = int(memory_gb)
+    except (TypeError, ValueError):
+        return ""
+    if any(s["min_ocpus"] <= ocpus <= s["max_ocpus"]
+           and s["min_memory_gb"] <= memory <= s["max_memory_gb"] for s in shapes):
+        return ""
+    largest = max(shapes, key=lambda s: (s["max_ocpus"], s["max_memory_gb"]))
+    return (f"No approved machine shape can provide {vcpu} vCPU with {memory} GB "
+            f"of memory. The largest available is {largest['name']} "
+            f"({largest['max_ocpus'] * _VCPU_PER_OCPU} vCPU, "
+            f"{largest['max_memory_gb']} GB).")
 
 
 def validate(session: Session, technology_code: str, deployment_target: str,
@@ -194,6 +273,15 @@ def validate(session: Session, technology_code: str, deployment_target: str,
                 f"{LABELS[field]} '{value}' is not offered for "
                 f"{technology_code or 'this technology'} — choose one of: {allowed}."
             )
+
+    # A combination each of whose parts is offered can still be unbuildable: 16
+    # vCPU and 4 GB are both on their dropdowns, and no shape provides both.
+    # Only checked when the hourly fetch has actually cached shapes.
+    if "vcpu" not in errors and "memory_gb" not in errors:
+        fit = shape_fit_error(session, deployment_target,
+                              chosen.get("vcpu"), chosen.get("memory_gb"))
+        if fit:
+            errors["vcpu"] = fit
     return errors
 
 

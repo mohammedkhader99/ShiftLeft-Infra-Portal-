@@ -409,6 +409,21 @@ export default function Admin() {
               <Row label="Catalogued options">{cfg.catalogue?.options_total ?? 0}</Row>
               <Row label="Option sources">{(cfg.catalogue?.sources ?? []).join(', ') || '—'}</Row>
               <Row label="Shape options from">{cfg.catalogue?.shape_options_from ?? '—'}</Row>
+              <Row label="Hourly cloud fetch"><Flag on={!!cfg.catalogue?.live_fetch_enabled} /></Row>
+              <Row label="Refresh interval">
+                {Math.round((cfg.catalogue?.refresh_interval_seconds ?? 0) / 60)} min
+              </Row>
+              {/* A stale timestamp means the fetch stopped running — which is
+                  invisible without showing it, because the cache keeps serving
+                  the last good options either way. */}
+              <Row label="Last refreshed">
+                {cfg.catalogue?.last_refreshed
+                  ? new Date(cfg.catalogue.last_refreshed).toLocaleString()
+                  : 'never'}
+              </Row>
+              <Row label="Cached from cloud">
+                {cfg.catalogue?.images_cached ?? 0} images · {cfg.catalogue?.shapes_cached ?? 0} shapes
+              </Row>
             </Group>
           </div>
         </Tile>

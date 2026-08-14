@@ -17,6 +17,7 @@ export type Component = {
   technology_code: string
   size: string
   version?: string
+  image?: string
   vcpu?: number
   memory_gb?: number
   storage_gb?: number
@@ -789,6 +790,11 @@ export type SystemConfig = {
     options_total: number
     sources: string[]
     shape_options_from: string
+    live_fetch_enabled: boolean
+    refresh_interval_seconds: number
+    last_refreshed: string | null
+    images_cached: number
+    shapes_cached: number
   }
 }
 

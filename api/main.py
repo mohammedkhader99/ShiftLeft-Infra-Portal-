@@ -29,6 +29,7 @@ from api import ai_drafter
 from api import ai_explainer
 from api import ai_recommend
 from api import ai_triage
+from api import cloud_options
 from api import component_options
 from api import fulfilment
 from api import portal_help
@@ -116,16 +117,19 @@ async def _lifespan(app: FastAPI):
     """Start the background workers on startup, stop them on shutdown.
 
     The functions are defined further down. The Jira poller runs only when
-    AUTO_PROVISION is on; the subsidiary sync runs only against live Jira. So
-    nothing runs by default (mock mode / dev / tests).
+    AUTO_PROVISION is on; the subsidiary sync runs only against live Jira; the
+    cloud-option refresh runs only when OCI_CATALOGUE_ENABLED is on. So nothing
+    runs by default (mock mode / dev / tests).
     """
     _start_poller()
     _start_subsync()
+    _start_catalogue_refresh()
     try:
         yield
     finally:
         _stop_poller()
         _stop_subsync()
+        _stop_catalogue_refresh()
 
 
 app = FastAPI(title="Infra Portal API", lifespan=_lifespan)
@@ -609,17 +613,25 @@ def _catalogue_options_posture(session: Session) -> dict:
     """
     rows = session.scalars(select(ComponentOption)).all()
     versioned = {r.technology_code for r in rows if r.field == "version"}
+    refreshed = cloud_options.last_refreshed(session)
     return {
         "technologies_total": session.scalar(
             select(func.count()).select_from(Technology)) or 0,
         "with_version_choice": len(versioned),
         "options_total": len(rows),
-        # Where the rows came from. "seed" is the curated catalogue; the hourly
-        # cloud fetch will add "oci-live" rows in the next increment.
+        # Where the rows came from. "seed" is the hand-curated catalogue;
+        # "oci-live" is the hourly fetch. Seeing only "seed" while the fetch is
+        # meant to be on is the signal that it is not actually working.
         "sources": sorted({r.source for r in rows}),
         # Numeric options are derived from the sizing anchors rather than stored,
         # so every technology has a working detail form with no catalogue entry.
         "shape_options_from": "sizing anchors (F-CAT-07)",
+        # --- the hourly cloud fetch ---
+        "live_fetch_enabled": cloud_options.enabled(),
+        "refresh_interval_seconds": cloud_options.refresh_interval_seconds(),
+        "last_refreshed": refreshed.isoformat() if refreshed else None,
+        "images_cached": sum(1 for r in rows if r.field == "image"),
+        "shapes_cached": sum(1 for r in rows if r.field == "shape"),
     }
 
 
@@ -693,6 +705,9 @@ _EXECUTION_GATE_LABELS = {
     "oke_kubernetes_version": "OKE Kubernetes version",
     "oke_cluster_type": "OKE cluster type",
     "kafka_source_set": "Kafka archive source configured",
+    "catalogue_mode": "Cloud option catalogue mode",
+    "catalogue_shapes_allowed": "Compute shapes allow-listed (0 = offer none)",
+    "catalogue_image_filter_set": "OS image filter configured",
 }
 
 
@@ -713,6 +728,50 @@ def _orchestrator_posture() -> dict | None:
         return response.json()
     except ValueError:
         return None
+
+
+def _orchestrator_cloud_options() -> dict | None:
+    """Ask the orchestrator what the tenancy offers (shapes + OS images).
+
+    Same signed channel and same reasoning as _orchestrator_posture: listing
+    shapes needs OCI credentials, and this process holds none. Read-only at the
+    far end — the endpoint calls list_* and nothing else.
+    """
+    payload = {"issued_at": datetime.now(timezone.utc).isoformat(),
+               "operation": "catalogue"}
+    raw = json.dumps(payload, sort_keys=True).encode()
+    response, _error = _post_to_orchestrator(
+        raw, sign(WEBHOOK_SECRET, raw), path="/catalogue/oci-options")
+    if response is None or response.status_code != 200:
+        return None
+    try:
+        return response.json()
+    except ValueError:
+        return None
+
+
+def _refresh_cloud_options_once() -> dict:
+    """One cache refresh. Safe to call from a thread or an admin's button."""
+    with SessionLocal() as session:
+        return cloud_options.refresh(session, _orchestrator_cloud_options)
+
+
+@app.post("/api/catalogue/refresh")
+def refresh_cloud_options_now(
+    requester: str = Depends(_authed_requester),
+) -> dict:
+    """Refresh the cloud option cache immediately (platform admin).
+
+    The hourly thread does this on its own; this is the "refresh now" for an
+    admin who has just changed the allowlist, and how the integration gets
+    verified without waiting an hour.
+    """
+    if roles_mod.PLATFORM_ADMIN not in roles_mod.resolve_roles(requester):
+        raise HTTPException(
+            status_code=403,
+            detail="Only a platform administrator can refresh the cloud catalogue.",
+        )
+    return _refresh_cloud_options_once()
 
 
 @app.get("/api/admin/settings")
@@ -2207,6 +2266,7 @@ class ComponentIn(BaseModel):
     # resolves from the size anchor. Values are checked against what the server
     # offers in api.component_options — never trusted as sent.
     version: str | None = None
+    image: str | None = None
     vcpu: int | None = None
     memory_gb: int | None = None
     storage_gb: int | None = None
@@ -2217,6 +2277,7 @@ class ComponentOut(BaseModel):
     technology_code: str | None = None
     size: str | None = None
     version: str | None = None
+    image: str | None = None
     vcpu: int | None = None
     memory_gb: int | None = None
     storage_gb: int | None = None
@@ -2431,7 +2492,8 @@ def save_draft(
         req.components = [
             RequestComponent(
                 technology_code=c.technology_code, size=c.size, version=c.version,
-                vcpu=c.vcpu, memory_gb=c.memory_gb, storage_gb=c.storage_gb,
+                image=c.image, vcpu=c.vcpu, memory_gb=c.memory_gb,
+                storage_gb=c.storage_gb,
             )
             for c in body.components
         ]
@@ -5979,3 +6041,45 @@ def _start_subsync() -> None:
 def _stop_subsync() -> None:
     """Signal the subsidiary-sync loop to exit (called on shutdown)."""
     _subsync_stop.set()
+
+
+# --- Hourly cloud option cache ----------------------------------------------
+
+_catalogue_thread: threading.Thread | None = None
+_catalogue_stop = threading.Event()
+
+
+def _catalogue_loop() -> None:
+    """Refresh the cloud option cache on an interval, on ONE instance only.
+
+    Leader-elected like the poller: several API replicas all calling the tenancy
+    every hour would multiply the API cost of the feature by the replica count
+    for no benefit, since they all write the same rows to the same database.
+    """
+    interval = cloud_options.refresh_interval_seconds()
+    while not _catalogue_stop.is_set():
+        try:
+            with SessionLocal() as session:
+                if leader.try_acquire(session, "catalogue"):
+                    cloud_options.refresh(session, _orchestrator_cloud_options)
+        except Exception:  # noqa: BLE001 - a refresh must never kill the loop
+            pass
+        _catalogue_stop.wait(interval)
+
+
+def _start_catalogue_refresh() -> None:
+    """Start the cloud-option refresh thread (called on startup)."""
+    global _catalogue_thread
+    if cloud_options.enabled() and (
+        _catalogue_thread is None or not _catalogue_thread.is_alive()
+    ):
+        _catalogue_stop.clear()
+        _catalogue_thread = threading.Thread(
+            target=_catalogue_loop, name="cloud-catalogue", daemon=True
+        )
+        _catalogue_thread.start()
+
+
+def _stop_catalogue_refresh() -> None:
+    """Signal the cloud-option refresh loop to exit (called on shutdown)."""
+    _catalogue_stop.set()

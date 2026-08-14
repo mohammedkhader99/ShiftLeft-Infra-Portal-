@@ -67,6 +67,7 @@ def resolve_components(components: list[dict], session: Session) -> dict:
             "technology_name": tech.name if tech else technology_code or None,
             "size": size or None,
             "version": (component.get("version") or "").strip() or None,
+            "image": (component.get("image") or "").strip() or None,
             "vcpu": None,
             "memory_gb": None,
             "storage_gb": None,
