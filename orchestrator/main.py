@@ -320,7 +320,58 @@ def _resource_name(base: str, kind: str, reference: str, primary: str) -> str:
     if kind == primary and "" in provisioner.existing_workspaces(reference):
         return base
     suffix = kind.split("-", 1)[1] if "-" in kind else kind
-    return f"{base}-{suffix}"
+    return _fit_name(f"{base}-{suffix}", base, suffix, reference, kind)
+
+
+def _short_reference(reference: str) -> str:
+    """A request reference squeezed to its identifying part: REQ-2026-0128 -> 26-0128.
+
+    The prefix and the century carry no information — every reference has them —
+    and they cost 6 of the very few characters a name has.
+    """
+    parts = [p for p in (reference or "").split("-") if p]
+    if len(parts) >= 3 and len(parts[-2]) == 4 and parts[-2].isdigit():
+        return f"{parts[-2][2:]}-{parts[-1]}"
+    return (reference or "").lower()
+
+
+def _fit_name(natural: str, base: str, suffix: str, reference: str, kind: str) -> str:
+    """`natural` if the module accepts it, else the same name compressed to fit.
+
+    Names are composed as <environment>-<reference>-<suffix>, and the modules cap
+    them (31 for a VM, 24 for OKE). Nothing checked, so an environment name of
+    seven characters produced a 32-character name and Terraform refused it at
+    PLAN time — AFTER the request had been approved in Jira. On the tightest
+    blueprint that left a budget of six characters for an environment name, which
+    almost no real name meets.
+
+    ONLY over-long names are changed. Every resource that already exists has a
+    name its module accepted, so it takes this function's first branch and is
+    untouched — renaming a live compute instance changes its hostname, which
+    Terraform implements by destroying and rebuilding the machine.
+
+    Compression is deterministic and keeps the reference, which is what makes the
+    name unique; the environment name is what gets trimmed.
+    """
+    limit = blueprint_registry.name_limit_for_kind(kind)
+    if not limit or len(natural) <= limit:
+        return natural
+
+    short_ref = _short_reference(reference)
+    env = base[: -(len(reference) + 1)] if base.lower().endswith(reference.lower()) else base
+    compact = f"{env}-{short_ref}-{suffix}"
+    if len(compact) <= limit:
+        return compact
+
+    # Still too long: trim the environment name, never the reference — the
+    # reference is what keeps the name unique across requests.
+    budget = limit - len(short_ref) - len(suffix) - 2  # two hyphens
+    if budget < 1:
+        # A suffix so long that no environment name fits. Drop the environment
+        # rather than emit something the module will refuse; the reference still
+        # identifies it, and the workspace path still records which request it is.
+        return f"{short_ref}-{suffix}"[:limit]
+    return f"{env[:budget].rstrip('-')}-{short_ref}-{suffix}"
 
 
 def _explicit_int(component: dict, field: str) -> int | None:
@@ -522,6 +573,11 @@ def _compute_spec(payload: dict, resource_kind: str = "") -> dict:
         # own pick counts as deliberate — more so than an admin's map.
         "image_ocid_explicit": (_chosen_image(payload, resource_kind)
                                 or _mapped_image(payload)),
+        # Resolved once and used twice: baked into user_data for blueprints that
+        # delegate to configure.py, and passed as a Terraform variable for those
+        # that render their own first-boot script (apache-httpd). One source, so
+        # the two paths cannot disagree about which OS a machine is.
+        "os_family": _os_family_for(payload, resource_kind) or configure.os_family(),
         "user_data": configure.render(components, _os_family_for(payload, resource_kind)),
         # The ports the installed service listens on, from the same profiles that
         # produced user_data — so the network rules and the OS firewall agree.
@@ -916,13 +972,25 @@ async def destroy(request: Request) -> dict:
     rkind = _resource_kind(payload)
     kinds = _resource_kinds(payload)
 
-    # Destroy is driven by the workspaces that EXIST, not by what the request
-    # asked for. A stack whose kinds changed since it was built would otherwise
-    # leave the old resource running with nothing tracking it, and still bill for
-    # it. Anything on disk gets torn down.
+    # A PARTIAL teardown removes exactly what it names; a FULL one removes
+    # everything on disk.
+    #
+    # Sweeping up untracked workspaces is right when a whole environment is being
+    # retired: a stack whose kinds changed since it was built would otherwise
+    # leave the old resource running, untracked and still billing. It is very
+    # wrong when the request names a subset — a decommission of one component in
+    # a two-component stack destroyed both machines, because "anything on disk"
+    # included the one nobody asked to remove.
+    #
+    # `partial` is set by the portal, which is the only layer that knows whether
+    # the requester picked some components or all of them. Absent (an older
+    # portal), the sweep behaviour is unchanged.
     built = provisioner.existing_workspaces(reference)
+    partial = bool(payload.get("partial_destroy"))
     if "" in built:  # legacy flat workspace holds exactly one resource
         targets = [_resource_kind(payload)]
+    elif partial:
+        targets = [k for k in kinds if k in built]
     else:
         targets = ([k for k in kinds if k in built]
                    + [k for k in built if k not in kinds])

@@ -4,12 +4,31 @@ resource_kind: oci-apache
 module: oci/apache-httpd
 version: 1.0.0
 builds: [apache]
+# OS families this blueprint's own first-boot script can actually configure.
+#
+# It renders templates/cloud-init.yaml.tftpl, which is Red Hat throughout:
+# package `httpd`, unit `httpd`, `firewall-cmd`, /etc/httpd/conf/httpd.conf and
+# /etc/pki/tls for the certificate. Point it at an Ubuntu image and cloud-init
+# looks for a package named httpd, finds none, and the VM boots healthy with no
+# web server on it while Terraform reports success.
+#
+# Declared so the PORTAL can refuse that combination up front. The comment below
+# has said "it needs a Red Hat-family image" since this blueprint shipped, and a
+# comment cannot stop a request: the form offered Apache on Ubuntu because it was
+# asking configure.py, whose apache recipe this module never uses.
+os_families: [rhel]
 description: Apache HTTP Server on a private OCI Compute instance, installed and hardened at first boot.
 # The image is NOT required: this module looks up the latest Oracle Linux itself
 # (see vars below), so only the subnet must be configured.
 requires_env: [OCI_COMPUTE_SUBNET_OCID]
 # The Terraform variable this module names its instance with.
 name_var: instance_name
+# Longest name this module's own validation rule accepts (31 characters,
+# from its instance_name regex). The portal composes names as
+# <environment>-<reference>-<suffix>, which overshot this and failed at PLAN
+# time — after the requester had a Jira ticket approved. Declared here so the
+# portal can compose a name that fits, and refuse one that cannot.
+name_max_length: 31
 # Module inputs the standard variable set does not carry. Declared here so the
 # provisioner needs to know nothing about this recipe's particulars.
 vars:

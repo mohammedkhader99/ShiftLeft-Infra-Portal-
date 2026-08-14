@@ -52,6 +52,8 @@ locals {
     enable_https   = var.enable_https
     server_name    = var.server_name
     index_html_b64 = base64encode(var.index_html_content)
+    # Decides every package name, path and firewall command in the template.
+    os_family = var.os_family
   }))
 }
 

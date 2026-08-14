@@ -4,6 +4,10 @@ resource_kind: oci-instance
 module: .
 version: 1.0.0
 builds: [compute-vm, rhel9, win2019]
+os_families: [rhel, debian]
+# A bare VM whose first-boot configuration, if any, is rendered by
+# orchestrator/configure.py — so it supports whatever configure.py supports.
+# Windows images can be booted here but no software recipe covers them.
 # The Terraform variable this module names its resource with.
 name_var: instance_name
 description: Private-only OCI Compute VM, flex-shape sized from the request.

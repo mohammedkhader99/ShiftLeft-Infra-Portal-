@@ -424,8 +424,17 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
           // that does nothing at all. Withdrawing the control has to withdraw
           // the value with it.
           for (const field of TEXT_DETAIL_FIELDS) {
-            if (!opts.fields?.[field] && next[field as 'version' | 'image']) {
-              delete next[field as 'version' | 'image']
+            const key = field as 'version' | 'image'
+            const spec = opts.fields?.[field]
+            const held = next[key]
+            if (!held) continue
+            // Cleared when the field is withdrawn entirely, AND when the value
+            // held is no longer among the offered options — an OS image list
+            // narrows to what the technology runs on, so a value chosen before
+            // that narrowing would otherwise survive invisibly and be refused at
+            // submit with nothing on screen to point at.
+            if (!spec || !spec.options.some((o) => o.value === held)) {
+              delete next[key]
             }
           }
 

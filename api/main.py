@@ -29,6 +29,7 @@ from api import ai_drafter
 from api import ai_explainer
 from api import ai_recommend
 from api import ai_triage
+from api import blueprint_capabilities
 from api import cloud_options
 from api import component_options
 from api import fulfilment
@@ -632,6 +633,11 @@ def _catalogue_options_posture(session: Session) -> dict:
         "last_refreshed": refreshed.isoformat() if refreshed else None,
         "images_cached": sum(1 for r in rows if r.field == "image"),
         "shapes_cached": sum(1 for r in rows if r.field == "shape"),
+        # Whether the portal has read the orchestrator's blueprint capabilities.
+        # False means the OS-image filter is INERT — every image is offered for
+        # every technology — which is indistinguishable from "nothing needed
+        # filtering" unless it is stated.
+        "blueprint_capabilities_known": blueprint_capabilities.known(),
     }
 
 
@@ -2282,6 +2288,12 @@ class ComponentOut(BaseModel):
     vcpu: int | None = None
     memory_gb: int | None = None
     storage_gb: int | None = None
+    # Whether the resource this component maps to is still running. Null when
+    # nothing has been provisioned yet (a draft), so "unknown" stays distinct
+    # from "gone". A partial decommission leaves some components dead and the
+    # rest alive, and offering a dead one for teardown again is offering to
+    # destroy something that no longer exists.
+    active: bool | None = None
 
 
 class DraftIn(BaseModel):
@@ -2752,6 +2764,7 @@ def get_request(reference: str, session: Session = Depends(get_session)) -> Requ
     """Load a draft (or submitted request) so it can be resumed/viewed."""
     req = _load_request(reference, session)
     out = RequestOut.model_validate(req)
+    _mark_component_lifecycle(session, req, out)
     out.ttl = _ttl_status(_min_active_ttl(session, reference))
     actual = session.scalar(select(ActualCost.billed_monthly).where(ActualCost.reference == reference))
     out.variance = _variance_status(req.estimate.monthly if req.estimate else None, actual)
@@ -3819,9 +3832,43 @@ def _short_reason(text: str, limit: int = 300) -> str:
     return " ".join(text.split())[:limit]
 
 
+def _mark_component_lifecycle(session: Session, req: Request, out) -> None:
+    """Flag each component alive or dead, from the resources actually on record.
+
+    A component has no lifecycle of its own — the RESOURCE it maps to does — so
+    this joins the two through the same blueprint mapping provisioning uses. With
+    partial decommission the distinction became visible: a request can have one
+    component torn down and another still running, and the form must not offer
+    the dead one for decommission a second time.
+    """
+    rows = session.scalars(
+        select(ProvisionedResource).where(ProvisionedResource.reference == req.reference)
+    ).all()
+    if not rows:
+        return  # nothing provisioned yet — leave every flag null, meaning unknown
+    live_kinds = {r.kind for r in rows if r.lifecycle_state == "active"}
+    target = (req.deployment_target or "").strip().lower()
+    for component in out.components:
+        code = component.technology_code
+        if not code:
+            continue
+        blueprint = session.scalar(
+            select(Blueprint).where(
+                Blueprint.technology_code == code,
+                Blueprint.deployment_target == target,
+                Blueprint.resource_kind != "",
+            )
+        )
+        kind = blueprint.resource_kind if blueprint else None
+        # No blueprint mapping (legacy single-resource request): the component is
+        # alive exactly when anything of this request still is.
+        component.active = (kind in live_kinds) if kind else bool(live_kinds)
+
+
 def _handoff_payload(req: Request, *, ttl_expiry: str | None = None,
                      action: str | None = None,
-                     resource_kinds: list[str] | None = None) -> tuple[bytes, str]:
+                     resource_kinds: list[str] | None = None,
+                     partial_destroy: bool = False) -> tuple[bytes, str]:
     """Build and sign the orchestrator handoff for a request.
 
     The full resource list is derived here rather than at each call site, so
@@ -3848,6 +3895,11 @@ def _handoff_payload(req: Request, *, ttl_expiry: str | None = None,
         # orchestrators ignore this and still see resource_kind, so the contract
         # stays backward compatible.
         "resource_kinds": resource_kinds or [req.resource_kind or "oci-bucket"],
+        # True when a destroy must remove ONLY the kinds above. The orchestrator
+        # otherwise sweeps up every workspace on disk, which is right for
+        # retiring a whole environment and catastrophic for removing one
+        # component of a stack. Only the portal knows which this is.
+        "partial_destroy": bool(partial_destroy),
     }
     if ttl_expiry:
         payload["ttl_expiry"] = ttl_expiry
@@ -4948,10 +5000,26 @@ def _decommission(session: Session, req: Request, actor: str) -> dict:
     _transition_jira(session, req, inprogress_status(), "jira.in_progress")
     session.commit()
 
-    body, signature = _handoff_payload(source)
+    # WHICH resources this decommission removes — from the components the
+    # requester SELECTED, not from everything the source built.
+    #
+    # This used to hand over the source request untouched, so the orchestrator
+    # tore down every workspace it could find. A request naming one component of
+    # a two-component stack destroyed both machines: the selection was collected,
+    # validated against the source's stack, priced and written on the Jira ticket,
+    # and then discarded at the last step.
+    #
+    # The payload still carries the SOURCE's reference and policy input, because
+    # the workspaces and names belong to the source; only the kind list narrows.
+    selected_kinds = _environment_resource_kinds(session, req)
+    remaining = [k for k in _environment_resource_kinds(session, source)
+                 if k not in selected_kinds]
+    body, signature = _handoff_payload(source, resource_kinds=selected_kinds,
+                                       partial_destroy=bool(remaining))
     append_audit(session, "destroy.handoff", reference=req.reference,
                  jira_key=req.approval.jira_key, actor=actor,
-                 detail={"source": source.reference})
+                 detail={"source": source.reference, "kinds": selected_kinds,
+                         "remaining": remaining, "partial": bool(remaining)})
     session.commit()
 
     response, error = _post_to_orchestrator(body, signature, path="/destroy")
@@ -4968,15 +5036,30 @@ def _decommission(session: Session, req: Request, actor: str) -> dict:
         session.commit()
         return {"approval": "approved", "decommissioned": False, "error": reason}
 
-    # Mark the source's live resources and the source request decommissioned.
+    # Mark ONLY the resources this request actually removed. Marking every active
+    # row — which is what happened before — told the portal a machine was gone
+    # while it was still running and still billing, and there is no worse kind of
+    # registry error than one that hides live infrastructure.
     for res in session.scalars(
         select(ProvisionedResource).where(
             ProvisionedResource.reference == source.reference,
             ProvisionedResource.lifecycle_state == "active",
+            ProvisionedResource.kind.in_(selected_kinds),
         )
     ):
         res.lifecycle_state = "decommissioned"
-    source.status = "decommissioned"
+    session.flush()
+
+    # The source is only finished when nothing of it is left. A partial teardown
+    # leaves it PROVISIONED, so it still appears in My Environments, can still be
+    # decommissioned again for what remains, and still shows its real cost.
+    still_active = session.scalar(
+        select(func.count()).select_from(ProvisionedResource).where(
+            ProvisionedResource.reference == source.reference,
+            ProvisionedResource.lifecycle_state == "active",
+        )
+    ) or 0
+    source.status = "provisioned" if still_active else "decommissioned"
     req.status = "decommissioned"
     _transition_jira(session, req, resolved_status(), "jira.resolved")
     summary = response.json().get("summary")

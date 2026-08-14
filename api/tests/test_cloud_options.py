@@ -317,22 +317,26 @@ def test_the_withdrawn_version_message_says_what_to_do_about_it(db):
     assert "cannot be chosen" not in message, "the old message said nothing useful"
 
 
-def test_software_with_no_recipe_for_the_image_is_refused(db, monkeypatch):
+def test_software_with_no_recipe_for_the_image_is_refused(db):
     """The combination check. Both halves are individually offered — the image is
     on its dropdown and the technology is in the catalogue — and together they
-    produce a machine that boots, reports success and installs nothing."""
-    from orchestrator import configure
-    monkeypatch.setitem(configure.TEMPLATES, "nginx",
-                        {"ports": [80], "rhel": {"packages": ["nginx"],
-                                                 "services": ["nginx"]}})
+    produce a machine that boots, reports success and installs nothing.
+
+    Uses apache, which is genuinely Red Hat-only: its blueprint renders its own
+    cloud-init (`httpd`, `firewall-cmd`, /etc/httpd/...) and never touches the
+    generic recipe table. An earlier version of this test monkeypatched
+    configure.TEMPLATES instead, and stopped testing anything the day the truth
+    source moved to the blueprint — it kept passing while asserting on a table
+    nothing consults for apache. See test_validation_truth_source.py.
+    """
     cloud_options.refresh(db, lambda: _fetched())
-    errors = component_options.validate(db, "nginx", "oci",
+    errors = component_options.validate(db, "apache", "oci",
                                         {"image": "ocid1.image..ubuntu"})
     assert "image" in errors
-    assert "no way to install" in errors["image"]
+    assert "cannot be installed on this image" in errors["image"]
     assert "rhel" in errors["image"], "it should say where it CAN be installed"
     # ...and the same technology on a Red Hat image is fine.
-    assert component_options.validate(db, "nginx", "oci",
+    assert component_options.validate(db, "apache", "oci",
                                       {"image": "ocid1.image..ol9"}) == {}
 
 

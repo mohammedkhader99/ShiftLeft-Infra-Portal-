@@ -15,7 +15,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from api import component_options
-from db.models import Backup, CostCentre, Environment, Project, Request, Subsidiary, Technology
+from db.models import (Backup, Blueprint, CostCentre, Environment, Project,
+                       ProvisionedResource, Request, Subsidiary, Technology)
 
 REQUEST_TYPES = {"dns", "create", "add", "resize", "decommission", "refresh", "restore",
                  "clone", "sandbox", "temporary", "reduce", "dr"}
@@ -176,6 +177,12 @@ def validate_submission(data: dict, session: Session) -> dict[str, str]:
         _validate_metadata(data, errors)
         _validate_advanced(data.get("advanced_options"), errors)
 
+    # The environment name has to fit the resource names it will be composed
+    # into, which depends on which technologies were chosen — so it runs after
+    # the components are known, not inside the name-format check above.
+    if request_type in COMPONENT_TYPES:
+        _validate_environment_name_fits(data, errors)
+
     # Last, and driven off SOURCE_ACTING_TYPES rather than sitting inside any one
     # type's validator: a new request type that acts on an existing resource gets
     # this guard by adding itself to that set, instead of by someone remembering
@@ -277,6 +284,10 @@ def _validate_decommission_fields(data: dict, session: Session, errors: dict[str
     if not selected:
         errors["components"] = "Select at least one technology to decommission."
         return
+    # Which of the source's components are still RUNNING. After a partial
+    # decommission some are already gone, and asking to tear one down a second
+    # time would hand the orchestrator a workspace that no longer exists.
+    live = _live_technologies(session, source)
     for component in selected:
         tech = (component.get("technology_code") or "").strip()
         if tech not in source_techs:
@@ -284,6 +295,46 @@ def _validate_decommission_fields(data: dict, session: Session, errors: dict[str
                 f"'{tech}' is not part of {source_ref}; choose from its technology stack."
             )
             break
+        if live is not None and tech not in live:
+            errors["components"] = (
+                f"'{tech}' has already been decommissioned from {source_ref}. "
+                + (f"Still running: {', '.join(sorted(live))}."
+                   if live else "Nothing is left to decommission.")
+            )
+            break
+
+
+def _live_technologies(session: Session, source: Request) -> set[str] | None:
+    """The source's technologies whose resource is still active, or None when
+    nothing has been provisioned (so no opinion can be formed).
+
+    Joins components to resources through the same blueprint mapping
+    provisioning uses, because a component carries no lifecycle of its own.
+    """
+    rows = session.scalars(
+        select(ProvisionedResource).where(
+            ProvisionedResource.reference == source.reference)
+    ).all()
+    if not rows:
+        return None
+    live_kinds = {r.kind for r in rows if r.lifecycle_state == "active"}
+    target = (source.deployment_target or "").strip().lower()
+    out: set[str] = set()
+    for component in source.components:
+        code = component.technology_code
+        if not code:
+            continue
+        blueprint = session.scalar(
+            select(Blueprint).where(
+                Blueprint.technology_code == code,
+                Blueprint.deployment_target == target,
+                Blueprint.resource_kind != "",
+            )
+        )
+        kind = blueprint.resource_kind if blueprint else None
+        if (kind in live_kinds) if kind else bool(live_kinds):
+            out.add(code)
+    return out
 
 
 def _validate_refresh_fields(data: dict, session: Session, errors: dict[str, str]) -> None:
@@ -551,6 +602,59 @@ def _validate_shortlived_fields(data: dict, session: Session, errors: dict[str, 
                 errors["expires_on"] = "Choose when this temporary environment should expire."
             elif expiry <= datetime.now(timezone.utc).date():
                 errors["expires_on"] = "The expiry date must be in the future."
+
+
+# The reference the orchestrator composes names from, shortened the way it
+# shortens it: REQ-2026-0128 -> 26-0128. Seven characters, and it is what the
+# environment name has to share its budget with.
+_SHORT_REFERENCE_LENGTH = 7
+
+
+def _validate_environment_name_fits(data: dict, errors: dict[str, str]) -> None:
+    """Refuse an environment name that would be TRIMMED in the built resource.
+
+    Resource names are composed as <environment>-<reference>-<suffix> and every
+    module caps them (31 for a VM, 24 for OKE). The orchestrator now compresses
+    an over-long name rather than failing, but it does that by trimming the
+    environment name — so `visa-preprod-eu` becomes `visa-preprod` in OCI, and
+    someone looking for their machine by name does not find it.
+
+    Compressing the REFERENCE is lossless (the identifying digits survive), so
+    that happens quietly. Trimming the ENVIRONMENT loses information, so it is
+    refused here with the length that would work.
+
+    Before any of this existed the name simply overran and Terraform refused it
+    at PLAN time — after the requester had a Jira ticket approved for something
+    that could never be built (REQ-2026-0128).
+    """
+    name = (data.get("environment_name") or "").strip()
+    if not name:
+        return  # its absence is reported by the type's own validator
+    from api import blueprint_capabilities
+    from api.component_options import _fetch_blueprints
+
+    worst: tuple[int, str, str] | None = None
+    for component in (data.get("components") or []):
+        code = (component.get("technology_code") or "").strip()
+        if not code:
+            continue
+        budget = blueprint_capabilities.name_budget(
+            code, _SHORT_REFERENCE_LENGTH, _fetch_blueprints)
+        if budget is None:
+            continue  # this technology's blueprint states no limit
+        allowed, suffix = budget
+        if len(name) > allowed and (worst is None or allowed < worst[0]):
+            worst = (allowed, code, suffix)
+
+    if worst is not None:
+        allowed, code, suffix = worst
+        errors["environment_name"] = (
+            f"'{name}' is {len(name)} characters, and {code} can only carry "
+            f"{allowed} — its machine is named "
+            f"<environment>-<request>-{suffix}, which the cloud limits. Longer "
+            f"names get shortened, so the resource would not be findable by the "
+            f"name you chose. Use {allowed} characters or fewer."
+        )
 
 
 def _validate_not_already_in_flight(data: dict, session: Session, errors: dict[str, str]) -> None:

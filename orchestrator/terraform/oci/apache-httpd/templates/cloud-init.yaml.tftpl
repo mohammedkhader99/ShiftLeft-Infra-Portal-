@@ -1,15 +1,37 @@
 #cloud-config
 # Cloud-init configuration that installs and configures Apache HTTP Server.
 # Rendered by Terraform (templatefile) and passed as base64 user_data.
+#
+# EVERY NAME AND PATH BELOW DIFFERS BETWEEN OS FAMILIES. Apache is `httpd` on
+# Oracle Linux and `apache2` on Ubuntu; the systemd unit follows the package
+# name; the config file lives in /etc/httpd/conf vs /etc/apache2; the firewall is
+# firewalld vs ufw; TLS certificates go to /etc/pki/tls vs /etc/ssl; and Debian
+# needs `a2enmod ssl` where Red Hat's mod_ssl package enables itself.
+#
+# This template was Red Hat throughout until the portal began offering Ubuntu
+# images. Pointed at Ubuntu it asked apt for a package called `httpd`, found
+# none, and left a VM that booted healthy with no web server on it while
+# Terraform reported success — the silent-success failure this codebase keeps
+# paying for. The family now comes from the image the requester chose.
+#
+# os_family is "rhel" or "debian"; anything else would have been refused before
+# reaching here (api/component_options.installable_on).
 
 package_update: true
 package_upgrade: false
 
 packages:
+%{ if os_family == "debian" ~}
+  - apache2
+%{ if enable_https ~}
+  - openssl
+%{ endif ~}
+%{ else ~}
   - httpd
 %{ if enable_https ~}
   - mod_ssl
   - openssl
+%{ endif ~}
 %{ endif ~}
 
 write_files:
@@ -18,18 +40,48 @@ write_files:
     content: ${index_html_b64}
     owner: root:root
     permissions: '0644'
+  # What this machine was asked to be, written before the install so a failure
+  # is diagnosable from the VM itself rather than only from the portal.
+  - path: /etc/infra-portal-configured
+    permissions: '0644'
+    content: |
+      technologies=apache
+      os_family=${os_family}
+      note=Written before install; presence alone does not prove success.
 
 runcmd:
-  # Optional ServerName
+%{ if os_family == "debian" ~}
+  # --- Ubuntu / Debian -------------------------------------------------------
+%{ if server_name != "" ~}
+  - grep -q '^ServerName ' /etc/apache2/apache2.conf || echo 'ServerName ${server_name}' >> /etc/apache2/apache2.conf
+%{ endif ~}
+  - systemctl enable --now apache2 || echo 'PORTAL: apache2 failed to start' >> /var/log/infra-portal.log
+  # ufw ships inactive on Ubuntu cloud images. `ufw allow` still records the rule
+  # either way, and this never ENABLES the firewall — doing that unasked could
+  # cut off SSH to a machine with no console.
+  - ufw allow 80/tcp || echo 'PORTAL: could not open 80/tcp' >> /var/log/infra-portal.log
+%{ if enable_https ~}
+  - ufw allow 443/tcp || echo 'PORTAL: could not open 443/tcp' >> /var/log/infra-portal.log
+  # Debian ships mod_ssl inside the apache2 package but leaves it disabled.
+  - a2enmod ssl || echo 'PORTAL: could not enable the ssl module' >> /var/log/infra-portal.log
+  - |
+    openssl req -x509 -nodes -newkey rsa:2048 -days 365 \
+      -keyout /etc/ssl/private/ssl-cert-snakeoil.key \
+      -out /etc/ssl/certs/ssl-cert-snakeoil.pem \
+      -subj "/CN=${server_name != "" ? server_name : "localhost"}"
+  - chmod 600 /etc/ssl/private/ssl-cert-snakeoil.key
+  - a2ensite default-ssl || echo 'PORTAL: could not enable the TLS site' >> /var/log/infra-portal.log
+%{ endif ~}
+  - systemctl restart apache2 || echo 'PORTAL: apache2 failed to restart' >> /var/log/infra-portal.log
+%{ else ~}
+  # --- Oracle Linux / Red Hat ------------------------------------------------
 %{ if server_name != "" ~}
   - grep -q '^ServerName ' /etc/httpd/conf/httpd.conf || echo 'ServerName ${server_name}' >> /etc/httpd/conf/httpd.conf
 %{ endif ~}
-  # Enable and start the web server
-  - systemctl enable --now httpd
-  # Open the OS firewall (firewalld is present on Oracle Linux platform images)
-  - firewall-cmd --permanent --add-service=http || true
+  - systemctl enable --now httpd || echo 'PORTAL: httpd failed to start' >> /var/log/infra-portal.log
+  - firewall-cmd --permanent --add-service=http || echo 'PORTAL: could not open http' >> /var/log/infra-portal.log
 %{ if enable_https ~}
-  - firewall-cmd --permanent --add-service=https || true
+  - firewall-cmd --permanent --add-service=https || echo 'PORTAL: could not open https' >> /var/log/infra-portal.log
   # Generate a self-signed certificate at the paths mod_ssl uses by default
   - |
     openssl req -x509 -nodes -newkey rsa:2048 -days 365 \
@@ -39,4 +91,6 @@ runcmd:
   - chmod 600 /etc/pki/tls/private/localhost.key
 %{ endif ~}
   - firewall-cmd --reload || true
-  - systemctl restart httpd
+  - systemctl restart httpd || echo 'PORTAL: httpd failed to restart' >> /var/log/infra-portal.log
+%{ endif ~}
+  - echo 'PORTAL: first-boot configuration finished' >> /var/log/infra-portal.log

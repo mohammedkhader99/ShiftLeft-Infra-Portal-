@@ -136,6 +136,10 @@ READ_ONLY_ENV: dict[str, str] = {
     # it on starts a thread that calls a real cloud API on a schedule.
     "OCI_CATALOGUE_ENABLED": "Hourly cloud option refresh",
     "OCI_CATALOGUE_REFRESH_SECONDS": "Cloud option refresh interval (seconds)",
+    # How long the API caches the orchestrator's blueprint capabilities — which
+    # OS families each recipe can configure. Deploy-time: capabilities change
+    # when the orchestrator is redeployed, not while it runs.
+    "BLUEPRINT_CAPABILITY_TTL_SECONDS": "Blueprint capability cache TTL (seconds)",
     # Integration + background-worker switches: visible so the posture is complete,
     # but deploy-time decisions rather than policy knobs.
     "VAULT_MODE": "Credential delivery mode",

@@ -4,9 +4,19 @@ resource_kind: oci-oke
 module: oci/oke
 version: 1.0.0
 builds: [oci-oke]
+os_families: [rhel]
+# OKE node pools run Oracle's own managed node images (Oracle Linux). The
+# requester does not choose the node OS, so this exists to stop the portal
+# claiming an Ubuntu node pool it has no way to build.
 description: OCI Container Engine for Kubernetes — private API endpoint, VCN-native pod networking, its own VCN and subnets, a worker node pool sized from the request, and a bastion for access.
 # The Terraform variable this module names its resources with.
 name_var: instance_name
+# Longest name this module's own validation rule accepts (24 characters,
+# from its instance_name regex). The portal composes names as
+# <environment>-<reference>-<suffix>, which overshot this and failed at PLAN
+# time — after the requester had a Jira ticket approved. Declared here so the
+# portal can compose a name that fits, and refuse one that cannot.
+name_max_length: 24
 # OCI takes 10-20 minutes to build a cluster. The default 600s would kill the
 # apply part way through, leaving real, billing resources that Terraform never
 # recorded and a later destroy cannot find.

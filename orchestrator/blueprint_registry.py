@@ -80,11 +80,23 @@ def discover(directory: Path | None = None) -> list[dict]:
             "module": str(manifest.get("module") or "."),
             "version": str(manifest.get("version") or ""),
             "builds": [str(b) for b in manifest.get("builds") or []],
+            # OS families this blueprint's own first-boot configuration can
+            # handle. Empty means it configures no operating system at all — a
+            # bucket, a managed database — and the portal makes no OS claim for
+            # it. The portal refuses an image whose family is not listed here,
+            # which is the only way it can know that Apache's Red Hat-only
+            # cloud-init must not be pointed at an Ubuntu image.
+            "os_families": [str(f).strip().lower()
+                            for f in manifest.get("os_families") or []],
             "description": str(manifest.get("description") or ""),
             # Which Terraform variable carries the environment's name. Modules
             # disagree (bucket_name, instance_name, db_name...), and hard-coding
             # the mapping meant a new recipe silently received an empty name.
             "name_var": str(manifest.get("name_var") or ""),
+            # Longest name this module's own validation accepts. Composing a
+            # longer one fails at PLAN time, after the request has been approved
+            # — see _resource_name. 0 means the module states no limit.
+            "name_max_length": int(manifest.get("name_max_length") or 0),
             # How long a single Terraform command may run. A Kubernetes cluster
             # takes far longer to build than a VM, and a timeout that fires part
             # way through an apply strands real, billing resources outside state.
@@ -105,3 +117,44 @@ def for_resource_kind(kind: str) -> dict | None:
         if bp.get("resource_kind") == kind:
             return bp
     return None
+
+
+def for_technology(code: str) -> dict | None:
+    """The manifest that actually BUILDS a technology, if a dedicated one does.
+
+    None means no blueprint claims it, and it falls to the generic path.
+
+    This is the difference between what a recipe table says and what the platform
+    does. `configure.py` carries a Debian recipe for apache, but apache is built
+    by oci/apache-httpd, which renders its own Red Hat-only cloud-init and never
+    calls configure.py — so asking configure.py whether Apache runs on Ubuntu
+    gives an answer that is true of a code path nothing executes.
+    """
+    code = (code or "").strip()
+    if not code:
+        return None
+    for bp in discover():
+        if code in (bp.get("builds") or []):
+            return bp
+    return None
+
+
+def name_limit_for_kind(kind: str) -> int:
+    """Longest resource name the blueprint for this kind accepts, or 0 if it
+    states none. Read from the manifest so the portal cannot disagree with the
+    module's own validation rule."""
+    manifest = for_resource_kind(kind)
+    return int((manifest or {}).get("name_max_length") or 0)
+
+
+def os_families_for_technology(code: str) -> set[str] | None:
+    """OS families the thing that BUILDS this technology can configure.
+
+    None means "no dedicated blueprint claims it" — the caller should fall back
+    to the generic recipe table. An empty set means a blueprint claims it but
+    declares no families, which the guard test refuses to allow.
+    """
+    manifest = for_technology(code)
+    if manifest is None:
+        return None
+    return {str(f).strip().lower() for f in (manifest.get("os_families") or [])}

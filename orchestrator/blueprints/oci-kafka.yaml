@@ -4,9 +4,19 @@ resource_kind: oci-kafka
 module: oci/kafka
 version: 1.0.0
 builds: [kafka]
+os_families: [rhel]
+# Kafka's first-boot script uses dnf, firewall-cmd and systemd unit files laid
+# out the Red Hat way. Never boot-tested at all, but what it WOULD run is
+# unambiguously Red Hat, so the portal must not offer it on an Ubuntu image.
 description: Apache Kafka in KRaft mode on private OCI Compute instances — no ZooKeeper, one node for development or three for a fault-tolerant quorum.
 # The Terraform variable this module names its brokers with.
 name_var: instance_name
+# Longest name this module's own validation rule accepts (29 characters,
+# from its instance_name regex). The portal composes names as
+# <environment>-<reference>-<suffix>, which overshot this and failed at PLAN
+# time — after the requester had a Jira ticket approved. Declared here so the
+# portal can compose a name that fits, and refuse one that cannot.
+name_max_length: 29
 # OCI_KAFKA_SOURCE_URL is REQUIRED, not optional. Kafka is not in the OS
 # repositories — it is an archive — and this subnet reaches Oracle's services
 # but not the public internet, so the Apache CDN is unreachable. Without a

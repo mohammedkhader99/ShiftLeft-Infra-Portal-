@@ -157,6 +157,12 @@ def _oci_vars(name: str, tags: dict, resource_kind: str = "oci-bucket",
         # defaulted it; nothing ever supplied a value, so storage was priced and
         # approved and then quietly ignored at build time.
         "boot_volume_size_in_gbs": int(sizing.get("boot_volume_gb", 50)),
+        # OS family of the chosen image. A blueprint that renders its own
+        # first-boot script needs it to pick package names, the systemd unit, the
+        # firewall tool and the certificate paths. Blueprints that delegate to
+        # configure.py get the same value baked into user_data instead, and
+        # modules declaring no such variable ignore it.
+        "os_family": (sizing.get("os_family") or "rhel"),
         "subnet_ocid": os.getenv("OCI_COMPUTE_SUBNET_OCID", ""),
         # Per-technology image resolved by the orchestrator (sizing["image_ocid"]);
         # falls back to the default image env for a plain/legacy call.

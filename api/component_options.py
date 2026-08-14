@@ -32,6 +32,7 @@ source="oci-live", so it appears here without this module changing.
 from sqlalchemy import select
 from sqlalchemy.orm import Session, object_session
 
+from api import blueprint_capabilities
 from db.models import ComponentOption, SizingAnchor, Technology
 
 # The detail fields, in the order the form shows them. `numeric` fields are
@@ -167,6 +168,21 @@ def _stored(session: Session, technology_code: str, target: str) -> dict[str, li
 _FAMILIES_THAT_CAN_PIN_A_VERSION = {"rhel"}
 
 
+def _image_suits(row: ComponentOption, technology_code: str) -> bool:
+    """Whether an OS image belongs on this technology's dropdown.
+
+    An image whose family we cannot read is SHOWN rather than hidden: the portal
+    not recognising an operating system is our gap, and silently removing a
+    legitimate image over it would be a worse failure than letting validation
+    have the final word.
+    """
+    families = supported_families(technology_code)
+    if not families:
+        return True  # this technology installs nothing on an OS — see installable_on
+    family = (row.attributes or {}).get("os_family")
+    return not family or family in families
+
+
 def options_for(session: Session, technology_code: str, deployment_target: str = "",
                 image: str = "") -> dict:
     """Everything the form needs for one component, and everything validate()
@@ -199,6 +215,23 @@ def options_for(session: Session, technology_code: str, deployment_target: str =
         # by "Oracle-Linux-9.4-2026.01.31-0", not by ocid1.image..
         captions: dict[str, str] = {}
         for row in stored.get(field, []):
+            # THE OS IMAGE LIST IS FILTERED TO WHAT THIS TECHNOLOGY RUNS ON.
+            #
+            # Refusing a bad combination at submit is a poor second to never
+            # offering it: the requester has by then filled in a whole form, and
+            # the rejection reads as the portal changing its mind. An image the
+            # platform cannot install this software on is not a choice, so it is
+            # not shown.
+            #
+            # This narrows and widens by itself. A technology certified on
+            # another OS tomorrow gains those images the moment its blueprint
+            # declares the family — nobody edits a list of images per technology.
+            #
+            # The dropdown is still only UX. validate() re-checks every submitted
+            # value against this same function, so a hand-crafted request naming
+            # a hidden image is refused all the same (ARCHITECTURE P2).
+            if field == "image" and not _image_suits(row, technology_code):
+                continue
             if row.value not in values:
                 values.append(row.value)
             if row.label and row.label != row.value:
@@ -234,22 +267,62 @@ def options_for(session: Session, technology_code: str, deployment_target: str =
         # combination outright — see validate().
         "os_family": family or None,
         "installable": (not family) or installable_on(technology_code, family),
+        # Whether the OS filtering is actually in force. False means the
+        # orchestrator could not be reached, so nothing was filtered — reported
+        # rather than left to look like "everything is allowed", which is how the
+        # rule silently did nothing in production for its first day.
+        "capabilities_known": blueprint_capabilities.known(),
     }
 
 
-def installable_on(technology_code: str, family: str) -> bool:
-    """Whether the platform has an install recipe for this technology on this OS.
+def supported_families(technology_code: str) -> set[str] | None:
+    """OS families the thing that ACTUALLY BUILDS this technology can configure.
 
-    Answered by the orchestrator's own recipe table, so the form cannot claim
-    something the machine will not do. Unknown family = no opinion, allow.
+    Asked of the ORCHESTRATOR, which owns the blueprints — over the signed
+    channel the API already uses, never by importing its code. The API image does
+    not contain the orchestrator package, so an import here raises in production
+    while passing every test, and the except branch silently switched the whole
+    rule off. See api/blueprint_capabilities.
+
+    Returns None when no answer is available: either the orchestrator could not
+    be reached, or no blueprint claims this technology. Callers must not read
+    None as "unrestricted" without saying so — that conflation is exactly what
+    let the portal accept Apache on Ubuntu.
+
+    Why the blueprint and not configure.py: configure.py carries a Debian recipe
+    for apache, and apache is built by oci/apache-httpd, a module that renders
+    its own Red Hat-only cloud-init and never calls configure.py at all.
+    """
+    return blueprint_capabilities.families_for(technology_code, _fetch_blueprints)
+
+
+def _fetch_blueprints() -> list[dict]:
+    """Ask the orchestrator what it ships. Imported lazily to avoid a cycle."""
+    from api.main import _orchestrator_blueprints
+    return _orchestrator_blueprints() or []
+
+
+def installable_on(technology_code: str, family: str) -> bool:
+    """Whether the platform can really install this technology on this OS.
+
+    Three things mean "no opinion, allow", and conflating any with "no" would
+    block far more than it protects:
+
+      * an OS family we failed to recognise,
+      * a technology no blueprint claims — an object storage bucket or a managed
+        database installs nothing on a machine, so the image is irrelevant to it
+        (reading its empty declaration as "supports no operating system" refused
+        every image for buckets, which a test caught before it shipped), and
+      * capabilities we could not read at all, which is NOT the same thing and is
+        reported separately by options_for so an inert filter is visible rather
+        than looking permissive.
     """
     if not family:
         return True
-    try:
-        from orchestrator import configure
-    except ImportError:  # pragma: no cover - the API always ships with it
+    families = supported_families(technology_code)
+    if not families:
         return True
-    return family in configure.supported_families(technology_code)
+    return family in families
 
 
 # One Oracle OCPU is two x86 vCPUs. The orchestrator converts the same way when
@@ -353,16 +426,28 @@ def validate(session: Session, technology_code: str, deployment_target: str,
     # boot, report success and install nothing.
     if not offered_all["installable"]:
         family = offered_all["os_family"]
-        try:
-            from orchestrator import configure
-            can = sorted(configure.supported_families(technology_code)) or ["nothing"]
-        except ImportError:  # pragma: no cover
-            can = ["another operating system"]
+        can = supported_families(technology_code)
+        # Name an image the requester can actually pick, not just a family name.
+        # "it can install it on: rhel" is true and useless — nobody chooses
+        # "rhel" from a dropdown, they choose "Oracle-Linux-9.8-2026.07.20-0".
+        suggestions = [
+            row.label for row in session.scalars(
+                select(ComponentOption).where(
+                    ComponentOption.field == "image",
+                    ComponentOption.deployment_target.in_(
+                        ("", (deployment_target or "").strip())),
+                ).order_by(ComponentOption.sort_order)
+            ).all()
+            if (row.attributes or {}).get("os_family") in can
+        ][:2]
+        instead = (f" Choose one of these instead: {', '.join(suggestions)}."
+                   if suggestions else "")
         errors["image"] = (
-            f"The platform has no way to install {technology_code} on a "
-            f"{family}-family image such as this one — it can install it on: "
-            f"{', '.join(can)}. Choose a different image, or remove this "
-            f"component from the request."
+            f"{technology_code} cannot be installed on this image — the "
+            f"platform's recipe for it only supports "
+            f"{', '.join(sorted(can)) or 'no operating system yet'}, and this "
+            f"image is {family}.{instead} Or remove {technology_code} from the "
+            f"request."
         )
         return errors
 

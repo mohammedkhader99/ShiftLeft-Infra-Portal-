@@ -205,3 +205,22 @@ variable "index_html_content" {
   type        = string
   default     = "<html><head><title>Apache on OCI</title></head><body><h1>Apache HTTP Server is running on OCI.</h1><p>Provisioned by the Orchestrator via Terraform.</p></body></html>\n"
 }
+
+# OS family of the image this instance boots: "rhel" or "debian".
+#
+# Package names, the systemd unit, the config path, the firewall tool and the
+# TLS certificate locations all follow it. Defaults to rhel, which is what every
+# request made before the portal offered a choice of image implied — and what
+# this module's own image lookup still selects when no image is supplied.
+variable "os_family" {
+  type    = string
+  default = "rhel"
+
+  validation {
+    # Refuse rather than silently install nothing. A family this template has no
+    # branch for would fall through to the Red Hat path and ask apt for a package
+    # named httpd.
+    condition     = contains(["rhel", "debian"], var.os_family)
+    error_message = "os_family must be rhel or debian - this blueprint has no recipe for anything else."
+  }
+}
