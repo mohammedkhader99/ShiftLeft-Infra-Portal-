@@ -2936,6 +2936,19 @@ def submit_request(
     components_data = [component_options.as_dict(c) for c in req.components]
     data = {field: _jsonable(getattr(req, field)) for field in REQUEST_FIELDS}
     data["components"] = components_data
+    # Carried for the duplicate-in-flight check, so it can tell "another request
+    # is already doing this" from "this request is already a row in the table".
+    #
+    # Defence in depth, and honestly labelled as such: TODAY nothing reaches that
+    # rule able to match itself, because a request is still `draft` here and
+    # drafts are excluded, and because the early return above makes a re-submit
+    # idempotent. Removing this line therefore breaks no test — I tried. It earns
+    # its place by making the rule correct on its own terms rather than by
+    # accident of two other decisions, either of which could reasonably change.
+    #
+    # Deliberately NOT added to REQUEST_FIELDS: that tuple also shapes the policy
+    # input and the signed orchestrator handoff, and neither needs it.
+    data["reference"] = req.reference
     errors = validate_submission(data, session)
     if errors:
         return JSONResponse(status_code=422, content={"errors": errors})

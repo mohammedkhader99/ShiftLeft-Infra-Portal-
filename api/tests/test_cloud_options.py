@@ -300,6 +300,23 @@ def test_a_version_submitted_against_an_ubuntu_image_is_refused(db):
     assert "version" in errors
 
 
+def test_the_withdrawn_version_message_says_what_to_do_about_it(db):
+    """This exact combination made Submit look like a dead button: the form
+    seeded version=1.20 when nginx was picked, the requester then chose an Ubuntu
+    image, the version dropdown was withdrawn but the VALUE was left behind — and
+    the resulting error pointed at a control no longer on screen.
+
+    The form now clears a withdrawn field, but the message still has to be
+    actionable, because a stale draft saved before that fix will still hit it.
+    """
+    cloud_options.refresh(db, lambda: _fetched())
+    message = component_options.validate(db, "nginx", "oci", {
+        "image": "ocid1.image..ubuntu", "version": "1.20"})["version"]
+    assert "Clear the version" in message, "the message must say what to do"
+    assert "Oracle Linux" in message, "and name the alternative that would work"
+    assert "cannot be chosen" not in message, "the old message said nothing useful"
+
+
 def test_software_with_no_recipe_for_the_image_is_refused(db, monkeypatch):
     """The combination check. Both halves are individually offered — the image is
     on its dropdown and the technology is in the catalogue — and together they

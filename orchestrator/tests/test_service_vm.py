@@ -246,6 +246,26 @@ def test_only_booted_technologies_claim_to_be_verified():
         "a code was marked verified — that claim needs a real boot test behind it")
 
 
+def test_the_module_enables_run_command_explicitly():
+    """Run Command is how the portal ASKS a machine whether its software really
+    installed — the only check that needs no inbound access to a private-only VM.
+
+    It is enabled by default on Oracle Linux images and NOT on Ubuntu ones, so
+    inheriting the image default made a machine's verifiability depend on which
+    OS the requester happened to pick. Found before booting an Ubuntu VM, not
+    after wasting one. A VM we cannot interrogate is a VM whose success we can
+    only assume, and assuming success is how a service-vm that installed nothing
+    shipped in the first place.
+    """
+    from pathlib import Path
+    main_tf = (Path(__file__).resolve().parents[1]
+               / "terraform" / "oci" / "service-vm" / "main.tf").read_text(encoding="utf-8")
+    assert "agent_config" in main_tf, "the module must state the agent plugins, not inherit them"
+    assert "Compute Instance Run Command" in main_tf
+    assert "ENABLED" in main_tf
+    assert "is_management_disabled = false" in main_tf
+
+
 def test_only_booted_os_families_claim_to_be_verified():
     """The Debian recipes were written from Ubuntu's documented package names,
     not from a machine that ran them. Plausible names are exactly what delivered

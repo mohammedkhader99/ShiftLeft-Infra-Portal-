@@ -145,6 +145,27 @@ resource "oci_core_instance" "service" {
     boot_volume_size_in_gbs = var.boot_volume_size_in_gbs
   }
 
+  # Oracle Cloud Agent plugins, stated explicitly rather than inherited from
+  # whichever image was chosen.
+  #
+  # Run Command is how the portal ASKS a machine whether its software actually
+  # installed — the only verification that does not need inbound network access
+  # to a private-only VM. It is enabled by default on Oracle Linux images and NOT
+  # on Ubuntu ones, so relying on the image default meant a machine's
+  # verifiability depended on which OS the requester happened to pick. A VM we
+  # cannot interrogate is a VM whose success we can only assume, and assuming
+  # success is how this project shipped a service-vm that never installed
+  # anything.
+  agent_config {
+    is_monitoring_disabled = false
+    is_management_disabled = false
+
+    plugins_config {
+      name          = "Compute Instance Run Command"
+      desired_state = "ENABLED"
+    }
+  }
+
   # user_data is omitted entirely when empty rather than sent as "", so a VM with
   # no configuration is visibly a bare VM instead of one that ran nothing.
   metadata = merge(

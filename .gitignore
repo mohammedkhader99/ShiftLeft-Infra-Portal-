@@ -18,3 +18,7 @@ orchestrator/terraform/.terraform.lock.hcl
 orchestrator/terraform/terraform.tfvars.json
 orchestrator/terraform/*.tfstate
 orchestrator/terraform/*.tfstate.*
+
+# Local database dumps taken before destructive changes. They contain request
+# rows and requester email addresses, so they stay out of git the same as .env.
+backups/

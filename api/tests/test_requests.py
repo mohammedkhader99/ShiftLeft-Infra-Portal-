@@ -835,6 +835,46 @@ def test_decommission_needs_at_least_one_technology(client, monkeypatch):
     assert "components" in errors
 
 
+def test_a_second_decommission_of_the_same_stack_is_refused(client, monkeypatch):
+    """Found in use: submitting a decommission twice produced two accepted
+    requests and two Jira tickets for one teardown, so an approver reviewed the
+    same work twice and the orchestrator would have been asked to destroy the
+    same resource twice.
+
+    Driven through the real endpoint rather than validate_submission directly:
+    the rule needs the submitting request's OWN reference to avoid blocking
+    itself, and that is passed in api/main.py. A unit test on the validator
+    cannot tell whether that wiring is still there.
+    """
+    source = _provision_a_request(client, monkeypatch)
+    body = {"request_type": "decommission", "source_reference": source,
+            "components": [{"technology_code": "postgres16", "size": "medium"}]}
+
+    first = client.post("/api/requests/draft", json=body).json()["reference"]
+    assert client.post(f"/api/requests/{first}/submit").status_code == 200
+
+    second = client.post("/api/requests/draft", json=body).json()["reference"]
+    resp = client.post(f"/api/requests/{second}/submit")
+    assert resp.status_code == 422
+    message = resp.json()["errors"]["source_reference"]
+    assert first in message, "the message must name the request already doing it"
+    assert "already requesting decommission" in message
+
+
+def test_a_decommission_does_not_block_itself_on_resubmit(client, monkeypatch):
+    """The other half, and the half the endpoint test exists for: a request is
+    already a draft row when it is validated, so a rule matching on source and
+    type must exclude the request making the call. Without the reference reaching
+    validation, a FIRST decommission would refuse itself and nothing could ever
+    be torn down."""
+    source = _provision_a_request(client, monkeypatch)
+    ref = client.post("/api/requests/draft", json={
+        "request_type": "decommission", "source_reference": source,
+        "components": [{"technology_code": "postgres16", "size": "medium"}],
+    }).json()["reference"]
+    assert client.post(f"/api/requests/{ref}/submit").status_code == 200
+
+
 def test_decommission_tears_down_source(client, monkeypatch):
     import api.main as main
 

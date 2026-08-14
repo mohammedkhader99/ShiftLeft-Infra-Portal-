@@ -248,6 +248,13 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
   const [result, setResult] = useState<Result | null>(null)
   // Advisory policy warnings (F-GOV-03) returned by a successful submit.
   const [warnings, setWarnings] = useState<string[]>([])
+  // The draft this form is editing, once it has been saved once. Sent back on
+  // every later save so the server UPDATES it instead of creating another:
+  // POST /api/requests/draft with no reference means "new draft", so without
+  // this every click of Save or Submit minted a fresh one. Invisible while
+  // submits succeed — one draft, immediately submitted — and very visible after
+  // nine rejected attempts left nine abandoned drafts behind.
+  const [draftRef, setDraftRef] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
   // AI request drafting (F-RPT-06): a plain-English description pre-fills the
@@ -404,23 +411,36 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
         results.filter((r): r is readonly [string, ComponentOptions] => r !== null),
       )
       setTechOptions(fetched)
-      // Seed any component that has no detail values yet from its current size,
-      // so the boxes are never blank and what is shown is what is priced.
       setComponents((cs) =>
         cs.map((c) => {
           const opts = fetched[c.technology_code]
-          if (!opts || c.vcpu) return c
-          const preset = opts.presets?.[c.size]
-          // Seed every text field's default too. A dropdown renders its first
-          // option when the bound value is empty, so without this the form would
-          // SHOW an OS image that the state does not hold — and submit without
-          // one, silently falling back to the platform default.
-          const defaults: Record<string, string> = {}
-          for (const field of ['version', 'image']) {
-            const value = opts.fields?.[field]?.default
-            if (value) defaults[field] = value
+          if (!opts) return c
+          const next: Component = { ...c }
+
+          // CLEAR any value whose field the server no longer offers. Picking an
+          // Ubuntu image withdraws the version dropdown, and a version left
+          // behind from before that choice is a value the server refuses — under
+          // a field that is no longer on screen, so the requester sees a submit
+          // that does nothing at all. Withdrawing the control has to withdraw
+          // the value with it.
+          for (const field of TEXT_DETAIL_FIELDS) {
+            if (!opts.fields?.[field] && next[field as 'version' | 'image']) {
+              delete next[field as 'version' | 'image']
+            }
           }
-          return { ...c, ...(preset ?? {}), ...defaults }
+
+          // Seed defaults only where nothing is set yet, so the boxes are never
+          // blank and what is shown is what gets priced. A dropdown renders its
+          // first option when its value is empty, so without this the form would
+          // SHOW an image the state does not hold.
+          if (!next.vcpu) Object.assign(next, opts.presets?.[c.size] ?? {})
+          for (const field of TEXT_DETAIL_FIELDS) {
+            const key = field as 'version' | 'image'
+            if (!next[key] && opts.fields?.[field]?.default) {
+              next[key] = opts.fields[field].default
+            }
+          }
+          return next
         }),
       )
     })
@@ -627,10 +647,20 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
     else setExplain({ summary: body?.detail || 'Could not explain the cost.', tips: [] })
   }
 
+  // Every save goes through here so the reference is remembered in exactly one
+  // place. Re-saving an existing draft updates it; only the first call creates.
+  async function persistDraft() {
+    const payload = buildPayload()
+    if (draftRef) payload.reference = draftRef
+    const saved = await saveDraft(payload)
+    if (saved.status === 200 && saved.body?.reference) setDraftRef(saved.body.reference)
+    return saved
+  }
+
   async function onSaveDraft() {
     setBusy(true)
     setResult(null)
-    const { status, body } = await saveDraft(buildPayload())
+    const { status, body } = await persistDraft()
     setBusy(false)
     if (status === 200)
       setResult({ kind: 'success', title: `Draft saved as ${body.reference}`, subtitle: 'You can resume it later.' })
@@ -642,7 +672,7 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
     setErrors({})
     setResult(null)
     setWarnings([])
-    const draft = await saveDraft(buildPayload())
+    const draft = await persistDraft()
     if (draft.status !== 200) {
       setBusy(false)
       setResult({ kind: 'error', title: 'Could not save the request', subtitle: draft.body?.detail || '' })
@@ -659,10 +689,31 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
         subtitle: appr?.jira_key ? `Jira ticket ${appr.jira_key} — awaiting approval.` : 'Awaiting approval.',
       })
       setWarnings(submit.body.policy_warnings || [])
+      // This draft is now a submitted request. Forget it, or the NEXT request
+      // raised from this form would overwrite the one just submitted instead of
+      // creating its own.
+      setDraftRef(null)
     } else if (submit.status === 422) {
-      setErrors(submit.body.errors || {})
+      const fieldErrors: Record<string, string> = submit.body.errors || {}
+      setErrors(fieldErrors)
       const pv = submit.body.policy_violations
-      if (pv?.length) setResult({ kind: 'error', title: 'Blocked by policy', subtitle: pv.join('; ') })
+      if (pv?.length) {
+        setResult({ kind: 'error', title: 'Blocked by policy', subtitle: pv.join('; ') })
+      } else {
+        // ALWAYS say something. Previously a validation error was stored and
+        // nothing was shown, so an error on a field that is no longer rendered —
+        // a version withdrawn when an Ubuntu image was chosen, say — made Submit
+        // look like a dead button. Silence is the one response a submit must
+        // never give.
+        const messages = Object.values(fieldErrors)
+        setResult({
+          kind: 'error',
+          title: messages.length
+            ? `The request could not be submitted (${messages.length} problem${messages.length > 1 ? 's' : ''})`
+            : 'The request could not be submitted',
+          subtitle: messages.join(' · ') || 'The server rejected it without saying why.',
+        })
+      }
     } else {
       setResult({ kind: 'error', title: 'Submit failed', subtitle: submit.body?.error || submit.body?.detail || '' })
     }

@@ -79,6 +79,27 @@ COMPONENT_TYPES = {"create", "add", "resize", "clone", "sandbox", "temporary", "
 # which inherits its context from the request it tears down).
 METADATA_TYPES = {"create", "add", "resize", "clone", "sandbox", "temporary", "dr"}
 
+# Request types that ACT ON an existing provisioned request rather than creating
+# something new. Two of these in flight against the same target is a real
+# problem, not a cosmetic one: two Jira tickets for one piece of work, two
+# approvers spending time on it, and an orchestrator eventually asked to tear
+# down the same resource twice — where the second attempt either fails
+# confusingly or, worse, destroys something a later request has since rebuilt.
+#
+# Clone and DR are deliberately absent: they READ a source to build something
+# new, so raising two is a legitimate thing to want.
+SOURCE_ACTING_TYPES = {"decommission", "refresh", "restore", "reduce"}
+
+# Types whose unit of work is a SUBSET of the stack, so two requests only clash
+# when they name overlapping technologies. Refresh and restore act on the whole
+# environment, so any second one against the same source clashes.
+COMPONENT_SCOPED_TYPES = {"decommission", "reduce"}
+
+# A request that could still act on its target. A `*-failed` request has stopped,
+# and blocking on one forever would make retrying impossible; a draft is not a
+# commitment to anything and would block the requester against themselves.
+IN_FLIGHT_STATUSES = ("submitted", "approved", "planned", "in-progress")
+
 
 def validate_submission(data: dict, session: Session) -> dict[str, str]:
     """Return {field: message} for every broken rule. Empty dict means valid.
@@ -154,6 +175,12 @@ def validate_submission(data: dict, session: Session) -> dict[str, str]:
     if request_type in METADATA_TYPES:
         _validate_metadata(data, errors)
         _validate_advanced(data.get("advanced_options"), errors)
+
+    # Last, and driven off SOURCE_ACTING_TYPES rather than sitting inside any one
+    # type's validator: a new request type that acts on an existing resource gets
+    # this guard by adding itself to that set, instead of by someone remembering
+    # to copy the check.
+    _validate_not_already_in_flight(data, session, errors)
 
     return errors
 
@@ -524,6 +551,62 @@ def _validate_shortlived_fields(data: dict, session: Session, errors: dict[str, 
                 errors["expires_on"] = "Choose when this temporary environment should expire."
             elif expiry <= datetime.now(timezone.utc).date():
                 errors["expires_on"] = "The expiry date must be in the future."
+
+
+def _validate_not_already_in_flight(data: dict, session: Session, errors: dict[str, str]) -> None:
+    """Refuse a second request to do the same thing to the same resource.
+
+    Submitting a decommission twice produced two accepted requests and two Jira
+    tickets for one teardown. Nothing downstream caught it: each request was
+    individually valid, the source was provisioned for both, and the components
+    belonged to it in both. The clash only exists BETWEEN requests, so this is
+    the only layer that can see it.
+
+    Scoped by technology for the types whose unit of work is part of a stack:
+    decommissioning nginx while a separate request decommissions redis from the
+    same environment is fine, and blocking it would be a nuisance. Refresh and
+    restore act on the whole environment, so any overlap is a clash.
+    """
+    request_type = (data.get("request_type") or "").strip()
+    if request_type not in SOURCE_ACTING_TYPES:
+        return
+    source_ref = (data.get("source_reference") or "").strip()
+    if not source_ref:
+        return  # a missing source is the type validator's error to report, not ours
+
+    # Exclude the request being submitted: it is already a draft row in the
+    # database, and a rule that blocks a request on account of itself is worse
+    # than no rule.
+    mine = (data.get("reference") or "").strip()
+    others = session.scalars(
+        select(Request).where(
+            Request.source_reference == source_ref,
+            Request.request_type == request_type,
+            Request.status.in_(IN_FLIGHT_STATUSES),
+            Request.reference != mine,
+        ).order_by(Request.reference)
+    ).all()
+    if not others:
+        return
+
+    wanted = {(c.get("technology_code") or "").strip()
+              for c in (data.get("components") or []) if c.get("technology_code")}
+    for other in others:
+        theirs = {c.technology_code for c in other.components if c.technology_code}
+        overlap = sorted(wanted & theirs) if request_type in COMPONENT_SCOPED_TYPES else None
+        if request_type in COMPONENT_SCOPED_TYPES and not overlap:
+            continue  # a different part of the same stack — not a clash
+
+        ticket = getattr(getattr(other, "approval", None), "jira_key", "") or ""
+        awaiting = f" (Jira {ticket})" if ticket else ""
+        what = f" for {', '.join(overlap)}" if overlap else ""
+        errors["source_reference"] = (
+            f"{other.reference} is already requesting {request_type} of "
+            f"{source_ref}{what} and is awaiting approval{awaiting}. Wait for it "
+            f"to finish, or cancel it, rather than raising a second one for the "
+            f"same resource."
+        )
+        return
 
 
 def _tech_targets(tech: Technology) -> list[str]:

@@ -373,10 +373,23 @@ def validate(session: Session, technology_code: str, deployment_target: str,
         value = str(raw).strip()
         spec = offered.get(field)
         if spec is None:
-            errors[field] = (
-                f"{LABELS[field]} cannot be chosen for "
-                f"{technology_code or 'this technology'}."
-            )
+            # Say WHY it is not on offer. "Version cannot be chosen" leaves the
+            # requester with nothing to act on, and when the field has been
+            # withdrawn by an image choice the control is not even on screen to
+            # point at.
+            family = offered_all["os_family"]
+            if field == "version" and family:
+                errors[field] = (
+                    f"The chosen OS image installs whichever {technology_code} "
+                    f"version its release carries, so a version cannot be pinned "
+                    f"on it. Clear the version, or choose an Oracle Linux image "
+                    f"if you need a specific one."
+                )
+            else:
+                errors[field] = (
+                    f"{LABELS[field]} cannot be chosen for "
+                    f"{technology_code or 'this technology'}."
+                )
             continue
         if value not in [o["value"] for o in spec["options"]]:
             allowed = ", ".join(o["value"] for o in spec["options"])
