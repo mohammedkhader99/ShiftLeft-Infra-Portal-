@@ -49,7 +49,10 @@ def _branch(text: str, family: str) -> str:
     """
     start = text.index('%{ if os_family == "debian" ~}', text.index("runcmd:"))
     middle = text.index("%{ else ~}", start)
-    end = text.index("%{ endif ~}\n  - echo 'PORTAL: first-boot", middle)
+    # The family branches close just before the shared final line. Anchored on
+    # the last `%{ endif ~}` rather than on the text of that line, which broke
+    # these tests the moment every runcmd entry gained its quotes.
+    end = text.rindex("%{ endif ~}", middle)
     body = _strip_comments(text[start:middle] if family == "debian"
                            else text[middle:end])
     # Only what actually RUNS. Everything after `||` is a diagnostic message, and

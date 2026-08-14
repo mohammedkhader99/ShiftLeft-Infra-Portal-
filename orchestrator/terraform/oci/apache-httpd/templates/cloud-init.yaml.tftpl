@@ -53,44 +53,44 @@ runcmd:
 %{ if os_family == "debian" ~}
   # --- Ubuntu / Debian -------------------------------------------------------
 %{ if server_name != "" ~}
-  - grep -q '^ServerName ' /etc/apache2/apache2.conf || echo 'ServerName ${server_name}' >> /etc/apache2/apache2.conf
+  - "grep -q '^ServerName ' /etc/apache2/apache2.conf || echo 'ServerName ${server_name}' >> /etc/apache2/apache2.conf"
 %{ endif ~}
-  - systemctl enable --now apache2 || echo 'PORTAL: apache2 failed to start' >> /var/log/infra-portal.log
+  - "systemctl enable --now apache2 || echo 'PORTAL: apache2 failed to start' >> /var/log/infra-portal.log"
   # ufw ships inactive on Ubuntu cloud images. `ufw allow` still records the rule
   # either way, and this never ENABLES the firewall — doing that unasked could
   # cut off SSH to a machine with no console.
-  - ufw allow 80/tcp || echo 'PORTAL: could not open 80/tcp' >> /var/log/infra-portal.log
+  - "ufw allow 80/tcp || echo 'PORTAL: could not open 80/tcp' >> /var/log/infra-portal.log"
 %{ if enable_https ~}
-  - ufw allow 443/tcp || echo 'PORTAL: could not open 443/tcp' >> /var/log/infra-portal.log
+  - "ufw allow 443/tcp || echo 'PORTAL: could not open 443/tcp' >> /var/log/infra-portal.log"
   # Debian ships mod_ssl inside the apache2 package but leaves it disabled.
-  - a2enmod ssl || echo 'PORTAL: could not enable the ssl module' >> /var/log/infra-portal.log
+  - "a2enmod ssl || echo 'PORTAL: could not enable the ssl module' >> /var/log/infra-portal.log"
   - |
     openssl req -x509 -nodes -newkey rsa:2048 -days 365 \
       -keyout /etc/ssl/private/ssl-cert-snakeoil.key \
       -out /etc/ssl/certs/ssl-cert-snakeoil.pem \
       -subj "/CN=${server_name != "" ? server_name : "localhost"}"
-  - chmod 600 /etc/ssl/private/ssl-cert-snakeoil.key
-  - a2ensite default-ssl || echo 'PORTAL: could not enable the TLS site' >> /var/log/infra-portal.log
+  - "chmod 600 /etc/ssl/private/ssl-cert-snakeoil.key"
+  - "a2ensite default-ssl || echo 'PORTAL: could not enable the TLS site' >> /var/log/infra-portal.log"
 %{ endif ~}
-  - systemctl restart apache2 || echo 'PORTAL: apache2 failed to restart' >> /var/log/infra-portal.log
+  - "systemctl restart apache2 || echo 'PORTAL: apache2 failed to restart' >> /var/log/infra-portal.log"
 %{ else ~}
   # --- Oracle Linux / Red Hat ------------------------------------------------
 %{ if server_name != "" ~}
-  - grep -q '^ServerName ' /etc/httpd/conf/httpd.conf || echo 'ServerName ${server_name}' >> /etc/httpd/conf/httpd.conf
+  - "grep -q '^ServerName ' /etc/httpd/conf/httpd.conf || echo 'ServerName ${server_name}' >> /etc/httpd/conf/httpd.conf"
 %{ endif ~}
-  - systemctl enable --now httpd || echo 'PORTAL: httpd failed to start' >> /var/log/infra-portal.log
-  - firewall-cmd --permanent --add-service=http || echo 'PORTAL: could not open http' >> /var/log/infra-portal.log
+  - "systemctl enable --now httpd || echo 'PORTAL: httpd failed to start' >> /var/log/infra-portal.log"
+  - "firewall-cmd --permanent --add-service=http || echo 'PORTAL: could not open http' >> /var/log/infra-portal.log"
 %{ if enable_https ~}
-  - firewall-cmd --permanent --add-service=https || echo 'PORTAL: could not open https' >> /var/log/infra-portal.log
+  - "firewall-cmd --permanent --add-service=https || echo 'PORTAL: could not open https' >> /var/log/infra-portal.log"
   # Generate a self-signed certificate at the paths mod_ssl uses by default
   - |
     openssl req -x509 -nodes -newkey rsa:2048 -days 365 \
       -keyout /etc/pki/tls/private/localhost.key \
       -out /etc/pki/tls/certs/localhost.crt \
       -subj "/CN=${server_name != "" ? server_name : "localhost"}"
-  - chmod 600 /etc/pki/tls/private/localhost.key
+  - "chmod 600 /etc/pki/tls/private/localhost.key"
 %{ endif ~}
-  - firewall-cmd --reload || true
-  - systemctl restart httpd || echo 'PORTAL: httpd failed to restart' >> /var/log/infra-portal.log
+  - "firewall-cmd --reload || true"
+  - "systemctl restart httpd || echo 'PORTAL: httpd failed to restart' >> /var/log/infra-portal.log"
 %{ endif ~}
-  - echo 'PORTAL: first-boot configuration finished' >> /var/log/infra-portal.log
+  - "echo 'PORTAL: first-boot configuration finished' >> /var/log/infra-portal.log"

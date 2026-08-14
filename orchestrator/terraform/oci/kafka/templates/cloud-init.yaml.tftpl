@@ -104,7 +104,7 @@ write_files:
       echo "PORTAL: kafka install finished $(date -Is)"
 
 runcmd:
-  - /opt/kafka-portal/install.sh || echo 'PORTAL: kafka install FAILED - see /var/log/infra-portal.log' >> /var/log/infra-portal.log
-  - firewall-cmd --permanent --add-port=${client_port}/tcp || echo 'PORTAL: could not open ${client_port}/tcp' >> /var/log/infra-portal.log
-  - firewall-cmd --permanent --add-port=${controller_port}/tcp || echo 'PORTAL: could not open ${controller_port}/tcp' >> /var/log/infra-portal.log
-  - firewall-cmd --reload || true
+  - "/opt/kafka-portal/install.sh || echo 'PORTAL: kafka install FAILED - see /var/log/infra-portal.log' >> /var/log/infra-portal.log"
+  - "firewall-cmd --permanent --add-port=${client_port}/tcp || echo 'PORTAL: could not open ${client_port}/tcp' >> /var/log/infra-portal.log"
+  - "firewall-cmd --permanent --add-port=${controller_port}/tcp || echo 'PORTAL: could not open ${controller_port}/tcp' >> /var/log/infra-portal.log"
+  - "firewall-cmd --reload || true"
