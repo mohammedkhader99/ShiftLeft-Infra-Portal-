@@ -244,3 +244,13 @@ def test_only_booted_technologies_claim_to_be_verified():
     """
     assert configure.VERIFIED_CODES == {"nginx", "redis7"}, (
         "a code was marked verified — that claim needs a real boot test behind it")
+
+
+def test_only_booted_os_families_claim_to_be_verified():
+    """The Debian recipes were written from Ubuntu's documented package names,
+    not from a machine that ran them. Plausible names are exactly what delivered
+    Redis 6.2 under a catalogue entry called "Redis 7", so Ubuntu stays unverified
+    until a VM has been booted and the service asked whether it works.
+    """
+    assert configure.VERIFIED_FAMILIES == {"rhel"}, (
+        "an OS family was marked verified — boot a VM on it first")

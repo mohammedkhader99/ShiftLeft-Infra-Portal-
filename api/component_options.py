@@ -30,7 +30,7 @@ source="oci-live", so it appears here without this module changing.
 """
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, object_session
 
 from db.models import ComponentOption, SizingAnchor, Technology
 
@@ -64,8 +64,15 @@ def as_dict(component) -> dict:
     One function so a new detail field cannot reach the price but miss the
     machine (or the reverse). Every caller that used to write
     `{"technology_code": ..., "size": ...}` by hand goes through here.
+
+    The chosen image's OS FAMILY is resolved and carried along. The orchestrator
+    needs it to pick a package manager and cannot look it up itself — the cached
+    image catalogue lives in this database. The session comes from the component
+    itself (object_session) rather than from a parameter, because this is called
+    from eight places and a signature nobody can forget to fill in is worth more
+    than an explicit one they can.
     """
-    return {
+    out = {
         "technology_code": component.technology_code,
         "size": component.size,
         "version": component.version,
@@ -74,6 +81,28 @@ def as_dict(component) -> dict:
         "memory_gb": component.memory_gb,
         "storage_gb": component.storage_gb,
     }
+    session = object_session(component)
+    if session is not None and component.image:
+        family = os_family_for_image(session, component.image)
+        if family:
+            out["os_family"] = family
+    return out
+
+
+def os_family_for_image(session: Session, image_ocid: str) -> str:
+    """The OS family an image needs, from the cached catalogue, or "".
+
+    "" when the image is unknown or its OS was not recognised. The caller must
+    treat that as "do not claim to know", never as a licence to assume Red Hat —
+    that assumption is what tells an Ubuntu machine to run dnf.
+    """
+    row = session.scalar(
+        select(ComponentOption).where(
+            ComponentOption.field == "image",
+            ComponentOption.value == (image_ocid or "").strip(),
+        )
+    )
+    return ((row.attributes or {}).get("os_family") or "") if row else ""
 
 
 def _anchors(session: Session, technology_code: str) -> list[SizingAnchor]:
@@ -131,20 +160,38 @@ def _stored(session: Session, technology_code: str, target: str) -> dict[str, li
     return grouped
 
 
-def options_for(session: Session, technology_code: str, deployment_target: str = "") -> dict:
+# Versions are delivered by Red Hat module streams (GAP-ANALYSIS step 9). Debian
+# has no equivalent — you get whatever the release carries — so a version chosen
+# against an Ubuntu image could not be honoured, and offering it would be the
+# Redis-6-sold-as-7 bug with a different distribution.
+_FAMILIES_THAT_CAN_PIN_A_VERSION = {"rhel"}
+
+
+def options_for(session: Session, technology_code: str, deployment_target: str = "",
+                image: str = "") -> dict:
     """Everything the form needs for one component, and everything validate()
     will accept for it.
 
     Returns fields in FIELDS order. A field with no options is omitted entirely,
     so the form shows no empty dropdown and validate() rejects any value for it.
+
+    `image` is the OS image the requester has picked. It narrows what is offered:
+    software with no install recipe for that image's OS family, and versions that
+    family cannot pin, are withdrawn rather than collected and discarded.
     """
     technology_code = (technology_code or "").strip()
+    family = os_family_for_image(session, image) if image else ""
     tech = session.scalar(select(Technology).where(Technology.code == technology_code))
     stored = _stored(session, technology_code, deployment_target)
     anchors = _anchors(session, technology_code)
 
     fields: dict[str, dict] = {}
     for field in FIELDS:
+        # A version the chosen image's OS cannot pin is not a choice, it is a
+        # wish. Withdraw the dropdown rather than record an answer nothing acts on.
+        if (field == "version" and family
+                and family not in _FAMILIES_THAT_CAN_PIN_A_VERSION):
+            continue
         values: list[str] = []
         default = ""
         # A stored row may carry its own display text. That is essential for an
@@ -182,7 +229,27 @@ def options_for(session: Session, technology_code: str, deployment_target: str =
         "deployment_target": (deployment_target or "").strip() or None,
         "fields": fields,
         "presets": presets(session, technology_code),
+        # The chosen image's OS family, and whether this technology can actually
+        # be installed on it. The form shows the warning; validation refuses the
+        # combination outright — see validate().
+        "os_family": family or None,
+        "installable": (not family) or installable_on(technology_code, family),
     }
+
+
+def installable_on(technology_code: str, family: str) -> bool:
+    """Whether the platform has an install recipe for this technology on this OS.
+
+    Answered by the orchestrator's own recipe table, so the form cannot claim
+    something the machine will not do. Unknown family = no opinion, allow.
+    """
+    if not family:
+        return True
+    try:
+        from orchestrator import configure
+    except ImportError:  # pragma: no cover - the API always ships with it
+        return True
+    return family in configure.supported_families(technology_code)
 
 
 # One Oracle OCPU is two x86 vCPUs. The orchestrator converts the same way when
@@ -275,8 +342,29 @@ def validate(session: Session, technology_code: str, deployment_target: str,
     every request raised before this form existed still works. A field SET to
     something not offered is refused: that is the whole point of the module.
     """
-    offered = options_for(session, technology_code, deployment_target)["fields"]
+    chosen_image = str(chosen.get("image") or "").strip()
+    offered_all = options_for(session, technology_code, deployment_target, chosen_image)
+    offered = offered_all["fields"]
     errors: dict[str, str] = {}
+
+    # The combination check, before the per-field ones: picking an Ubuntu image
+    # for software we can only install on Red Hat would otherwise sail through —
+    # the image is offered and the technology is offered, and the machine would
+    # boot, report success and install nothing.
+    if not offered_all["installable"]:
+        family = offered_all["os_family"]
+        try:
+            from orchestrator import configure
+            can = sorted(configure.supported_families(technology_code)) or ["nothing"]
+        except ImportError:  # pragma: no cover
+            can = ["another operating system"]
+        errors["image"] = (
+            f"The platform has no way to install {technology_code} on a "
+            f"{family}-family image such as this one — it can install it on: "
+            f"{', '.join(can)}. Choose a different image, or remove this "
+            f"component from the request."
+        )
+        return errors
 
     for field in FIELDS:
         raw = chosen.get(field)

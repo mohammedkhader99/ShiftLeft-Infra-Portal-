@@ -1,4 +1,8 @@
 .env
+# ...and any copy of it. A backup taken before editing settings carries the
+# same credentials as the original, and `.env` alone does not match `.env.bak`.
+.env.*
+!.env.example
 .venv/
 __pycache__/
 *.pyc

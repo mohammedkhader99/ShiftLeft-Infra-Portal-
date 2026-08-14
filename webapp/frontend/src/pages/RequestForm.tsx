@@ -377,13 +377,20 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
   // defaults for a component that has none yet. Re-runs when the target changes,
   // because what can be offered depends on where it runs.
   const chosenCodes = components.map((c) => c.technology_code).filter(Boolean).join(',')
+  // Re-queried when the chosen IMAGE changes too: the image decides the OS
+  // family, which decides what software can be installed and which versions can
+  // be pinned. Keyed on tech:image pairs so changing a size does not refetch.
+  const chosenImages = components.map((c) => `${c.technology_code}:${c.image ?? ''}`).join(',')
   useEffect(() => {
     const codes = chosenCodes ? chosenCodes.split(',') : []
     if (!codes.length) return
     let cancelled = false
     Promise.all(
       codes.map((code) =>
-        getComponentOptions(code, target).then(
+        getComponentOptions(
+          code, target,
+          components.find((c) => c.technology_code === code)?.image ?? '',
+        ).then(
           (o) => [code, o] as const,
           // A failed fetch must not wedge the form: the component keeps its size
           // and the server fills the shape from the anchor, which is exactly the
@@ -421,7 +428,7 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
       cancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chosenCodes, target])
+  }, [chosenCodes, chosenImages, target])
 
   const techName = (code: string) =>
     lookups?.technologies.find((t) => t.code === code)?.name ?? code
@@ -1189,6 +1196,21 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
                                       )
                                     })}
                                   </div>
+                                )}
+
+                                {opts && !opts.installable && (
+                                  <p style={{ fontSize: '0.75rem', color: 'var(--cds-text-error)', marginTop: '0.5rem' }}>
+                                    {techName(c.technology_code)} cannot be installed on
+                                    a {opts.os_family} image. Choose a different OS image,
+                                    or remove this component.
+                                  </p>
+                                )}
+
+                                {opts && opts.os_family && opts.installable && !opts.fields.version && (
+                                  <p style={{ fontSize: '0.72rem', color: 'var(--cds-text-secondary)', marginTop: '0.4rem' }}>
+                                    This OS installs whichever version its release carries,
+                                    so there is no version to choose.
+                                  </p>
                                 )}
 
                                 {active === 'custom' && (

@@ -49,9 +49,9 @@ def _fetched(**overrides) -> dict:
         ],
         "images": [
             {"ocid": "ocid1.image..ol9", "name": "Oracle-Linux-9.4-2026.01.31-0",
-             "os": "Oracle Linux", "os_version": "9"},
-            {"ocid": "ocid1.image..ol8", "name": "Oracle-Linux-8.10-2026.01.31-0",
-             "os": "Oracle Linux", "os_version": "8"},
+             "os": "Oracle Linux", "os_version": "9", "os_family": "rhel"},
+            {"ocid": "ocid1.image..ubuntu", "name": "Canonical-Ubuntu-24.04-2026.07.17-0",
+             "os": "Canonical Ubuntu", "os_version": "24.04", "os_family": "debian"},
         ],
         "shapes_available": 40,
         "images_available": 300,
@@ -267,6 +267,72 @@ def test_last_refreshed_is_answerable(db):
     assert cloud_options.last_refreshed(db) is None
     cloud_options.refresh(db, lambda: _fetched())
     assert cloud_options.last_refreshed(db) is not None
+
+
+# --- The chosen image narrows what the form offers ---------------------------
+
+def test_the_image_carries_its_os_family(db):
+    """The orchestrator needs it to pick a package manager and cannot look it up
+    itself — the image catalogue lives in this database."""
+    cloud_options.refresh(db, lambda: _fetched())
+    assert component_options.os_family_for_image(db, "ocid1.image..ol9") == "rhel"
+    assert component_options.os_family_for_image(db, "ocid1.image..ubuntu") == "debian"
+    assert component_options.os_family_for_image(db, "ocid1.image..unknown") == ""
+
+
+def test_an_ubuntu_image_withdraws_the_version_dropdown(db):
+    """Versions are delivered by Red Hat module streams. Debian has no
+    equivalent, so a version chosen against Ubuntu could not be honoured — and
+    collecting it anyway is the Redis-6-sold-as-7 bug in a different distro."""
+    cloud_options.refresh(db, lambda: _fetched())
+    on_rhel = component_options.options_for(db, "nginx", "oci", "ocid1.image..ol9")
+    on_ubuntu = component_options.options_for(db, "nginx", "oci", "ocid1.image..ubuntu")
+    assert "version" in on_rhel["fields"]
+    assert "version" not in on_ubuntu["fields"]
+    # ...and the shape is still offered, so the component stays configurable.
+    assert "vcpu" in on_ubuntu["fields"]
+
+
+def test_a_version_submitted_against_an_ubuntu_image_is_refused(db):
+    cloud_options.refresh(db, lambda: _fetched())
+    errors = component_options.validate(db, "nginx", "oci", {
+        "image": "ocid1.image..ubuntu", "version": "1.24"})
+    assert "version" in errors
+
+
+def test_software_with_no_recipe_for_the_image_is_refused(db, monkeypatch):
+    """The combination check. Both halves are individually offered — the image is
+    on its dropdown and the technology is in the catalogue — and together they
+    produce a machine that boots, reports success and installs nothing."""
+    from orchestrator import configure
+    monkeypatch.setitem(configure.TEMPLATES, "nginx",
+                        {"ports": [80], "rhel": {"packages": ["nginx"],
+                                                 "services": ["nginx"]}})
+    cloud_options.refresh(db, lambda: _fetched())
+    errors = component_options.validate(db, "nginx", "oci",
+                                        {"image": "ocid1.image..ubuntu"})
+    assert "image" in errors
+    assert "no way to install" in errors["image"]
+    assert "rhel" in errors["image"], "it should say where it CAN be installed"
+    # ...and the same technology on a Red Hat image is fine.
+    assert component_options.validate(db, "nginx", "oci",
+                                      {"image": "ocid1.image..ol9"}) == {}
+
+
+def test_software_installable_on_both_is_accepted_on_ubuntu(db):
+    """The other half — otherwise a check that refused everything would pass."""
+    cloud_options.refresh(db, lambda: _fetched())
+    assert component_options.validate(db, "nginx", "oci",
+                                      {"image": "ocid1.image..ubuntu"}) == {}
+
+
+def test_no_image_chosen_means_no_family_restriction(db):
+    """Every request raised before images were offered."""
+    cloud_options.refresh(db, lambda: _fetched())
+    out = component_options.options_for(db, "nginx", "oci")
+    assert out["os_family"] is None
+    assert out["installable"] is True
+    assert "version" in out["fields"]
 
 
 def test_the_columns_are_wide_enough_for_a_real_ocid():

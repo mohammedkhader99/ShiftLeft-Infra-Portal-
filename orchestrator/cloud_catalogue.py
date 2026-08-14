@@ -205,6 +205,19 @@ def _live_images(client, compartment: str) -> list[dict]:
     ]
 
 
+def with_family(images: list[dict]) -> list[dict]:
+    """Tag each image with the OS family its first-boot configuration needs.
+
+    Resolved HERE, next to the OCI response that names the operating system,
+    rather than by pattern-matching an image OCID somewhere downstream. An image
+    whose OS we do not recognise gets "" and the portal declines to configure
+    software on it — guessing rhel is how a machine ends up being told to run
+    dnf on something that has never heard of it.
+    """
+    from orchestrator import configure
+    return [{**i, "os_family": configure.family_for_os(i.get("os", ""))} for i in images]
+
+
 # --- The one entry point ----------------------------------------------------
 
 def fetch() -> dict:
@@ -243,7 +256,7 @@ def fetch() -> dict:
             unique_shapes.append(s)
 
     shapes = [s for s in unique_shapes if s["name"] in allow]
-    images = [i for i in all_images if _image_allowed(i["name"], keep)]
+    images = with_family([i for i in all_images if _image_allowed(i["name"], keep)])
 
     return {
         "mode": mode(),

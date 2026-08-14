@@ -34,13 +34,19 @@ export type ComponentOptions = {
     { label: string; options: { value: string; label: string }[]; default: string }
   >
   presets: Record<string, { vcpu: number; memory_gb: number; storage_gb: number }>
+  // The chosen image's OS family, and whether this technology can be installed
+  // on it. `installable: false` is a blocking combination — the server refuses
+  // it on submit, so the form says so rather than letting it get that far.
+  os_family: string | null
+  installable: boolean
 }
 
 export async function getComponentOptions(
   technology: string,
   target: string,
+  image = '',
 ): Promise<ComponentOptions> {
-  const q = new URLSearchParams({ technology, target })
+  const q = new URLSearchParams({ technology, target, image })
   return json<ComponentOptions>(await fetch(`/api/catalogue/component-options?${q}`))
 }
 

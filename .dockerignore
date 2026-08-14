@@ -5,3 +5,12 @@ __pycache__
 *.pyc
 .pytest_cache
 .env
+# Node dependencies and build output. The webapp image runs its own `npm install`
+# inside the build, so a host copy is never needed — and at ~390 MB it was being
+# uploaded to the Docker daemon on EVERY build of EVERY service, which is most of
+# why builds here take minutes.
+node_modules/
+dist/
+# Local backups of the environment file. Never in an image, same as .env itself.
+.env.*
+!.env.example

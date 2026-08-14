@@ -439,6 +439,24 @@ def _chosen_image(payload: dict, resource_kind: str = "") -> str:
     return ""
 
 
+def _os_family_for(payload: dict, resource_kind: str = "") -> str:
+    """The OS family of the image THIS machine boots.
+
+    The API resolves it from the requester's chosen image and passes it on the
+    component, because only the API has the cached image catalogue. Empty falls
+    back to CONFIG_OS_FAMILY inside configure.render, which is what every request
+    naming no image has always got.
+
+    Scoped per resource: a stack whose two machines run different operating
+    systems must not have one family applied to both.
+    """
+    for c in _components_for(payload, resource_kind):
+        family = (c.get("os_family") or "").strip().lower()
+        if family:
+            return family
+    return ""
+
+
 def _image_for(payload: dict, resource_kind: str = "") -> str:
     """The OS image for this request's compute component, in precedence order:
     what the requester chose on the form, then a per-technology image from
@@ -504,10 +522,11 @@ def _compute_spec(payload: dict, resource_kind: str = "") -> dict:
         # own pick counts as deliberate — more so than an admin's map.
         "image_ocid_explicit": (_chosen_image(payload, resource_kind)
                                 or _mapped_image(payload)),
-        "user_data": configure.render(components),
+        "user_data": configure.render(components, _os_family_for(payload, resource_kind)),
         # The ports the installed service listens on, from the same profiles that
         # produced user_data — so the network rules and the OS firewall agree.
-        "service_ports": configure.ports_for(components),
+        "service_ports": configure.ports_for(
+            components, _os_family_for(payload, resource_kind)),
         # How many nodes a clustered resource gets for this request's size.
         "node_count": _node_count(payload),
         # The managed-PostgreSQL shape for the same sizing, so a database scales

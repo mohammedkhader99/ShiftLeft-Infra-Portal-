@@ -2101,6 +2101,7 @@ def lookups(session: Session = Depends(get_session)) -> LookupsResponse:
 def component_option_list(
     technology: str,
     target: str = "",
+    image: str = "",
     session: Session = Depends(get_session),
 ) -> dict:
     """What the component detail form may offer for one technology on one target.
@@ -2110,7 +2111,7 @@ def component_option_list(
     uses to fill the boxes when a size button is clicked — previously a
     hard-coded table in the browser that could disagree with what was priced.
     """
-    return component_options.options_for(session, technology, target)
+    return component_options.options_for(session, technology, target, image)
 
 
 @app.post("/api/lookups/subsidiaries/sync")

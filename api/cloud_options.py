@@ -106,6 +106,12 @@ def _rows_from(fetched: dict) -> list[dict]:
             # The OCID is unreadable; the display name is what a requester picks by.
             "label": image.get("name") or image["ocid"],
             "is_default": index == 0,
+            # The OS family this image needs. Carried through so the form can
+            # narrow what software and versions it offers, and so the machine is
+            # told to use the right package manager.
+            "attributes": {"os": image.get("os", ""),
+                           "os_version": image.get("os_version", ""),
+                           "os_family": image.get("os_family", "")},
             "deployment_target": "oci",
             "technology_code": ALL_TECHNOLOGIES,
         })
