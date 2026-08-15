@@ -1,0 +1,166 @@
+"""Give the portal's VM subnet a route to the internet, and nothing else.
+
+WHY THIS EXISTS
+---------------
+AI-ShiftLeft-DEV-VCN had a service gateway and no NAT gateway. That is enough for
+Oracle Linux, whose yum mirrors sit inside the Oracle Services Network, and not
+enough for Ubuntu, whose apt repositories are on the public internet. The two
+behave identically right up to the moment a package is installed, so the portal
+built Ubuntu machines, Terraform exited zero, and the machines had nothing on
+them. REQ-2026-0134 proved it in one request: Apache on Oracle Linux installed
+and served on :80, while nginx on Ubuntu reported `nginx NOT INSTALLED`.
+
+WHAT IT CHANGES
+---------------
+All six subnets in the VCN share the default route table, so adding 0.0.0.0/0
+there would hand outbound internet to the database and Kubernetes subnets too.
+Instead this creates a route table used by the VM subnet ALONE:
+
+    1. a NAT gateway on the VCN                      (outbound only; nothing
+                                                      can open a connection in)
+    2. a route table carrying BOTH rules —           (the service-gateway rule is
+       Oracle Services Network -> service gateway     carried over deliberately:
+       0.0.0.0/0                -> NAT gateway        without it the machines lose
+                                                      Object Storage, which is how
+                                                      they report on themselves)
+    3. the VM subnet pointed at that route table
+
+The database and Kubernetes subnets keep the default route table exactly as it
+is. Reversing this is three steps in the other order: point the subnet back at
+the default route table, delete the route table, delete the NAT gateway.
+
+USAGE
+-----
+    python ops/oci_enable_internet_egress.py            # report only, changes nothing
+    python ops/oci_enable_internet_egress.py --apply    # make the change
+
+Idempotent: run it twice and the second run reports that everything already
+exists and changes nothing.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+
+import oci
+
+from orchestrator.cloud_state import _oci_config
+
+NAT_NAME = "AI-ShiftLeft-DEV-NATGW"
+ROUTE_TABLE_NAME = "AI-ShiftL-DEV-VM-APP-RT"
+
+
+def _find(items, name):
+    for item in items:
+        if item.display_name == name and item.lifecycle_state not in (
+                "TERMINATED", "TERMINATING"):
+            return item
+    return None
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--apply", action="store_true",
+                        help="make the change; without it, only report")
+    args = parser.parse_args()
+
+    subnet_ocid = os.getenv("OCI_COMPUTE_SUBNET_OCID", "")
+    if not subnet_ocid:
+        print("OCI_COMPUTE_SUBNET_OCID is not set — nothing to act on.")
+        return 2
+
+    net = oci.core.VirtualNetworkClient(_oci_config())
+    subnet = net.get_subnet(subnet_ocid).data
+    vcn = net.get_vcn(subnet.vcn_id).data
+    compartment = subnet.compartment_id
+
+    print(f"VCN     : {vcn.display_name} ({vcn.cidr_block})")
+    print(f"subnet  : {subnet.display_name} ({subnet.cidr_block})")
+    print(f"mode    : {'APPLY — this will change the tenancy' if args.apply else 'REPORT ONLY'}")
+    print()
+
+    # --- 1. the NAT gateway ---------------------------------------------------
+    gateways = net.list_nat_gateways(compartment, vcn_id=vcn.id).data
+    nat = _find(gateways, NAT_NAME) or (gateways[0] if gateways else None)
+    if nat:
+        print(f"NAT gateway     : exists — {nat.display_name} ({nat.lifecycle_state})")
+    elif not args.apply:
+        print(f"NAT gateway     : WOULD CREATE {NAT_NAME}")
+    else:
+        nat = net.create_nat_gateway(oci.core.models.CreateNatGatewayDetails(
+            compartment_id=compartment, vcn_id=vcn.id, display_name=NAT_NAME,
+            block_traffic=False)).data
+        nat = oci.wait_until(net, net.get_nat_gateway(nat.id),
+                             "lifecycle_state", "AVAILABLE", max_wait_seconds=300).data
+        print(f"NAT gateway     : CREATED {nat.display_name}")
+
+    # --- 2. the route table, carrying the service-gateway rule forward --------
+    service_gateways = net.list_service_gateways(compartment, vcn_id=vcn.id).data
+    if not service_gateways:
+        print("no service gateway found — refusing to build a route table that "
+              "would cut the machines off from Object Storage.")
+        return 1
+    sgw = service_gateways[0]
+
+    # The service rule is copied from the table in use rather than looked up
+    # fresh, so this cannot quietly narrow what the subnet can already reach.
+    current = net.get_route_table(subnet.route_table_id).data
+    service_rules = [r for r in current.route_rules
+                     if r.destination_type == "SERVICE_CIDR_BLOCK"]
+    print(f"service rules carried forward: "
+          f"{[r.destination for r in service_rules] or 'NONE FOUND'}")
+    if not service_rules:
+        print("  the subnet's current table has no service rule to carry — stopping.")
+        return 1
+
+    tables = net.list_route_tables(compartment, vcn_id=vcn.id).data
+    table = _find(tables, ROUTE_TABLE_NAME)
+    if table:
+        print(f"route table     : exists — {table.display_name}")
+    elif not args.apply:
+        print(f"route table     : WOULD CREATE {ROUTE_TABLE_NAME} with "
+              f"{len(service_rules)} service rule(s) + 0.0.0.0/0 -> NAT")
+    else:
+        rules = [oci.core.models.RouteRule(
+            destination=r.destination, destination_type="SERVICE_CIDR_BLOCK",
+            network_entity_id=sgw.id,
+            description="Oracle Services Network — Object Storage, yum mirrors")
+            for r in service_rules]
+        rules.append(oci.core.models.RouteRule(
+            destination="0.0.0.0/0", destination_type="CIDR_BLOCK",
+            network_entity_id=nat.id,
+            description="Outbound internet for OS package repositories (apt)"))
+        table = net.create_route_table(oci.core.models.CreateRouteTableDetails(
+            compartment_id=compartment, vcn_id=vcn.id,
+            display_name=ROUTE_TABLE_NAME, route_rules=rules)).data
+        print(f"route table     : CREATED {table.display_name} with {len(rules)} rules")
+
+    # --- 3. point the subnet at it -------------------------------------------
+    if table and subnet.route_table_id == table.id:
+        print(f"subnet          : already uses {ROUTE_TABLE_NAME}")
+    elif not args.apply:
+        print(f"subnet          : WOULD MOVE from '{current.display_name}' "
+              f"to '{ROUTE_TABLE_NAME}'")
+    elif table:
+        net.update_subnet(subnet.id, oci.core.models.UpdateSubnetDetails(
+            route_table_id=table.id))
+        print(f"subnet          : MOVED to {ROUTE_TABLE_NAME}")
+
+    # --- what the other subnets see ------------------------------------------
+    others = [s for s in oci.pagination.list_call_get_all_results(
+        net.list_subnets, compartment, vcn_id=vcn.id).data
+        if s.id != subnet.id]
+    print()
+    print(f"unchanged: {len(others)} other subnet(s) keep the default route "
+          f"table and have no route to the internet:")
+    for s in others:
+        print(f"   {s.display_name}")
+    if not args.apply:
+        print("\nNothing was changed. Re-run with --apply to make it so.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
