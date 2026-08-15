@@ -163,6 +163,12 @@ def _oci_vars(name: str, tags: dict, resource_kind: str = "oci-bucket",
         # configure.py get the same value baked into user_data instead, and
         # modules declaring no such variable ignore it.
         "os_family": (sizing.get("os_family") or "rhel"),
+        # Where the machine PUTs its own evidence. Only blueprints declaring
+        # `boot_report: template` take this as a variable — the rest already have
+        # it baked into the user_data configure.py rendered, and passing it to
+        # them would put an undeclared-variable warning in every apply log.
+        # Removed again below for those; see _cloud_vars.
+        "boot_report_url": (sizing.get("boot_report_url") or ""),
         "subnet_ocid": os.getenv("OCI_COMPUTE_SUBNET_OCID", ""),
         # Per-technology image resolved by the orchestrator (sizing["image_ocid"]);
         # falls back to the default image env for a plain/legacy call.
@@ -326,6 +332,11 @@ def _cloud_vars(cloud: str, name: str, tags: dict, resource_kind: str, sizing: d
     # beats the shared compute default already in the base set.
     if sizing and sizing.get("image_ocid_explicit"):
         base["image_ocid"] = sizing["image_ocid_explicit"]
+    # Only a module that renders its own cloud-init declares boot_report_url.
+    # Handing it to the others is harmless but noisy, and a log full of routine
+    # warnings is where a real one goes unread.
+    if manifest.get("boot_report") != "template":
+        base.pop("boot_report_url", None)
     return base
 
 

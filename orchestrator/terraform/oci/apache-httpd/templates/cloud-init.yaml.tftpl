@@ -48,6 +48,43 @@ write_files:
       technologies=apache
       os_family=${os_family}
       note=Written before install; presence alone does not prove success.
+%{ if boot_report_url != "" ~}
+  # The machine's own evidence, PUT to Object Storage at the end of first boot.
+  #
+  # This blueprint renders its OWN cloud-init and never calls
+  # orchestrator/configure.py, so the self-report added there did not reach an
+  # Apache machine at all — the same split that let this template stay Red Hat
+  # only while the generic path learned about Ubuntu. Caught in pre-flight for
+  # REQ-2026-0134, before it cost a VM.
+  #
+  # The package and unit names arrive as ALREADY-RESOLVED strings. A Terraform
+  # conditional directive cannot be used inside a literal block: its line sits at
+  # column zero, which ends the block and breaks the document — which is exactly
+  # what the first version of this did. (Nor can one be named in a comment: the
+  # whole file is a template, so a directive in a YAML comment is still parsed.
+  # That was the second version's mistake.)
+  - path: /usr/local/bin/infra-portal-report.sh
+    permissions: '0755'
+    content: |
+      #!/bin/sh
+      REPORT=/var/log/infra-portal-report.txt
+      {
+        echo 'os_family=${os_family}'
+        echo 'technologies=apache'
+        . /etc/os-release 2>/dev/null && echo "os=$PRETTY_NAME"
+        echo '--- packages ---'
+        (rpm -q ${apache_package} 2>/dev/null || dpkg-query -W -f='${apache_package} $${Version}' ${apache_package} 2>/dev/null || echo '${apache_package} NOT INSTALLED')
+        echo ''
+        echo '--- services ---'
+        echo "${apache_service}=$(systemctl is-active ${apache_service} 2>&1)"
+        echo '--- ports ---'
+        echo "http_80=$(curl -s -o /dev/null -m 5 -w '%%{http_code}' http://localhost/ 2>&1)"
+        ss -lnt 2>/dev/null | grep ':80 ' || echo 'nothing listening on 80'
+        echo '--- first-boot log ---'
+        cat /var/log/infra-portal.log 2>/dev/null || echo '(no portal log written)'
+      } > $REPORT 2>&1
+      curl -s -X PUT --data-binary @$REPORT '${boot_report_url}' >/dev/null 2>&1 || true
+%{ endif ~}
 
 runcmd:
 %{ if os_family == "debian" ~}
@@ -94,3 +131,6 @@ runcmd:
   - "systemctl restart httpd || echo 'PORTAL: httpd failed to restart' >> /var/log/infra-portal.log"
 %{ endif ~}
   - "echo 'PORTAL: first-boot configuration finished' >> /var/log/infra-portal.log"
+%{ if boot_report_url != "" ~}
+  - "/usr/local/bin/infra-portal-report.sh || true"
+%{ endif ~}

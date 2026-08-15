@@ -54,6 +54,12 @@ locals {
     index_html_b64 = base64encode(var.index_html_content)
     # Decides every package name, path and firewall command in the template.
     os_family = var.os_family
+    # Where the finished machine reports what it actually has.
+    boot_report_url = var.boot_report_url
+    # Resolved HERE, not with a directive inside the template's literal
+    # block — see the note in the template.
+    apache_package = var.os_family == "debian" ? "apache2" : "httpd"
+    apache_service = var.os_family == "debian" ? "apache2" : "httpd"
   }))
 }
 

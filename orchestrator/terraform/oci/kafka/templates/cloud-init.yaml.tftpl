@@ -103,8 +103,36 @@ write_files:
       systemctl enable --now kafka
       echo "PORTAL: kafka install finished $(date -Is)"
 
+%{ if boot_report_url != "" ~}
+  - path: /usr/local/bin/infra-portal-report.sh
+    permissions: '0755'
+    content: |
+      #!/bin/sh
+      REPORT=/var/log/infra-portal-report.txt
+      {
+        echo 'os_family=rhel'
+        echo 'technologies=kafka'
+        echo 'node=${node_id}'
+        . /etc/os-release 2>/dev/null && echo "os=$PRETTY_NAME"
+        echo '--- packages ---'
+        (rpm -q ${java_package} 2>/dev/null || echo '${java_package} NOT INSTALLED')
+        (test -x /opt/kafka/bin/kafka-server-start.sh && echo "kafka $(readlink -f /opt/kafka)" || echo 'kafka NOT INSTALLED')
+        echo '--- services ---'
+        echo "kafka=$(systemctl is-active kafka 2>&1)"
+        echo '--- ports ---'
+        ss -lnt 2>/dev/null | grep ':${client_port} ' || echo 'nothing listening on ${client_port}'
+        ss -lnt 2>/dev/null | grep ':${controller_port} ' || echo 'nothing listening on ${controller_port}'
+        echo '--- first-boot log ---'
+        cat /var/log/infra-portal.log 2>/dev/null || echo '(no portal log written)'
+      } > $REPORT 2>&1
+      curl -s -X PUT --data-binary @$REPORT '${boot_report_url}' >/dev/null 2>&1 || true
+%{ endif ~}
+
 runcmd:
   - "/opt/kafka-portal/install.sh || echo 'PORTAL: kafka install FAILED - see /var/log/infra-portal.log' >> /var/log/infra-portal.log"
   - "firewall-cmd --permanent --add-port=${client_port}/tcp || echo 'PORTAL: could not open ${client_port}/tcp' >> /var/log/infra-portal.log"
   - "firewall-cmd --permanent --add-port=${controller_port}/tcp || echo 'PORTAL: could not open ${controller_port}/tcp' >> /var/log/infra-portal.log"
   - "firewall-cmd --reload || true"
+%{ if boot_report_url != "" ~}
+  - "/usr/local/bin/infra-portal-report.sh || true"
+%{ endif ~}

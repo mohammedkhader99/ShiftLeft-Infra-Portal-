@@ -3,6 +3,21 @@ target: oci
 resource_kind: oci-apache
 module: oci/apache-httpd
 version: 1.0.0
+
+# How this blueprint's machines report on themselves at the end of first boot.
+#
+# Terraform exiting zero says the VM exists, not that anything was installed on
+# it. That inference was wrong four times in one week, so every blueprint that
+# boots a machine must make the machine say what it actually became. Which
+# MECHANISM carries the report differs, and getting that wrong is silent: the
+# Apache blueprint renders its own cloud-init, so the report added to
+# configure.py never reached an Apache machine at all, and the gap was found in
+# pre-flight for REQ-2026-0134 rather than by any test.
+#
+# Declared here so the provisioner knows whether to pass boot_report_url, and so
+# test_every_machine_reports.py can hold each blueprint to it.
+# template  = this module renders its own cloud-init and embeds the report.
+boot_report: template
 builds: [apache]
 # OS families this blueprint's own first-boot script can actually configure.
 #

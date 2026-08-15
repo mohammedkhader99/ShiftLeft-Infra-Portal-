@@ -276,3 +276,12 @@ variable "ssh_authorized_key" {
   type        = string
   default     = ""
 }
+
+variable "boot_report_url" {
+  description = <<-EOT
+    Where each node PUTs its own self-report at the end of first boot. Empty
+    disables reporting entirely, which leaves the boot exactly as it was.
+  EOT
+  type        = string
+  default     = ""
+}

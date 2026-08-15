@@ -582,6 +582,10 @@ def _compute_spec(payload: dict, resource_kind: str = "") -> dict:
         # that render their own first-boot script (apache-httpd). One source, so
         # the two paths cannot disagree about which OS a machine is.
         "os_family": _os_family_for(payload, resource_kind) or configure.os_family(),
+        # Same URL the generic path bakes into user_data, exposed as a
+        # variable for blueprints that render their own cloud-init.
+        "boot_report_url": configure.boot_report_url(
+            payload.get("reference", ""), resource_kind),
         "user_data": configure.render(
             components,
             _os_family_for(payload, resource_kind),

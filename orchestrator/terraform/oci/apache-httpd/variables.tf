@@ -224,3 +224,11 @@ variable "os_family" {
     error_message = "os_family must be rhel or debian - this blueprint has no recipe for anything else."
   }
 }
+
+# Where this machine PUTs its own evidence at the end of first boot. A
+# write-only pre-authenticated request; empty means no report is emitted and the
+# boot is unchanged. See orchestrator/boot_reports.py.
+variable "boot_report_url" {
+  type    = string
+  default = ""
+}

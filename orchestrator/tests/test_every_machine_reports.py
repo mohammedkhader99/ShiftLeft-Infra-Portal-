@@ -1,0 +1,271 @@
+"""Every blueprint that boots a machine must make that machine report on itself.
+
+WHY THIS FILE EXISTS. The self-report was built into orchestrator/configure.py,
+which renders first-boot configuration for blueprints that ask for it. The Apache
+blueprint does not ask: it renders its own cloud-init and ignores what
+configure.py produced. So the feature was finished, its own tests passed, and an
+Apache machine would still have reported nothing at all. The same was true of
+Kafka. Neither was caught by a test — both were caught by hand, in the pre-flight
+for REQ-2026-0134, minutes before a VM would have been built blind.
+
+That is the shape of nearly every serious bug in this project: not a missing
+test, but a boundary nothing tested ACROSS. configure.py's tests proved
+configure.py reports. Nothing proved every machine does.
+
+So this file asks the question at the level it matters: for each blueprint that
+boots a machine, does the cloud-init that machine ACTUALLY BOOTS WITH carry a
+report? Which mechanism carries it differs per blueprint, and each manifest has
+to say which — an exemption must be argued in writing, not assumed by silence.
+"""
+
+from __future__ import annotations
+
+import pathlib
+import re
+
+import pytest
+
+yaml = pytest.importorskip("yaml")
+
+from orchestrator import configure
+
+ROOT = pathlib.Path(__file__).resolve().parents[2]
+BLUEPRINTS = ROOT / "orchestrator" / "blueprints"
+TERRAFORM = ROOT / "orchestrator" / "terraform"
+
+PAR = ("https://objectstorage.me-dubai-1.oraclecloud.com/p/TOKEN/n/axuri6bvn1y8"
+       "/b/shiftleft-boot-reports/o/")
+
+
+def _manifests() -> list[tuple[str, dict]]:
+    out = []
+    for path in sorted(BLUEPRINTS.glob("*.yaml")):
+        doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        out.append((path.name, doc))
+    return out
+
+
+def _boots_a_machine(manifest: dict) -> bool:
+    """A blueprint that declares which OS families it supports boots a machine.
+
+    Buckets and managed databases declare none, because there is no operating
+    system for a requester to be given or refused.
+    """
+    return bool(manifest.get("os_families"))
+
+
+def _templatefile_call(body: str) -> str:
+    """The values a module hands to templatefile(), as text.
+
+    Crude brace matching rather than an HCL parser, because the only question
+    asked of it is whether a name appears among those values.
+    """
+    at = body.find("templatefile(")
+    if at < 0:
+        return ""
+    depth, out = 0, []
+    for char in body[at + len("templatefile"):]:
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                break
+        out.append(char)
+    return "".join(out)
+
+
+MACHINE_BLUEPRINTS = [(n, m) for n, m in _manifests() if _boots_a_machine(m)]
+IDS = [n for n, _ in MACHINE_BLUEPRINTS]
+
+
+def test_there_are_machine_blueprints_to_check():
+    """If a rename made the list empty, every test below would pass vacuously and
+    this file would go on reporting success while checking nothing."""
+    assert len(MACHINE_BLUEPRINTS) >= 4, IDS
+
+
+# --- Each blueprint must SAY how it reports ----------------------------------
+
+@pytest.mark.parametrize("name,manifest", MACHINE_BLUEPRINTS, ids=IDS)
+def test_every_machine_blueprint_declares_its_mechanism(name, manifest):
+    """Silence is the failure mode this whole file exists to stop. A new
+    blueprint that says nothing must fail here, not on a live machine."""
+    assert manifest.get("boot_report") in ("template", "user_data", "none"), (
+        f"{name} boots a machine but does not say how that machine reports on "
+        f"itself. Add boot_report: template | user_data | none.")
+
+
+@pytest.mark.parametrize("name,manifest", MACHINE_BLUEPRINTS, ids=IDS)
+def test_an_exemption_must_be_argued_in_writing(name, manifest):
+    """`none` is allowed — OKE's nodes really do boot an image this project never
+    renders — but only where somebody wrote down why. An exemption nobody had to
+    justify is how the rule quietly stops applying."""
+    if manifest.get("boot_report") != "none":
+        return
+    text = (BLUEPRINTS / name).read_text(encoding="utf-8")
+    reason = re.search(r"#[^\n]*\bnone\b[^\n]*=[^\n]*EXEMPT", text)
+    assert reason, (f"{name} exempts itself from boot reporting without saying "
+                    f"why. State the reason in a comment above boot_report.")
+
+
+# --- `template`: the module's own cloud-init must carry the report ------------
+
+TEMPLATE_BLUEPRINTS = [(n, m) for n, m in MACHINE_BLUEPRINTS
+                       if m.get("boot_report") == "template"]
+TEMPLATE_IDS = [n for n, _ in TEMPLATE_BLUEPRINTS]
+
+
+@pytest.mark.parametrize("name,manifest", TEMPLATE_BLUEPRINTS, ids=TEMPLATE_IDS)
+def test_the_modules_own_cloud_init_writes_and_runs_the_report(name, manifest):
+    """THE test. Apache declared os_families and rendered its own cloud-init, and
+    that cloud-init had no report in it — which is precisely what this asserts."""
+    module = TERRAFORM / manifest["module"]
+    templates = list((module / "templates").glob("cloud-init*.tftpl"))
+    assert templates, f"{name} says `template` but has no cloud-init template."
+    for template in templates:
+        text = template.read_text(encoding="utf-8")
+        assert "boot_report_url" in text, (
+            f"{template.relative_to(ROOT)} never uses boot_report_url, so the "
+            f"machine it boots reports nothing.")
+        assert "infra-portal-report.sh" in text, (
+            f"{template.relative_to(ROOT)} does not write the report script.")
+
+
+@pytest.mark.parametrize("name,manifest", TEMPLATE_BLUEPRINTS, ids=TEMPLATE_IDS)
+def test_the_module_accepts_the_url_and_passes_it_to_the_template(name, manifest):
+    """A template that reads boot_report_url and a module that never declares or
+    passes it fails at plan time — after approval, which is the expensive place
+    to find out."""
+    module = TERRAFORM / manifest["module"]
+    declared = "".join(p.read_text(encoding="utf-8")
+                       for p in module.glob("*.tf"))
+    assert re.search(r'variable\s+"boot_report_url"', declared), (
+        f"{manifest['module']} does not declare variable boot_report_url.")
+    assert re.search(r"boot_report_url\s*=", declared), (
+        f"{manifest['module']} declares boot_report_url but never passes it "
+        f"into its templatefile call, so the template always sees the default.")
+
+
+@pytest.mark.parametrize("name,manifest", TEMPLATE_BLUEPRINTS, ids=TEMPLATE_IDS)
+def test_a_multi_node_blueprint_gives_each_node_its_own_report(name, manifest):
+    """One URL for a three-node Kafka cluster means node 3 overwrites node 1 and
+    two machines are never examined — a silent failure wearing a report."""
+    module = TERRAFORM / manifest["module"]
+    body = "".join(p.read_text(encoding="utf-8") for p in module.glob("*.tf"))
+    # The precise question is not "does this module use count anywhere" — Apache
+    # uses one for an optional security group and still builds a single machine.
+    # It is "is this TEMPLATE rendered once per node", which shows as count.index
+    # among the values handed to templatefile.
+    call = _templatefile_call(body)
+    if "count.index" not in call:
+        return
+    assert re.search(r"boot_report_url[^\n]*replace\(|replace\([^\n]*boot_report_url",
+                     call), (
+        f"{manifest['module']} renders its cloud-init once per node but gives "
+        f"every node the same report URL, so all but one go unexamined.")
+
+
+# --- `user_data`: configure.py must be the thing that renders it --------------
+
+USER_DATA_BLUEPRINTS = [(n, m) for n, m in MACHINE_BLUEPRINTS
+                        if m.get("boot_report") == "user_data"]
+UD_IDS = [n for n, _ in USER_DATA_BLUEPRINTS]
+
+
+@pytest.mark.parametrize("name,manifest", USER_DATA_BLUEPRINTS, ids=UD_IDS)
+def test_a_user_data_blueprint_really_does_take_user_data(name, manifest):
+    """Claiming `user_data` while rendering your own cloud-init is exactly the
+    Apache mistake, stated the other way round."""
+    module = TERRAFORM / manifest["module"]
+    body = "".join(p.read_text(encoding="utf-8") for p in module.glob("*.tf"))
+    assert re.search(r'variable\s+"user_data"', body), (
+        f"{manifest['module']} says its report arrives in user_data but "
+        f"declares no user_data variable to receive it.")
+    own = list((module / "templates").glob("cloud-init*.tftpl"))
+    assert not own, (
+        f"{manifest['module']} renders its own cloud-init ({[p.name for p in own]}) "
+        f"and would ignore what configure.py produced. It is a `template` "
+        f"blueprint, and its template needs the report in it.")
+
+
+@pytest.mark.parametrize("name,manifest", USER_DATA_BLUEPRINTS, ids=UD_IDS)
+def test_configure_py_reports_for_every_family_that_blueprint_offers(
+        name, manifest, monkeypatch):
+    """Not "configure.py can report" but "it reports for the families THIS
+    blueprint offers a requester" — the two came apart once already, when the
+    generic path learned about Ubuntu and a template did not."""
+    monkeypatch.setenv("CONFIG_ENABLED", "true")
+    monkeypatch.delenv("CONFIG_PACKAGE_MAP", raising=False)
+    monkeypatch.setenv("OCI_BOOT_REPORT_PAR_URL", PAR)
+    url = configure.boot_report_url("REQ-2026-0199", manifest["resource_kind"])
+    assert url, "a configured PAR must produce a URL"
+    for family in manifest["os_families"]:
+        text = configure.render([{"technology_code": "nginx"}], family, url)
+        doc = yaml.safe_load(text)
+        assert any(f["path"].endswith("report.sh") for f in doc["write_files"]), (
+            f"{name} offers {family} but configure.py writes no report for it.")
+        assert "infra-portal-report.sh" in doc["runcmd"][-1], (
+            f"{name}/{family} writes a report script and never runs it.")
+
+
+# --- The declaration has to survive the trip from file to running code --------
+
+@pytest.mark.parametrize("name,manifest", MACHINE_BLUEPRINTS, ids=IDS)
+def test_the_registry_carries_the_declaration_through(name, manifest):
+    """Every test above reads the YAML file. Nothing at runtime does.
+
+    blueprint_registry.discover() copies a WHITELIST of keys out of each
+    manifest, and a key it does not know about is dropped in silence. So
+    boot_report was declared correctly in all five files, every test passed, and
+    the provisioner saw None for every blueprint — it would have passed the URL
+    to nobody and the Apache machine would still have reported nothing.
+
+    Found by running the real code path by hand rather than by any test, which is
+    exactly the habit this file was written to make unnecessary.
+    """
+    from orchestrator import blueprint_registry
+    loaded = blueprint_registry.for_resource_kind(manifest["resource_kind"]) or {}
+    assert loaded, f"{name} does not load through the registry at all"
+    assert loaded.get("boot_report") == manifest["boot_report"], (
+        f"{name} declares boot_report: {manifest['boot_report']} in the file, but "
+        f"the registry hands the provisioner {loaded.get('boot_report')!r}. Add "
+        f"the key to blueprint_registry.discover().")
+
+
+@pytest.mark.parametrize("name,manifest", TEMPLATE_BLUEPRINTS, ids=TEMPLATE_IDS)
+def test_the_provisioner_actually_passes_the_url(name, manifest, monkeypatch):
+    """The end of the chain: does the variable reach terraform.tfvars.json?"""
+    monkeypatch.setenv("OCI_BOOT_REPORT_PAR_URL", PAR)
+    from orchestrator import provisioner
+    kind = manifest["resource_kind"]
+    sizing = {"boot_report_url": configure.boot_report_url("REQ-2026-0199", kind)}
+    variables = provisioner._cloud_vars("oci", "test-name", {}, kind, sizing)
+    assert variables.get("boot_report_url", "").endswith(f"REQ-2026-0199-{kind}.txt"), (
+        f"{name} renders its own cloud-init but the provisioner sends it no URL, "
+        f"so the template falls back to its default and reports nothing.")
+
+
+@pytest.mark.parametrize("name,manifest", USER_DATA_BLUEPRINTS, ids=UD_IDS)
+def test_a_user_data_blueprint_is_sent_no_stray_variable(name, manifest, monkeypatch):
+    """Its module declares no such variable, and Terraform warns on every apply
+    for one it was given and never asked for. Routine warnings are where a real
+    one goes unread."""
+    monkeypatch.setenv("OCI_BOOT_REPORT_PAR_URL", PAR)
+    from orchestrator import provisioner
+    kind = manifest["resource_kind"]
+    sizing = {"boot_report_url": configure.boot_report_url("REQ-2026-0199", kind)}
+    variables = provisioner._cloud_vars("oci", "test-name", {}, kind, sizing)
+    assert "boot_report_url" not in variables
+
+
+# --- The two mechanisms must agree on where reports land ----------------------
+
+def test_both_mechanisms_write_to_the_same_place(monkeypatch):
+    """The portal reads one bucket. A blueprint writing somewhere else would look
+    like a machine that never reported, which reads as a failure."""
+    monkeypatch.setenv("OCI_BOOT_REPORT_PAR_URL", PAR)
+    from orchestrator import boot_reports
+    url = configure.boot_report_url("REQ-2026-0199", "oci-apache")
+    assert url.startswith(PAR)
+    assert boot_reports.bucket() in url

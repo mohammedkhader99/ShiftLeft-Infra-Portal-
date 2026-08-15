@@ -88,6 +88,12 @@ def discover(directory: Path | None = None) -> list[dict]:
             # cloud-init must not be pointed at an Ubuntu image.
             "os_families": [str(f).strip().lower()
                             for f in manifest.get("os_families") or []],
+            # Which mechanism carries this blueprint's boot self-report:
+            # `template` (its own cloud-init embeds it, so the module needs
+            # boot_report_url as a variable), `user_data` (configure.py already
+            # baked it in), or `none` (exempt, with the reason written down).
+            # The provisioner reads this to decide whether to pass the URL.
+            "boot_report": str(manifest.get("boot_report") or ""),
             "description": str(manifest.get("description") or ""),
             # Which Terraform variable carries the environment's name. Modules
             # disagree (bucket_name, instance_name, db_name...), and hard-coding

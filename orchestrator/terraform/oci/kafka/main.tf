@@ -221,6 +221,10 @@ resource "oci_core_instance" "kafka" {
       num_partitions     = var.num_partitions
       replication_factor = local.replication_factor
       min_isr            = local.min_isr
+      # Per NODE, not per resource: a single URL would have every node
+      # overwrite the last and leave all but one machine unexamined.
+      boot_report_url = var.boot_report_url == "" ? "" : replace(
+        var.boot_report_url, ".txt", "-node${count.index + 1}.txt")
     }))
   }
 
