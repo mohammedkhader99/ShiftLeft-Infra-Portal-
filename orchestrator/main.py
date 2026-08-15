@@ -21,6 +21,7 @@ from common.signing import verify
 from orchestrator import (
     backups,
     blueprint_registry,
+    boot_reports,
     cloud_catalogue,
     cloud_state,
     configure,
@@ -711,6 +712,92 @@ async def apply(request: Request) -> dict:
     }
     _provisioned[key] = provisioned
     return provisioned
+
+
+def _report_expected(kind: str) -> tuple[bool, str]:
+    """Whether a machine of this kind should have reported, and if not, why not.
+
+    Stated as a reason rather than a bare False so that "nothing to check here"
+    can never be confused with "checked and found nothing" — the second is a
+    failure and the first is not.
+    """
+    if provisioner.provision_mode() != "apply":
+        return False, "mock mode built no real machine"
+    manifest = blueprint_registry.for_resource_kind(kind) or {}
+    if not manifest.get("os_families"):
+        return False, "not a machine — nothing boots, so nothing can report"
+    if manifest.get("boot_report") == "none":
+        return False, "blueprint is exempt from boot reporting"
+    if not boot_reports.bucket():
+        return False, "no OCI_BOOT_REPORT_PAR_URL is configured, so no machine was asked"
+    return True, ""
+
+
+@app.post("/verify")
+async def verify_boot(request: Request) -> dict:
+    """What the machines of a request say about themselves, in their own words.
+
+    READ-ONLY, and it decides nothing. The orchestrator holds the cloud
+    credentials, so it is the only layer that can read the bucket; what a broken
+    machine MEANS for a request is the portal's call, and the portal makes it.
+    That split is the same one that keeps approval in Jira: whoever can act must
+    not also be the one who judges the outcome.
+
+    Callable in every PROVISION_MODE. In mock mode there is no machine to ask, so
+    every resource comes back not-applicable and the portal proceeds as before —
+    a verification step that failed closed in mock mode would stop the demo path
+    the whole project is built to run on.
+    """
+    body = await request.body()
+    payload = _authorise(body, request.headers.get("X-Signature", ""))
+    reference = payload["reference"]
+
+    resources: list[dict] = []
+    for kind in _resource_kinds(payload):
+        expected, why = _report_expected(kind)
+        if not expected:
+            resources.append({"kind": kind, "expected": False,
+                              "state": "not-applicable", "note": why})
+            continue
+        try:
+            found = boot_reports.reports_for(reference, kind)
+        except boot_reports.BootReportUnavailable as exc:
+            # The bucket itself is unreadable. NOT the same as a machine that has
+            # not reported yet, and not something waiting longer will fix.
+            resources.append({"kind": kind, "expected": True,
+                              "state": "unreadable", "note": str(exc)})
+            continue
+        if not found:
+            resources.append({"kind": kind, "expected": True, "state": "waiting",
+                              "note": "no machine has reported yet"})
+            continue
+        problems: list[str] = []
+        for name, text in sorted(found.items()):
+            result = boot_reports.verdict(text)
+            problems += [f"{name}: {p}" for p in result["problems"]]
+        resources.append({
+            "kind": kind, "expected": True,
+            "state": "ok" if not problems else "broken",
+            "problems": problems,
+            "machines": sorted(found),
+            # The machine's own words, so the portal can show a human WHY rather
+            # than a verdict they have to take on trust.
+            "reports": found,
+        })
+
+    checked = [r for r in resources if r["expected"]]
+    return {
+        "reference": reference,
+        "resources": resources,
+        "checked": len(checked),
+        "waiting": [r["kind"] for r in checked if r["state"] == "waiting"],
+        "broken": [r["kind"] for r in checked if r["state"] == "broken"],
+        "unreadable": [r["kind"] for r in checked if r["state"] == "unreadable"],
+        # Nothing left to wait for — every machine that owes a report has filed one.
+        "settled": not any(r["state"] == "waiting" for r in checked),
+        # True with nothing to check: a bucket request has no machine to disbelieve.
+        "all_ok": all(r["state"] == "ok" for r in checked),
+    }
 
 
 @app.post("/drift")

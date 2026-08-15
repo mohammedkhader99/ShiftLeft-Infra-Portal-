@@ -166,6 +166,56 @@ def test_a_multi_node_blueprint_gives_each_node_its_own_report(name, manifest):
         f"every node the same report URL, so all but one go unexamined.")
 
 
+@pytest.mark.parametrize("name,manifest", MACHINE_BLUEPRINTS, ids=IDS)
+def test_a_blueprint_cannot_build_more_machines_than_it_can_tell_apart(name, manifest):
+    """Every module builds `count` instances from one rendered cloud-init.
+
+    Today each count defaults to 1, so the single report per resource is exactly
+    right. Raise one — a one-line change, and the obvious thing to do when a
+    requester asks for three web servers — and all three machines PUT to the same
+    object. The last to boot wins, two go unexamined, and the portal reports the
+    whole stack healthy on the word of one machine.
+
+    This is the same fault the Kafka template already had to solve per node. The
+    rule is not "counts must stay at 1"; it is "you may only build as many
+    machines as you can tell apart".
+    """
+    module = TERRAFORM / manifest["module"]
+    body = "".join(p.read_text(encoding="utf-8") for p in module.glob("*.tf"))
+    # Unbounded on purpose. A {0,400} window here silently skipped service-vm,
+    # whose instance block is longer than that, and the test passed while the
+    # blueprint was scaled to three machines sharing one report URL — a guard
+    # that quietly checks nothing is worse than no guard at all.
+    instance = re.search(r'resource\s+"oci_core_instance"[^{]*\{(.*?)\n\}', body, re.S)
+    assert instance, (
+        f"{manifest['module']} boots machines but no oci_core_instance was found "
+        f"— this guard has stopped being able to see them.")
+    # A BARE variable is a count someone can raise. An expression — the shared
+    # module's `var.resource_kind == "oci-instance" ? 1 : 0` — is a switch, and
+    # can never produce a second machine however it is configured.
+    counted = re.search(r"count\s*=\s*var\.(\w+)\s*\n", instance.group(1))
+    if not counted:
+        return
+    variable = counted.group(1)
+
+    per_instance = re.search(
+        r"boot_report_url[^\n]*(replace|count\.index)|"
+        r"(replace|count\.index)[^\n]*boot_report_url", body)
+    if per_instance:
+        return  # it can tell its machines apart; any count is fine
+
+    declared = re.search(rf'variable\s+"{variable}"\s*\{{(.{{0,400}}?)\n\}}', body, re.S)
+    default = re.search(r"default\s*=\s*(\d+)", declared.group(1)) if declared else None
+    assert default and int(default.group(1)) == 1, (
+        f"{manifest['module']} builds var.{variable} machines from one cloud-init "
+        f"and gives them all the same report URL, so all but one go unexamined. "
+        f"Either vary the URL per instance, or leave the default at 1.")
+    manifest_count = (manifest.get("vars") or {}).get(variable)
+    assert manifest_count in (None, 1), (
+        f"{name} sets {variable}={manifest_count}, but {manifest['module']} cannot "
+        f"tell those machines' reports apart.")
+
+
 # --- `user_data`: configure.py must be the thing that renders it --------------
 
 USER_DATA_BLUEPRINTS = [(n, m) for n, m in MACHINE_BLUEPRINTS

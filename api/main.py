@@ -1191,7 +1191,8 @@ def stats(session: Session = Depends(get_session),
             "total": total,
             "active": sum_of("provisioned"),
             "in_flight": sum_of("submitted", "planned", "in-progress"),
-            "failed": sum_of("apply-failed", "decommission-failed", "rejected"),
+            "failed": sum_of("apply-failed", "teardown-failed", "rejected",
+                             "verify-failed"),
             "decommissioned": sum_of("decommissioned"),
             "breaching_sla": breaching_sla,
         },
@@ -3982,17 +3983,145 @@ def _provision_in_background(reference: str, jira_key: str, body: bytes, signatu
 
         result = response.json()
         ttl_dt = datetime.fromisoformat(ttl_expiry_iso) if ttl_expiry_iso else None
+        # Recorded FIRST and unconditionally. These resources are real and are
+        # billing from this moment; a verdict arriving later must never be the
+        # reason nobody can find them to tear them down.
         for res in _result_resources(result):
             session.add(ProvisionedResource(
                 reference=reference, kind=res.get("kind", "resource"), name=res.get("name", ""),
                 region=res.get("region"), details=res.get("outputs", {}) or {},
                 ttl_expiry=ttl_dt, lifecycle_state="active",
             ))
-        _transition_jira(session, req, resolved_status(), "jira.resolved")
-        req.status = "provisioned"
-        req.status_detail = _record_unautomated(session, req, jira_key)
-        append_audit(session, "provisioned", reference=reference, jira_key=jira_key, detail=result)
+        append_audit(session, "apply.completed", reference=reference, jira_key=jira_key,
+                     detail={"summary": result.get("summary")})
         session.commit()
+
+    # Ask the machines themselves, with NO database session held: first boot takes
+    # minutes, and a transaction left open that long blocks everything behind it.
+    outcome = _await_boot_reports(reference, body, signature)
+
+    with SessionLocal() as session:
+        req = session.scalar(select(Request).where(Request.reference == reference))
+        if req is None:
+            return
+        if outcome["ok"]:
+            _transition_jira(session, req, resolved_status(), "jira.resolved")
+            req.status = "provisioned"
+            req.status_detail = _record_unautomated(session, req, jira_key)
+            append_audit(session, "provisioned", reference=reference, jira_key=jira_key,
+                         detail={**result, "verification": outcome["detail"]})
+        else:
+            # The apply SUCCEEDED and the resources exist — this is not
+            # 'apply-failed', which tells an operator nothing was created and so
+            # nothing needs cleaning up. What failed is the machine.
+            #
+            # 'verify-failed' and not 'verification-failed' because Request.status
+            # is varchar(16) and there is no migration tooling in this project, so
+            # a 19-character status is a runtime error on Postgres that SQLite
+            # would let every test pass. 'decommission-failed' was exactly that,
+            # sitting unexploded until the first decommission failed.
+            req.status = "verify-failed"
+            # status_detail is varchar(500) and a machine can list many problems.
+            req.status_detail = outcome["summary"][:500]
+            append_audit(session, outcome["event"], reference=reference, jira_key=jira_key,
+                         detail=outcome["detail"])
+            add_comment(jira_key, "⚠️ The infrastructure was created, but the machine "
+                                  "did not confirm it is working, so this request is "
+                                  f"NOT complete.\n\n{outcome['summary']}\n\nThe "
+                                  "resources exist and are billing — they need fixing "
+                                  "or decommissioning.")
+        session.commit()
+
+
+def _boot_verify_enforced() -> bool:
+    """Whether a machine that says it is broken blocks the request (F-LCM).
+
+    On by default. Off still COLLECTS and shows the report — turning it off means
+    'do not let this stop a request', never 'stop asking'.
+    """
+    return settings.env("BOOT_VERIFY_ENFORCED", "true").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
+def _boot_verify_int(key: str, fallback: int) -> int:
+    try:
+        return max(1, int(settings.env(key, str(fallback))))
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _await_boot_reports(reference: str, body: bytes, signature: str) -> dict:
+    """Wait for every machine to say what it actually became, and judge it.
+
+    WHY THE PORTAL WAITS. Terraform returns when an instance reaches RUNNING,
+    which is BEFORE cloud-init has finished installing anything. Asking straight
+    away would find no report and call a healthy machine silent, so the portal
+    waits for the answer rather than assuming one.
+
+    Three outcomes, deliberately distinct, because they need different actions:
+      ok       — every machine reports the software installed and running
+      broken   — a machine says what is wrong, in its own words
+      silent   — nothing reported in time, so the portal does not KNOW. Absence of
+                 evidence is not evidence of health; this is the exact inference
+                 that reported four broken machines as provisioned.
+    """
+    if not _boot_verify_enforced():
+        return {"ok": True, "event": "verification.skipped",
+                "summary": "", "detail": {"enforced": False}}
+
+    deadline_minutes = _boot_verify_int("BOOT_VERIFY_DEADLINE_MINUTES", 15)
+    interval = _boot_verify_int("BOOT_VERIFY_POLL_SECONDS", 20)
+    give_up_at = time.monotonic() + deadline_minutes * 60
+    last: dict = {}
+
+    while True:
+        unreachable = None
+        response, error = _post_to_orchestrator(body, signature, path="/verify")
+        if response is not None and response.status_code == 200:
+            last = response.json()
+            if last.get("checked", 0) == 0:
+                # Nothing here can report — a bucket, a managed database, or mock
+                # mode. Silence is the correct and complete answer.
+                return {"ok": True, "event": "verification.not_applicable",
+                        "summary": "", "detail": last}
+            if last.get("settled"):
+                break
+        else:
+            unreachable = error or (response.text if response is not None else "no response")
+
+        # Read the clock ONCE. Asking twice let the deadline fall between the two
+        # readings, so "we could not ask the machines" was reported as "we asked
+        # and they said nothing" — two different faults needing two different
+        # fixes, decided by a microsecond.
+        out_of_time = time.monotonic() >= give_up_at
+        if out_of_time and unreachable:
+            return {"ok": False, "event": "verification.unavailable",
+                    "summary": ("Could not ask the machines whether they work: "
+                                f"{unreachable}"),
+                    "detail": {"error": unreachable}}
+        if out_of_time:
+            waiting = last.get("waiting") or ["the machines"]
+            return {"ok": False, "event": "verification.silent",
+                    "summary": (f"No report arrived from {', '.join(waiting)} within "
+                                f"{deadline_minutes} minutes. The machine may still be "
+                                f"installing, may have failed before it could report, or "
+                                f"may not be able to reach Object Storage. It has NOT "
+                                f"been confirmed working."),
+                    "detail": last}
+        time.sleep(interval)
+
+    if last.get("all_ok"):
+        return {"ok": True, "event": "verification.passed", "summary": "", "detail": last}
+
+    problems: list[str] = []
+    for resource in last.get("resources", []):
+        problems += resource.get("problems") or []
+        if resource.get("state") == "unreadable":
+            problems.append(f"{resource['kind']}: {resource.get('note', 'unreadable')}")
+    return {"ok": False, "event": "verification.failed",
+            "summary": ("The machines were built but reported problems: "
+                        + "; ".join(problems)),
+            "detail": last}
 
 
 @app.post("/api/requests/{reference}/retry")
@@ -4987,7 +5116,7 @@ def _decommission(session: Session, req: Request, actor: str) -> dict:
         select(Request).where(Request.reference == req.source_reference)
     )
     if source is None:
-        req.status = "decommission-failed"
+        req.status = "teardown-failed"
         req.status_detail = f"Source request {req.source_reference} not found."
         append_audit(session, "decommission.source_missing", reference=req.reference,
                      jira_key=req.approval.jira_key, detail={"source": req.source_reference})
@@ -5027,7 +5156,7 @@ def _decommission(session: Session, req: Request, actor: str) -> dict:
     if response is None or response.status_code != 200:
         raw = error or (response.text if response else "")
         reason = _short_reason(raw)
-        req.status = "decommission-failed"
+        req.status = "teardown-failed"
         req.status_detail = reason
         append_audit(session, "destroy.failed", reference=req.reference,
                      jira_key=req.approval.jira_key,
@@ -5484,7 +5613,12 @@ def _advance_request(session: Session, req: Request) -> str:
                      jira_key=jira_key, actor="poller")
         session.commit()
         _provision_in_background(req.reference, jira_key, body, signature, ttl_iso)
-        session.refresh(req)  # pick up 'provisioned' / 'apply-failed' from the apply
+        # Picks up 'provisioned' / 'apply-failed' / 'verify-failed'. This
+        # blocks the sweep while the machines finish booting and report, which is
+        # the same bargain the sweep already makes with a long Terraform apply.
+        # Safe to sit in 'in-progress' meanwhile: the sweep only ever picks up
+        # 'submitted' and 'planned', so nothing re-provisions it underneath us.
+        session.refresh(req)
     return req.status
 
 

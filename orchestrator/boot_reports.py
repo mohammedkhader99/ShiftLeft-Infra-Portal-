@@ -73,6 +73,41 @@ def fetch(reference: str, resource_kind: str, client=None) -> str:
             f"no report for {reference}/{resource_kind}: {exc}") from exc
 
 
+def reports_for(reference: str, resource_kind: str, client=None) -> dict[str, str]:
+    """Every report the machines of one resource have written, by object name.
+
+    Listed by PREFIX rather than fetched by exact name, because one resource kind
+    can be more than one machine: a Kafka node writes ...-oci-kafka-node1.txt, and
+    a GET of the bare name would 404 forever while a healthy cluster sat there
+    reporting perfectly well.
+
+    Raises BootReportUnavailable only when the bucket itself cannot be reached.
+    An empty dict means "nothing has reported YET", which is a different fact
+    from "the bucket is unreadable" and the caller has to treat it differently.
+    """
+    name = bucket()
+    if not name:
+        raise BootReportUnavailable(
+            "OCI_BOOT_REPORT_PAR_URL is not set, so no machine has been asked to "
+            "report and none can be read.")
+    client = client or _client()
+    prefix = f"{(reference or '').strip()}-{(resource_kind or 'resource').strip()}"
+    try:
+        namespace = client.get_namespace().data
+        listing = client.list_objects(namespace, name, prefix=prefix).data
+    except Exception as exc:  # noqa: BLE001 - SDK raises many types
+        raise BootReportUnavailable(f"could not list reports for {prefix}: {exc}") from exc
+
+    out: dict[str, str] = {}
+    for obj in getattr(listing, "objects", None) or []:
+        try:
+            out[obj.name] = client.get_object(namespace, name, obj.name).data.text
+        except Exception as exc:  # noqa: BLE001
+            raise BootReportUnavailable(
+                f"listed {obj.name} but could not read it: {exc}") from exc
+    return out
+
+
 def verdict(report: str) -> dict:
     """Read a report and say plainly whether the machine is working.
 

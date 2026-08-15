@@ -8,7 +8,11 @@ export type WFStep = {
 
 const TERMINAL_FAIL: Record<string, string> = {
   'apply-failed': 'Provisioning',
-  'decommission-failed': 'Provisioning',
+  'teardown-failed': 'Provisioning',
+  // Built and running, but the machine reported it is not working — so the
+  // stage that failed is Provisioned, not Provisioning. Pointing at
+  // Provisioning would send someone hunting a Terraform error there isn't one of.
+  'verify-failed': 'Provisioned',
   rejected: 'Approved',
 }
 

@@ -25,7 +25,9 @@ from api.ai_drafter import AiUnavailable, ai_mode, ai_model, anthropic_client
 from db.models import AuditLog, Request
 
 # Request statuses that mean the request failed outright.
-FAILURE_STATUSES = {"apply-failed", "decommission-failed", "rejected"}
+FAILURE_STATUSES = {"apply-failed", "teardown-failed", "rejected",
+                    # Built, but the machine itself says it is not working.
+                    "verify-failed"}
 # Audit events that record a failure or a block worth diagnosing.
 FAILURE_EVENTS = {
     "apply.failed", "destroy.failed", "decommission.source_missing",

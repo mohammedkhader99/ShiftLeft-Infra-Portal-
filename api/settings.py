@@ -51,6 +51,29 @@ ALLOWLIST: dict[str, dict] = {
                                "help": ("Stop retrying a request after this many failed "
                                         "handoffs. A permanent failure otherwise retries "
                                         "every poll cycle indefinitely.")},
+    # Boot verification. Terraform exiting zero says a machine EXISTS, not that
+    # anything was installed on it — an inference that was wrong four times in
+    # one week. Each machine writes a self-report at the end of first boot and
+    # the portal now waits for it before calling a request provisioned.
+    "BOOT_VERIFY_ENFORCED": {"label": "Require machines to prove they booted correctly",
+                             "type": "bool", "default": "true", "group": "Governance",
+                             "help": ("When on, a request is only 'provisioned' once "
+                                      "every machine reports the software it was asked "
+                                      "for is installed and running. When off, the "
+                                      "report is still collected and shown, but a "
+                                      "machine that says it is broken no longer blocks "
+                                      "the request.")},
+    "BOOT_VERIFY_DEADLINE_MINUTES": {"label": "Wait for boot reports (minutes)",
+                                     "type": "int", "default": "15", "min": 1, "max": 120,
+                                     "group": "Governance",
+                                     "help": ("How long to wait for a machine to finish "
+                                              "installing and report. Longer than the "
+                                              "slowest first boot; too short and a "
+                                              "working machine is called silent.")},
+    "BOOT_VERIFY_POLL_SECONDS": {"label": "Boot report poll interval (seconds)",
+                                 "type": "int", "default": "20", "min": 5, "max": 300,
+                                 "group": "Governance",
+                                 "help": "How often to check the bucket while waiting."},
     "APPROVAL_QUORUM": {"label": "Approval quorum", "type": "int", "default": "1", "min": 1,
                         "group": "Governance",
                         "help": "Number of distinct approvers required before provisioning."},
