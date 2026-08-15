@@ -158,14 +158,34 @@ FAMILIES = tuple(_INSTALL)
 # `{port}` is substituted per declared port; `reload` runs once afterwards.
 _FIREWALL = {
     "rhel": {"add": "firewall-cmd --permanent --add-port={port}/tcp",
-             "reload": "firewall-cmd --reload"},
-    # ufw ships inactive on Ubuntu cloud images. `ufw allow` on an inactive
-    # firewall still records the rule, so this is correct whether or not the
-    # image has it enabled, and it never switches the firewall ON — doing that
-    # unasked could cut off SSH.
-    "debian": {"add": "ufw allow {port}/tcp", "reload": "ufw --force reload"},
+             "reload": "firewall-cmd --reload",
+             # How the machine checks its OWN work. firewalld answers directly.
+             "query": "firewall-cmd --query-port={port}/tcp"},
+    # OCI's Ubuntu images DO NOT SHIP ufw. This said they did — "ufw ships
+    # inactive on Ubuntu cloud images, and `ufw allow` on an inactive firewall
+    # still records the rule" — and it was simply wrong. The images filter with
+    # iptables rules baked into /etc/iptables/rules.v4 that REJECT everything but
+    # SSH, `ufw allow` failed with command-not-found, and the reject rule stayed.
+    #
+    # REQ-2026-0136 is what that costs: nginx installed, running, listening on
+    # :80, and unreachable from any other machine on the subnet. The portal
+    # called it provisioned. The machine had even logged the failure.
+    #
+    # So: use ufw when it is genuinely there and active — overwriting a live ufw
+    # with raw iptables rules would have them wiped on its next reload — and
+    # otherwise edit iptables directly, which is what the image actually uses.
+    "debian": {
+        "add": ("(command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | "
+                "grep -q active && ufw allow {port}/tcp) || "
+                "iptables -I INPUT -p tcp --dport {port} -j ACCEPT"),
+        # Rules added at runtime are lost on reboot unless written down.
+        "reload": ("netfilter-persistent save 2>/dev/null || "
+                   "iptables-save > /etc/iptables/rules.v4 2>/dev/null"),
+        "query": "iptables-save 2>/dev/null | grep -q -- '--dport {port} '",
+    },
     "suse": {"add": "firewall-cmd --permanent --add-port={port}/tcp",
-             "reload": "firewall-cmd --reload"},
+             "reload": "firewall-cmd --reload",
+             "query": "firewall-cmd --query-port={port}/tcp"},
 }
 
 # What the portal calls an OS family, keyed by the `operating_system` string OCI
@@ -271,6 +291,20 @@ def _report_script(codes: list[str], packages: list[str], services: list[str],
             f"  echo \"http_{port}=$(curl -s -o /dev/null -m 5 -w '%{{http_code}}' "
             f"http://localhost:{port}/ 2>&1)\"")
         checks.append(f"  ss -lnt 2>/dev/null | grep ':{port} ' || echo 'nothing listening on {port}'")
+        # The firewall, asked DIRECTLY.
+        #
+        # The three checks above all pass on a machine nobody can reach: curl to
+        # localhost and ss both look at the daemon, not the firewall. That is not
+        # theoretical — REQ-2026-0136 reported http_80=200 and a listening socket
+        # while every other machine on its subnet got "No route to host".
+        #
+        # Nor is testing the machine's own private IP enough: that traffic
+        # arrives on lo, and the first rule in both images' rule sets accepts
+        # everything on lo before any port rule is consulted. So it would pass
+        # too. Only the rule set itself answers the question honestly.
+        query = _FIREWALL[family]["query"].format(port=port)
+        checks.append(f"  if {query} >/dev/null 2>&1; then echo 'firewall_{port}=open'; "
+                      f"else echo 'firewall_{port}=CLOSED'; fi")
     checks += [
         "  echo '--- first-boot log ---'",
         "  cat /var/log/infra-portal.log 2>/dev/null || echo '(no portal log written)'",
@@ -517,26 +551,26 @@ def render(components: list[dict], family: str = "", report_url: str = "") -> st
     # Module streams are enabled BEFORE the install, or the default stream is
     # already resolved and the wrong major version comes down.
     for mod in modules:
-        lines.append(cmd(f"{_MODULE_ENABLE[family]} {mod} || echo 'PORTAL: could not "
+        lines.append(cmd(f"{_MODULE_ENABLE[family]} {mod} || echo 'PORTAL FAILURE: could not "
                          f"enable module {mod}' >> /var/log/infra-portal.log"))
     if packages:
         # `|| true` keeps a failed install from aborting the rest of cloud-init, so
         # the marker + log survive for diagnosis instead of a silent dead VM.
-        lines.append(cmd(f"{install} {' '.join(packages)} || echo 'PORTAL: package install FAILED' >> /var/log/infra-portal.log"))
+        lines.append(cmd(f"{install} {' '.join(packages)} || echo 'PORTAL FAILURE: package install did not complete' >> /var/log/infra-portal.log"))
     for svc in services:
-        lines.append(cmd(f"systemctl enable --now {svc} || echo 'PORTAL: {svc} failed to start' >> /var/log/infra-portal.log"))
+        lines.append(cmd(f"systemctl enable --now {svc} || echo 'PORTAL FAILURE: {svc} did not start' >> /var/log/infra-portal.log"))
     # The OS firewall, from the same declaration that drives the network rules.
     # Without this a service starts correctly and is still unreachable — which
     # looks exactly like a broken install.
     for port in ports:
         add = firewall["add"].format(port=port)
-        lines.append(cmd(f"{add} || echo 'PORTAL: could not open {port}/tcp' >> /var/log/infra-portal.log"))
+        lines.append(cmd(f"{add} || echo 'PORTAL FAILURE: could not open {port}/tcp in the firewall' >> /var/log/infra-portal.log"))
     if ports:
         lines.append(cmd(f"{firewall['reload']} || true"))
     # Say on the machine what was skipped and why, so a missing service is
     # diagnosable from the VM without going back to the portal.
     for code in unsupported:
-        lines.append(cmd(f"echo 'PORTAL: {code} has no install recipe for {family}; "
+        lines.append(cmd(f"echo 'PORTAL FAILURE: {code} has no install recipe for {family}; "
                          f"nothing was installed for it' >> /var/log/infra-portal.log"))
     lines.append(cmd("echo 'PORTAL: first-boot configuration finished' >> /var/log/infra-portal.log"))
     # LAST, so the report describes the finished machine rather than one still

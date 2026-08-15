@@ -126,7 +126,7 @@ def test_every_runcmd_entry_is_a_command_not_a_mapping(monkeypatch):
     bad = [c for c in runcmd if not isinstance(c, str)]
     assert not bad, f"these parsed as {type(bad[0]).__name__}, not commands: {bad}"
     # ...and the colon survived into the command, rather than splitting it.
-    assert any("PORTAL: package install FAILED" in c for c in runcmd)
+    assert any("PORTAL FAILURE: package install did not complete" in c for c in runcmd)
 
 
 def test_redis_enables_the_module_stream_before_installing(monkeypatch):

@@ -126,8 +126,32 @@ def verdict(report: str) -> dict:
                 problems.append(f"{key} is {value}")
             elif key.startswith("http_") and value not in ("200", "301", "302", "403"):
                 problems.append(f"{key} returned {value or 'nothing'}")
+            elif key.startswith("firewall_") and value != "open":
+                # A service can be installed, running and answering on loopback
+                # while the machine's own firewall rejects every other host —
+                # REQ-2026-0136 exactly. A port nobody can reach is not a working
+                # service, whatever the daemon says about itself.
+                problems.append(
+                    f"port {key.split('_', 1)[1]} is not open in the firewall, so "
+                    f"nothing outside this machine can reach the service")
         elif line.startswith("nothing listening on"):
             problems.append(line)
-        elif "PORTAL:" in line and "FAILED" in line.upper():
+        # A step of the first-boot script that did not work, in its own words.
+        #
+        # This used to look for the word FAILED, which meant `PORTAL: could not
+        # open 80/tcp` — a real failure, on a real machine — read as perfectly
+        # healthy and REQ-2026-0136 was marked provisioned. Failure lines now
+        # carry one fixed marker so the verdict never has to match prose.
+        #
+        # The second clause reads reports from machines built BEFORE that marker
+        # existed. Matching their prose is exactly what this change was meant to
+        # stop doing, and it is still right here: those machines are already
+        # running and cannot be asked again. Matching only FAILED left the one
+        # real legacy report — the nginx machine that started all this — still
+        # reading as fine, which is how this was noticed.
+        elif "PORTAL FAILURE:" in line or (
+                "PORTAL:" in line
+                and any(phrase in line.lower()
+                        for phrase in ("failed", "could not", "no install recipe"))):
             problems.append(line)
     return {"ok": not problems, "problems": problems}

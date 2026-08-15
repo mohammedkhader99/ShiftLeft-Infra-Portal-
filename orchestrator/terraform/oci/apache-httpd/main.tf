@@ -60,6 +60,15 @@ locals {
     # block — see the note in the template.
     apache_package = var.os_family == "debian" ? "apache2" : "httpd"
     apache_service = var.os_family == "debian" ? "apache2" : "httpd"
+    # How the machine asks its OWN firewall whether :80 is open.
+    # This blueprint opens the firewall by SERVICE on Red Hat
+    # (--add-service=http) and by PORT on Debian, so the check has to ask
+    # the same way it was opened. Querying only the port would have
+    # reported CLOSED on every correctly-configured Oracle Linux machine —
+    # a false alarm is as corrosive to trust as a missed failure.
+    firewall_query = var.os_family == "debian" ? (
+      "iptables-save 2>/dev/null | grep -q -- '--dport 80 '") : (
+      "firewall-cmd --query-service=http || firewall-cmd --query-port=80/tcp")
   }))
 }
 

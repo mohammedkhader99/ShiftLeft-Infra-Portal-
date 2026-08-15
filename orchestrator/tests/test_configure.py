@@ -62,7 +62,7 @@ def test_install_failure_does_not_abort_the_rest_of_boot(monkeypatch):
     """A failed install must leave a diagnosable machine, not a silent dead VM."""
     _on(monkeypatch)
     out = configure.render(_COMPONENTS)
-    assert "|| echo 'PORTAL: package install FAILED'" in out
+    assert "|| echo 'PORTAL FAILURE: package install did not complete'" in out
     assert "/var/log/infra-portal.log" in out
 
 

@@ -80,6 +80,12 @@ write_files:
         echo '--- ports ---'
         echo "http_80=$(curl -s -o /dev/null -m 5 -w '%%{http_code}' http://localhost/ 2>&1)"
         ss -lnt 2>/dev/null | grep ':80 ' || echo 'nothing listening on 80'
+        # curl-to-localhost and ss both look at the DAEMON, and both pass on a
+        # machine nobody can reach — which is exactly what REQ-2026-0136 did.
+        # So ask the firewall itself. Testing the machine's own private IP would
+        # not do either: that traffic arrives on lo, which both images accept
+        # before any port rule is consulted.
+        if ${firewall_query} >/dev/null 2>&1; then echo 'firewall_80=open'; else echo 'firewall_80=CLOSED'; fi
         echo '--- first-boot log ---'
         cat /var/log/infra-portal.log 2>/dev/null || echo '(no portal log written)'
       } > $REPORT 2>&1
@@ -92,33 +98,40 @@ runcmd:
 %{ if server_name != "" ~}
   - "grep -q '^ServerName ' /etc/apache2/apache2.conf || echo 'ServerName ${server_name}' >> /etc/apache2/apache2.conf"
 %{ endif ~}
-  - "systemctl enable --now apache2 || echo 'PORTAL: apache2 failed to start' >> /var/log/infra-portal.log"
-  # ufw ships inactive on Ubuntu cloud images. `ufw allow` still records the rule
-  # either way, and this never ENABLES the firewall — doing that unasked could
-  # cut off SSH to a machine with no console.
-  - "ufw allow 80/tcp || echo 'PORTAL: could not open 80/tcp' >> /var/log/infra-portal.log"
+  - "systemctl enable --now apache2 || echo 'PORTAL FAILURE: apache2 did not start' >> /var/log/infra-portal.log"
+  # OCI's Ubuntu images DO NOT SHIP ufw. The note that used to sit here said they
+  # did, and that `ufw allow` records the rule either way; both halves were wrong.
+  # These images filter with iptables rules in /etc/iptables/rules.v4 that REJECT
+  # everything but SSH, so the command failed and the reject rule stayed.
+  #
+  # That is REQ-2026-0136: nginx installed, running, listening on :80, and
+  # unreachable from every other machine on its subnet — reported provisioned.
+  # ufw is still preferred where it is genuinely present AND active, because raw
+  # iptables rules are wiped by its next reload.
+  - "(command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q active && ufw allow 80/tcp) || iptables -I INPUT -p tcp --dport 80 -j ACCEPT || echo 'PORTAL FAILURE: could not open 80/tcp in the firewall' >> /var/log/infra-portal.log"
+  - "netfilter-persistent save 2>/dev/null || iptables-save > /etc/iptables/rules.v4 2>/dev/null || true"
 %{ if enable_https ~}
-  - "ufw allow 443/tcp || echo 'PORTAL: could not open 443/tcp' >> /var/log/infra-portal.log"
+  - "(command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q active && ufw allow 443/tcp) || iptables -I INPUT -p tcp --dport 443 -j ACCEPT || echo 'PORTAL FAILURE: could not open 443/tcp in the firewall' >> /var/log/infra-portal.log"
   # Debian ships mod_ssl inside the apache2 package but leaves it disabled.
-  - "a2enmod ssl || echo 'PORTAL: could not enable the ssl module' >> /var/log/infra-portal.log"
+  - "a2enmod ssl || echo 'PORTAL FAILURE: could not enable the ssl module' >> /var/log/infra-portal.log"
   - |
     openssl req -x509 -nodes -newkey rsa:2048 -days 365 \
       -keyout /etc/ssl/private/ssl-cert-snakeoil.key \
       -out /etc/ssl/certs/ssl-cert-snakeoil.pem \
       -subj "/CN=${server_name != "" ? server_name : "localhost"}"
   - "chmod 600 /etc/ssl/private/ssl-cert-snakeoil.key"
-  - "a2ensite default-ssl || echo 'PORTAL: could not enable the TLS site' >> /var/log/infra-portal.log"
+  - "a2ensite default-ssl || echo 'PORTAL FAILURE: could not enable the TLS site' >> /var/log/infra-portal.log"
 %{ endif ~}
-  - "systemctl restart apache2 || echo 'PORTAL: apache2 failed to restart' >> /var/log/infra-portal.log"
+  - "systemctl restart apache2 || echo 'PORTAL FAILURE: apache2 did not restart' >> /var/log/infra-portal.log"
 %{ else ~}
   # --- Oracle Linux / Red Hat ------------------------------------------------
 %{ if server_name != "" ~}
   - "grep -q '^ServerName ' /etc/httpd/conf/httpd.conf || echo 'ServerName ${server_name}' >> /etc/httpd/conf/httpd.conf"
 %{ endif ~}
-  - "systemctl enable --now httpd || echo 'PORTAL: httpd failed to start' >> /var/log/infra-portal.log"
-  - "firewall-cmd --permanent --add-service=http || echo 'PORTAL: could not open http' >> /var/log/infra-portal.log"
+  - "systemctl enable --now httpd || echo 'PORTAL FAILURE: httpd did not start' >> /var/log/infra-portal.log"
+  - "firewall-cmd --permanent --add-service=http || echo 'PORTAL FAILURE: could not open http' >> /var/log/infra-portal.log"
 %{ if enable_https ~}
-  - "firewall-cmd --permanent --add-service=https || echo 'PORTAL: could not open https' >> /var/log/infra-portal.log"
+  - "firewall-cmd --permanent --add-service=https || echo 'PORTAL FAILURE: could not open https' >> /var/log/infra-portal.log"
   # Generate a self-signed certificate at the paths mod_ssl uses by default
   - |
     openssl req -x509 -nodes -newkey rsa:2048 -days 365 \
@@ -128,7 +141,7 @@ runcmd:
   - "chmod 600 /etc/pki/tls/private/localhost.key"
 %{ endif ~}
   - "firewall-cmd --reload || true"
-  - "systemctl restart httpd || echo 'PORTAL: httpd failed to restart' >> /var/log/infra-portal.log"
+  - "systemctl restart httpd || echo 'PORTAL FAILURE: httpd did not restart' >> /var/log/infra-portal.log"
 %{ endif ~}
   - "echo 'PORTAL: first-boot configuration finished' >> /var/log/infra-portal.log"
 %{ if boot_report_url != "" ~}

@@ -122,6 +122,13 @@ write_files:
         echo '--- ports ---'
         ss -lnt 2>/dev/null | grep ':${client_port} ' || echo 'nothing listening on ${client_port}'
         ss -lnt 2>/dev/null | grep ':${controller_port} ' || echo 'nothing listening on ${controller_port}'
+        # ss shows the DAEMON is bound. It says nothing about whether the
+        # machine's firewall lets anyone else connect — the two came apart on
+        # REQ-2026-0136, which listened on :80 and rejected every client.
+        # Kafka is Red Hat only, so firewalld answers directly.
+        for P in ${client_port} ${controller_port}; do
+          if firewall-cmd --query-port=$P/tcp >/dev/null 2>&1; then echo "firewall_$P=open"; else echo "firewall_$P=CLOSED"; fi
+        done
         echo '--- first-boot log ---'
         cat /var/log/infra-portal.log 2>/dev/null || echo '(no portal log written)'
       } > $REPORT 2>&1
@@ -129,9 +136,9 @@ write_files:
 %{ endif ~}
 
 runcmd:
-  - "/opt/kafka-portal/install.sh || echo 'PORTAL: kafka install FAILED - see /var/log/infra-portal.log' >> /var/log/infra-portal.log"
-  - "firewall-cmd --permanent --add-port=${client_port}/tcp || echo 'PORTAL: could not open ${client_port}/tcp' >> /var/log/infra-portal.log"
-  - "firewall-cmd --permanent --add-port=${controller_port}/tcp || echo 'PORTAL: could not open ${controller_port}/tcp' >> /var/log/infra-portal.log"
+  - "/opt/kafka-portal/install.sh || echo 'PORTAL FAILURE: kafka install did not complete - see /var/log/infra-portal.log' >> /var/log/infra-portal.log"
+  - "firewall-cmd --permanent --add-port=${client_port}/tcp || echo 'PORTAL FAILURE: could not open ${client_port}/tcp' >> /var/log/infra-portal.log"
+  - "firewall-cmd --permanent --add-port=${controller_port}/tcp || echo 'PORTAL FAILURE: could not open ${controller_port}/tcp' >> /var/log/infra-portal.log"
   - "firewall-cmd --reload || true"
 %{ if boot_report_url != "" ~}
   - "/usr/local/bin/infra-portal-report.sh || true"

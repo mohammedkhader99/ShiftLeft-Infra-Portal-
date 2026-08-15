@@ -131,15 +131,23 @@ def test_debian_enables_mod_ssl_which_red_hat_gets_from_a_package(template):
 # --- Failures are diagnosable from the machine -------------------------------
 
 def test_every_step_reports_its_own_failure(template):
-    """`|| true` hides a failure; `|| echo PORTAL: ...` records it. A machine
-    that installed nothing must say so on itself."""
+    """`|| true` hides a failure; `|| echo PORTAL FAILURE: ...` records it. A
+    machine that installed nothing must say so on itself.
+
+    The marker is one fixed string rather than each step's own prose. It used to
+    be enough for a line to contain "PORTAL:", and the verdict then looked for
+    the word FAILED — so `PORTAL: could not open 80/tcp` counted as a reported
+    failure here while reading as perfectly healthy there. REQ-2026-0136 shipped
+    through that gap."""
     steps = [line for line in _strip_comments(template).splitlines()
              if line.strip().startswith("- systemctl")
-             or line.strip().startswith("- ufw allow")
-             or "add-service" in line]
-    assert steps
+             or "add-service" in line
+             or "--dport" in line]
+    assert steps, "no firewall or service steps found — has the template changed?"
     for step in steps:
-        assert "PORTAL:" in step, f"this step fails silently: {step.strip()}"
+        if "netfilter-persistent" in step:
+            continue  # persistence is best-effort; the rule is already in place
+        assert "PORTAL FAILURE:" in step, f"this step fails silently: {step.strip()}"
 
 
 def test_the_marker_records_which_family_was_used(template):
