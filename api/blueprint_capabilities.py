@@ -30,6 +30,7 @@ import time
 _cache: dict[str, set[str]] | None = None
 _limits: dict[str, tuple[str, int]] = {}
 _refusals: dict[tuple[str, str], str] = {}
+_proven: dict[str, set[str]] = {}
 _fetched_at: float = 0.0
 _lock = threading.Lock()
 
@@ -113,6 +114,11 @@ def refresh(fetcher) -> bool:
         _limits.update(_build_limits(shipped))
         _refusals.clear()
         _refusals.update(_build_refusals(shipped))
+        _proven.clear()
+        for bp in shipped or []:
+            for code, families in (bp.get("verified") or {}).items():
+                _proven.setdefault(str(code), set()).update(
+                    str(f).strip().lower() for f in families or [])
         _fetched_at = time.time()
     return True
 
@@ -155,6 +161,21 @@ def name_budget(code: str, reference_length: int, fetcher) -> tuple[int, str] | 
     return limit - reference_length - len(suffix) - 2, suffix
 
 
+def evidence(code: str) -> dict:
+    """What a machine has proved about this technology, per OS family.
+
+    Returns {"proven": {...}, "refuted": {...}, "known": bool}. `known` is False
+    when capabilities have never been read — and a caller deciding whether to
+    CERTIFY must treat that as "cannot judge", never as "nothing objected".
+    """
+    code = (code or "").strip()
+    return {
+        "proven": set(_proven.get(code, set())),
+        "refuted": {f for (c, f) in _refusals if c == code},
+        "known": _cache is not None,
+    }
+
+
 def refusal(code: str, family: str) -> str:
     """Why a machine proved this combination wrong, or "" if there is no such
     evidence. Distinct from "not supported": this one was BUILT and measured."""
@@ -174,3 +195,4 @@ def reset() -> None:
         _cache, _fetched_at = None, 0.0
         _limits.clear()
         _refusals.clear()
+        _proven.clear()

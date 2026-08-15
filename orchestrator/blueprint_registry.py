@@ -41,6 +41,19 @@ def _readiness(manifest: dict) -> tuple[bool, list[str]]:
     return (not missing), missing
 
 
+def _verified_for(builds: list) -> dict:
+    """{technology: [families it has been booted and checked on]}."""
+    try:
+        from orchestrator.configure import VERIFIED
+    except Exception:  # noqa: BLE001 - discovery must never fail closed
+        return {}
+    out: dict[str, list[str]] = {}
+    for code, family in VERIFIED:
+        if code in {str(b) for b in builds}:
+            out.setdefault(code, []).append(family)
+    return {k: sorted(v) for k, v in out.items()}
+
+
 def _refuted_for(builds: list) -> dict:
     """{technology: {family: why}} for the codes this blueprint builds.
 
@@ -117,6 +130,10 @@ def discover(directory: Path | None = None) -> list[dict]:
             # portal needs both to decide what to offer: one says what the recipe
             # can configure, the other says where it was caught lying.
             "refuted": _refuted_for(manifest.get("builds") or []),
+            # Combinations a real machine PROVED work. The portal refuses to
+            # certify anything it cannot see evidence for, so this is what makes
+            # "certified" mean something rather than "somebody clicked".
+            "verified": _verified_for(manifest.get("builds") or []),
             "description": str(manifest.get("description") or ""),
             # Which Terraform variable carries the environment's name. Modules
             # disagree (bucket_name, instance_name, db_name...), and hard-coding

@@ -964,6 +964,27 @@ def list_blueprints(session: Session = Depends(get_session),
     }
 
 
+def _unproven_families(code: str, manifest: dict) -> set[str] | None:
+    """OS families this blueprint offers `code` on that no machine has proven.
+
+    None means the evidence could not be read at all — which is NOT the same as
+    "nothing objected" and must never be treated as permission.
+
+    A blueprint that offers no OS families builds no machine (a bucket, a managed
+    database), so boot evidence cannot apply to it and this returns an empty set.
+    That is a deliberate, stated gap: proving those needs the resource itself to
+    be asked whether it exists and is healthy, which is separate work.
+    """
+    found = blueprint_capabilities.evidence(code)
+    if not found["known"]:
+        blueprint_capabilities.families_for(code, _orchestrator_blueprints)
+        found = blueprint_capabilities.evidence(code)
+    if not found["known"]:
+        return None
+    offered = {str(f).strip().lower() for f in (manifest.get("os_families") or [])}
+    return offered - found["proven"] - found["refuted"]
+
+
 @app.post("/api/blueprints")
 def certify_blueprint(body: BlueprintIn, session: Session = Depends(get_session),
                       admin: str = Depends(require_action("manage_settings"))) -> dict:
@@ -990,6 +1011,32 @@ def certify_blueprint(body: BlueprintIn, session: Session = Depends(get_session)
         raise HTTPException(
             status_code=422,
             detail=f"The orchestrator ships no blueprint building '{code}' on {target}.")
+
+    # THE GATE. Certification is what makes the portal build a thing for real, so
+    # it must not rest on somebody's recollection that it once worked.
+    #
+    # The rule: for every OS family this blueprint offers the technology on, a
+    # real machine must have been built and asked. A family that was built and
+    # DISPROVEN is acceptable here — the form already refuses those images, so no
+    # requester can reach the broken combination — but a family nobody has ever
+    # tried is not.
+    #
+    # Standing requirement (user, 15 Aug 2026): "once you certify the component it
+    # should not fail when the user selects the component."
+    unproven = _unproven_families(code, manifest)
+    if unproven is None:
+        raise HTTPException(
+            status_code=503,
+            detail=("The portal cannot read what has been proven, so it cannot "
+                    "tell whether this is safe to certify. Try again once the "
+                    "orchestrator is reachable."))
+    if unproven:
+        raise HTTPException(
+            status_code=422,
+            detail=(f"{code} has not been proven on {', '.join(sorted(unproven))}. "
+                    f"Certifying it would let a requester pick an operating system "
+                    f"nobody has built it on. Raise a request that builds {code} on "
+                    f"each of those images, let the machine report, then certify."))
 
     row = session.get(Blueprint, (code, target))
     now = datetime.now(timezone.utc)
