@@ -108,35 +108,68 @@ TEMPLATES: dict[str, dict] = {
     },
 }
 
-# Codes whose first-boot configuration has been PROVEN on a real VM: booted, and
-# the service asked whether it was working. Adding a code here is a deliberate,
-# reviewable claim, and it must be backed by evidence recorded below.
+# (technology, OS family) pairs whose first-boot configuration has been PROVEN on
+# a real VM: booted, and the service asked whether it was working. Each pair is a
+# deliberate, reviewable claim and must be backed by the evidence recorded below.
 #
-#   nginx   11 Aug 2026 — installed nginx-1.20.1, service active, listening on
-#           0.0.0.0:80, curl localhost returned 200.
-#   redis7  11 Aug 2026 — installed redis-7.2.14 via the redis:7 module stream,
-#           service active, redis-cli PONG, set/get round-tripped, and bound to
-#           127.0.0.1 only as the profile intends.
+# A PAIR, not two lists. This was a set of codes and a set of families, which can
+# only express their cross-product — so recording that nginx works on Ubuntu
+# would silently have claimed redis7 does too, on the strength of a machine
+# nobody ever booted. That is the same shape as the bug that delivered Redis 6.2
+# under a catalogue entry called "Redis 7": a plausible name standing in for a
+# checked one.
 #
-# Both were verified from the config this file GENERATES, not from hand-written
-# cloud-init, and both VMs were destroyed afterwards.
+#   nginx / rhel     11 Aug 2026 — installed nginx-1.20.1, service active,
+#                    listening on 0.0.0.0:80, curl localhost returned 200.
+#   redis7 / rhel    11 Aug 2026 — installed redis-7.2.14 via the redis:7 module
+#                    stream, service active, redis-cli PONG, set/get
+#                    round-tripped, bound to 127.0.0.1 only as the profile
+#                    intends.
+#   nginx / debian   15 Aug 2026 — REQ-2026-0138 on Ubuntu 24.04.4 LTS: installed
+#                    nginx 1.24.0-2ubuntu7.15, unit active, firewall_80=open, and
+#                    a DIFFERENT machine on the subnet
+#                    (test-req-2026-0134-apache-01) fetched it over the network:
+#                    HTTP 200, `Server: nginx/1.24.0 (Ubuntu)`, real page served.
+#
+#                    The third-party fetch is what makes this evidence rather
+#                    than a process listing. Two earlier attempts at the same
+#                    request looked healthy from inside the machine and were not:
+#                    REQ-2026-0134 had no nginx on it at all (the subnet had no
+#                    route to apt), and REQ-2026-0136 had nginx running and
+#                    answering on loopback while every other host got "No route
+#                    to host" (the firewall step used ufw, which OCI's Ubuntu
+#                    images do not ship). Both were recorded `provisioned`.
+#
+# All verified from the config this file GENERATES, not from hand-written
+# cloud-init.
 #
 # `apache` is deliberately NOT here. The certified Apache blueprint renders its
 # own cloud-init from a Terraform template and never calls this module, so the
-# entry below is untested — proving REQ-2026-0100 proved that template, not this
-# one.
+# entry below is untested — REQ-2026-0100 proved that template, not this one.
 #
-# EVERY ENTRY ABOVE WAS PROVEN ON ORACLE LINUX. The Debian recipes added when
-# Ubuntu images were offered have NOT been booted: the package and unit names
-# come from Ubuntu's documented catalogue, not from a machine that ran them. A
-# name that is merely plausible is exactly what delivered Redis 6.2 under a
-# catalogue entry called "Redis 7", so nothing here claims Ubuntu is verified
-# until a VM has been booted and asked. See VERIFIED_FAMILIES.
-VERIFIED_CODES: set[str] = {"nginx", "redis7"}
+# STILL UNPROVEN ON DEBIAN: redis7, java21, python312, nodejs20. Their package
+# and unit names come from Ubuntu's documented catalogue, not from a machine that
+# ran them.
+VERIFIED: set[tuple[str, str]] = {
+    ("nginx", "rhel"),
+    ("redis7", "rhel"),
+    ("nginx", "debian"),
+}
 
-# Which OS families the codes above have actually been booted on. Adding to this
-# set is a claim that someone ran a machine and checked the service answered.
-VERIFIED_FAMILIES: set[str] = {"rhel"}
+# Derived, and kept only because other modules already read them. Neither is the
+# truth on its own: read either in isolation and nginx-on-Ubuntu looks like
+# redis7-on-Ubuntu. VERIFIED is the record; these are conveniences.
+VERIFIED_CODES: set[str] = {code for code, _family in VERIFIED}
+VERIFIED_FAMILIES: set[str] = {family for _code, family in VERIFIED}
+
+
+def is_verified(code: str, family: str) -> bool:
+    """Whether THIS technology has been booted on THIS OS family.
+
+    The question worth asking. `code in VERIFIED_CODES and family in
+    VERIFIED_FAMILIES` answers a different and more generous one.
+    """
+    return ((code or "").strip(), (family or "").strip().lower()) in VERIFIED
 
 # Enabling a module stream is a Red Hat family concept. The other families have
 # no equivalent, so a profile declaring a module simply has nothing emitted.

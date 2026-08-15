@@ -266,11 +266,38 @@ def test_the_module_enables_run_command_explicitly():
     assert "is_management_disabled = false" in main_tf
 
 
-def test_only_booted_os_families_claim_to_be_verified():
-    """The Debian recipes were written from Ubuntu's documented package names,
-    not from a machine that ran them. Plausible names are exactly what delivered
-    Redis 6.2 under a catalogue entry called "Redis 7", so Ubuntu stays unverified
-    until a VM has been booted and the service asked whether it works.
+def test_only_booted_combinations_claim_to_be_verified():
+    """Each claim is a (technology, OS family) PAIR and needs its own machine.
+
+    This used to compare two flat sets, which can only express their
+    cross-product: recording that nginx works on Ubuntu would have silently
+    claimed redis7 does too, on the strength of a VM nobody booted. Plausible
+    package names standing in for checked ones is exactly what delivered Redis
+    6.2 under a catalogue entry called "Redis 7".
     """
-    assert configure.VERIFIED_FAMILIES == {"rhel"}, (
-        "an OS family was marked verified — boot a VM on it first")
+    assert configure.VERIFIED == {
+        ("nginx", "rhel"),
+        ("redis7", "rhel"),
+        ("nginx", "debian"),
+    }, ("a combination was marked verified — boot a VM on it first, and record "
+        "the evidence beside the entry")
+
+
+def test_a_verified_technology_is_not_verified_on_every_family():
+    """THE point of the pair. nginx on Ubuntu is proven; redis7 on Ubuntu is a
+    package name someone read in a manual."""
+    assert configure.is_verified("nginx", "debian") is True
+    assert configure.is_verified("redis7", "debian") is False
+    assert configure.is_verified("redis7", "rhel") is True
+
+
+def test_the_derived_sets_are_not_mistaken_for_the_record():
+    """They are kept for existing readers, and each is more generous than the
+    truth — so anything deciding on them must be shown to be safe."""
+    assert configure.VERIFIED_CODES == {"nginx", "redis7"}
+    assert configure.VERIFIED_FAMILIES == {"rhel", "debian"}
+    implied = {(c, f) for c in configure.VERIFIED_CODES
+               for f in configure.VERIFIED_FAMILIES}
+    assert implied - configure.VERIFIED == {("redis7", "debian")}, (
+        "the gap between what the flat sets imply and what was actually booted "
+        "has changed — check nothing decides on the flat sets alone")
