@@ -174,9 +174,15 @@ TEMPLATES: dict[str, dict] = {
 # All verified from the config this file GENERATES, not from hand-written
 # cloud-init.
 #
-# `apache` is deliberately NOT here. The certified Apache blueprint renders its
-# own cloud-init from a Terraform template and never calls this module, so the
-# entry below is untested — REQ-2026-0100 proved that template, not this one.
+# WHAT THIS RECORDS. Proven (technology, OS family) pairs, whatever PROVED them.
+# Not "pairs proven through configure.py" — that reading kept apache out on the
+# grounds that its blueprint renders its own cloud-init, and the certification
+# gate then refused to certify a web server that has been serving traffic since
+# REQ-2026-0134. A false refusal costs trust exactly as a missed failure does.
+#
+# The recipe below for apache is still untested — nothing installs from it,
+# because the certified blueprint uses its own template. What is proven is the
+# COMBINATION, and that is what the gate asks about.
 #
 # STILL UNPROVEN ON DEBIAN: redis7, java21, python312, nodejs20. Their package
 # and unit names come from Ubuntu's documented catalogue, not from a machine that
@@ -208,6 +214,15 @@ VERIFIED: set[tuple[str, str]] = {
     # changed, a machine was booted, and the claim moved on evidence — which is
     # the only way anything gets into this set.
     ("python312", "rhel"),
+    # 15 Aug 2026 — REQ-2026-0134, Oracle Linux 9.8, via the oci/apache-httpd
+    # blueprint's own template rather than this module: httpd 2.4.62 installed,
+    # unit active, port 80 open in firewalld, HTTP 200. It then served as the
+    # third-party client that proved nginx was reachable on REQ-2026-0138, which
+    # is about as thoroughly exercised as a machine here gets.
+    #
+    # rhel only. The template has a Debian branch and no machine has ever run it,
+    # and the blueprint declares rhel alone for that reason.
+    ("apache", "rhel"),
 }
 
 # Combinations PROVEN NOT to deliver what the catalogue name promises.

@@ -248,7 +248,7 @@ def test_only_booted_technologies_claim_to_be_verified():
     failures are recorded in REFUTED, not quietly omitted.
     """
     assert configure.VERIFIED_CODES == {
-        "nginx", "redis7", "java21", "python312", "nodejs20"}, (
+        "nginx", "redis7", "java21", "python312", "nodejs20", "apache"}, (
         "a code was marked verified — that claim needs a real boot test behind it")
 
 
@@ -287,6 +287,10 @@ def test_only_booted_combinations_claim_to_be_verified():
         ("java21", "rhel"), ("java21", "debian"),
         ("python312", "debian"), ("python312", "rhel"),
         ("nodejs20", "rhel"),      # Ubuntu gave 18.19.1 — see REFUTED
+        # Proven by its OWN blueprint's template, not by this module. The record
+        # holds proven COMBINATIONS whatever proved them — reading it as "proven
+        # through configure.py" is what made the gate refuse a working web server.
+        ("apache", "rhel"),
     }, ("a combination was marked verified — boot a VM on it first, and record "
         "the evidence beside the entry")
 
@@ -314,7 +318,7 @@ def test_the_derived_sets_are_not_mistaken_for_the_record():
     """They are kept for existing readers, and each is more generous than the
     truth — so anything deciding on them must be shown to be safe."""
     assert configure.VERIFIED_CODES == {
-        "nginx", "redis7", "java21", "python312", "nodejs20"}
+        "nginx", "redis7", "java21", "python312", "nodejs20", "apache"}
     assert configure.VERIFIED_FAMILIES == {"rhel", "debian"}
     implied = {(c, f) for c in configure.VERIFIED_CODES
                for f in configure.VERIFIED_FAMILIES}
@@ -331,9 +335,11 @@ def test_the_derived_sets_are_not_mistaken_for_the_record():
     # which is the normal course of events, not an anomaly. The invariant that
     # actually holds is containment.
     unproven = implied - configure.VERIFIED
-    # One pair left, and it is disproven rather than untried: Node 20 does not
-    # exist in Ubuntu's repositories and an external source was declined.
-    assert unproven == {("nodejs20", "debian")}
+    # Two pairs. Node 20 on Ubuntu is DISPROVEN — it does not exist in Ubuntu's
+    # repositories and an external source was declined. apache on Ubuntu is
+    # simply untried: the template has a Debian branch and no machine has run it,
+    # which is why the blueprint declares rhel alone.
+    assert unproven == {("nodejs20", "debian"), ("apache", "debian")}
     assert set(configure.REFUTED) <= unproven, (
         "a combination is recorded as disproven AND as verified — the two "
         "records disagree about the same machine")

@@ -144,4 +144,4 @@ def test_only_what_was_actually_booted_is_claimed_verified():
     # set alone and python312 looks proven everywhere, when Oracle Linux gave it
     # 3.9.25 under a catalogue entry called "Python 3.12".
     assert configure.VERIFIED_CODES == {
-        "nginx", "redis7", "java21", "python312", "nodejs20"}
+        "nginx", "redis7", "java21", "python312", "nodejs20", "apache"}
