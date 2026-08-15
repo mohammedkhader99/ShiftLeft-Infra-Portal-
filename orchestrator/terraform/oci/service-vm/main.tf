@@ -146,16 +146,23 @@ resource "oci_core_instance" "service" {
   }
 
   # Oracle Cloud Agent plugins, stated explicitly rather than inherited from
-  # whichever image was chosen.
+  # whichever image was chosen. Run Command is how the portal ASKS a machine
+  # whether its software really installed — the only check needing no inbound
+  # access to a private-only VM.
   #
-  # Run Command is how the portal ASKS a machine whether its software actually
-  # installed — the only verification that does not need inbound network access
-  # to a private-only VM. It is enabled by default on Oracle Linux images and NOT
-  # on Ubuntu ones, so relying on the image default meant a machine's
-  # verifiability depended on which OS the requester happened to pick. A VM we
-  # cannot interrogate is a VM whose success we can only assume, and assuming
-  # success is how this project shipped a service-vm that never installed
-  # anything.
+  # RUN COMMAND IS ENABLED WHERE IT EXISTS, WHICH IS NOT EVERYWHERE.
+  #
+  # Measured on 14 Aug 2026, two machines launched a minute apart in the same
+  # subnet: the Oracle Linux agent offers 16 plugins including this one; the
+  # Ubuntu 24.04 agent offers 11 and does NOT include it. Asking for it there is
+  # accepted by OCI, recorded on the instance as ENABLED, and silently never
+  # delivered — the agent has no such plugin to start.
+  #
+  # It is still requested for every family: on Red Hat it is what makes a machine
+  # interrogable, and on Ubuntu it is a harmless no-op. What must NOT happen is
+  # the portal assuming the request succeeded — a Debian machine cannot be
+  # verified this way and needs another route, which is why nginx-on-Ubuntu
+  # remains unproven and `debian` is absent from configure.VERIFIED_FAMILIES.
   agent_config {
     is_monitoring_disabled = false
     is_management_disabled = false
