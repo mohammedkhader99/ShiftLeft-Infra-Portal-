@@ -301,10 +301,13 @@ def test_a_verified_technology_is_not_verified_on_every_family():
 
 
 def test_a_disproven_combination_says_what_the_machine_measured():
-    """Stronger than absence from VERIFIED: these were built and caught."""
-    assert "3.9" in configure.refusal("python312", "rhel")
+    """Stronger than absence from VERIFIED: this one was built and caught."""
     assert "18" in configure.refusal("nodejs20", "debian")
     assert configure.refusal("java21", "rhel") == "", "nothing disproved this one"
+    # python312 on Oracle Linux was refuted at 3.9.25 and the refusal retired
+    # when the recipe stopped asking for `python3`. Evidence about a recipe does
+    # not outlive the recipe.
+    assert configure.refusal("python312", "rhel") == ""
 
 
 def test_the_derived_sets_are_not_mistaken_for_the_record():
@@ -315,10 +318,20 @@ def test_the_derived_sets_are_not_mistaken_for_the_record():
     assert configure.VERIFIED_FAMILIES == {"rhel", "debian"}
     implied = {(c, f) for c in configure.VERIFIED_CODES
                for f in configure.VERIFIED_FAMILIES}
-    # The flat sets imply ten combinations. Two of them were BUILT AND DISPROVEN,
-    # which is why nothing may decide on the flat sets alone.
-    assert implied - configure.VERIFIED == {("python312", "rhel"),
-                                            ("nodejs20", "debian")}
-    assert implied - configure.VERIFIED == set(configure.REFUTED), (
-        "the gap between what the flat sets imply and what was booted is no "
-        "longer exactly the disproven set — one of the two records has drifted")
+    # The flat sets imply ten combinations and eight were booted. The gap is
+    # everything NOT proven, which is not one thing but two:
+    #
+    #   nodejs20 / debian   disproven — built, measured at 18.19.1, and declined
+    #   python312 / rhel    unproven  — the recipe was fixed after being caught
+    #                       at 3.9.25, and no machine has run the new one yet
+    #
+    # An earlier version of this test asserted the gap was EXACTLY the disproven
+    # set. That held only while every unproven pair happened to also be a
+    # disproven one, and it stopped being true the moment a recipe was fixed —
+    # which is the normal course of events, not an anomaly. The invariant that
+    # actually holds is containment.
+    unproven = implied - configure.VERIFIED
+    assert unproven == {("python312", "rhel"), ("nodejs20", "debian")}
+    assert set(configure.REFUTED) <= unproven, (
+        "a combination is recorded as disproven AND as verified — the two "
+        "records disagree about the same machine")

@@ -110,7 +110,19 @@ TEMPLATES: dict[str, dict] = {
         "ports": [],
         "expects": "3.12",
         "version_command": "python3 --version 2>&1",
-        "rhel": {"packages": ["python3", "python3-pip"], "services": []},
+        # `python3` on Oracle Linux 9 is Python 3.9 — measured 3.9.25 on
+        # REQ-2026-0139, under a catalogue entry called "Python 3.12". The 3.12
+        # interpreter is a SEPARATE package, confirmed available on the machine
+        # itself: python3.12-3.12.13 and python3.12-pip-23.2.1, both ol9_appstream.
+        #
+        # Installed ALONGSIDE the system python, never replacing it: `dnf` itself
+        # runs on 3.9, and repointing the `python3` alternative would break
+        # package management on the machine. So the interpreter is at
+        # /usr/bin/python3.12 and the check asks for it by name.
+        "rhel": {"packages": ["python3.12", "python3.12-pip"], "services": [],
+                 "version_command": "python3.12 --version 2>&1"},
+        # Ubuntu 24.04's `python3` IS 3.12 (measured 3.12.3 on REQ-2026-0140), so
+        # this side is left exactly as it was proven.
         "debian": {"packages": ["python3", "python3-pip"], "services": []},
     },
     # Same failure as redis7, found while wiring version selection up: OL9's
@@ -196,21 +208,36 @@ VERIFIED: set[tuple[str, str]] = {
 # for opposite treatment. The first is a gap to fill; the second is a promise the
 # portal must stop making until the recipe is fixed.
 #
-#   python312 / rhel   15 Aug 2026, REQ-2026-0139: the recipe installs `python3`,
-#                      and on Oracle Linux 9 that is Python 3.9.25. A real 3.12
-#                      IS available to the machine — python3.12-3.12.13 in
-#                      ol9_appstream, confirmed on the VM itself — so this is a
-#                      wrong package name, not a missing capability.
+#   python312 / rhel   RETIRED 15 Aug 2026, and worth reading as a pattern.
+#                      REQ-2026-0139 measured 3.9.25 because the recipe asked for
+#                      `python3`. The recipe now asks for `python3.12`, so the
+#                      measurement is of something that no longer exists and the
+#                      refusal goes with it. The combination is UNPROVEN again —
+#                      not verified — and stays out of VERIFIED until a machine
+#                      says otherwise.
+#
+#                      A refutation is evidence about a RECIPE, not a law about an
+#                      operating system. Leaving it in place after the recipe
+#                      changed would also have been a trap: the form would refuse
+#                      the combination, so nobody could raise the request that
+#                      would prove the fix.
 #   nodejs20 / debian  15 Aug 2026, REQ-2026-0140: the recipe installs `nodejs`,
 #                      and Ubuntu 24.04 carries 18.19.1. Its repositories have no
-#                      Node 20 at all, so fixing this means either an external
-#                      repository or withdrawing the promise on Ubuntu.
+#                      Node 20 at all.
+#
+#                      STANDS BY DECISION, not merely by measurement. The only fix
+#                      is a third-party apt source (NodeSource), and the owner of
+#                      this estate chose on 15 Aug 2026 not to take packages from
+#                      outside the organisation's control onto its machines. Node
+#                      20 is therefore Oracle-Linux-only, where the nodejs:20
+#                      module stream delivers it properly (measured 20.20.2).
+#
+#                      So this entry is not waiting to be fixed. It records a
+#                      capability the platform has deliberately declined.
 #
 # Exactly the shape of the bug that delivered Redis 6.2 under an entry called
 # "Redis 7" — twice over, and invisible until the machine was asked its version.
 REFUTED: dict[tuple[str, str], str] = {
-    ("python312", "rhel"):
-        "Oracle Linux's `python3` is Python 3.9, not 3.12 (measured: 3.9.25)",
     ("nodejs20", "debian"):
         "Ubuntu 24.04's `nodejs` is Node 18, not Node 20 (measured: 18.19.1)",
 }
@@ -400,8 +427,17 @@ def _report_script(wanted: list[tuple[str, str]], packages: list[str],
     # Matched as a PREFIX with a dot boundary, never a substring: `7` appears in
     # `6.2.7`, and a substring test would have passed the very bug this exists to
     # catch.
+    # The family's own command wins where it declares one. Oracle Linux installs
+    # 3.12 ALONGSIDE the system python, so it answers on `python3.12` while Ubuntu
+    # answers on `python3` — asking the wrong one would report a working machine
+    # as broken, and a false alarm costs trust as surely as a missed failure.
+    def _command(code: str) -> str:
+        spec = TEMPLATES.get(code, {})
+        return (spec.get(family, {}).get("version_command")
+                or spec.get("version_command", ""))
+
     versioned = [(code, wanted_version or TEMPLATES.get(code, {}).get("expects", ""),
-                  TEMPLATES.get(code, {}).get("version_command", ""))
+                  _command(code))
                  for code, wanted_version in wanted]
     versioned = [(c, w, cmd) for c, w, cmd in versioned if w and cmd]
     if versioned:

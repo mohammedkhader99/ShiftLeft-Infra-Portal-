@@ -18,6 +18,8 @@ promised, and the portal refuses to call a mismatch a success.
 
 from __future__ import annotations
 
+import pathlib
+
 import pytest
 
 yaml = pytest.importorskip("yaml")
@@ -101,16 +103,22 @@ def test_the_raw_output_is_kept_in_the_report():
     assert "[$RAW]" in _script(["python312"], "rhel")
 
 
-@pytest.mark.parametrize("code,command", [
-    ("redis7", "redis-server --version"),
-    ("java21", "java -version"),
-    ("python312", "python3 --version"),
-    ("nodejs20", "node --version"),
+@pytest.mark.parametrize("code,family,command", [
+    ("redis7", "rhel", "redis-server --version"),
+    ("redis7", "debian", "redis-server --version"),
+    ("java21", "rhel", "java -version"),
+    ("java21", "debian", "java -version"),
+    # python312 differs BY FAMILY: Oracle Linux installs 3.12 alongside the
+    # system python and answers on python3.12, Ubuntu's python3 already is 3.12.
+    ("python312", "rhel", "python3.12 --version"),
+    ("python312", "debian", "python3 --version"),
+    ("nodejs20", "rhel", "node --version"),
 ])
-def test_each_technology_is_asked_in_its_own_language(code, command):
-    """These tools announce themselves completely differently; one generic
-    command would work for none of them."""
-    assert command in _script([code], "rhel")
+def test_each_technology_is_asked_in_its_own_language(code, family, command):
+    """These tools announce themselves completely differently, and one of them
+    answers on a different binary depending on the OS. A single generic command
+    would work for none of them."""
+    assert command in _script([code], family)
 
 
 # --- The verdict --------------------------------------------------------------
@@ -147,3 +155,49 @@ def test_an_installed_package_does_not_excuse_a_wrong_version():
               "version_redis7=WRONG wanted 7 got 6.2.7 [Redis server v=6.2.7]\n"
               "PORTAL: first-boot configuration finished\n")
     assert boot_reports.verdict(report)["ok"] is False
+
+
+# --- A family that answers on a different binary ------------------------------
+
+def test_oracle_linux_installs_the_interpreter_its_name_promises():
+    """`python3` on Oracle Linux 9 is 3.9. The 3.12 interpreter is a separate
+    package — measured 3.9.25 on REQ-2026-0139 under an entry called
+    "Python 3.12"."""
+    script = _script(["python312"], "rhel")
+    assert "python3.12 --version" in script
+    doc_packages = configure.TEMPLATES["python312"]["rhel"]["packages"]
+    assert "python3.12" in doc_packages
+    assert "python3" not in doc_packages, (
+        "installing plain python3 on Oracle Linux is the bug this fixed")
+
+
+def test_the_system_python_is_left_alone_on_oracle_linux():
+    """dnf itself runs on 3.9. Repointing the python3 alternative would deliver
+    3.12 and break package management on the machine — a fix worse than the bug."""
+    text = pathlib.Path(configure.__file__).read_text(encoding="utf-8")
+    assert "alternatives --set python3" not in text
+
+
+def test_ubuntu_still_asks_the_way_that_was_proven():
+    """Ubuntu 24.04's python3 IS 3.12 (measured 3.12.3). Asking it for
+    python3.12 unnecessarily risks reporting a working machine as broken."""
+    assert "python3 --version" in _script(["python312"], "debian")
+
+
+def test_a_family_without_its_own_command_uses_the_shared_one():
+    assert "redis-server --version" in _script(["redis7"], "rhel")
+    assert "redis-server --version" in _script(["redis7"], "debian")
+
+
+def test_a_retired_refutation_leaves_the_pair_unproven_not_proven():
+    """Fixing a recipe retires the measurement of the OLD recipe — it does not
+    prove the new one. python312 on Oracle Linux is now neither refused nor
+    claimed, and only a machine can move it."""
+    assert ("python312", "rhel") not in configure.REFUTED
+    assert ("python312", "rhel") not in configure.VERIFIED
+
+
+def test_the_declined_capability_is_still_refused():
+    """Node 20 on Ubuntu is not waiting to be fixed: the only route is a
+    third-party apt source, and that was declined."""
+    assert ("nodejs20", "debian") in configure.REFUTED

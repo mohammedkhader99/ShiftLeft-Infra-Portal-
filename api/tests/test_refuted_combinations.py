@@ -86,10 +86,16 @@ def test_the_shipped_blueprints_carry_todays_evidence():
         for code, families in (bp.get("refuted") or {}).items():
             for family in families:
                 refuted[(code, family)] = families[family]
-    assert ("python312", "rhel") in refuted
     assert ("nodejs20", "debian") in refuted
-    assert "3.9" in refuted[("python312", "rhel")]
     assert "18" in refuted[("nodejs20", "debian")]
+    # python312 on Oracle Linux WAS refuted, measured at 3.9.25, and the refusal
+    # was retired when the recipe stopped asking for `python3` and started asking
+    # for `python3.12`. A refutation is evidence about a RECIPE; once the recipe
+    # changes it describes something that no longer exists. The pair is unproven
+    # again — not proven — and only a machine can move it.
+    assert ("python312", "rhel") not in refuted
+    from orchestrator import configure
+    assert ("python312", "rhel") not in configure.VERIFIED
 
 
 def test_a_refuted_pair_is_never_also_claimed_as_verified():
