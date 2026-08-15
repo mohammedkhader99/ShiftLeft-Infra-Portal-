@@ -54,12 +54,23 @@ import os
 #
 # A family a technology has no block for is NOT installable there, and render()
 # refuses rather than guessing — see _unsupported.
+#
+# `expects` is the version THE CATALOGUE NAME PROMISES, and `version_command` is
+# how the machine is asked what it actually received. The two exist because a
+# recipe and a catalogue entry can agree only by luck otherwise: "Redis 7"
+# installing a package called `redis` delivered Redis 6.2 on Oracle Linux, and
+# nothing noticed until someone logged in. An entry whose name names a version
+# and whose recipe cannot pin one is a promise waiting to be broken — so the
+# machine now reports the version it has and the portal compares.
 TEMPLATES: dict[str, dict] = {
     # OL9 offers nginx 1.20 (default), 1.22 and 1.24 as module streams, so the
     # version on the form is a real choice rather than a label. Ubuntu has no
     # equivalent mechanism: you get what the release carries.
     "nginx": {
         "ports": [80],
+        # No `expects`: the requester chooses the version, so the promise is
+        # whatever they picked. render() supplies it per request.
+        "version_command": "nginx -v 2>&1",
         "rhel": {"packages": ["nginx"], "services": ["nginx"], "module_name": "nginx"},
         "debian": {"packages": ["nginx"], "services": ["nginx"]},
     },
@@ -81,6 +92,8 @@ TEMPLATES: dict[str, dict] = {
     # enabled it installs 7.2.14.
     "redis7": {
         "ports": [],
+        "expects": "7",
+        "version_command": "redis-server --version 2>&1",
         "rhel": {"packages": ["redis"], "services": ["redis"],
                  "module": "redis:7", "module_name": "redis"},
         # Debian names both the package and the unit redis-server.
@@ -88,11 +101,15 @@ TEMPLATES: dict[str, dict] = {
     },
     "java21": {
         "ports": [],
+        "expects": "21",
+        "version_command": "java -version 2>&1",
         "rhel": {"packages": ["java-21-openjdk-headless"], "services": []},
         "debian": {"packages": ["openjdk-21-jre-headless"], "services": []},
     },
     "python312": {
         "ports": [],
+        "expects": "3.12",
+        "version_command": "python3 --version 2>&1",
         "rhel": {"packages": ["python3", "python3-pip"], "services": []},
         "debian": {"packages": ["python3", "python3-pip"], "services": []},
     },
@@ -102,6 +119,8 @@ TEMPLATES: dict[str, dict] = {
     # Not boot-tested — it stays out of VERIFIED_CODES until it is.
     "nodejs20": {
         "ports": [],
+        "expects": "20",
+        "version_command": "node --version 2>&1",
         "rhel": {"packages": ["nodejs", "npm"], "services": [],
                  "module": "nodejs:20", "module_name": "nodejs"},
         "debian": {"packages": ["nodejs", "npm"], "services": []},
@@ -276,8 +295,9 @@ def boot_report_url(reference: str, resource_kind: str) -> str:
     return f"{par}{reference}-{kind}.txt"
 
 
-def _report_script(codes: list[str], packages: list[str], services: list[str],
-                   ports: list[int], family: str, report_url: str) -> list[str]:
+def _report_script(wanted: list[tuple[str, str]], packages: list[str],
+                   services: list[str], ports: list[int], family: str,
+                   report_url: str) -> list[str]:
     """The self-check a machine runs on itself, as cloud-config write_files lines.
 
     WHY A MACHINE REPORTS ON ITSELF.
@@ -304,7 +324,7 @@ def _report_script(codes: list[str], packages: list[str], services: list[str],
         "REPORT=/var/log/infra-portal-report.txt",
         "{",
         f"  echo 'os_family={family}'",
-        f"  echo 'technologies={' '.join(codes)}'",
+        f"  echo 'technologies={' '.join(code for code, _v in wanted)}'",
         "  . /etc/os-release 2>/dev/null && echo \"os=$PRETTY_NAME\"",
         "  echo '--- packages ---'",
     ]
@@ -315,6 +335,38 @@ def _report_script(codes: list[str], packages: list[str], services: list[str],
         checks.append(
             f"  (rpm -q {package} 2>/dev/null || dpkg-query -W -f='{package} ${{Version}}\\n' "
             f"{package} 2>/dev/null || echo '{package} NOT INSTALLED')")
+    # --- versions -------------------------------------------------------------
+    #
+    # THE half of the question the report never asked. "the package installed" and
+    # "the machine has what the catalogue promised" are different facts, and
+    # conflating them is how Redis 6.2 shipped under an entry called "Redis 7".
+    #
+    # The comparison happens ON THE MACHINE rather than in the portal, so the
+    # report is self-contained evidence: a human reading it sees what was wanted,
+    # what arrived, and whether they match, without holding the catalogue in their
+    # head. The first number-looking token is extracted because every one of these
+    # tools announces itself differently — `Python 3.12.3`, `v20.11.0`,
+    # `openjdk version "21.0.5"`, `Redis server v=7.2.14 sha=...`.
+    #
+    # Matched as a PREFIX with a dot boundary, never a substring: `7` appears in
+    # `6.2.7`, and a substring test would have passed the very bug this exists to
+    # catch.
+    versioned = [(code, wanted_version or TEMPLATES.get(code, {}).get("expects", ""),
+                  TEMPLATES.get(code, {}).get("version_command", ""))
+                 for code, wanted_version in wanted]
+    versioned = [(c, w, cmd) for c, w, cmd in versioned if w and cmd]
+    if versioned:
+        checks.append("  echo '--- versions ---'")
+    for code, want, command in versioned:
+        checks.append(f"  RAW=$({command})")
+        # r"" so the backslash reaches grep rather than being a Python escape.
+        checks.append(r"  GOT=$(echo " '"$RAW"' r" | grep -oE '[0-9]+(\.[0-9]+)*'"
+                      " | head -1)")
+        checks.append("  case \"$GOT\" in")
+        checks.append(f"    {want}|{want}.*) echo \"version_{code}=OK ($GOT)\" ;;")
+        checks.append(f"    *) echo \"version_{code}=WRONG wanted {want} got "
+                      f"${{GOT:-none}} [$RAW]\" ;;")
+        checks.append("  esac")
     checks.append("  echo '--- services ---'")
     for service in services:
         checks.append(f"  echo \"{service}=$(systemctl is-active {service} 2>&1)\"")
@@ -577,7 +629,7 @@ def render(components: list[dict], family: str = "", report_url: str = "") -> st
         lines.append("    permissions: '0755'")
         lines.append("    content: |")
         for check in _report_script(
-                [code for code, _version, _profile in profiles],
+                [(code, version) for code, version, _profile in profiles],
                 packages, services, ports, family, report_url):
             lines.append(f"      {check}")
     lines.append("runcmd:")

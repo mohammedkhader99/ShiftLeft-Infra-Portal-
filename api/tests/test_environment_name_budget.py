@@ -89,8 +89,23 @@ def test_a_longer_name_is_fine_on_a_roomier_blueprint():
 
 
 def test_a_technology_with_no_blueprint_imposes_no_limit():
-    """Nothing builds java21, so there is no resource name to overrun."""
-    assert _errors("a-very-long-environment-name-indeed", "java21") == {}
+    """Nothing builds mongodb, so there is no resource name to overrun.
+
+    This used to be asserted with java21, which nothing built either. service-vm
+    now declares it, so java21 correctly inherits that module's 31-character
+    limit — see the test below. The example moved to a technology that still has
+    no blueprint at all.
+    """
+    assert _errors("a-very-long-environment-name-indeed", "mongodb") == {}
+
+
+def test_a_newly_declared_technology_inherits_its_blueprints_limit():
+    """The other half, and a real improvement: a java21 request with a long
+    environment name previously passed validation and would have failed at PLAN
+    time, after approval — the expensive place to find out. Now the blueprint
+    that will build it says how long a name it accepts, and the form says so
+    first."""
+    assert _errors("a-very-long-environment-name-indeed", "java21") != {}
 
 
 def test_no_components_no_opinion():

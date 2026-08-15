@@ -23,7 +23,17 @@ boot_report: user_data
 # technology here is a data change — but it is NOT free: each one needs its
 # package name checked against the image and a real boot test before it earns a
 # place in configure.VERIFIED_CODES.
-builds: [nginx, redis7]
+# CAPABILITY, not certification. This lists what the blueprint CAN build —
+# configure.py carries a per-family recipe for every one of these — and the
+# portal decides separately, by certifying, which it will actually use. The
+# badge on the catalogue follows certification, never this line.
+#
+# The three added on 15 Aug 2026 are NOT yet proven on any machine. They are
+# listed because a technology absent from here is filtered out of the machine's
+# first-boot configuration entirely (_components_for), so it could never be
+# booted and therefore never verified: a recipe unlisted here can only stay
+# unproven forever. Listing it is what makes the evidence obtainable.
+builds: [nginx, redis7, java21, python312, nodejs20]
 # This blueprint delegates first-boot configuration to orchestrator/configure.py,
 # which carries a per-family recipe for each technology, so what it supports is
 # whatever configure.py supports. Listed anyway rather than left implicit: a

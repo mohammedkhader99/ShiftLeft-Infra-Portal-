@@ -60,19 +60,37 @@ def test_a_dedicated_blueprint_overrides_the_generic_recipe_table():
 
 
 def test_a_technology_no_blueprint_claims_gets_no_os_opinion():
-    """java21 has a recipe in configure.py but NO blueprint lists it in `builds`,
-    so nothing can currently provision it — the recipe is unreachable code.
+    """mongodb is in the catalogue and no blueprint builds it, so the portal has
+    no view on which operating systems suit it.
 
-    The API says "no opinion" rather than repeating configure.py's claim, and it
-    cannot do otherwise: the API image does not contain the orchestrator, so
-    configure.py is not something it can consult. An earlier version imported it
-    anyway inside a try/except, which worked under pytest and raised in the
-    container — see test_api_does_not_import_orchestrator.
+    The API says "no opinion" rather than inventing one, and it cannot do
+    otherwise: the API image does not contain the orchestrator, so configure.py
+    is not something it can consult. An earlier version imported it anyway inside
+    a try/except, which worked under pytest and raised in the container — see
+    test_api_does_not_import_orchestrator.
+
+    This used to be asserted with java21, which had a recipe in configure.py that
+    NO blueprint listed — unreachable code, and a recipe that could never be
+    booted could never be proven either. service-vm now declares it, so the
+    example moved to a technology that genuinely has no recipe at all.
     """
-    assert blueprint_registry.for_technology("java21") is None
-    assert component_options.supported_families("java21") is None
+    assert blueprint_registry.for_technology("mongodb") is None
+    assert component_options.supported_families("mongodb") is None
     # ...and "no opinion" must not be read as "supports nothing".
-    assert component_options.installable_on("java21", "debian") is True
+    assert component_options.installable_on("mongodb", "debian") is True
+
+
+def test_a_declared_recipe_gets_an_os_opinion_even_before_it_is_certified():
+    """The other half. java21 has a recipe and service-vm now declares it, so the
+    portal knows which families it can be configured on — while the catalogue
+    badge stays manual until somebody certifies it.
+
+    Capability and certification are different facts. Conflating them is what
+    made the recipe unreachable: it could not be installed on a machine, so it
+    could never be verified, so it could never be certified.
+    """
+    assert blueprint_registry.for_technology("java21") is not None
+    assert component_options.supported_families("java21") == {"rhel", "debian"}
 
 
 def test_the_generic_blueprint_agrees_with_the_table_it_delegates_to():

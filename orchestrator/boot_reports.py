@@ -126,6 +126,13 @@ def verdict(report: str) -> dict:
                 problems.append(f"{key} is {value}")
             elif key.startswith("http_") and value not in ("200", "301", "302", "403"):
                 problems.append(f"{key} returned {value or 'nothing'}")
+            elif key.startswith("version_") and not value.startswith("OK"):
+                # The machine was asked what version it actually has and compared
+                # it with what the catalogue name promised. "Installed" and "is
+                # the thing we sold them" are different facts: Redis 6.2 was
+                # installed, running, and answering PONG under an entry called
+                # "Redis 7", and every check the portal had said healthy.
+                problems.append(f"{key.split('_', 1)[1]} is the wrong version — {value}")
             elif key.startswith("firewall_") and value != "open":
                 # A service can be installed, running and answering on loopback
                 # while the machine's own firewall rejects every other host —
