@@ -285,7 +285,7 @@ def test_only_booted_combinations_claim_to_be_verified():
         ("nginx", "rhel"), ("nginx", "debian"),
         ("redis7", "rhel"), ("redis7", "debian"),
         ("java21", "rhel"), ("java21", "debian"),
-        ("python312", "debian"),   # Oracle Linux gave 3.9.25 — see REFUTED
+        ("python312", "debian"), ("python312", "rhel"),
         ("nodejs20", "rhel"),      # Ubuntu gave 18.19.1 — see REFUTED
     }, ("a combination was marked verified — boot a VM on it first, and record "
         "the evidence beside the entry")
@@ -295,7 +295,6 @@ def test_a_verified_technology_is_not_verified_on_every_family():
     """THE point of the pair. nginx on Ubuntu is proven; redis7 on Ubuntu is a
     package name someone read in a manual."""
     assert configure.is_verified("python312", "debian") is True
-    assert configure.is_verified("python312", "rhel") is False
     assert configure.is_verified("nodejs20", "rhel") is True
     assert configure.is_verified("nodejs20", "debian") is False
 
@@ -304,10 +303,11 @@ def test_a_disproven_combination_says_what_the_machine_measured():
     """Stronger than absence from VERIFIED: this one was built and caught."""
     assert "18" in configure.refusal("nodejs20", "debian")
     assert configure.refusal("java21", "rhel") == "", "nothing disproved this one"
-    # python312 on Oracle Linux was refuted at 3.9.25 and the refusal retired
-    # when the recipe stopped asking for `python3`. Evidence about a recipe does
-    # not outlive the recipe.
+    # python312 on Oracle Linux was refuted at 3.9.25, the refusal was retired
+    # when the recipe changed, and REQ-2026-0146 then proved the new recipe at
+    # 3.12.13. The full arc: measured wrong, fixed, re-measured, claimed.
     assert configure.refusal("python312", "rhel") == ""
+    assert configure.is_verified("python312", "rhel") is True
 
 
 def test_the_derived_sets_are_not_mistaken_for_the_record():
@@ -331,7 +331,9 @@ def test_the_derived_sets_are_not_mistaken_for_the_record():
     # which is the normal course of events, not an anomaly. The invariant that
     # actually holds is containment.
     unproven = implied - configure.VERIFIED
-    assert unproven == {("python312", "rhel"), ("nodejs20", "debian")}
+    # One pair left, and it is disproven rather than untried: Node 20 does not
+    # exist in Ubuntu's repositories and an external source was declined.
+    assert unproven == {("nodejs20", "debian")}
     assert set(configure.REFUTED) <= unproven, (
         "a combination is recorded as disproven AND as verified — the two "
         "records disagree about the same machine")

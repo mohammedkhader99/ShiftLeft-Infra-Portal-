@@ -95,7 +95,8 @@ def test_the_shipped_blueprints_carry_todays_evidence():
     # again — not proven — and only a machine can move it.
     assert ("python312", "rhel") not in refuted
     from orchestrator import configure
-    assert ("python312", "rhel") not in configure.VERIFIED
+    # REQ-2026-0146 then proved the fixed recipe at 3.12.13.
+    assert ("python312", "rhel") in configure.VERIFIED
 
 
 def test_a_refuted_pair_is_never_also_claimed_as_verified():

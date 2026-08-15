@@ -189,12 +189,13 @@ def test_a_family_without_its_own_command_uses_the_shared_one():
     assert "redis-server --version" in _script(["redis7"], "debian")
 
 
-def test_a_retired_refutation_leaves_the_pair_unproven_not_proven():
-    """Fixing a recipe retires the measurement of the OLD recipe — it does not
-    prove the new one. python312 on Oracle Linux is now neither refused nor
-    claimed, and only a machine can move it."""
+def test_the_fixed_recipe_was_proven_by_a_machine_not_by_the_fix():
+    """The full arc, and the discipline it demonstrates: python312 on Oracle
+    Linux was measured wrong (3.9.25, REQ-2026-0139), the recipe was fixed, the
+    refutation retired, and only THEN — after REQ-2026-0146 reported 3.12.13 —
+    was it claimed. Fixing a recipe never proves it."""
     assert ("python312", "rhel") not in configure.REFUTED
-    assert ("python312", "rhel") not in configure.VERIFIED
+    assert ("python312", "rhel") in configure.VERIFIED
 
 
 def test_the_declined_capability_is_still_refused():

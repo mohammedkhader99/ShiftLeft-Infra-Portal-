@@ -199,6 +199,15 @@ VERIFIED: set[tuple[str, str]] = {
     ("redis7", "debian"),
     ("python312", "debian"),
     ("nodejs20", "rhel"),
+    # 15 Aug 2026 — REQ-2026-0146, Oracle Linux 9.8, proving the FIXED recipe:
+    # python3.12-3.12.13 and python3.12-pip-23.2.1 installed, and the machine
+    # answered `python3.12 --version` with 3.12.13. The system python is
+    # untouched at 3.9, which is what dnf needs.
+    #
+    # The pair it replaces was refuted at 3.9.25 on REQ-2026-0139. A recipe was
+    # changed, a machine was booted, and the claim moved on evidence — which is
+    # the only way anything gets into this set.
+    ("python312", "rhel"),
 }
 
 # Combinations PROVEN NOT to deliver what the catalogue name promises.
