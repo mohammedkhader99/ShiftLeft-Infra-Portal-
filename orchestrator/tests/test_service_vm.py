@@ -239,10 +239,16 @@ def test_only_booted_technologies_claim_to_be_verified():
 
     nginx and redis7 were booted on 11 Aug 2026 and asked directly — nginx
     returned HTTP 200, redis returned PONG on 7.2.14 — with the evidence recorded
-    beside the set. Everything else this blueprint could build stays out until
-    the same is done for it.
+    beside the set.
+
+    Extended 15 Aug 2026 by REQ-2026-0139 (Oracle Linux 9.8) and REQ-2026-0140
+    (Ubuntu 24.04.4): one machine each, five technologies on each, and every one
+    reported the version it actually received. java21 and redis7 passed on both;
+    python312 passed on Ubuntu only and nodejs20 on Oracle Linux only — the two
+    failures are recorded in REFUTED, not quietly omitted.
     """
-    assert configure.VERIFIED_CODES == {"nginx", "redis7"}, (
+    assert configure.VERIFIED_CODES == {
+        "nginx", "redis7", "java21", "python312", "nodejs20"}, (
         "a code was marked verified — that claim needs a real boot test behind it")
 
 
@@ -276,9 +282,11 @@ def test_only_booted_combinations_claim_to_be_verified():
     6.2 under a catalogue entry called "Redis 7".
     """
     assert configure.VERIFIED == {
-        ("nginx", "rhel"),
-        ("redis7", "rhel"),
-        ("nginx", "debian"),
+        ("nginx", "rhel"), ("nginx", "debian"),
+        ("redis7", "rhel"), ("redis7", "debian"),
+        ("java21", "rhel"), ("java21", "debian"),
+        ("python312", "debian"),   # Oracle Linux gave 3.9.25 — see REFUTED
+        ("nodejs20", "rhel"),      # Ubuntu gave 18.19.1 — see REFUTED
     }, ("a combination was marked verified — boot a VM on it first, and record "
         "the evidence beside the entry")
 
@@ -286,18 +294,31 @@ def test_only_booted_combinations_claim_to_be_verified():
 def test_a_verified_technology_is_not_verified_on_every_family():
     """THE point of the pair. nginx on Ubuntu is proven; redis7 on Ubuntu is a
     package name someone read in a manual."""
-    assert configure.is_verified("nginx", "debian") is True
-    assert configure.is_verified("redis7", "debian") is False
-    assert configure.is_verified("redis7", "rhel") is True
+    assert configure.is_verified("python312", "debian") is True
+    assert configure.is_verified("python312", "rhel") is False
+    assert configure.is_verified("nodejs20", "rhel") is True
+    assert configure.is_verified("nodejs20", "debian") is False
+
+
+def test_a_disproven_combination_says_what_the_machine_measured():
+    """Stronger than absence from VERIFIED: these were built and caught."""
+    assert "3.9" in configure.refusal("python312", "rhel")
+    assert "18" in configure.refusal("nodejs20", "debian")
+    assert configure.refusal("java21", "rhel") == "", "nothing disproved this one"
 
 
 def test_the_derived_sets_are_not_mistaken_for_the_record():
     """They are kept for existing readers, and each is more generous than the
     truth — so anything deciding on them must be shown to be safe."""
-    assert configure.VERIFIED_CODES == {"nginx", "redis7"}
+    assert configure.VERIFIED_CODES == {
+        "nginx", "redis7", "java21", "python312", "nodejs20"}
     assert configure.VERIFIED_FAMILIES == {"rhel", "debian"}
     implied = {(c, f) for c in configure.VERIFIED_CODES
                for f in configure.VERIFIED_FAMILIES}
-    assert implied - configure.VERIFIED == {("redis7", "debian")}, (
-        "the gap between what the flat sets imply and what was actually booted "
-        "has changed — check nothing decides on the flat sets alone")
+    # The flat sets imply ten combinations. Two of them were BUILT AND DISPROVEN,
+    # which is why nothing may decide on the flat sets alone.
+    assert implied - configure.VERIFIED == {("python312", "rhel"),
+                                            ("nodejs20", "debian")}
+    assert implied - configure.VERIFIED == set(configure.REFUTED), (
+        "the gap between what the flat sets imply and what was booted is no "
+        "longer exactly the disproven set — one of the two records has drifted")

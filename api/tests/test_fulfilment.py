@@ -177,4 +177,6 @@ def test_configurable_codes_match_the_orchestrators_templates():
     orchestrator's actual templates."""
     from orchestrator import configure
     assert fulfilment.CONFIGURABLE_CODES == set(configure.TEMPLATES)
-    assert fulfilment.CONFIG_VERIFIED_CODES == configure.VERIFIED_CODES
+    assert fulfilment.CONFIG_VERIFIED_CODES == configure.VERIFIED_CODES, (
+        "the catalogue's copy of what has been proven has drifted from the "
+        "orchestrator's record — update api/fulfilment.CONFIG_VERIFIED_CODES")

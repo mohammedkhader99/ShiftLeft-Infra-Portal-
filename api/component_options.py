@@ -451,6 +451,19 @@ def validate(session: Session, technology_code: str, deployment_target: str,
     # for software we can only install on Red Hat would otherwise sail through —
     # the image is offered and the technology is offered, and the machine would
     # boot, report success and install nothing.
+    # A combination a real machine DISPROVED gets its own message. "the recipe
+    # only supports rhel" would be true and misleading here: the recipe supports
+    # it, it was built, and it delivered the wrong thing. The requester deserves
+    # the measurement, not a shrug.
+    measured = blueprint_capabilities.refusal(technology_code, family)
+    if measured:
+        errors["image"] = (
+            f"{technology_code} was built on this operating system and did not "
+            f"deliver what the catalogue promises: {measured}. Until the recipe "
+            f"is fixed, choose a different OS image for it, or remove "
+            f"{technology_code} from the request.")
+        return errors
+
     if not offered_all["installable"]:
         can = supported_families(technology_code)
         # Name an image the requester can actually pick, not just a family name.

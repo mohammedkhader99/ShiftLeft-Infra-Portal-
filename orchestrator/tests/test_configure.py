@@ -139,7 +139,9 @@ def test_provisioner_falls_back_to_the_env_default(monkeypatch):
 def test_only_what_was_actually_booted_is_claimed_verified():
     """VERIFIED_CODES is a claim that someone booted a VM and asked the service
     whether it worked. The tripwire against claiming it without doing it."""
-    # Exactly the two booted and checked on 11 Aug 2026 — see the evidence
-    # recorded beside the set. Anything else appearing here means someone claimed
-    # a technology works without booting one.
-    assert configure.VERIFIED_CODES == {"nginx", "redis7"}
+    # Every code here has been booted on at least one family, with the evidence
+    # recorded beside the set. WHICH family is the pair record's job — read this
+    # set alone and python312 looks proven everywhere, when Oracle Linux gave it
+    # 3.9.25 under a catalogue entry called "Python 3.12".
+    assert configure.VERIFIED_CODES == {
+        "nginx", "redis7", "java21", "python312", "nodejs20"}

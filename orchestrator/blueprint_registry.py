@@ -41,6 +41,24 @@ def _readiness(manifest: dict) -> tuple[bool, list[str]]:
     return (not missing), missing
 
 
+def _refuted_for(builds: list) -> dict:
+    """{technology: {family: why}} for the codes this blueprint builds.
+
+    Read from configure.REFUTED, which only ever records what a machine was built
+    and asked. Imported lazily so a registry listing never depends on the recipe
+    table being importable.
+    """
+    try:
+        from orchestrator.configure import REFUTED
+    except Exception:  # noqa: BLE001 - discovery must never fail closed
+        return {}
+    out: dict[str, dict[str, str]] = {}
+    for (code, family), why in REFUTED.items():
+        if code in {str(b) for b in builds}:
+            out.setdefault(code, {})[family] = why
+    return out
+
+
 def discover(directory: Path | None = None) -> list[dict]:
     """Every valid manifest in the blueprints directory, newest-safe and sorted.
 
@@ -94,6 +112,11 @@ def discover(directory: Path | None = None) -> list[dict]:
             # baked it in), or `none` (exempt, with the reason written down).
             # The provisioner reads this to decide whether to pass the URL.
             "boot_report": str(manifest.get("boot_report") or ""),
+            # Combinations a real machine PROVED do not deliver what the
+            # catalogue name promises. Published beside os_families because the
+            # portal needs both to decide what to offer: one says what the recipe
+            # can configure, the other says where it was caught lying.
+            "refuted": _refuted_for(manifest.get("builds") or []),
             "description": str(manifest.get("description") or ""),
             # Which Terraform variable carries the environment's name. Modules
             # disagree (bucket_name, instance_name, db_name...), and hard-coding

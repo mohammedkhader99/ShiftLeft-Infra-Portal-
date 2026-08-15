@@ -173,6 +173,46 @@ VERIFIED: set[tuple[str, str]] = {
     ("nginx", "rhel"),
     ("redis7", "rhel"),
     ("nginx", "debian"),
+    # 15 Aug 2026 — REQ-2026-0139 (Oracle Linux 9.8) and REQ-2026-0140
+    # (Ubuntu 24.04.4), one machine each with all five technologies on it. Each
+    # machine reported the version it actually received and compared it with what
+    # the catalogue name promises:
+    #
+    #   java21     OL9 java-21-openjdk-headless 21.0.11 | Ubuntu 21.0.11
+    #   redis7     OL9 redis 7.2.14 (redis:7 stream)    | Ubuntu redis-server 7.0.15
+    #   python312  Ubuntu python3 3.12.3
+    #   nodejs20   OL9 nodejs 20.20.2 (nodejs:20 stream)
+    ("java21", "rhel"),
+    ("java21", "debian"),
+    ("redis7", "debian"),
+    ("python312", "debian"),
+    ("nodejs20", "rhel"),
+}
+
+# Combinations PROVEN NOT to deliver what the catalogue name promises.
+#
+# Stronger than absence from VERIFIED, and kept apart from it deliberately:
+# "nobody has tried this" and "we tried it and it delivered the wrong thing" call
+# for opposite treatment. The first is a gap to fill; the second is a promise the
+# portal must stop making until the recipe is fixed.
+#
+#   python312 / rhel   15 Aug 2026, REQ-2026-0139: the recipe installs `python3`,
+#                      and on Oracle Linux 9 that is Python 3.9.25. A real 3.12
+#                      IS available to the machine — python3.12-3.12.13 in
+#                      ol9_appstream, confirmed on the VM itself — so this is a
+#                      wrong package name, not a missing capability.
+#   nodejs20 / debian  15 Aug 2026, REQ-2026-0140: the recipe installs `nodejs`,
+#                      and Ubuntu 24.04 carries 18.19.1. Its repositories have no
+#                      Node 20 at all, so fixing this means either an external
+#                      repository or withdrawing the promise on Ubuntu.
+#
+# Exactly the shape of the bug that delivered Redis 6.2 under an entry called
+# "Redis 7" — twice over, and invisible until the machine was asked its version.
+REFUTED: dict[tuple[str, str], str] = {
+    ("python312", "rhel"):
+        "Oracle Linux's `python3` is Python 3.9, not 3.12 (measured: 3.9.25)",
+    ("nodejs20", "debian"):
+        "Ubuntu 24.04's `nodejs` is Node 18, not Node 20 (measured: 18.19.1)",
 }
 
 # Derived, and kept only because other modules already read them. Neither is the
@@ -180,6 +220,15 @@ VERIFIED: set[tuple[str, str]] = {
 # redis7-on-Ubuntu. VERIFIED is the record; these are conveniences.
 VERIFIED_CODES: set[str] = {code for code, _family in VERIFIED}
 VERIFIED_FAMILIES: set[str] = {family for _code, family in VERIFIED}
+
+
+def refusal(code: str, family: str) -> str:
+    """Why this combination must not be built, or "" if there is no such evidence.
+
+    Only ever populated by a machine that was built and asked. A guess belongs in
+    a comment, not here.
+    """
+    return REFUTED.get(((code or "").strip(), (family or "").strip().lower()), "")
 
 
 def is_verified(code: str, family: str) -> bool:

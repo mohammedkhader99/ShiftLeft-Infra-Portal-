@@ -29,6 +29,7 @@ import time
 # because several requests can miss the cache at once.
 _cache: dict[str, set[str]] | None = None
 _limits: dict[str, tuple[str, int]] = {}
+_refusals: dict[tuple[str, str], str] = {}
 _fetched_at: float = 0.0
 _lock = threading.Lock()
 
@@ -43,12 +44,32 @@ def ttl_seconds() -> int:
 
 
 def _build(shipped: list[dict]) -> dict[str, set[str]]:
-    """Flatten the manifest list to {technology: families}."""
+    """Flatten the manifest list to {technology: families it can be built on}.
+
+    A family a real machine DISPROVED is removed here rather than filtered later,
+    so every caller — the dropdown, validate(), anything added next — inherits the
+    refusal without having to know it exists. python312 on Oracle Linux delivers
+    Python 3.9.25 under a catalogue entry called "Python 3.12"; offering that
+    image is offering a machine we know will be wrong.
+    """
     out: dict[str, set[str]] = {}
     for bp in shipped or []:
         families = {str(f).strip().lower() for f in (bp.get("os_families") or [])}
+        refuted = bp.get("refuted") or {}
         for code in bp.get("builds") or []:
-            out.setdefault(str(code), set()).update(families)
+            code = str(code)
+            disproven = {str(f).strip().lower() for f in (refuted.get(code) or {})}
+            out.setdefault(code, set()).update(families - disproven)
+    return out
+
+
+def _build_refusals(shipped: list[dict]) -> dict[tuple[str, str], str]:
+    """{(technology, family): why a machine proved this does not work}."""
+    out: dict[tuple[str, str], str] = {}
+    for bp in shipped or []:
+        for code, families in (bp.get("refuted") or {}).items():
+            for family, why in (families or {}).items():
+                out[(str(code), str(family).strip().lower())] = str(why)
     return out
 
 
@@ -90,6 +111,8 @@ def refresh(fetcher) -> bool:
         _cache = _build(shipped)
         _limits.clear()
         _limits.update(_build_limits(shipped))
+        _refusals.clear()
+        _refusals.update(_build_refusals(shipped))
         _fetched_at = time.time()
     return True
 
@@ -132,6 +155,12 @@ def name_budget(code: str, reference_length: int, fetcher) -> tuple[int, str] | 
     return limit - reference_length - len(suffix) - 2, suffix
 
 
+def refusal(code: str, family: str) -> str:
+    """Why a machine proved this combination wrong, or "" if there is no such
+    evidence. Distinct from "not supported": this one was BUILT and measured."""
+    return _refusals.get(((code or "").strip(), (family or "").strip().lower()), "")
+
+
 def known() -> bool:
     """Whether capabilities have ever been read. Surfaced in the admin console so
     an inert filter is visible instead of looking like a permissive one."""
@@ -144,3 +173,4 @@ def reset() -> None:
     with _lock:
         _cache, _fetched_at = None, 0.0
         _limits.clear()
+        _refusals.clear()
