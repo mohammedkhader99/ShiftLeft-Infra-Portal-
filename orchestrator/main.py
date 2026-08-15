@@ -130,6 +130,10 @@ async def posture(request: Request) -> dict:
         "catalogue_mode": cloud_catalogue.mode(),
         "catalogue_shapes_allowed": len(cloud_catalogue.shape_allowlist()),
         "catalogue_image_filter_set": bool(cloud_catalogue.image_filter()),
+        # Boot self-reporting. Set-or-not, never by value: the PAR URL is a
+        # credential. Without it a machine still builds, it just cannot tell the
+        # portal whether its software actually came up.
+        "boot_report_configured": bool(os.getenv("OCI_BOOT_REPORT_PAR_URL")),
     }
 
 
@@ -578,7 +582,13 @@ def _compute_spec(payload: dict, resource_kind: str = "") -> dict:
         # that render their own first-boot script (apache-httpd). One source, so
         # the two paths cannot disagree about which OS a machine is.
         "os_family": _os_family_for(payload, resource_kind) or configure.os_family(),
-        "user_data": configure.render(components, _os_family_for(payload, resource_kind)),
+        "user_data": configure.render(
+            components,
+            _os_family_for(payload, resource_kind),
+            # Where this machine PUTs its own evidence. Empty when no PAR is
+            # configured, in which case nothing about the boot changes.
+            configure.boot_report_url(payload.get("reference", ""), resource_kind),
+        ),
         # The ports the installed service listens on, from the same profiles that
         # produced user_data — so the network rules and the OS firewall agree.
         "service_ports": configure.ports_for(

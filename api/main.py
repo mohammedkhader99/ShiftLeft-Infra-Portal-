@@ -714,6 +714,7 @@ _EXECUTION_GATE_LABELS = {
     "catalogue_mode": "Cloud option catalogue mode",
     "catalogue_shapes_allowed": "Compute shapes allow-listed (0 = offer none)",
     "catalogue_image_filter_set": "OS image filter configured",
+    "boot_report_configured": "Boot self-report destination configured",
 }
 
 

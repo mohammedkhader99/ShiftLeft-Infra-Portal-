@@ -201,6 +201,88 @@ def family_for_os(os_name: str) -> str:
     return ""
 
 
+def boot_report_url(reference: str, resource_kind: str) -> str:
+    """Where this machine PUTs its own evidence, or "" if not configured.
+
+    A pre-authenticated request granting object WRITES only, on a bucket that
+    holds nothing else. The machine can add its report and can neither read
+    another nor list the bucket, so the URL travelling in user-data — where
+    anyone able to read that VM's instance metadata can see it — costs at most
+    some junk objects.
+
+    Configured rather than assumed: with no PAR set, nothing is emitted and a
+    machine behaves exactly as it did before self-reporting existed.
+    """
+    par = (os.getenv("OCI_BOOT_REPORT_PAR_URL", "") or "").strip()
+    reference = (reference or "").strip()
+    if not par or not reference:
+        return ""
+    if not par.endswith("/"):
+        par += "/"
+    kind = (resource_kind or "resource").strip() or "resource"
+    return f"{par}{reference}-{kind}.txt"
+
+
+def _report_script(codes: list[str], packages: list[str], services: list[str],
+                   ports: list[int], family: str, report_url: str) -> list[str]:
+    """The self-check a machine runs on itself, as cloud-config write_files lines.
+
+    WHY A MACHINE REPORTS ON ITSELF.
+
+    The portal has been inferring success from Terraform exiting zero, and that
+    inference has been wrong four times: a service-vm that installed nothing, an
+    Apache whose runcmd was discarded, a Redis 6 sold as 7, an nginx that lost
+    port 80 to httpd. Every one booted healthy and was reported provisioned.
+
+    Asking the machine afterwards catches all of them — but Run Command, the way
+    we asked, does not exist on OCI's Ubuntu images (measured: 16 agent plugins
+    on Oracle Linux, 11 on Ubuntu, and it is in neither list on the latter). A
+    private VM cannot be reached inbound either. So the machine reports OUTWARD,
+    which works on any operating system and needs nothing installed.
+
+    Written as a script file rather than inline commands: it is long, it contains
+    quotes and loops, and every character of it would otherwise have to survive
+    YAML quoting — the failure that has now cost this project two machines.
+    """
+    checks = [
+        "#!/bin/sh",
+        "# Written by the provisioning portal. Reports what this machine ACTUALLY",
+        "# has, so success is evidence rather than an inference from Terraform.",
+        "REPORT=/var/log/infra-portal-report.txt",
+        "{",
+        f"  echo 'os_family={family}'",
+        f"  echo 'technologies={' '.join(codes)}'",
+        "  . /etc/os-release 2>/dev/null && echo \"os=$PRETTY_NAME\"",
+        "  echo '--- packages ---'",
+    ]
+    for package in packages:
+        # Both package managers are tried because the report must be readable
+        # even when the machine is not the family we think it is — which is
+        # precisely the failure worth catching.
+        checks.append(
+            f"  (rpm -q {package} 2>/dev/null || dpkg-query -W -f='{package} ${{Version}}\\n' "
+            f"{package} 2>/dev/null || echo '{package} NOT INSTALLED')")
+    checks.append("  echo '--- services ---'")
+    for service in services:
+        checks.append(f"  echo \"{service}=$(systemctl is-active {service} 2>&1)\"")
+    checks.append("  echo '--- ports ---'")
+    for port in ports:
+        checks.append(
+            f"  echo \"http_{port}=$(curl -s -o /dev/null -m 5 -w '%{{http_code}}' "
+            f"http://localhost:{port}/ 2>&1)\"")
+        checks.append(f"  ss -lnt 2>/dev/null | grep ':{port} ' || echo 'nothing listening on {port}'")
+    checks += [
+        "  echo '--- first-boot log ---'",
+        "  cat /var/log/infra-portal.log 2>/dev/null || echo '(no portal log written)'",
+        "} > $REPORT 2>&1",
+        # `|| true` so a failed upload never fails the boot: the report is
+        # diagnostic, and a machine that works but could not phone home is a
+        # better outcome than one marked broken because a bucket was unreachable.
+        f"curl -s -X PUT --data-binary @$REPORT '{report_url}' >/dev/null 2>&1 || true",
+    ]
+    return checks
+
+
 def os_family() -> str:
     """The DEFAULT family, when a request names no image.
 
@@ -330,7 +412,7 @@ def enabled() -> bool:
             in ("1", "true", "yes", "on"))
 
 
-def render(components: list[dict], family: str = "") -> str:
+def render(components: list[dict], family: str = "", report_url: str = "") -> str:
     """Cloud-init user-data configuring the request's technologies, or "" when
     there is nothing to configure (or the feature is off).
 
@@ -420,6 +502,17 @@ def render(components: list[dict], family: str = "") -> str:
         # Named on the machine itself, so "why is X missing?" is answerable
         # there rather than only from the portal.
         lines.append(f"      not_installable_on_{family}={' '.join(unsupported)}")
+    # The machine's own self-check, written as a FILE so its quotes and loops
+    # never have to survive YAML quoting — the failure that has already cost this
+    # project two machines.
+    if report_url:
+        lines.append("  - path: /usr/local/bin/infra-portal-report.sh")
+        lines.append("    permissions: '0755'")
+        lines.append("    content: |")
+        for check in _report_script(
+                [code for code, _version, _profile in profiles],
+                packages, services, ports, family, report_url):
+            lines.append(f"      {check}")
     lines.append("runcmd:")
     # Module streams are enabled BEFORE the install, or the default stream is
     # already resolved and the wrong major version comes down.
@@ -446,4 +539,10 @@ def render(components: list[dict], family: str = "") -> str:
         lines.append(cmd(f"echo 'PORTAL: {code} has no install recipe for {family}; "
                          f"nothing was installed for it' >> /var/log/infra-portal.log"))
     lines.append(cmd("echo 'PORTAL: first-boot configuration finished' >> /var/log/infra-portal.log"))
+    # LAST, so the report describes the finished machine rather than one still
+    # installing. Its failure is swallowed: a machine that works but could not
+    # upload its report is a better outcome than one that fails boot over an
+    # unreachable bucket.
+    if report_url:
+        lines.append(cmd("/usr/local/bin/infra-portal-report.sh || true"))
     return "\n".join(lines) + "\n"

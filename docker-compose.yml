@@ -352,6 +352,10 @@ services:
       OCI_CATALOGUE_MODE: ${OCI_CATALOGUE_MODE:-mock}
       OCI_SHAPE_ALLOWLIST: ${OCI_SHAPE_ALLOWLIST:-}
       OCI_IMAGE_FILTER: ${OCI_IMAGE_FILTER:-}
+      # Where a machine PUTs evidence about itself at the end of first boot. A
+      # write-only pre-authenticated request; unset means machines are not asked
+      # to report and nothing about a boot changes.
+      OCI_BOOT_REPORT_PAR_URL: ${OCI_BOOT_REPORT_PAR_URL:-}
       # AWS. Terraform's AWS provider reads these from the environment, so
       # without them the aws/s3 blueprint can never work however they are set.
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}

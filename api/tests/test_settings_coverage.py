@@ -42,6 +42,8 @@ _GATE_ENV = {
     # catalogue_shapes_allowed (a count, not the list) /
     # catalogue_image_filter_set.
     "OCI_CATALOGUE_MODE", "OCI_SHAPE_ALLOWLIST", "OCI_IMAGE_FILTER",
+    # Reported as boot_report_configured (set-or-not; the value is a credential).
+    "OCI_BOOT_REPORT_PAR_URL",
     # Kafka: reported as kafka_source_set — the value is a
     # pre-authenticated Object Storage URL, so it is never displayed.
     "OCI_KAFKA_SOURCE_URL",
