@@ -30,6 +30,7 @@ from api import ai_explainer
 from api import ai_recommend
 from api import ai_triage
 from api import blueprint_capabilities
+from api import network_egress
 from api import cloud_options
 from api import component_options
 from api import fulfilment
@@ -638,6 +639,11 @@ def _catalogue_options_posture(session: Session) -> dict:
         # every technology — which is indistinguishable from "nothing needed
         # filtering" unless it is stated.
         "blueprint_capabilities_known": blueprint_capabilities.known(),
+        # Whether the portal knows what the build network can reach. False
+        # means the OS-image list is NOT being filtered on that basis, so an
+        # image whose packages are unreachable can still be chosen — the
+        # machine's own boot report is then the only thing that will catch it.
+        "network_egress_known": network_egress.known(),
     }
 
 
@@ -855,6 +861,27 @@ def _orchestrator_blueprints() -> list[dict] | None:
         return None
     try:
         return (response.json() or {}).get("available") or []
+    except ValueError:
+        return None
+
+
+def _orchestrator_network_egress() -> dict | None:
+    """What the subnet the orchestrator builds VMs in can reach, or None.
+
+    Read from the executing layer, never assumed: the API holds no cloud
+    credentials and cannot see a route table, so guessing here would be exactly
+    the sort of confident wrongness that offered Ubuntu on a subnet with no
+    route to the internet.
+    """
+    payload = {"issued_at": datetime.now(timezone.utc).isoformat(),
+               "operation": "network-egress"}
+    raw = json.dumps(payload, sort_keys=True).encode()
+    response, _err = _post_to_orchestrator(raw, sign(WEBHOOK_SECRET, raw),
+                                           path="/network/egress")
+    if response is None or response.status_code != 200:
+        return None
+    try:
+        return response.json() or {}
     except ValueError:
         return None
 

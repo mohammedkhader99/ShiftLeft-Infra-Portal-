@@ -32,7 +32,7 @@ source="oci-live", so it appears here without this module changing.
 from sqlalchemy import select
 from sqlalchemy.orm import Session, object_session
 
-from api import blueprint_capabilities
+from api import blueprint_capabilities, network_egress
 from db.models import ComponentOption, SizingAnchor, Technology
 
 # The detail fields, in the order the form shows them. `numeric` fields are
@@ -180,6 +180,13 @@ def _image_suits(row: ComponentOption, technology_code: str) -> bool:
     if not families:
         return True  # this technology installs nothing on an OS — see installable_on
     family = (row.attributes or {}).get("os_family")
+    if family and not network_egress.can_install(family, _fetch_egress):
+        # The machine would build, boot, and find no repository to install from.
+        # REQ-2026-0134 is what that looks like: Apache on Oracle Linux served on
+        # :80 while nginx on Ubuntu, same subnet, same request, reported
+        # `nginx NOT INSTALLED` — because Oracle's mirrors are inside the Oracle
+        # Services Network and Ubuntu's are not.
+        return False
     return not family or family in families
 
 
@@ -272,6 +279,9 @@ def options_for(session: Session, technology_code: str, deployment_target: str =
         # rather than left to look like "everything is allowed", which is how the
         # rule silently did nothing in production for its first day.
         "capabilities_known": blueprint_capabilities.known(),
+        # Same disclosure for the network check: False means images were
+        # not filtered on what this subnet can reach.
+        "network_known": network_egress.known(),
     }
 
 
@@ -300,6 +310,12 @@ def _fetch_blueprints() -> list[dict]:
     """Ask the orchestrator what it ships. Imported lazily to avoid a cycle."""
     from api.main import _orchestrator_blueprints
     return _orchestrator_blueprints() or []
+
+
+def _fetch_egress() -> dict:
+    """Ask the orchestrator what the build network can reach. Lazy, as above."""
+    from api.main import _orchestrator_network_egress
+    return _orchestrator_network_egress() or {}
 
 
 def installable_on(technology_code: str, family: str) -> bool:
@@ -420,12 +436,22 @@ def validate(session: Session, technology_code: str, deployment_target: str,
     offered = offered_all["fields"]
     errors: dict[str, str] = {}
 
+    # Can this OS get its packages here AT ALL? Asked first, because it is the
+    # most basic question about a machine and the one nobody was asking: the
+    # image is real, the technology is real, the recipe supports the family, and
+    # the machine still comes up empty because the subnet cannot reach the
+    # repository. The dropdown already hides these; this is the authority, and it
+    # also catches a stale draft or a value posted straight to the API.
+    family = offered_all["os_family"]
+    if family and not network_egress.can_install(family, _fetch_egress):
+        errors["image"] = network_egress.guidance(family, _fetch_egress)
+        return errors
+
     # The combination check, before the per-field ones: picking an Ubuntu image
     # for software we can only install on Red Hat would otherwise sail through —
     # the image is offered and the technology is offered, and the machine would
     # boot, report success and install nothing.
     if not offered_all["installable"]:
-        family = offered_all["os_family"]
         can = supported_families(technology_code)
         # Name an image the requester can actually pick, not just a family name.
         # "it can install it on: rhel" is true and useless — nobody chooses

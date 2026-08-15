@@ -163,6 +163,12 @@ READ_ONLY_ENV: dict[str, str] = {
     # OS families each recipe can configure. Deploy-time: capabilities change
     # when the orchestrator is redeployed, not while it runs.
     "BLUEPRINT_CAPABILITY_TTL_SECONDS": "Blueprint capability cache TTL (seconds)",
+    # How long the API caches what the build subnet can REACH — which
+    # decides whether an Ubuntu image can be offered at all, since its apt
+    # repositories are on the public internet while Oracle Linux's mirrors
+    # are inside the Oracle Services Network. Deploy-time: a route table
+    # changes when somebody deliberately changes it.
+    "NETWORK_EGRESS_TTL_SECONDS": "Build-network egress cache TTL (seconds)",
     # Integration + background-worker switches: visible so the posture is complete,
     # but deploy-time decisions rather than policy knobs.
     "VAULT_MODE": "Credential delivery mode",

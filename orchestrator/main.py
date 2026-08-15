@@ -25,6 +25,7 @@ from orchestrator import (
     cloud_catalogue,
     cloud_state,
     configure,
+    network_egress,
     provisioner,
 )
 
@@ -84,6 +85,30 @@ async def blueprints(request: Request) -> dict:
     if not verify(WEBHOOK_SECRET, body, request.headers.get("X-Signature", "")):
         raise HTTPException(status_code=401, detail="Invalid webhook signature.")
     return {"available": blueprint_registry.discover()}
+
+
+@app.post("/network/egress")
+async def network_egress_report(request: Request) -> dict:
+    # NOT named network_egress: at module level that rebinds the imported module
+    # to this function, so `network_egress.report()` below resolves to the
+    # function and raises AttributeError. Every unit test passed — they exercise
+    # the module directly — and the endpoint failed on the first real call.
+    """What the subnet the portal builds VMs in can actually reach.
+
+    Discovery, exactly like /blueprints: the portal cannot see the tenancy, so it
+    must ask the layer that can rather than assume. Only the signature is checked
+    — this reads route tables and changes nothing, and it is called while a
+    requester is filling in a form, long before any approval exists to re-verify.
+    """
+    body = await request.body()
+    if not verify(WEBHOOK_SECRET, body, request.headers.get("X-Signature", "")):
+        raise HTTPException(status_code=401, detail="Invalid webhook signature.")
+    if provisioner.provision_mode() != "apply":
+        # Mock mode builds nothing, so no network constrains it. Saying "unknown"
+        # here would put a warning on every screen of the demo path.
+        return {"known": False, "families": [],
+                "reason": "not building real machines, so no network limits apply"}
+    return network_egress.report()
 
 
 @app.post("/posture")

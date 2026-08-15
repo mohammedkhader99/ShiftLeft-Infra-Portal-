@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from api import blueprint_capabilities, settings
+from api import blueprint_capabilities, network_egress, settings
 
 _BLUEPRINT_DIR = Path(__file__).resolve().parents[2] / "orchestrator" / "blueprints"
 
@@ -40,6 +40,28 @@ def _blueprint_capabilities_are_deterministic():
     blueprint_capabilities.refresh(_manifests_from_disk)
     yield
     blueprint_capabilities.reset()
+
+
+@pytest.fixture(autouse=True)
+def _network_egress_is_deterministic():
+    """Seed the build-network answer instead of letting it call a live orchestrator.
+
+    Exactly the same hazard as the capability cache above, and the same fix: left
+    alone, api code under test POSTs to ORCHESTRATOR_URL, which on a developer's
+    machine may be running — so a test's result would depend on the route table
+    of a real tenancy.
+
+    Seeded as fully connected because that is what the rest of the suite is about:
+    a test choosing an Ubuntu image is exercising something other than the network
+    rule, and should not have to know this exists. The tests that DO exercise the
+    rule reset it and supply their own answer.
+    """
+    network_egress.reset()
+    network_egress.refresh(lambda: {
+        "known": True, "subnet_name": "TEST-SUBNET", "internet": True,
+        "oracle_services": True, "families": ["rhel", "debian", "suse"], "reason": ""})
+    yield
+    network_egress.reset()
 
 
 @pytest.fixture(autouse=True)
