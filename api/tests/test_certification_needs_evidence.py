@@ -170,3 +170,39 @@ def test_the_certify_route_points_at_the_certify_function():
              and "POST" in getattr(r, "methods", set())]
     assert match, "the certify route is not registered at all"
     assert match[0].endpoint.__name__ == "certify_blueprint"
+
+
+# --- A machine nothing can inspect --------------------------------------------
+
+def test_a_technology_nothing_can_inspect_is_refused():
+    """win2019 boots a real Windows machine, and both the first-boot config and
+    the self-report are POSIX shell. It can never report.
+
+    Read against the SHIPPED manifests, and asserted on the GATE rather than the
+    declaration. Tests that the manifest declares it and the registry publishes
+    it both passed while the gate ignored it entirely — declaration, publication
+    and decision are three boundaries, and only the last one refuses anything.
+    """
+    from orchestrator import blueprint_registry
+    shipped = blueprint_registry.discover()
+    caps.reset()
+    caps.refresh(lambda: shipped)
+    by_code = {c: bp for bp in shipped for c in (bp.get("builds") or [])}
+    blocked = api_main._unproven_families("win2019", by_code["win2019"])
+    assert blocked, "Windows passed a gate that requires a machine to report"
+    assert any("Windows" in str(b) for b in blocked), (
+        f"refused, but not for a reason a reader can act on: {blocked}")
+
+
+def test_it_is_refused_differently_from_a_bucket():
+    """A bucket boots no machine and is allowed; this boots one that cannot be
+    inspected. Collapsing the two would certify a Windows VM on the strength of
+    it having no operating system."""
+    from orchestrator import blueprint_registry
+    shipped = blueprint_registry.discover()
+    caps.reset()
+    caps.refresh(lambda: shipped)
+    by_code = {c: bp for bp in shipped for c in (bp.get("builds") or [])}
+    assert api_main._unproven_families("oci-objectstorage",
+                                       by_code["oci-objectstorage"]) == set()
+    assert api_main._unproven_families("win2019", by_code["win2019"])

@@ -319,3 +319,57 @@ def test_both_mechanisms_write_to_the_same_place(monkeypatch):
     url = configure.boot_report_url("REQ-2026-0199", "oci-apache")
     assert url.startswith(PAR)
     assert boot_reports.bucket() in url
+
+
+# --- A machine with nothing to install still has something to prove -----------
+
+def test_a_bare_vm_still_files_a_report(monkeypatch):
+    """compute-vm and rhel9 install nothing, and render() used to return "" for
+    them — so those machines booted with no cloud-init and filed no report,
+    making the blueprints unprovable BY CONSTRUCTION. The certification gate then
+    refused them for lack of evidence they could never produce.
+
+    A bare VM's job is to exist, so an empty report still proves the three things
+    that matter: the image boots, cloud-init ran, and the machine reached Object
+    Storage — because the report arrived at all.
+    """
+    monkeypatch.setenv("CONFIG_ENABLED", "true")
+    monkeypatch.setenv("OCI_BOOT_REPORT_PAR_URL",
+                       "https://objectstorage.me-dubai-1.oraclecloud.com/p/T/n/ns"
+                       "/b/shiftleft-boot-reports/o/")
+    from orchestrator import configure
+    url = configure.boot_report_url("REQ-2026-0199", "oci-instance")
+    text = configure.render([{"technology_code": "compute-vm"}], "rhel", url)
+    assert text.strip(), "a bare VM renders no cloud-init at all"
+    doc = yaml.safe_load(text)
+    assert any(f["path"].endswith("report.sh") for f in doc["write_files"])
+    assert any("infra-portal-report.sh" in c for c in doc["runcmd"])
+
+
+def test_a_bare_vm_with_no_par_still_renders_nothing(monkeypatch):
+    """The change must not start emitting cloud-init where none was emitted
+    before: with no reporting configured there is nothing to say."""
+    monkeypatch.setenv("CONFIG_ENABLED", "true")
+    monkeypatch.delenv("OCI_BOOT_REPORT_PAR_URL", raising=False)
+    from orchestrator import configure
+    assert configure.render([{"technology_code": "compute-vm"}], "rhel", "") == ""
+
+
+def test_windows_is_declared_unverifiable_rather_than_linux():
+    """oci-compute claimed os_families [rhel, debian] and builds win2019, so the
+    gate asked whether a WINDOWS machine had been proven on Oracle Linux and
+    answered "unproven on debian,rhel" — a nonsense a reader would have chased.
+
+    Declared unverifiable, NOT as having no families: those are different. No
+    families means no machine boots (a bucket) and the gate allows it; this boots
+    a real machine that no reporter can run on, and must be refused.
+    """
+    import yaml as _yaml
+    manifest = _yaml.safe_load(
+        (ROOT / "orchestrator" / "blueprints" / "oci-compute.yaml").read_text(
+            encoding="utf-8"))
+    blocked = manifest.get("cannot_verify") or {}
+    assert "win2019" in blocked
+    assert "Windows" in blocked["win2019"]
+    assert "win2019" in (manifest.get("builds") or []), (
+        "it is still built — only its verifiability is being declared")

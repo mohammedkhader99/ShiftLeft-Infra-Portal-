@@ -134,6 +134,9 @@ def discover(directory: Path | None = None) -> list[dict]:
             # certify anything it cannot see evidence for, so this is what makes
             # "certified" mean something rather than "somebody clicked".
             "verified": _verified_for(manifest.get("builds") or []),
+            # Technologies this blueprint builds but nothing can inspect —
+            # distinct from a blueprint that boots no machine at all.
+            "cannot_verify": dict(manifest.get("cannot_verify") or {}),
             "description": str(manifest.get("description") or ""),
             # Which Terraform variable carries the environment's name. Modules
             # disagree (bucket_name, instance_name, db_name...), and hard-coding

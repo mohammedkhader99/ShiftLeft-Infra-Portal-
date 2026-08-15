@@ -31,6 +31,7 @@ _cache: dict[str, set[str]] | None = None
 _limits: dict[str, tuple[str, int]] = {}
 _refusals: dict[tuple[str, str], str] = {}
 _proven: dict[str, set[str]] = {}
+_unverifiable: dict[str, str] = {}
 _fetched_at: float = 0.0
 _lock = threading.Lock()
 
@@ -115,6 +116,10 @@ def refresh(fetcher) -> bool:
         _refusals.clear()
         _refusals.update(_build_refusals(shipped))
         _proven.clear()
+        _unverifiable.clear()
+        for bp in shipped or []:
+            for code, why in (bp.get("cannot_verify") or {}).items():
+                _unverifiable[str(code)] = str(why)
         for bp in shipped or []:
             for code, families in (bp.get("verified") or {}).items():
                 _proven.setdefault(str(code), set()).update(
@@ -161,6 +166,15 @@ def name_budget(code: str, reference_length: int, fetcher) -> tuple[int, str] | 
     return limit - reference_length - len(suffix) - 2, suffix
 
 
+def unverifiable(code: str) -> str:
+    """Why nothing can inspect this technology, or "".
+
+    Not the same as a blueprint that boots no machine: this one boots a real
+    machine that no reporter can run on.
+    """
+    return _unverifiable.get((code or "").strip(), "")
+
+
 def evidence(code: str) -> dict:
     """What a machine has proved about this technology, per OS family.
 
@@ -196,3 +210,4 @@ def reset() -> None:
         _limits.clear()
         _refusals.clear()
         _proven.clear()
+        _unverifiable.clear()

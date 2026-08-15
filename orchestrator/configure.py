@@ -670,8 +670,20 @@ def render(components: list[dict], family: str = "", report_url: str = "") -> st
     # says why on itself.
     unsupported = sorted({c for c, _v, p in profiles if not p})
     profiles = [(c, v, p) for c, v, p in profiles if p]
-    if not profiles:
+    if not profiles and not report_url:
         return ""
+    # A machine with NOTHING to install still has something to prove.
+    #
+    # This used to return "" here, so a compute-vm or rhel9 request booted with no
+    # cloud-init at all and filed no report — which made those blueprints
+    # unprovable BY CONSTRUCTION. The certification gate refused them for lack of
+    # evidence they could never produce, and no amount of testing would have
+    # changed that.
+    #
+    # A bare VM's job is to exist, so the three things worth proving about it are
+    # that the image boots, that cloud-init ran, and that the machine can reach
+    # Object Storage — which a report saying nothing else still demonstrates,
+    # because it arrived.
 
     packages: list[str] = []
     services: list[str] = []

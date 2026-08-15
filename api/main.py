@@ -975,6 +975,15 @@ def _unproven_families(code: str, manifest: dict) -> set[str] | None:
     That is a deliberate, stated gap: proving those needs the resource itself to
     be asked whether it exists and is healthy, which is separate work.
     """
+    # A technology the blueprint itself says nothing can inspect. Kept ahead of
+    # the family arithmetic because it is a different fact: not "unproven on
+    # rhel", which is what a Windows machine used to be told, but "no machine can
+    # report what this became". Returning an empty set here would let it through
+    # exactly as a bucket does, and a bucket at least cannot be broken silently.
+    blocked = blueprint_capabilities.unverifiable(code)
+    if blocked:
+        return {blocked}
+
     found = blueprint_capabilities.evidence(code)
     if not found["known"]:
         blueprint_capabilities.families_for(code, _orchestrator_blueprints)

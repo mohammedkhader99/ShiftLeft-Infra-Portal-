@@ -20,6 +20,25 @@ version: 1.0.0
 boot_report: user_data
 builds: [compute-vm, rhel9, win2019]
 os_families: [rhel, debian]
+
+# win2019 is WINDOWS, and this blueprint claimed rhel and debian for it because
+# os_families is declared per blueprint rather than per technology. Both the
+# first-boot configuration and the self-report are POSIX shell; neither can run
+# on Windows at all. So the certification gate was asking whether a Windows
+# machine had been proven on Oracle Linux — a question with no sensible answer,
+# which it reported as "unproven on debian,rhel".
+#
+# Declared as UNVERIFIABLE rather than as having no families. Those are different
+# and the difference matters: a technology with no families boots no machine (a
+# bucket) and the gate lets it through, while this one boots a real machine that
+# nothing can inspect. Certifying it would be exactly the promise the gate exists
+# to prevent.
+#
+# Lifting this needs a PowerShell reporter and a Windows machine to run it on.
+cannot_verify:
+  win2019: >-
+    Windows: first-boot configuration and the self-report are POSIX shell and
+    cannot run on it, so no machine can report what this became
 # A bare VM whose first-boot configuration, if any, is rendered by
 # orchestrator/configure.py — so it supports whatever configure.py supports.
 # Windows images can be booted here but no software recipe covers them.
