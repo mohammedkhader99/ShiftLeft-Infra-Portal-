@@ -192,6 +192,17 @@ def _oci_vars(name: str, tags: dict, resource_kind: str = "oci-bucket",
         # This blueprint builds its own VCN, so it takes network inputs of its own
         # rather than the shared compute subnet.
         "oke_bastion_allowed_cidr": os.getenv("OCI_OKE_BASTION_CIDR", ""),
+        # The network OKE was GIVEN, resolved per environment tier by the
+        # orchestrator. Empty for every other resource kind, which takes the
+        # shared compute subnet instead. Terraform refuses a required
+        # variable left empty, so a wiring mistake stops at plan rather than
+        # building a cluster somewhere unintended.
+        "vcn_id": sizing.get("vcn_id", ""),
+        "api_subnet_id": sizing.get("api_subnet_id", ""),
+        "node_subnet_id": sizing.get("node_subnet_id", ""),
+        "pod_subnet_id": sizing.get("pod_subnet_id", ""),
+        "lb_subnet_id": sizing.get("lb_subnet_id", ""),
+        "bastion_subnet_id": sizing.get("bastion_subnet_id", ""),
         "oke_kubernetes_version": os.getenv("OCI_OKE_KUBERNETES_VERSION", ""),
         "oke_cluster_type": os.getenv("OCI_OKE_CLUSTER_TYPE", ""),
         # --- Kafka ------------------------------------------------------------

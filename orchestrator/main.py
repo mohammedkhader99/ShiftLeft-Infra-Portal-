@@ -598,6 +598,29 @@ def _compute_spec(payload: dict, resource_kind: str = "") -> dict:
     """
     components = _components_for(payload, resource_kind)
     sizing = _instance_sizing(payload)
+
+    # ONE VCN PER TIER. The cluster is built in the network belonging to the tier
+    # the request names, and in no other. An unmapped tier is REFUSED here rather
+    # than defaulted: a production cluster silently built into the development VCN
+    # would look exactly like success, and this is the last place that can stop it.
+    #
+    # Only OKE consumes a network map today. The other blueprints take the shared
+    # compute subnet, which is a separate contract and unchanged by this.
+    if resource_kind == "oci-oke":
+        tier = (payload.get("policy_input", {}).get("environment_tier") or "").strip()
+        try:
+            network = oke_networks.for_tier(tier)
+        except oke_networks.NetworkNotMapped as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        sizing = {
+            **sizing,
+            "vcn_id": network["vcn"],
+            "api_subnet_id": network["api"],
+            "node_subnet_id": network["node"],
+            "pod_subnet_id": network["pod"],
+            "lb_subnet_id": network["lb"],
+            "bastion_subnet_id": network["bastion"],
+        }
     return {
         **sizing,
         # The disk the request was priced for. Previously never sent, so every
