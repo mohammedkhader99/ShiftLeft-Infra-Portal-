@@ -120,7 +120,36 @@ def test_every_node_of_a_multi_machine_resource_is_read(monkeypatch):
 
 # --- Nothing to check is not the same as nothing wrong ------------------------
 
-def test_a_bucket_has_no_machine_to_disbelieve(monkeypatch):
+def test_a_bucket_is_asked_whether_it_EXISTS(monkeypatch):
+    """A bucket has no machine to disbelieve — and that used to mean it was never
+    checked at all, so oci-objectstorage was certifiable on no evidence
+    whatsoever. It files no boot report, so the proof comes from the resource
+    itself."""
+    from orchestrator import resource_state
+    monkeypatch.setattr(resource_state, "check",
+                        lambda kind, name, clients=None: {"state": "ok",
+                                                          "detail": "bucket exists"})
+    result = _verify(["oci-bucket"], monkeypatch, {})
+    assert result["checked"] == 1, "a bucket is no longer exempt from proving itself"
+    assert result["all_ok"] is True
+
+
+def test_a_bucket_that_does_not_exist_is_not_healthy(monkeypatch):
+    from orchestrator import resource_state
+    monkeypatch.setattr(resource_state, "check",
+                        lambda kind, name, clients=None: {"state": "waiting",
+                                                          "detail": "no bucket yet"})
+    result = _verify(["oci-bucket"], monkeypatch, {})
+    assert result["settled"] is False
+
+
+def test_a_kind_with_no_health_check_is_unproven_not_healthy(monkeypatch):
+    """`unknown` must never read as permission. A kind nothing can judge is a
+    kind nothing has proven."""
+    from orchestrator import resource_state
+    monkeypatch.setattr(resource_state, "check",
+                        lambda kind, name, clients=None: {"state": "unknown",
+                                                          "detail": "no check defined"})
     result = _verify(["oci-bucket"], monkeypatch, {})
     assert result["checked"] == 0
     assert result["resources"][0]["state"] == "not-applicable"
@@ -142,11 +171,30 @@ def test_no_par_configured_checks_nothing(monkeypatch):
     assert result["checked"] == 0
 
 
-def test_an_exempt_blueprint_is_not_held_to_a_report(monkeypatch):
-    """OKE's nodes boot an image this project never renders."""
+def test_a_cluster_is_asked_whether_it_is_RUNNING(monkeypatch):
+    """OKE's nodes boot an image this project never renders, so no boot report is
+    possible — but a cluster can be asked whether it is ACTIVE with its nodes
+    present. Exempt from ONE kind of proof is not exempt from proof."""
+    from orchestrator import resource_state
+    monkeypatch.setattr(resource_state, "check",
+                        lambda kind, name, clients=None: {
+                            "state": "broken",
+                            "detail": "cluster is ACTIVE but has no node pool"})
     result = _verify(["oci-oke"], monkeypatch, {})
-    assert result["checked"] == 0
-    assert "exempt" in result["resources"][0]["note"]
+    assert result["checked"] == 1
+    assert result["all_ok"] is False
+    assert "no node pool" in result["resources"][0]["problems"][0]
+
+
+def test_a_cluster_that_cannot_be_asked_is_not_assumed_healthy(monkeypatch):
+    from orchestrator import resource_state
+
+    def explode(kind, name, clients=None):
+        raise resource_state.StateUnavailable("no compartment configured")
+    monkeypatch.setattr(resource_state, "check", explode)
+    result = _verify(["oci-oke"], monkeypatch, {})
+    assert result["all_ok"] is False
+    assert result["resources"][0]["state"] == "unreadable"
 
 
 def test_an_unreadable_bucket_is_not_reported_as_healthy(monkeypatch):

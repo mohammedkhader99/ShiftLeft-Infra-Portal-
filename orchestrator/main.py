@@ -28,6 +28,7 @@ from orchestrator import (
     network_egress,
     oke_networks,
     provisioner,
+    resource_state,
 )
 
 API_URL = os.getenv("API_URL", "http://localhost:8081")
@@ -806,10 +807,33 @@ async def verify_boot(request: Request) -> dict:
     payload = _authorise(body, request.headers.get("X-Signature", ""))
     reference = payload["reference"]
 
+    name, _tags = _bucket_and_tags(payload)
+    primary = _resource_kind(payload)
+
     resources: list[dict] = []
     for kind in _resource_kinds(payload):
         expected, why = _report_expected(kind)
         if not expected:
+            # No machine to ask — so ask the RESOURCE. A cluster, a bucket and a
+            # managed database file no boot report and never will, and until now
+            # that read as "nothing to prove". It is not: it means the proof has
+            # to come from the thing itself reaching a working state.
+            if provisioner.provision_mode() == "apply":
+                try:
+                    health = resource_state.check(
+                        kind, _resource_name(name, kind, reference, primary))
+                except resource_state.StateUnavailable as exc:
+                    resources.append({"kind": kind, "expected": True,
+                                      "state": "unreadable", "note": str(exc)})
+                    continue
+                if health["state"] != "unknown":
+                    resources.append({
+                        "kind": kind, "expected": True, "state": health["state"],
+                        "problems": ([health["detail"]]
+                                     if health["state"] == "broken" else []),
+                        "note": health["detail"]})
+                    continue
+                why = health["detail"]
             resources.append({"kind": kind, "expected": False,
                               "state": "not-applicable", "note": why})
             continue
