@@ -77,7 +77,8 @@ from api.policy import PolicyUnavailable, get_policy_evaluator
 from api.pricing import estimate_cost
 from api import roles as roles_mod
 from api.sizing import resolve_components
-from api.validation import CREATE_LIKE_TYPES, DEPLOYMENT_TARGETS, validate_submission
+from api.validation import (CREATE_LIKE_TYPES, DEPLOYMENT_TARGETS, normalise_tier,
+                            validate_submission)
 from common.security import install_rate_limit, install_security_headers
 from common.signing import sign
 from db.models import (
@@ -2585,6 +2586,14 @@ def save_draft(
     # Only update fields the caller actually sent, so a partial save can't wipe
     # data set by an earlier save. (The portal sends the whole form each time.)
     provided = body.model_dump(exclude_unset=True)
+    # The tier is STORED canonically even though validation accepts the old
+    # lowercase spellings. It is the key for the per-tier network map, so "test"
+    # and "Test" sitting side by side in the column would be two tiers as far as
+    # a lookup is concerned — and one of them would map to no VCN.
+    if provided.get("environment_tier"):
+        provided["environment_tier"] = (
+            normalise_tier(provided["environment_tier"])
+            or provided["environment_tier"])
     for field in REQUEST_FIELDS:
         if field in provided:
             setattr(req, field, provided[field])

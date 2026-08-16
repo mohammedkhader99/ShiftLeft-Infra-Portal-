@@ -66,7 +66,10 @@ def test_mock_draft_maps_a_full_description_to_the_catalog(session):
     assert d["request_type"] == "create"
     assert d["project_code"] == "EGATE"          # matched by the 'egate' token
     assert d["deployment_target"] == "onprem"    # 'on-prem'
-    assert d["environment_tier"] == "uat"        # 'uat'
+    # Drafted as "UAT": the prose says "uat" and the portal's tier is UAT. The
+    # drafter produces canonical values, because a draft that needs normalising
+    # later is a draft that can fail validation the requester never saw.
+    assert d["environment_tier"] == "UAT"        # 'uat' in the description
     assert d["data_classification"] == "internal"
     assert d["environment_name"] == "egate-uat"  # derived from project + tier
     assert d["components"] == [{"technology_code": "postgres16", "size": "medium"}]

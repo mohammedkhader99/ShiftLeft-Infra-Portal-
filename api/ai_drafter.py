@@ -177,16 +177,26 @@ def _match_target(text: str) -> str | None:
     return None
 
 
-# Tier phrasings → the ladder value (ENV_TIERS), checked in this order so the
-# more specific pre-prod / DR win before prod.
+# Tier phrasings → one of ENV_TIERS, checked in this order so the more specific
+# pre-production wins before production.
+#
+# A requester still writes "SIT" or "pre-prod" in prose whatever the portal calls
+# its tiers, so those phrasings are kept and land on the tier the owner folded
+# them into (16 Aug 2026): SIT is an integration-testing stage like Pre-Test, and
+# pre-production is a final gate like UAT.
+#
+# "Disaster recovery" deliberately matches NOTHING. DR was deferred, so there is
+# no tier to draft into, and inventing one here would produce a draft that fails
+# validation with a message about a tier the portal does not have.
 _TIER_PATTERNS: list[tuple[str, str]] = [
-    (r"\bdr\b|disaster recovery", "dr"),
-    (r"pre[- ]?prod(uction)?", "preprod"),
-    (r"\bprod(uction)?\b", "prod"),
-    (r"\buat\b|user acceptance", "uat"),
-    (r"\bsit\b|system integration", "sit"),
-    (r"\btest\b|\bqa\b", "test"),
-    (r"\bdev(elopment)?\b", "dev"),
+    (r"pre[- ]?prod(uction)?", "UAT"),
+    (r"\bprod(uction)?\b", "Production"),
+    (r"\buat\b|user acceptance", "UAT"),
+    (r"\bsit\b|system integration", "Pre-Test"),
+    (r"\bqmg\b", "QMG"),
+    (r"pre[- ]?test", "Pre-Test"),
+    (r"\btest\b|\bqa\b", "Test"),
+    (r"\bdev(elopment)?\b", "Development"),
 ]
 
 
@@ -399,8 +409,19 @@ def _constrain(draft: dict, catalog: dict, mode: str, notes: list[str]) -> dict:
     warnings: list[str] = []
 
     def keep(value, allowed: set[str]) -> str | None:
-        v = value.strip().lower() if isinstance(value, str) else value
-        return v if v in allowed else None
+        """Keep a drafted value only if the portal actually accepts it.
+
+        Lower-cases first because most of these vocabularies are lowercase, then
+        falls back to a case-insensitive match — environment tiers are capitalised
+        (Development, UAT, Pre-Test), and lowercasing alone silently dropped every
+        tier the drafter inferred, leaving the field blank on every AI draft.
+        """
+        if not isinstance(value, str):
+            return value if value in allowed else None
+        lowered = value.strip().lower()
+        if lowered in allowed:
+            return lowered
+        return next((a for a in allowed if a.lower() == lowered), None)
 
     request_type = (draft.get("request_type") or "create").strip().lower()
     if request_type not in REQUEST_TYPES:

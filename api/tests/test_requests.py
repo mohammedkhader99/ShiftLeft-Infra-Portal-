@@ -1060,7 +1060,13 @@ def test_create_rejects_unknown_environment_tier(client):
 def test_environment_tier_persisted_and_returned(client):
     ref = _draft_ref(client, VALID_CREATE)
     assert client.post(f"/api/requests/{ref}/submit").status_code == 200
-    assert client.get(f"/api/requests/{ref}").json()["environment_tier"] == "uat"
+    # Submitted as "uat" and STORED as "UAT". The old lowercase spellings are
+    # still accepted — saved drafts and API clients carry them, and refusing
+    # those would break working integrations to enforce a rename — but what is
+    # stored is canonical, because the tier is the key for the per-tier network
+    # map and "uat" beside "UAT" would be two tiers to a lookup, one of them
+    # mapping to no VCN.
+    assert client.get(f"/api/requests/{ref}").json()["environment_tier"] == "UAT"
 
 
 # --- Cost breakdown + Excel cost sheet (increment 6.4) -----------------------

@@ -311,7 +311,10 @@ class Request(Base):
     # New environment name (for 'create'); target existing environment (others).
     environment_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
     target_environment: Mapped[str | None] = mapped_column(String(120), nullable=True)
-    # Environment tier/stage for 'create' (dev|test|sit|uat|preprod|prod|dr) — 6.2.
+    # Environment tier/stage for 'create' — one of ENVIRONMENT_TIERS (6.2).
+    # THE key for the per-tier network map: under one VCN per tier this
+    # decides which network the request's infrastructure is built in, so a
+    # value outside the vocabulary is a request that cannot be placed.
     environment_tier: Mapped[str | None] = mapped_column(String(16), nullable=True)
     # Advanced options (6.5): a flexible JSON bag (region, HA, backup retention,
     # monitoring level, support tier, encryption, …). A few drive cost; the rest

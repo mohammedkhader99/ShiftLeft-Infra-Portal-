@@ -82,7 +82,13 @@ def _dr(**over):
 
 def test_valid_dr(session):
     _source(session)
-    assert validation.validate_submission(_dr(), session) == {}
+    errors = validation.validate_submission(_dr(), session)
+    # DR was deferred on 16 Aug 2026 — disaster recovery normally means a second
+    # REGION, which the per-tier network map has no dimension for. The request
+    # type therefore cannot be satisfied, and says so rather than asking for a
+    # tier that does not exist.
+    assert "environment_tier" in errors
+    assert "no DR tier" in errors["environment_tier"]
 
 
 def test_dr_requires_source(session):
@@ -116,11 +122,23 @@ def test_dr_counts_as_environment(session):
 
 # --- End-to-end --------------------------------------------------------------
 
-def test_dr_draft_and_submit(client, session):
+def test_dr_can_be_drafted_but_not_submitted(client, session):
+    """DR was deferred on 16 Aug 2026, so this request type cannot be satisfied.
+
+    A DRAFT is still accepted — drafts are working notes and refusing to save one
+    would lose a requester's typing over a platform decision. SUBMISSION is
+    refused, because submitting starts an approval for something the portal
+    cannot build.
+
+    This is a real capability loss from deferring the tier, recorded here rather
+    than discovered by whoever next needs disaster recovery. Restoring it means
+    restoring the DR tier, which needs a region dimension the network map has
+    not got.
+    """
     _source(session)
     draft = client.post("/api/requests/draft", json=_dr())
-    assert draft.status_code == 200
+    assert draft.status_code == 200, "a draft is working notes; saving it is not a promise"
     ref = draft.json()["reference"]
-    assert client.post(f"/api/requests/{ref}/submit").status_code == 200
-    row = session.scalar(main.select(Request).where(Request.reference == ref))
-    assert row.request_type == "dr" and row.source_reference == "REQ-PROD" and row.environment_tier == "dr"
+    submitted = client.post(f"/api/requests/{ref}/submit")
+    assert submitted.status_code == 422
+    assert "no DR tier" in str(submitted.json())

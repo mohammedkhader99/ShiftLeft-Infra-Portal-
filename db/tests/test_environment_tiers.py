@@ -68,3 +68,40 @@ def test_the_default_is_the_least_privileged_tier():
 def test_no_tier_is_blank_or_padded(tier):
     """These become keys in a network map and, later, path-safe identifiers."""
     assert tier and tier == tier.strip()
+
+
+# --- A request's tier and the environment model must not drift apart ----------
+
+def test_the_request_vocabulary_mirrors_the_model():
+    """Two lists existed and disagreed: Request.environment_tier held
+    dev|test|sit|uat|preprod|prod|dr while Environment.environment_class held
+    these six. Only the request's tier reaches the orchestrator, so under one VCN
+    per tier it is the one that decides which network a cluster is built in — and
+    a second vocabulary is a second answer to that question."""
+    from api.validation import ENV_TIERS
+    assert ENV_TIERS == set(ENVIRONMENT_TIERS)
+
+
+def test_every_retired_tier_maps_to_a_live_one():
+    """Requests written before the change hold the old values, and 37 of them
+    existed. A tier that maps nowhere is a request that cannot be placed."""
+    from api.validation import ENV_TIERS, LEGACY_ENV_TIERS
+    for old, new in LEGACY_ENV_TIERS.items():
+        assert new in ENV_TIERS, f"{old} maps to {new}, which is not a tier"
+
+
+def test_sit_and_preprod_fold_where_the_owner_decided():
+    """Neither had an equivalent among the six and both were in use — 6 requests
+    on sit, 2 on preprod. Folded rather than adding two more tiers, because every
+    tier costs a VCN under this plan. Pinned because the choice relocates real
+    requests, and later real infrastructure."""
+    from api.validation import LEGACY_ENV_TIERS
+    assert LEGACY_ENV_TIERS["sit"] == "Pre-Test"
+    assert LEGACY_ENV_TIERS["preprod"] == "UAT"
+
+
+def test_dr_is_absent_from_the_request_vocabulary_too():
+    """It was deferred for the environment model; leaving it here would let a
+    request name a tier the estate does not have."""
+    from api.validation import ENV_TIERS
+    assert "dr" not in ENV_TIERS and "DR" not in ENV_TIERS

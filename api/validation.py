@@ -15,7 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from api import component_options
-from db.models import (Backup, Blueprint, CostCentre, Environment, Project,
+from db.models import (ENVIRONMENT_TIERS, Backup, Blueprint, CostCentre, Environment, Project,
                        ProvisionedResource, Request, Subsidiary, Technology)
 
 REQUEST_TYPES = {"dns", "create", "add", "resize", "decommission", "refresh", "restore",
@@ -27,8 +27,57 @@ CLASSIFICATIONS = {"public", "internal", "confidential", "restricted"}
 SENSITIVE_CLASSIFICATIONS = {"restricted", "confidential"}  # a refresh must mask these
 DEPLOYMENT_TARGETS = {"onprem", "azure", "oci", "aws", "gcp"}
 # Environment tier ladder (increment 6.2, from the UX brief).
-ENV_TIERS = {"dev", "test", "sit", "uat", "preprod", "prod", "dr"}
-NONPROD_TIERS = {"dev", "test", "sit", "uat", "preprod"}
+# The environment tiers a REQUEST may name. Single source of truth, mirroring
+# db.models.ENVIRONMENT_TIERS — a test asserts the two stay in step.
+#
+# This became load-bearing on 16 Aug 2026: under one VCN per tier, a request's
+# tier decides which network its infrastructure is built in. It was
+# dev|test|sit|uat|preprod|prod|dr, and mapped onto the six the estate actually
+# runs. sit and preprod had no equivalent and eight requests used them, so the
+# owner folded them into the nearest tier rather than carrying two more networks:
+#
+#   dev -> Development   test -> Test    sit     -> Pre-Test
+#   uat -> UAT           prod -> Production      preprod -> UAT
+#
+# dr is not here. It was proposed and deliberately deferred: disaster recovery
+# generally implies a different REGION, which the network map has no dimension
+# for. Re-adding it is a decision, not a tidy-up.
+ENV_TIERS = set(ENVIRONMENT_TIERS)
+
+# What a request written before that change becomes. Kept in code so a database
+# restored from an older dump converges, rather than carrying tiers that map to
+# no network and refuse every OKE request with a confusing reason.
+LEGACY_ENV_TIERS: dict[str, str] = {
+    "dev": "Development",
+    "test": "Test",
+    "sit": "Pre-Test",
+    "uat": "UAT",
+    "preprod": "UAT",
+    "prod": "Production",
+}
+# Every tier except Production. Derived, so adding a tier cannot forget to
+# classify it — the old hand-written list would silently have treated a new tier
+# as production and refused sandboxes on it.
+NONPROD_TIERS = {t for t in ENV_TIERS if t != "Production"}
+
+
+def normalise_tier(value: str | None) -> str:
+    """A submitted tier as one of ENVIRONMENT_TIERS, or "" if it is none of them.
+
+    LIBERAL IN WHAT IT ACCEPTS. Saved drafts, API clients and 37 stored requests
+    all carry the old lowercase spellings, and the vocabulary changed underneath
+    them on 16 Aug 2026. Refusing those would break working integrations to
+    enforce a rename, so an old spelling is translated rather than rejected —
+    while what gets STORED is always canonical, because the tier now decides
+    which VCN a request's infrastructure is built in.
+    """
+    raw = (value or "").strip()
+    if not raw:
+        return ""
+    for tier in ENV_TIERS:
+        if raw.lower() == tier.lower():
+            return tier
+    return LEGACY_ENV_TIERS.get(raw.lower(), "")
 # Ordered ladder for "refresh a lower env from a higher one" (F-LCM-03). DR sits
 # with prod (it mirrors prod).
 TIER_ORDER = {"dev": 0, "test": 1, "sit": 2, "uat": 3, "preprod": 4, "prod": 5, "dr": 5}
@@ -355,7 +404,7 @@ def _validate_refresh_fields(data: dict, session: Session, errors: dict[str, str
             errors["source_reference"] = (
                 f"{target_ref} is not provisioned (status: {target.status}); only a "
                 "provisioned environment can be refreshed.")
-        elif (target.environment_tier or "").strip().lower() not in NONPROD_TIERS:
+        elif normalise_tier(target.environment_tier) not in NONPROD_TIERS:
             errors["source_reference"] = "Only non-production environments can be refreshed (never prod/DR)."
 
     if not from_ref:
@@ -439,10 +488,11 @@ def _validate_create_fields(data: dict, session: Session, errors: dict[str, str]
             "Select a data classification (public, internal, confidential or restricted)."
         )
 
-    tier = (data.get("environment_tier") or "").strip().lower()
-    if tier not in ENV_TIERS:
+    tier = normalise_tier(data.get("environment_tier"))
+    if not tier:
         errors["environment_tier"] = (
-            "Select the environment tier (dev, test, sit, uat, preprod, prod or dr)."
+            "Select the environment tier ("
+            + ", ".join(sorted(ENV_TIERS)) + ")."
         )
 
 
@@ -475,9 +525,14 @@ def _validate_dr_fields(data: dict, session: Session, errors: dict[str, str]) ->
     (F-CAT): the create-field rules for the replica (its own name + DR target),
     the tier must be 'dr' (prod-class), and a valid provisioned source to protect."""
     _validate_create_fields(data, session, errors)
-    tier = (data.get("environment_tier") or "").strip().lower()
-    if tier in ENV_TIERS and tier != "dr":
-        errors["environment_tier"] = "A Disaster Recovery replica must be at the DR tier."
+    # DR was deferred on 16 Aug 2026 — disaster recovery generally implies a
+    # different REGION, which the per-tier network map has no dimension for. So
+    # there is no DR tier to sit at, and saying "must be at the DR tier" would
+    # send a requester looking for one that does not exist.
+    errors["environment_tier"] = (
+        "Disaster Recovery is not available: there is no DR tier. It was deferred "
+        "because DR normally means a second region, which this platform does not "
+        "yet model.")
     source_ref = (data.get("source_reference") or "").strip()
     if not source_ref:
         errors["source_reference"] = "Select the environment to protect (the DR primary)."
@@ -582,10 +637,10 @@ def _validate_shortlived_fields(data: dict, session: Session, errors: dict[str, 
     Same create-field rules, but the tier must be non-prod (never prod/DR); a
     temporary environment must additionally carry a future expiry date."""
     _validate_create_fields(data, session, errors)
-    tier = (data.get("environment_tier") or "").strip().lower()
-    if tier in ENV_TIERS and tier not in NONPROD_TIERS:
+    tier = normalise_tier(data.get("environment_tier"))
+    if tier and tier not in NONPROD_TIERS:
         errors["environment_tier"] = (
-            "A sandbox/temporary environment must be non-production (never prod/DR)."
+            "A sandbox/temporary environment must be non-production."
         )
     if require_expiry:
         raw = data.get("expires_on")
