@@ -231,8 +231,8 @@ def seed(session: Session) -> None:
     egate = session.scalar(select(Project).where(Project.code == "EGATE"))
     visa = session.scalar(select(Project).where(Project.code == "VISA"))
     environments = [
-        {"name": "egate-prod", "environment_class": "prod", "project_id": egate.id},
-        {"name": "visa-uat", "environment_class": "non-prod", "project_id": visa.id},
+        {"name": "egate-prod", "environment_class": "Production", "project_id": egate.id},
+        {"name": "visa-uat", "environment_class": "UAT", "project_id": visa.id},
     ]
     _upsert_by(session, Environment, "name", environments)
 

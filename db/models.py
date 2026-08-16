@@ -111,6 +111,33 @@ class Technology(Base):
     )
 
 
+# The environment tiers this estate runs, in lifecycle order. A CONSTRAINED
+# vocabulary rather than free text: with a per-tier network map, a typo would be
+# a tier with no VCN behind it. That is refused rather than misrouted — the safe
+# failure — but it is better not to be reachable at all.
+#
+# DR was proposed and deliberately deferred on 16 Aug 2026. Adding it is not a
+# one-line change: disaster recovery generally implies a different REGION, and
+# the network map would need a region alongside its subnets. All six below are
+# in me-dubai-1.
+ENVIRONMENT_TIERS: tuple[str, ...] = (
+    "Development",
+    "QMG",
+    "Pre-Test",
+    "Test",
+    "UAT",
+    "Production",
+)
+
+# What the two values that preceded this vocabulary become. Kept in code rather
+# than done once by hand, so a database seeded from an older dump converges
+# instead of carrying values nothing recognises.
+LEGACY_ENVIRONMENT_CLASSES: dict[str, str] = {
+    "prod": "Production",
+    "non-prod": "UAT",
+}
+
+
 class Environment(Base):
     """An existing environment, used for lookups (e.g. add/resize targets)."""
 
@@ -118,8 +145,16 @@ class Environment(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(120), unique=True)
-    # prod | non-prod  — drives HA/backup/monitoring defaults (F-CAT-08)
-    environment_class: Mapped[str] = mapped_column(String(16), default="non-prod")
+    # One of ENVIRONMENT_TIERS. Drives HA/backup/monitoring defaults (F-CAT-08),
+    # and from 16 Aug 2026 it is also the key for the per-tier network map: one
+    # VCN per tier, so a cluster or a machine lands in the network belonging to
+    # its own tier and no other.
+    #
+    # It used to hold only prod | non-prod, which could not express the estate:
+    # development, QMG, pre-test, test and UAT were one value between them. A
+    # per-tier network map keyed on that would have put UAT and development in
+    # the same VCN while appearing to honour "one VCN per tier".
+    environment_class: Mapped[str] = mapped_column(String(16), default="Development")
     project_id: Mapped[int] = mapped_column(ForeignKey("project.id"))
 
 
