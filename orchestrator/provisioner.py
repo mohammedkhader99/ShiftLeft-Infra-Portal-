@@ -192,7 +192,6 @@ def _oci_vars(name: str, tags: dict, resource_kind: str = "oci-bucket",
         # This blueprint builds its own VCN, so it takes network inputs of its own
         # rather than the shared compute subnet.
         "oke_bastion_allowed_cidr": os.getenv("OCI_OKE_BASTION_CIDR", ""),
-        "oke_vcn_cidr": os.getenv("OCI_OKE_VCN_CIDR", ""),
         "oke_kubernetes_version": os.getenv("OCI_OKE_KUBERNETES_VERSION", ""),
         "oke_cluster_type": os.getenv("OCI_OKE_CLUSTER_TYPE", ""),
         # --- Kafka ------------------------------------------------------------

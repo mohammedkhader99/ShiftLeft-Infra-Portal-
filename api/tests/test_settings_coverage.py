@@ -34,9 +34,14 @@ _GATE_ENV = {
     "PROVISION_MODE", "CLOUD_STATE_MODE", "OCI_ACTUATE_ENABLED", "OCI_PSQL_ENABLED",
     "DNS_MODE", "OCI_DNS_ENABLED", "CONFIG_ENABLED", "BACKUP_MODE", "RESTORE_MODE",
     "REDUCE_MODE", "REFRESH_MODE",
-    # OKE: reported as oke_bastion_cidr_set / oke_vcn_cidr_set (set-or-not, not
-    # the ranges themselves) plus the version and cluster type.
-    "OCI_OKE_BASTION_CIDR", "OCI_OKE_VCN_CIDR", "OCI_OKE_KUBERNETES_VERSION",
+    # OKE: reported as oke_bastion_cidr_set (set-or-not, not the range itself),
+    # oke_mapped_tiers (tier NAMES, not the OCIDs behind them — an admin needs to
+    # know which tiers are buildable, not to read the topology off a status
+    # page), plus the version and cluster type.
+    #
+    # OCI_OKE_VCN_CIDR is gone: the module no longer chooses an address range,
+    # it is handed subnets the network team allocated.
+    "OCI_OKE_BASTION_CIDR", "OCI_OKE_NETWORKS", "OCI_OKE_KUBERNETES_VERSION",
     "OCI_OKE_CLUSTER_TYPE",
     # Cloud option catalogue: reported as catalogue_mode /
     # catalogue_shapes_allowed (a count, not the list) /

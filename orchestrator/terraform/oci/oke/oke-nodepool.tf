@@ -31,7 +31,7 @@ resource "oci_containerengine_node_pool" "oke_node_pool" {
       for_each = data.oci_identity_availability_domains.ads.availability_domains
       content {
         availability_domain = placement_configs.value.name
-        subnet_id            = oci_core_subnet.node_subnet.id
+        subnet_id            = var.node_subnet_id
       }
     }
 
@@ -39,7 +39,7 @@ resource "oci_containerengine_node_pool" "oke_node_pool" {
 
     node_pool_pod_network_option_details {
       cni_type       = "OCI_VCN_IP_NATIVE"
-      pod_subnet_ids = [oci_core_subnet.pod_subnet.id]
+      pod_subnet_ids = [var.pod_subnet_id]
       pod_nsg_ids     = [oci_core_network_security_group.nsg_pods.id]
       max_pods_per_node = var.max_pods_per_node
     }

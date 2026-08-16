@@ -26,6 +26,7 @@ from orchestrator import (
     cloud_state,
     configure,
     network_egress,
+    oke_networks,
     provisioner,
 )
 
@@ -137,11 +138,16 @@ async def posture(request: Request) -> dict:
         "dns_enabled": provisioner.dns_enabled(),
         "dns_zone_set": bool(os.getenv("OCI_DNS_ZONE")),
         "config_enabled": configure.enabled(),
-        # OKE. The CIDRs are reported as set/not-set rather than by value: an
-        # admin needs to know whether the cluster can be built, not to read the
-        # network topology off a status page.
+        # OKE. Reported as set/not-set or by NAME, never by value: an admin
+        # needs to know whether a cluster can be built, not to read the network
+        # topology off a status page.
         "oke_bastion_cidr_set": bool(os.getenv("OCI_OKE_BASTION_CIDR")),
-        "oke_vcn_cidr_set": bool(os.getenv("OCI_OKE_VCN_CIDR")),
+        # Which environment tiers have a network to build a cluster in. By
+        # NAME, not by value: the OCIDs are topology, and an admin needs to
+        # know which tiers are buildable, not to read the network off a
+        # status page. An unmapped tier is refused, so this is the list of
+        # tiers that can have a cluster at all.
+        "oke_mapped_tiers": oke_networks.mapped_tiers(),
         "oke_kubernetes_version": os.getenv("OCI_OKE_KUBERNETES_VERSION", "") or "(module default)",
         "oke_cluster_type": os.getenv("OCI_OKE_CLUSTER_TYPE", "") or "BASIC_CLUSTER",
         # Set-or-not: the value is a pre-authenticated URL, which is a credential.

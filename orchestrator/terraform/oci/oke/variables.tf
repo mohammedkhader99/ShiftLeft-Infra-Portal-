@@ -160,40 +160,6 @@ variable "services_cidr" {
 # Networking — this blueprint builds its own VCN
 ###############################################################################
 
-variable "oke_vcn_cidr" {
-  description = <<-EOT
-    CIDR for the VCN this cluster creates. Empty uses 10.0.0.0/16.
-
-    KNOWN LIMITATION: every cluster built with the same value gets an overlapping
-    VCN. Two clusters that must talk to each other, or to the same on-premises
-    network, need distinct ranges — there is no allocator here, so a second
-    concurrent cluster needs this changed before it is requested.
-  EOT
-  type    = string
-  default = ""
-}
-
-variable "default_vcn_cidr" {
-  description = <<-EOT
-    Used when oke_vcn_cidr is empty.
-
-    NOT 10.0.0.0/16, which is the OCI default and therefore the collision. Three
-    VCNs in this tenancy already sit on it — Codeium-POC-VCN,
-    oke-vcn-quick-OKE_cluster_A10 and llama-vllm-ray-vcn — so that default would
-    have created a fourth. Overlapping CIDRs can never be routed to each other or
-    to on-premises over a DRG.
-
-    10.56.64.0/18 is clear of everything observed: 10.56.0.0/20 (AI-SC-POC-VCN),
-    10.56.6.0/24 (Codeium secondary) and 10.56.32.0/19 (AI-ShiftLeft-DEV-VCN).
-
-    This is a safer default, not an allocation. Nothing here checks the range is
-    still free, and a second cluster still needs a different value. Only an IPAM
-    allocator fixes that properly.
-  EOT
-  type    = string
-  default = "10.56.64.0/18"
-}
-
 variable "oke_bastion_allowed_cidr" {
   description = <<-EOT
     Public source range allowed to SSH to the bastion — an office or VPN range.
@@ -226,4 +192,55 @@ variable "bastion_ocpus" {
 variable "bastion_memory_gb" {
   type    = number
   default = 4
+}
+
+# --- The network this cluster is GIVEN ---------------------------------------
+#
+# This module used to build its own VCN, subnets, gateways and route tables. That
+# is the pattern ARCHITECTURE.md names as a known failure mode, and the tenancy
+# shows why: seven VCNs, five of them on overlapping CIDRs, including an
+# oke-vcn-quick-* built exactly this way and now unable to peer with anything.
+#
+# The network team provisioned four purpose-built subnets — API, worker, pod and
+# load balancer — in AI-ShiftLeft-DEV-VCN. The contract already existed; this
+# module simply ignored it.
+#
+# ONE VCN PER ENVIRONMENT TIER is the plan, so these arrive per request rather
+# than being fixed here. A tier with no mapping must be refused by the caller,
+# never defaulted: a production cluster silently built into the development VCN
+# would look exactly like success.
+
+variable "vcn_id" {
+  description = "OCID of the VCN this cluster is built in. Not created here."
+  type        = string
+}
+
+variable "api_subnet_id" {
+  description = "OCID of the subnet for the Kubernetes API endpoint."
+  type        = string
+}
+
+variable "node_subnet_id" {
+  description = "OCID of the subnet for worker nodes."
+  type        = string
+}
+
+variable "pod_subnet_id" {
+  description = "OCID of the subnet for VCN-native pod networking."
+  type        = string
+}
+
+variable "lb_subnet_id" {
+  description = "OCID of the subnet for service load balancers."
+  type        = string
+}
+
+variable "bastion_subnet_id" {
+  description = <<-EOT
+    OCID of the subnet the bastion host runs in. The network team provided four
+    Kubernetes subnets and no bastion subnet, so this is the VM-APP subnet by
+    decision (16 Aug 2026) — where the machines anyone would connect from already
+    run, and the range OCI_OKE_BASTION_CIDR already names.
+  EOT
+  type        = string
 }

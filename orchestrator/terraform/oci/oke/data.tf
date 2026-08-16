@@ -28,3 +28,9 @@ data "oci_core_images" "bastion_image" {
   sort_by                  = "TIMECREATED"
   sort_order                = "DESC"
 }
+
+# The VCN is given, so its address range is a fact to be read rather than a
+# number this module picks. local.operator_cidr is derived from it.
+data "oci_core_vcn" "provided" {
+  vcn_id = var.vcn_id
+}

@@ -40,14 +40,15 @@ FORBIDDEN_PREFIXES = (
 
 # Module path -> why it is allowed to create networking, and what removes the
 # exception. Adding an entry must be a decision someone defends in review.
-KNOWN_EXCEPTIONS: dict[str, str] = {
-    "oci/oke": (
-        "Builds its own VCN because there is nothing to be compliant with yet: "
-        "the tenancy has no hub, no spoke VCNs and no IPAM. Remove this exception "
-        "once a landing-zone spoke exists and the module consumes a resolved "
-        "network contract instead."
-    ),
-}
+# Empty since 16 Aug 2026. oci/oke was the last entry: it built its own VCN,
+# subnets, gateways and route tables "because there is nothing to be compliant
+# with yet". There was — the network team had provisioned four purpose-built
+# Kubernetes subnets in AI-ShiftLeft-DEV-VCN, and the module ignored them.
+#
+# What the exception cost is visible in the tenancy: seven VCNs, five on
+# overlapping CIDRs, including an oke-vcn-quick-* built this exact way and now
+# unable to peer with anything.
+KNOWN_EXCEPTIONS: dict[str, str] = {}
 
 _RESOURCE = re.compile(r'^resource\s+"([a-z0-9_]+)"', re.M)
 
@@ -95,14 +96,29 @@ def test_the_modules_that_are_compliant_stay_compliant():
         assert module not in creating, f"{module} started creating networking"
 
 
-def test_the_oke_default_cidr_avoids_the_ranges_already_in_use():
-    """10.0.0.0/16 is the OCI default and therefore the collision: three VCNs in
-    this tenancy already use it. A default that overlaps is worse than no default,
-    because the plan succeeds and the cluster is simply unroutable."""
+def test_oke_chooses_no_addresses_at_all():
+    """The default-CIDR test that stood here asked which range OKE picks when
+    nobody says. It picks none: the VCN and all five subnets arrive as OCIDs, and
+    the module reads the VCN's CIDR rather than choosing one.
+
+    That question mattered while the module allocated its own space — the OCI
+    default of 10.0.0.0/16 collides with three VCNs in this tenancy, and a plan
+    over an overlapping range succeeds while producing a cluster that cannot
+    route. It is now unanswerable, which is the point."""
     variables = (TERRAFORM_ROOT / "oci" / "oke" / "variables.tf").read_text(encoding="utf-8")
-    block = variables.split('variable "default_vcn_cidr"', 1)[1]
-    default = re.search(r'default\s*=\s*"([^"]+)"', block).group(1)
-    assert default != "10.0.0.0/16", "the OKE default VCN CIDR collides with three existing VCNs"
-    assert default.startswith("10.56."), (
-        "expected a range inside the tenancy's 10.56 space; anything else needs "
-        "checking against the VCNs actually deployed")
+    assert 'variable "default_vcn_cidr"' not in variables
+    assert 'variable "oke_vcn_cidr"' not in variables
+    for required in ("vcn_id", "api_subnet_id", "node_subnet_id",
+                     "pod_subnet_id", "lb_subnet_id", "bastion_subnet_id"):
+        assert f'variable "{required}"' in variables, (
+            f"the module cannot consume a given network without {required}")
+
+
+def test_oke_reads_the_vcn_cidr_rather_than_choosing_it():
+    """The NSG rules need the VCN's range. Reading it from the VCN it was given
+    keeps the rules true whatever the network team allocated per tier."""
+    body = "".join(p.read_text(encoding="utf-8")
+                   for p in (TERRAFORM_ROOT / "oci" / "oke").glob("*.tf"))
+    assert 'data "oci_core_vcn" "provided"' in body
+    assert "data.oci_core_vcn.provided.cidr_block" in body
+    assert "cidrsubnet(" not in body, "it is still carving subnet ranges"

@@ -713,7 +713,10 @@ _EXECUTION_GATE_LABELS = {
     "cloud_state_mode": "Cloud-state sync mode",
     "actuate_enabled": "Real stop/start allowed",
     "oke_bastion_cidr_set": "OKE bastion source range configured",
-    "oke_vcn_cidr_set": "OKE VCN range configured (else module default)",
+    # A list of tier names, not a boolean: "no tiers mapped" and "only
+    # Development mapped" are different operational facts, and a request for
+    # an unmapped tier is refused rather than built in another tier's VCN.
+    "oke_mapped_tiers": "OKE networks mapped for these environment tiers",
     "oke_kubernetes_version": "OKE Kubernetes version",
     "oke_cluster_type": "OKE cluster type",
     "kafka_source_set": "Kafka archive source configured",

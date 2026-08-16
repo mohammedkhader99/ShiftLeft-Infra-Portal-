@@ -34,9 +34,17 @@ def test_the_blueprint_ships_and_dispatches_to_its_own_module():
     module = provisioner._module_dir("oci", KIND)
     assert module.name == "oke"
     # The customer's resource files came across, not just a skeleton.
-    for f in ("oke-cluster.tf", "oke-nodepool.tf", "network.tf", "subnets.tf",
-              "network-security-groups.tf", "bastion.tf", "variables.tf", "locals.tf"):
+    for f in ("oke-cluster.tf", "oke-nodepool.tf", "network-security-groups.tf",
+              "bastion.tf", "variables.tf", "locals.tf"):
         assert (module / f).is_file(), f"{f} is missing from the copied module"
+    # network.tf and subnets.tf are DELIBERATELY absent since 16 Aug 2026: the
+    # module consumes the VCN and subnets the network team provisioned and
+    # creates no networking of its own. Asserted rather than merely omitted, so
+    # a re-added file is a failing test and not a silent regression.
+    for f in ("network.tf", "subnets.tf"):
+        assert not (module / f).is_file(), (
+            f"{f} is back — this module must not create networking; see "
+            f"test_workload_modules_create_no_networking.py")
 
 
 # --- An apply must not be killed part way through -----------------------------

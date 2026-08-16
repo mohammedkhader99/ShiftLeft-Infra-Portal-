@@ -11,7 +11,7 @@ resource "oci_core_instance" "bastion" {
   }
 
   create_vnic_details {
-    subnet_id                = oci_core_subnet.bastion_subnet.id
+    subnet_id                = var.bastion_subnet_id
     assign_public_ip          = true
     nsg_ids                   = [oci_core_network_security_group.nsg_bastion.id]
     display_name              = "${local.label_prefix}-bastion-vnic"

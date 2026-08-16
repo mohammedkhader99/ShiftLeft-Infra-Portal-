@@ -340,7 +340,10 @@ services:
       # carefully they are set in .env — a blueprint would report "not configured"
       # forever with no way to fix it.
       OCI_OKE_BASTION_CIDR: ${OCI_OKE_BASTION_CIDR:-}
-      OCI_OKE_VCN_CIDR: ${OCI_OKE_VCN_CIDR:-}
+      # Per-tier network map: {tier: {vcn, api, node, pod, lb, bastion}}.
+      # Replaced OCI_OKE_VCN_CIDR, which asked the module to CHOOSE an
+      # address range; it is now given subnets the network team allocated.
+      OCI_OKE_NETWORKS: ${OCI_OKE_NETWORKS:-}
       OCI_OKE_KUBERNETES_VERSION: ${OCI_OKE_KUBERNETES_VERSION:-}
       OCI_OKE_CLUSTER_TYPE: ${OCI_OKE_CLUSTER_TYPE:-}
       # Kafka: a pre-authenticated Object Storage URL for the release archive.

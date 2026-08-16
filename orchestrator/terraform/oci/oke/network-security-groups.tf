@@ -8,35 +8,35 @@
 resource "oci_core_network_security_group" "nsg_api_endpoint" {
   compartment_id = var.compartment_ocid
   freeform_tags  = var.tags
-  vcn_id         = oci_core_vcn.oke_vcn.id
+  vcn_id         = var.vcn_id
   display_name   = "${local.label_prefix}-nsg-api-endpoint"
 }
 
 resource "oci_core_network_security_group" "nsg_nodes" {
   compartment_id = var.compartment_ocid
   freeform_tags  = var.tags
-  vcn_id         = oci_core_vcn.oke_vcn.id
+  vcn_id         = var.vcn_id
   display_name   = "${local.label_prefix}-nsg-nodes"
 }
 
 resource "oci_core_network_security_group" "nsg_pods" {
   compartment_id = var.compartment_ocid
   freeform_tags  = var.tags
-  vcn_id         = oci_core_vcn.oke_vcn.id
+  vcn_id         = var.vcn_id
   display_name   = "${local.label_prefix}-nsg-pods"
 }
 
 resource "oci_core_network_security_group" "nsg_lb" {
   compartment_id = var.compartment_ocid
   freeform_tags  = var.tags
-  vcn_id         = oci_core_vcn.oke_vcn.id
+  vcn_id         = var.vcn_id
   display_name   = "${local.label_prefix}-nsg-lb"
 }
 
 resource "oci_core_network_security_group" "nsg_bastion" {
   compartment_id = var.compartment_ocid
   freeform_tags  = var.tags
-  vcn_id         = oci_core_vcn.oke_vcn.id
+  vcn_id         = var.vcn_id
   display_name   = "${local.label_prefix}-nsg-bastion"
 }
 

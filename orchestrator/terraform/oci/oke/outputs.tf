@@ -5,23 +5,23 @@ output "cluster_id" {
 
 output "vcn_id" {
   description = "OCID of the VCN"
-  value       = oci_core_vcn.oke_vcn.id
+  value       = var.vcn_id
 }
 
 output "api_endpoint_subnet_id" {
-  value = oci_core_subnet.api_endpoint_subnet.id
+  value = var.api_subnet_id
 }
 
 output "node_subnet_id" {
-  value = oci_core_subnet.node_subnet.id
+  value = var.node_subnet_id
 }
 
 output "pod_subnet_id" {
-  value = oci_core_subnet.pod_subnet.id
+  value = var.pod_subnet_id
 }
 
 output "lb_subnet_id" {
-  value = oci_core_subnet.lb_subnet.id
+  value = var.lb_subnet_id
 }
 
 output "node_pool_id" {
