@@ -1,3 +1,39 @@
+# ---------------------------------------------------------------------------
+# NETWORK CONTRACT — REQUIRED, stated 16 Aug 2026 by the platform owner
+# ---------------------------------------------------------------------------
+# This blueprint must STOP building its own VCN and consume the subnets the
+# network team already provisioned. For the DEVELOPMENT tier those are, in
+# AI-ShiftLeft-DEV-VCN (10.56.32.0/19):
+#
+#   API SUBNET     10.56.36.0/24  OKE control plane
+#     ocid1.subnet.oc1.me-dubai-1.aaaaaaaa63kqn2lgduuhbpjxkltl7zivtpq3exomwhhq766xu4v6kiclqujq
+#   WORKER SUBNET  10.56.32.0/22  worker nodes          (NAT added 15 Aug 2026)
+#     ocid1.subnet.oc1.me-dubai-1.aaaaaaaa57fwk3cc3lvpndiusgqrb4qammm4tcczpkjbjx62z6b727v6445a
+#   POD SUBNET     10.56.37.0/24  VCN-native pods       (NAT added 15 Aug 2026)
+#     ocid1.subnet.oc1.me-dubai-1.aaaaaaaac44mpicsydmcew5onyqktmdb2yr7u2nxs47lblypl22tdhum7h7q
+#   LB SUBNET      10.56.38.0/24  load balancers
+#     ocid1.subnet.oc1.me-dubai-1.aaaaaaaarwy6p5xjv2adqmkwf7c5tch3ljxzi4cbr3yeigpalsn23g7xsaka
+#   VCN
+#     ocid1.vcn.oc1.me-dubai-1.amaaaaaawr6mjjya4rcdfqwjkvvotccutud3oq6xjf7zatsd62ibxmr2gsrq
+#
+# PER TIER, NOT GLOBAL. The stated plan is a separate VCN per environment tier,
+# so these OCIDs are the DEVELOPMENT mapping and nothing else. A tier with no
+# mapping must be REFUSED, with the reason. It must never fall back to another
+# tier's network: a production cluster silently built into the development VCN
+# is the worst failure this blueprint could have, and it would look like success.
+#
+# BLOCKED ON A MODEL THAT CANNOT EXPRESS IT. The portal has no "Development"
+# tier. `environment.environment_class` holds only prod | non-prod, and
+# `environment_name` is free text ("test", "test113"). So "always use these
+# subnets for Development" cannot be written down today — non-prod covers dev,
+# test, UAT and staging alike, and one VCN per tier needs a tier to key on.
+# Resolving that comes BEFORE the module rework; building the map against
+# environment_class would quietly put UAT and dev in the same network.
+#
+# Sizing note: max_pods_per_node 31 against a /24 pod subnet (254 addresses)
+# caps this at roughly 8 nodes. More than that needs a larger pod subnet, which
+# is the network team's call.
+# ---------------------------------------------------------------------------
 ref: oci/oke
 target: oci
 resource_kind: oci-oke
