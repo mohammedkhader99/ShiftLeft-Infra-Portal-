@@ -91,12 +91,25 @@ def test_the_image_becomes_a_dropdown_the_form_can_show(db):
     assert fields["image"]["options"][0]["value"].startswith("ocid1.image")
 
 
-def test_an_image_is_offered_for_every_technology_not_stored_46_times(db):
-    """It belongs to the machine, not to nginx."""
+def test_an_image_is_offered_to_technologies_that_configure_one(db):
+    """One stored row per image, shown to every technology that installs on an OS
+    — the catalogue must not hold 46 copies of the same image.
+
+    It used to be shown to ALL of them, which meant a bucket, a managed database
+    and an OKE cluster each carried an OS-image dropdown. For OKE that was worse
+    than useless: its worker image is chosen by OCI from those compatible with
+    the cluster's Kubernetes version, so a requester picking Ubuntu got Oracle
+    Linux nodes and no explanation.
+    """
     cloud_options.refresh(db, lambda: _fetched())
     assert len([r for r in _live_rows(db) if r.field == "image"]) == 2
-    for code in ("nginx", "redis7", "postgres16"):
-        assert "image" in component_options.options_for(db, code, "oci")["fields"]
+    for code in ("nginx", "apache"):
+        assert "image" in component_options.options_for(db, code, "oci")["fields"], (
+            f"{code} configures an operating system and must be offered one")
+    for code in ("oci-objectstorage", "postgres16", "oci-oke"):
+        assert "image" not in component_options.options_for(db, code, "oci")["fields"], (
+            f"{code} configures no operating system, so an image choice is a "
+            f"decision the portal will silently discard")
 
 
 def test_shapes_are_cached_but_are_not_a_dropdown(db):

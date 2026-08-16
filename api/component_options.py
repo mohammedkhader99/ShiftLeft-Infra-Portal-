@@ -177,8 +177,21 @@ def _image_suits(row: ComponentOption, technology_code: str) -> bool:
     have the final word.
     """
     families = supported_families(technology_code)
+    if families is None:
+        # We could not read what this technology supports. That is OUR gap, and
+        # hiding a legitimate image over it would be worse than showing one that
+        # validation can refuse later.
+        return True
     if not families:
-        return True  # this technology installs nothing on an OS — see installable_on
+        # DECLARED none, which is a different fact entirely: this thing
+        # configures no operating system, so no image applies to it.
+        #
+        # A bucket, a managed database and an OKE cluster were all being offered
+        # an OS image dropdown. For OKE the choice was not merely useless but
+        # misleading — its worker image is selected by OCI from those compatible
+        # with the cluster's Kubernetes version, so a requester picking Ubuntu
+        # got Oracle Linux nodes and no explanation.
+        return False
     family = (row.attributes or {}).get("os_family")
     if family and not network_egress.can_install(family, _fetch_egress):
         # The machine would build, boot, and find no repository to install from.

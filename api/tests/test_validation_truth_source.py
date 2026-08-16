@@ -169,10 +169,21 @@ def test_the_list_widens_by_itself_when_a_blueprint_gains_a_family(monkeypatch, 
         "certifying apache on debian must widen its image list with no other change")
 
 
-def test_a_technology_with_no_os_opinion_sees_every_image(db):
-    """A bucket installs nothing on a machine, so filtering its images would hide
-    valid choices for no reason."""
-    assert len(_images(db, "oci-objectstorage")) == 2
+def test_a_technology_we_cannot_judge_still_sees_every_image(db):
+    """Unknown and "declared none" are different, and only one hides images.
+
+    mongodb has no blueprint at all, so the portal has no view on which operating
+    systems suit it — that is OUR gap, and hiding a legitimate image over it
+    would be worse than showing one validation can refuse later.
+
+    oci-objectstorage DECLARES no families, which is a statement rather than a
+    gap: it configures no operating system, so no image applies. Conflating the
+    two put an OS-image dropdown on a bucket.
+    """
+    assert component_options.supported_families("mongodb") is None
+    assert len(_images(db, "mongodb")) == 2, "an unjudgeable technology keeps its images"
+    assert component_options.supported_families("oci-objectstorage") == set()
+    assert _images(db, "oci-objectstorage") == [], "a bucket has no operating system"
 
 
 def test_an_image_of_unrecognised_family_is_shown_not_hidden(db):
