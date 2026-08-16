@@ -252,12 +252,39 @@ def options_for(session: Session, technology_code: str, deployment_target: str =
             # a hidden image is refused all the same (ARCHITECTURE P2).
             if field == "image" and not _image_suits(row, technology_code):
                 continue
+            # A VERSION THE CHOSEN OS CANNOT ACTUALLY PIN IS NOT A CHOICE.
+            #
+            # The catalogue offered nginx 1.20, 1.22 and 1.24. Oracle Linux 9.8
+            # ships streams 1.22, 1.24 and 1.26 — measured on the machine from
+            # REQ-2026-0146. There is no 1.20 stream, so `dnf module enable
+            # nginx:1.20` fails and the request lands verify-failed, while the
+            # non-modular 1.20.1 installs anyway and version_nginx reports OK:
+            # the requester got what they asked for by accident with the pinning
+            # step broken. And 1.26 was silently unavailable.
+            #
+            # A seeded list that was true once, with nothing checking it against
+            # a machine. Measured streams win where they exist; where nothing has
+            # been measured the catalogue's list stands, because an empty answer
+            # is our gap and must not withdraw every version over it.
+            if field == "version" and family:
+                measured = blueprint_capabilities.streams(technology_code, family)
+                if measured and row.value not in measured:
+                    continue
             if row.value not in values:
                 values.append(row.value)
             if row.label and row.label != row.value:
                 captions[row.value] = row.label
             if row.is_default and not default:
                 default = row.value
+        if field == "version" and family:
+            # The OS may offer a stream the catalogue has never heard of. 1.26 is
+            # on Oracle Linux 9.8 and was missing from the seeded list, so a
+            # filter alone would have kept the form a version behind the machine.
+            for stream in blueprint_capabilities.streams(technology_code, family):
+                if stream not in values:
+                    values.append(stream)
+            if default and default not in values:
+                default = values[0] if values else ""
         if field in NUMERIC_FIELDS:
             # Anchor-derived numbers, merged with anything catalogued above.
             for anchor in anchors:

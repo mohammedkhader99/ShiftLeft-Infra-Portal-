@@ -33,6 +33,7 @@ _refusals: dict[tuple[str, str], str] = {}
 _proven: dict[str, set[str]] = {}
 _unverifiable: dict[str, str] = {}
 _network_tiers: dict[str, list] = {}
+_streams: dict[tuple[str, str], list] = {}
 _fetched_at: float = 0.0
 _lock = threading.Lock()
 
@@ -119,9 +120,13 @@ def refresh(fetcher) -> bool:
         _proven.clear()
         _unverifiable.clear()
         _network_tiers.clear()
+        _streams.clear()
         for bp in shipped or []:
             for code, why in (bp.get("cannot_verify") or {}).items():
                 _unverifiable[str(code)] = str(why)
+            for code, families in (bp.get("streams") or {}).items():
+                for family, values in (families or {}).items():
+                    _streams[(str(code), str(family).strip().lower())] = list(values)
             if bp.get("network_tiers") is not None:
                 for code in bp.get("builds") or []:
                     _network_tiers[str(code)] = list(bp["network_tiers"])
@@ -169,6 +174,17 @@ def name_budget(code: str, reference_length: int, fetcher) -> tuple[int, str] | 
         return None
     suffix, limit = entry
     return limit - reference_length - len(suffix) - 2, suffix
+
+
+def streams(code: str, family: str) -> list:
+    """Versions this OS family can actually pin for a technology, as measured.
+
+    Empty means nothing has been measured — NOT that no version works. The caller
+    must leave the catalogue's list alone in that case rather than withdrawing
+    every choice over a gap in our own knowledge.
+    """
+    return list(_streams.get(((code or "").strip(),
+                              (family or "").strip().lower()), []))
 
 
 def network_tiers(code: str) -> list | None:

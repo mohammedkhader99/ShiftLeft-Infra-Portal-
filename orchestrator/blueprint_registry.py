@@ -41,6 +41,26 @@ def _readiness(manifest: dict) -> tuple[bool, list[str]]:
     return (not missing), missing
 
 
+def _streams_for(builds: list) -> dict:
+    """{technology: {family: [streams]}} for the codes this blueprint builds.
+
+    Only what has been MEASURED on a machine of that family. A technology or
+    family with nothing recorded is absent, and the caller must then leave the
+    catalogue's list alone rather than filtering against an empty answer.
+    """
+    try:
+        from orchestrator.configure import FAMILIES, streams_for
+    except Exception:  # noqa: BLE001 - discovery must never fail closed
+        return {}
+    out: dict[str, dict[str, list]] = {}
+    for code in {str(b) for b in builds}:
+        for family in FAMILIES:
+            streams = streams_for(code, family)
+            if streams:
+                out.setdefault(code, {})[family] = streams
+    return out
+
+
 def _network_tiers(resource_kind: str) -> list | None:
     """Environment tiers this resource kind has a network mapped for.
 
@@ -163,6 +183,10 @@ def discover(directory: Path | None = None) -> list[dict]:
             # portal has none mapped and the form must say so BEFORE approval,
             # not discover it at plan time.
             "network_tiers": _network_tiers(manifest.get("resource_kind", "")),
+            # Versions each OS family can actually pin, measured on a real
+            # machine. The catalogue's own list went stale — it offered nginx
+            # 1.20 on an Oracle Linux 9.8 that has no such stream.
+            "streams": _streams_for(manifest.get("builds") or []),
             "description": str(manifest.get("description") or ""),
             # Which Terraform variable carries the environment's name. Modules
             # disagree (bucket_name, instance_name, db_name...), and hard-coding
