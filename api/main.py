@@ -162,7 +162,18 @@ CONTRACT_VERSION = "1.0"
 ORCH_MAX_ATTEMPTS = 3
 # Real provisioning (terraform plan/apply) can take a while, so the handoff
 # waits longer than a normal API call.
-ORCH_TIMEOUT = 300.0
+# Longer than the longest thing the orchestrator is allowed to run, or the API
+# gives up while the work is still legitimately going.
+#
+# It was 300s, retried three times. An OKE apply is allowed 2700s
+# (command_timeout_seconds in oci-oke.yaml) because a cluster takes 10-20 minutes
+# and its node pool longer. So REQ-2026-0149 timed out at 5 minutes, was retried
+# twice more, and at 15 minutes the API declared apply-failed — while the
+# orchestrator was still building the cluster that is now running.
+#
+# Three apply requests were also sent for one cluster. Only the orchestrator's
+# idempotency ledger stopped that becoming three clusters.
+ORCH_TIMEOUT = float(os.getenv("ORCHESTRATOR_TIMEOUT_SECONDS", "3000"))
 # Sandbox resources get a short time-to-live (F-FIN-07 foundation).
 PROVISION_TTL_DAYS = int(os.getenv("PROVISION_TTL_DAYS", "7"))
 
@@ -4064,7 +4075,26 @@ def _provision_in_background(reference: str, jira_key: str, body: bytes, signatu
         if req is None:
             return
         response, error = _post_to_orchestrator(body, signature, path="/apply")
-        if response is None or response.status_code != 200:
+
+        # A TIMEOUT IS NOT A FAILURE. The orchestrator may still be building, and
+        # concluding otherwise loses track of live infrastructure: REQ-2026-0149's
+        # cluster and its two worker nodes were created, are billing, and the
+        # portal recorded nothing because it believed the apply had failed.
+        #
+        # Reporting failure falsely is worse than reporting success falsely — a
+        # false success is at least recorded and can be torn down. So the request
+        # stays in flight and the verification path asks the CLOUD what exists,
+        # which is the only source that actually knows.
+        timed_out = response is None and "timed out" in (error or "").lower()
+        if timed_out:
+            append_audit(session, "apply.timeout", reference=reference,
+                         jira_key=jira_key, detail={"error": error})
+            add_comment(jira_key, "⏳ The portal stopped waiting for this apply, but "
+                                  "it may still be running. Checking what actually "
+                                  "exists in the cloud before deciding.")
+            session.commit()
+            result = {"resources": [], "summary": "apply timed out; reconciling"}
+        elif response is None or response.status_code != 200:
             raw = error or (response.text if response else "")
             reason = _short_reason(raw)
             req.status = "apply-failed"
@@ -4077,7 +4107,8 @@ def _provision_in_background(reference: str, jira_key: str, body: bytes, signatu
             session.commit()
             return
 
-        result = response.json()
+        if not timed_out:
+            result = response.json()
         ttl_dt = datetime.fromisoformat(ttl_expiry_iso) if ttl_expiry_iso else None
         # Recorded FIRST and unconditionally. These resources are real and are
         # billing from this moment; a verdict arriving later must never be the

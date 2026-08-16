@@ -143,6 +143,11 @@ ALLOWLIST: dict[str, dict] = {
 # .env only (secrets/security/provisioning switches). key -> label. Values that are
 # secret are reported as presence only (handled at the endpoint), never echoed.
 READ_ONLY_ENV: dict[str, str] = {
+    # How long the API waits for the orchestrator. Visible because it must stay
+    # LONGER than the slowest blueprint apply: it was 300s while OKE is allowed
+    # 2700s, so REQ-2026-0149 was declared apply-failed 15 minutes into a build
+    # that was still running, and the cluster it created went unrecorded.
+    "ORCHESTRATOR_TIMEOUT_SECONDS": "Orchestrator call timeout (seconds)",
     "AUTH_MODE": "Sign-in mode",
     "USE_MOCK": "Master mock switch",
     "PROVISION_MODE": "Provisioning mode",
