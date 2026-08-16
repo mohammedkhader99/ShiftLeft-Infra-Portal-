@@ -169,7 +169,11 @@ def _oci_vars(name: str, tags: dict, resource_kind: str = "oci-bucket",
         # them would put an undeclared-variable warning in every apply log.
         # Removed again below for those; see _cloud_vars.
         "boot_report_url": (sizing.get("boot_report_url") or ""),
-        "subnet_ocid": os.getenv("OCI_COMPUTE_SUBNET_OCID", ""),
+        # The tier's own subnet when the per-tier map is in force,
+        # otherwise the single configured one — which is the migration
+        # state, and exactly what every machine used before.
+        "subnet_ocid": (sizing.get("compute_subnet")
+                        or os.getenv("OCI_COMPUTE_SUBNET_OCID", "")),
         # Per-technology image resolved by the orchestrator (sizing["image_ocid"]);
         # falls back to the default image env for a plain/legacy call.
         "image_ocid": sizing.get("image_ocid") or os.getenv("OCI_COMPUTE_IMAGE_OCID", ""),

@@ -48,13 +48,18 @@ def _network_tiers(resource_kind: str) -> list | None:
     serves it, and no tier restricts it. An empty LIST is different: it consumes
     a map and nothing is mapped, so nothing can be built.
     """
-    if resource_kind != "oci-oke":
-        return None
     try:
-        from orchestrator.oke_networks import mapped_tiers
+        from orchestrator.oke_networks import compute_tiers, mapped_tiers
     except Exception:  # noqa: BLE001 - discovery must never fail closed
         return None
-    return mapped_tiers()
+    if resource_kind == "oci-oke":
+        return mapped_tiers()
+    # Ordinary machines. [] here means the map is not in force and the single
+    # configured subnet still serves every tier — so publish None, meaning
+    # "unrestricted", rather than [] which the form reads as "nothing can be
+    # built at all".
+    tiers = compute_tiers()
+    return tiers or None
 
 
 def _verified_for(builds: list) -> dict:

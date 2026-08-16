@@ -29,6 +29,13 @@ import os
 # place, and Terraform would not notice.
 REQUIRED = ("vcn", "api", "node", "pod", "lb", "bastion")
 
+# The subnet ordinary machines are built in, per tier. Separate from REQUIRED
+# because a tier can legitimately have compute without a cluster: most tiers will
+# run VMs long before anyone asks for Kubernetes, and demanding five OKE subnets
+# before a single nginx could be built would be the rule getting in the way of
+# the work it exists to protect.
+COMPUTE = "compute"
+
 
 class NetworkNotMapped(RuntimeError):
     """This tier has no network, so no cluster may be built for it."""
@@ -70,6 +77,49 @@ def for_tier(tier: str) -> dict:
             f"{', '.join(missing)}. A cluster built with part of a network is a "
             f"cluster in the wrong place.")
     return {k: str(entry[k]).strip() for k in REQUIRED}
+
+
+def compute_subnet(tier: str) -> str:
+    """The subnet ordinary machines are built in for this tier.
+
+    Returns "" when NO tier declares one, which is the migration state: the
+    portal falls back to OCI_COMPUTE_SUBNET_OCID and behaves exactly as it did
+    before. Once any tier declares a compute subnet the map is in force, and a
+    tier without one is REFUSED — because at that point silence means somebody
+    added tiers and forgot this one, not that the feature is unused.
+
+    Raises NetworkNotMapped when the map is in force and this tier is missing. A
+    Production machine built in the development subnet is the failure this
+    exists to prevent, and it would look exactly like success.
+    """
+    tier = (tier or "").strip()
+    mapped = _configured()
+    in_force = any(str(entry.get(COMPUTE, "")).strip()
+                   for entry in mapped.values() if isinstance(entry, dict))
+    if not in_force:
+        return ""
+    entry = mapped.get(tier) or {}
+    subnet = str(entry.get(COMPUTE, "")).strip()
+    if not subnet:
+        with_compute = sorted(t for t, e in mapped.items()
+                              if isinstance(e, dict) and str(e.get(COMPUTE, "")).strip())
+        raise NetworkNotMapped(
+            f"No compute subnet is mapped for the {tier or '(unnamed)'} tier. "
+            f"Machines are built one network per tier, and building this one in "
+            f"another tier's subnet is not something the portal will do. Mapped "
+            f"tiers: {', '.join(with_compute) or 'none'}.")
+    return subnet
+
+
+def compute_tiers() -> list[str]:
+    """Tiers that can have a machine built in them, or [] when the map is not in
+    force and the single configured subnet still serves every tier."""
+    try:
+        mapped = _configured()
+    except NetworkNotMapped:
+        return []
+    return sorted(t for t, e in mapped.items()
+                  if isinstance(e, dict) and str(e.get(COMPUTE, "")).strip())
 
 
 def mapped_tiers() -> list[str]:

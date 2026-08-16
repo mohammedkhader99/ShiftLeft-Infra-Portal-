@@ -607,6 +607,24 @@ def _compute_spec(payload: dict, resource_kind: str = "") -> dict:
     #
     # Only OKE consumes a network map today. The other blueprints take the shared
     # compute subnet, which is a separate contract and unchanged by this.
+    # Ordinary machines are built one network per tier too. Until now every
+    # resource kind except OKE took a single OCI_COMPUTE_SUBNET_OCID whatever
+    # tier the request named, so a Production nginx landed in the DEVELOPMENT
+    # subnet — the exact failure the OKE map exists to prevent, left open for the
+    # twelve technologies people actually raise.
+    #
+    # Refused rather than defaulted, for the same reason and with the same force.
+    if resource_kind != "oci-oke":
+        tier = (payload.get("policy_input", {}).get("environment_tier") or "").strip()
+        try:
+            subnet = oke_networks.compute_subnet(tier)
+        except oke_networks.NetworkNotMapped as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if subnet:
+            # "" means no tier declares one yet, so the single configured subnet
+            # still serves every tier and nothing changes.
+            sizing = {**sizing, "compute_subnet": subnet}
+
     if resource_kind == "oci-oke":
         tier = (payload.get("policy_input", {}).get("environment_tier") or "").strip()
         try:
