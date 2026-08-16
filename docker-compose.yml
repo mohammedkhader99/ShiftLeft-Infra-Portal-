@@ -344,6 +344,10 @@ services:
       # Replaced OCI_OKE_VCN_CIDR, which asked the module to CHOOSE an
       # address range; it is now given subnets the network team allocated.
       OCI_OKE_NETWORKS: ${OCI_OKE_NETWORKS:-}
+      # How long the supported-Kubernetes-version answer is cached.
+      # Versions are retired on Oracle's schedule, so an hour keeps a
+      # long-running orchestrator from holding one past retirement.
+      OKE_VERSION_TTL_SECONDS: ${OKE_VERSION_TTL_SECONDS:-}
       OCI_OKE_KUBERNETES_VERSION: ${OCI_OKE_KUBERNETES_VERSION:-}
       OCI_OKE_CLUSTER_TYPE: ${OCI_OKE_CLUSTER_TYPE:-}
       # Kafka: a pre-authenticated Object Storage URL for the release archive.

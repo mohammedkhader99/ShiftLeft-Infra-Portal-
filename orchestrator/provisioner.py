@@ -207,7 +207,10 @@ def _oci_vars(name: str, tags: dict, resource_kind: str = "oci-bucket",
         "pod_subnet_id": sizing.get("pod_subnet_id", ""),
         "lb_subnet_id": sizing.get("lb_subnet_id", ""),
         "bastion_subnet_id": sizing.get("bastion_subnet_id", ""),
-        "oke_kubernetes_version": os.getenv("OCI_OKE_KUBERNETES_VERSION", ""),
+        # Resolved against what OCI accepts TODAY, not a constant in this
+        # repository. Empty only for non-OKE kinds, which ignore it.
+        "oke_kubernetes_version": (sizing.get("oke_kubernetes_version")
+                                   or os.getenv("OCI_OKE_KUBERNETES_VERSION", "")),
         "oke_cluster_type": os.getenv("OCI_OKE_CLUSTER_TYPE", ""),
         # --- Kafka ------------------------------------------------------------
         # Where the Kafka archive is fetched from. It is a pre-authenticated URL

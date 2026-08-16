@@ -28,6 +28,11 @@ _OCIDS = {"vcn": "ocid1.vcn.dev", "api": "ocid1.subnet.api", "node": "ocid1.subn
 @pytest.fixture(autouse=True)
 def _mapped(monkeypatch):
     monkeypatch.setenv("OCI_OKE_NETWORKS", json.dumps({"Development": _OCIDS}))
+    # The Kubernetes version is resolved against what OCI accepts, and there is
+    # no OCI here. A configured version is the documented fallback for exactly
+    # that case — these tests are about the NETWORK reaching Terraform, and
+    # should not fail for a reason that has nothing to do with it.
+    monkeypatch.setenv("OCI_OKE_KUBERNETES_VERSION", "v1.36.1")
 
 
 def _payload(tier="Development"):

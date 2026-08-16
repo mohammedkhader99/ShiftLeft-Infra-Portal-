@@ -43,6 +43,10 @@ _GATE_ENV = {
     # it is handed subnets the network team allocated.
     "OCI_OKE_BASTION_CIDR", "OCI_OKE_NETWORKS", "OCI_OKE_KUBERNETES_VERSION",
     "OCI_OKE_CLUSTER_TYPE",
+    # Cache lifetime for the supported-version lookup. Reported as part of
+    # oke_kubernetes_version, which now says where the version CAME from —
+    # a constant in this repo was what failed REQ-2026-0148.
+    "OKE_VERSION_TTL_SECONDS",
     # Cloud option catalogue: reported as catalogue_mode /
     # catalogue_shapes_allowed (a count, not the list) /
     # catalogue_image_filter_set.

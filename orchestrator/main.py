@@ -25,6 +25,7 @@ from orchestrator import (
     cloud_catalogue,
     cloud_state,
     configure,
+    kubernetes_versions,
     network_egress,
     oke_networks,
     provisioner,
@@ -631,8 +632,18 @@ def _compute_spec(payload: dict, resource_kind: str = "") -> dict:
             network = oke_networks.for_tier(tier)
         except oke_networks.NetworkNotMapped as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        # The Kubernetes version OCI will actually accept. The module carried a
+        # hard-coded v1.29.1, retired since it was written, and REQ-2026-0148 —
+        # the first cluster anyone asked this portal for — failed at apply
+        # because of it. A cloud retires versions on its own schedule and nothing
+        # in this repository can be edited often enough to keep up.
+        version, why = kubernetes_versions.resolve(
+            os.getenv("OCI_OKE_KUBERNETES_VERSION", ""))
+        if not version:
+            raise HTTPException(status_code=400, detail=why)
         sizing = {
             **sizing,
+            "oke_kubernetes_version": version,
             "vcn_id": network["vcn"],
             "api_subnet_id": network["api"],
             "node_subnet_id": network["node"],

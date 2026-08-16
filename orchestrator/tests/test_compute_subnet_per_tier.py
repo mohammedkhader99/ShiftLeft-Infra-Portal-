@@ -109,6 +109,9 @@ def test_a_tier_may_have_compute_without_a_cluster(monkeypatch):
 
 
 def test_oke_still_resolves_its_own_five(monkeypatch):
+    # OKE also resolves its Kubernetes version against what OCI accepts, and
+    # there is no OCI here. A configured version is the documented fallback.
+    monkeypatch.setenv("OCI_OKE_KUBERNETES_VERSION", "v1.36.1")
     monkeypatch.setenv("OCI_OKE_NETWORKS", json.dumps({"Development": {
         "compute": DEV, "vcn": "v", "api": "a", "node": "n", "pod": "p",
         "lb": "l", "bastion": "b"}}))
