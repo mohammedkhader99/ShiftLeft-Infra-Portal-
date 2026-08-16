@@ -176,14 +176,33 @@ def main() -> int:
         print(f"subnet          : MOVED to {route_table_name}")
 
     # --- what the other subnets see ------------------------------------------
+    # Every other subnet, with what its routing ACTUALLY says.
+    #
+    # This used to print "keep the default route table and have no route to the
+    # internet" over a bare list, asserting a fact it had not checked. Run twice
+    # — once for the worker subnet, once for the pod subnet — and the second run
+    # confidently reported the worker subnet as having no internet thirty seconds
+    # after giving it some.
+    #
+    # Read from the route table via the same code the portal uses to decide which
+    # operating systems it may offer, so the report and the decision can never
+    # disagree about the same subnet.
+    from orchestrator import network_egress
+
     others = [s for s in oci.pagination.list_call_get_all_results(
         net.list_subnets, compartment, vcn_id=vcn.id).data
         if s.id != subnet.id]
     print()
-    print(f"unchanged: {len(others)} other subnet(s) keep the default route "
-          f"table and have no route to the internet:")
+    print(f"unchanged by this run — {len(others)} other subnet(s), as they stand:")
     for s in others:
-        print(f"   {s.display_name}")
+        state = network_egress.egress_for_subnet(s.id, net)
+        if not state["known"]:
+            reach = "could not read its routing"
+        elif state["internet"]:
+            reach = f"HAS internet via {state['route_table']}"
+        else:
+            reach = f"no internet ({state['route_table']})"
+        print(f"   {s.display_name:34} {reach}")
     if not args.apply:
         print("\nNothing was changed. Re-run with --apply to make it so.")
     return 0
