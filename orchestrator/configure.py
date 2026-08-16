@@ -71,7 +71,22 @@ TEMPLATES: dict[str, dict] = {
         # No `expects`: the requester chooses the version, so the promise is
         # whatever they picked. render() supplies it per request.
         "version_command": "nginx -v 2>&1",
-        "rhel": {"packages": ["nginx"], "services": ["nginx"], "module_name": "nginx"},
+        # The streams Oracle Linux 9.8 ACTUALLY offers, measured on the machine
+        # from REQ-2026-0146 with `dnf module list nginx` on 16 Aug 2026:
+        # 1.22, 1.24, 1.26.
+        #
+        # The portal offered 1.20, 1.22, 1.24 — a seeded list that was true once
+        # and went stale. There is no 1.20 stream on 9.8, so `dnf module enable
+        # nginx:1.20` fails and the request lands verify-failed; the 1.20.1 that
+        # installs comes from the non-modular base package, so the requester got
+        # what they asked for by accident while the pinning step had failed.
+        # 1.26 was silently unavailable.
+        #
+        # Declared beside the recipe rather than seeded into the catalogue,
+        # because this is a property of the OS the recipe installs from, and the
+        # catalogue had no way to know it had changed.
+        "rhel": {"packages": ["nginx"], "services": ["nginx"], "module_name": "nginx",
+                 "streams": ["1.22", "1.24", "1.26"]},
         "debian": {"packages": ["nginx"], "services": ["nginx"]},
     },
     # OL9 ships a single httpd with no streams — one honest version.
@@ -94,8 +109,9 @@ TEMPLATES: dict[str, dict] = {
         "ports": [],
         "expects": "7",
         "version_command": "redis-server --version 2>&1",
+        # Measured the same way: OL 9.8 offers exactly one redis stream, 7.
         "rhel": {"packages": ["redis"], "services": ["redis"],
-                 "module": "redis:7", "module_name": "redis"},
+                 "module": "redis:7", "module_name": "redis", "streams": ["7"]},
         # Debian names both the package and the unit redis-server.
         "debian": {"packages": ["redis-server"], "services": ["redis-server"]},
     },
@@ -786,3 +802,16 @@ def render(components: list[dict], family: str = "", report_url: str = "") -> st
     if report_url:
         lines.append(cmd("/usr/local/bin/infra-portal-report.sh || true"))
     return "\n".join(lines) + "\n"
+
+
+def streams_for(code: str, family: str) -> list[str]:
+    """Module streams this OS family actually offers for a technology.
+
+    Empty means either the family pins no versions — Debian carries whatever its
+    release holds — or nobody has measured this one. Either way the caller must
+    not then offer a version list it invented, which is exactly how the form came
+    to offer nginx 1.20 on an Oracle Linux 9.8 that has no such stream.
+    """
+    profile = (TEMPLATES.get((code or "").strip(), {})
+               .get((family or "").strip().lower(), {}))
+    return list(profile.get("streams") or [])

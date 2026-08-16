@@ -14,7 +14,7 @@ from datetime import date, datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from api import component_options
+from api import blueprint_capabilities, component_options
 from db.models import (ENVIRONMENT_TIERS, Backup, Blueprint, CostCentre, Environment, Project,
                        ProvisionedResource, Request, Subsidiary, Technology)
 
@@ -456,6 +456,46 @@ def _validate_restore_fields(data: dict, session: Session, errors: dict[str, str
             errors["restore_backup_id"] = "That backup belongs to a different environment."
 
 
+def _validate_tier_has_a_network(data: dict, errors: dict[str, str]) -> None:
+    """Refuse a component whose tier has no network, BEFORE anybody approves it.
+
+    Some blueprints are built one VCN per environment tier, and a tier with no
+    VCN mapped cannot be built at all. The orchestrator already refuses it — but
+    at PLAN time, which is after the request has been priced, sent to Jira and
+    approved. The requester then sees a retry loop with the reason buried in a
+    status detail.
+
+    That is the same expensive shape as the resource name that overran its limit
+    and killed REQ-2026-0128 after approval: the portal knew the answer at form
+    time and said nothing until it cost something.
+
+    None means the technology takes no per-tier network and is unrestricted. An
+    empty list means it needs one and none exists, which no tier can satisfy.
+    """
+    tier = normalise_tier(data.get("environment_tier"))
+    for component in data.get("components") or []:
+        code = (component.get("technology_code") or "").strip()
+        if not code:
+            continue
+        mapped = blueprint_capabilities.network_tiers(code)
+        if mapped is None:
+            continue
+        if not mapped:
+            errors["components"] = (
+                f"{code} is built in a network of its own per environment tier, "
+                f"and no tier has one yet. Ask the network team to provision one "
+                f"before requesting it.")
+            return
+        if tier and tier not in mapped:
+            errors["environment_tier"] = (
+                f"{code} cannot be built in the {tier} tier: no network has been "
+                f"provisioned for it. These are built one VCN per tier, so it "
+                f"will not be placed in another tier's network. Available: "
+                f"{', '.join(sorted(mapped))} — or ask the network team to "
+                f"provision a {tier} network.")
+            return
+
+
 def _validate_create_fields(data: dict, session: Session, errors: dict[str, str]) -> None:
     project = (data.get("project_code") or "").strip()
     if not project:
@@ -487,6 +527,8 @@ def _validate_create_fields(data: dict, session: Session, errors: dict[str, str]
         errors["data_classification"] = (
             "Select a data classification (public, internal, confidential or restricted)."
         )
+
+    _validate_tier_has_a_network(data, errors)
 
     tier = normalise_tier(data.get("environment_tier"))
     if not tier:

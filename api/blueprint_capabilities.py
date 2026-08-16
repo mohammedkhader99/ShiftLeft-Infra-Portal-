@@ -32,6 +32,7 @@ _limits: dict[str, tuple[str, int]] = {}
 _refusals: dict[tuple[str, str], str] = {}
 _proven: dict[str, set[str]] = {}
 _unverifiable: dict[str, str] = {}
+_network_tiers: dict[str, list] = {}
 _fetched_at: float = 0.0
 _lock = threading.Lock()
 
@@ -117,9 +118,13 @@ def refresh(fetcher) -> bool:
         _refusals.update(_build_refusals(shipped))
         _proven.clear()
         _unverifiable.clear()
+        _network_tiers.clear()
         for bp in shipped or []:
             for code, why in (bp.get("cannot_verify") or {}).items():
                 _unverifiable[str(code)] = str(why)
+            if bp.get("network_tiers") is not None:
+                for code in bp.get("builds") or []:
+                    _network_tiers[str(code)] = list(bp["network_tiers"])
         for bp in shipped or []:
             for code, families in (bp.get("verified") or {}).items():
                 _proven.setdefault(str(code), set()).update(
@@ -164,6 +169,15 @@ def name_budget(code: str, reference_length: int, fetcher) -> tuple[int, str] | 
         return None
     suffix, limit = entry
     return limit - reference_length - len(suffix) - 2, suffix
+
+
+def network_tiers(code: str) -> list | None:
+    """Tiers this technology has a network mapped for, or None if it needs no map.
+
+    None and [] mean opposite things: None is "no per-tier network applies", [] is
+    "it needs one and there is none", which no tier can satisfy.
+    """
+    return _network_tiers.get((code or "").strip())
 
 
 def unverifiable(code: str) -> str:

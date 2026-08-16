@@ -41,6 +41,22 @@ def _readiness(manifest: dict) -> tuple[bool, list[str]]:
     return (not missing), missing
 
 
+def _network_tiers(resource_kind: str) -> list | None:
+    """Environment tiers this resource kind has a network mapped for.
+
+    None means the kind takes no network map at all — the shared compute subnet
+    serves it, and no tier restricts it. An empty LIST is different: it consumes
+    a map and nothing is mapped, so nothing can be built.
+    """
+    if resource_kind != "oci-oke":
+        return None
+    try:
+        from orchestrator.oke_networks import mapped_tiers
+    except Exception:  # noqa: BLE001 - discovery must never fail closed
+        return None
+    return mapped_tiers()
+
+
 def _verified_for(builds: list) -> dict:
     """{technology: [families it has been booted and checked on]}."""
     try:
@@ -137,6 +153,11 @@ def discover(directory: Path | None = None) -> list[dict]:
             # Technologies this blueprint builds but nothing can inspect —
             # distinct from a blueprint that boots no machine at all.
             "cannot_verify": dict(manifest.get("cannot_verify") or {}),
+            # Tiers this blueprint has a network for. Only blueprints that
+            # consume a per-tier network map carry it; an empty list means the
+            # portal has none mapped and the form must say so BEFORE approval,
+            # not discover it at plan time.
+            "network_tiers": _network_tiers(manifest.get("resource_kind", "")),
             "description": str(manifest.get("description") or ""),
             # Which Terraform variable carries the environment's name. Modules
             # disagree (bucket_name, instance_name, db_name...), and hard-coding
