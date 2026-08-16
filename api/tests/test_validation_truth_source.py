@@ -214,13 +214,26 @@ def test_every_blueprint_that_installs_software_declares_its_os_families():
     manifest had carried a COMMENT saying it needs a Red Hat image since the day
     it shipped, and a comment cannot refuse a request.
     """
-    # Scoped to the blueprints that boot a machine. A bucket and a managed
-    # database have no operating system for a requester to choose, so demanding
-    # a declaration from them would be noise — and a guard that asks for
-    # meaningless entries gets filled in with meaningless entries.
+    # Scoped to blueprints the portal CONFIGURES, which is what boot_report says.
+    # A bucket and a managed database have no operating system for a requester to
+    # choose, and a guard that asks for meaningless entries gets filled in with
+    # meaningless entries.
+    #
+    # `name_var == "instance_name"` used to stand in for this and was too broad.
+    # OKE boots machines and configures none — its worker nodes run an
+    # Oracle-managed image this project never renders — so it was told to declare
+    # OS families it has no opinion about. It did, claiming [rhel], and the
+    # certification gate then demanded boot evidence from a blueprint that files
+    # no report: certification needed proof, proof needed a build, and a build
+    # needed certification.
+    #
+    # "Boots a machine" and "decides what that machine runs" are different
+    # questions, and only the second one has an answer worth declaring.
     silent = [
         bp["ref"] for bp in blueprint_registry.discover()
-        if bp.get("name_var") == "instance_name" and not bp.get("os_families")
+        if bp.get("name_var") == "instance_name"
+        and bp.get("boot_report") != "none"
+        and not bp.get("os_families")
     ]
     assert not silent, (
         f"these blueprints boot a machine but declare no os_families: {silent}. "

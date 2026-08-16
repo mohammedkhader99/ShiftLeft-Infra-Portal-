@@ -59,7 +59,26 @@ version: 1.0.0
 #             which Terraform does report truthfully.
 boot_report: none
 builds: [oci-oke]
-os_families: [rhel]
+# NO os_families, and that is the honest declaration.
+#
+# This blueprint configures no operating system. Its worker nodes boot an
+# Oracle-managed image OKE selects, which is why boot_report is `none` — there is
+# no cloud-init for this project to render or to carry a self-report.
+#
+# It claimed [rhel] anyway, and the certification gate therefore demanded boot
+# evidence from a blueprint that can never produce any: "oci-oke unproven on
+# rhel". Certification then required proof, proof required a build, and a build
+# required certification — a deadlock that would have caught EVERY new blueprint
+# after it, not only this one. The same shape as telling a Windows VM it was
+# unproven on Oracle Linux.
+#
+# What proves this blueprint is orchestrator/resource_state.py: the cluster
+# reaching ACTIVE with its node pool at target size, checked on every build
+# including the first. A cluster that comes up empty lands the request on
+# verify-failed exactly as a machine with no software does.
+#
+# The requester picks no OS image for a cluster, so nothing is lost by not
+# declaring one.
 # OKE node pools run Oracle's own managed node images (Oracle Linux). The
 # requester does not choose the node OS, so this exists to stop the portal
 # claiming an Ubuntu node pool it has no way to build.

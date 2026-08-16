@@ -373,3 +373,42 @@ def test_windows_is_declared_unverifiable_rather_than_linux():
     assert "Windows" in blocked["win2019"]
     assert "win2019" in (manifest.get("builds") or []), (
         "it is still built — only its verifiability is being declared")
+
+
+# --- A blueprint must not claim an OS it never configures ---------------------
+
+@pytest.mark.parametrize("name,manifest", _manifests(), ids=[n for n, _ in _manifests()])
+def test_a_blueprint_declaring_no_boot_report_declares_no_os_family(name, manifest):
+    """`boot_report: none` and `os_families` together are a contradiction.
+
+    A blueprint reports nothing precisely because it renders no cloud-init, and a
+    blueprint that renders no cloud-init configures no operating system. OKE
+    claimed [rhel] while doing neither, and the certification gate then demanded
+    boot evidence it could never produce — "unproven on rhel". Certification
+    needed proof, proof needed a build, a build needed certification, and that
+    deadlock would have caught EVERY new blueprint after it.
+
+    Such a blueprint is proven by orchestrator/resource_state.py instead: the
+    resource itself reaching a working state, checked on every build including
+    the first.
+    """
+    if manifest.get("boot_report") != "none":
+        return
+    assert not manifest.get("os_families"), (
+        f"{name} reports nothing (boot_report: none) yet claims to configure "
+        f"{manifest['os_families']}. One of the two is wrong: either it renders "
+        f"cloud-init and should report, or it configures no OS and should say so.")
+
+
+@pytest.mark.parametrize("name,manifest", _manifests(), ids=[n for n, _ in _manifests()])
+def test_a_blueprint_that_reports_nothing_can_be_proven_some_other_way(name, manifest):
+    """Exempt from boot reporting is not exempt from proof. A blueprint that
+    files no report and has no resource-state check could never be proven at
+    all, and would sit uncertifiable forever with nobody able to say why."""
+    if manifest.get("boot_report") != "none":
+        return
+    from orchestrator import resource_state
+    kind = manifest.get("resource_kind", "")
+    assert kind in resource_state.CHECKABLE, (
+        f"{name} files no boot report and {kind} has no resource-state check, so "
+        f"nothing can ever prove it. Add one to resource_state.CHECKABLE.")
