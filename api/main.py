@@ -1273,7 +1273,8 @@ def stats(session: Session = Depends(get_session),
         "kpis": {
             "total": total,
             "active": sum_of("provisioned"),
-            "in_flight": sum_of("submitted", "planned", "in-progress"),
+            "in_flight": sum_of("submitted", "planned", "in-progress",
+                                "manual-fulfil"),
             "failed": sum_of("apply-failed", "teardown-failed", "rejected",
                              "verify-failed"),
             "decommissioned": sum_of("decommissioned"),
@@ -5630,6 +5631,39 @@ def _advance_request(session: Session, req: Request) -> str:
         if req.request_type == "dns":
             _dns(session, req, actor="poller")
             return req.status
+        # NOTHING CERTIFIED MEANS NOTHING TO BUILD.
+        #
+        # Without this the request goes to the orchestrator anyway, and
+        # _environment_resource_kinds falls back to a legacy derivation that ends
+        # at "oci-bucket". A requester who asked for a Kubernetes cluster received
+        # an empty object storage bucket and the request was marked provisioned —
+        # REQ-2026-0144 did exactly that with python312, and OKE, Kafka, MongoDB
+        # and every other uncertified technology behave the same way today.
+        #
+        # Manual fulfilment is a real feature and is NOT what is being refused:
+        # the portal still validates, prices, approves and audits the request, and
+        # the infrastructure team still builds it. What stops is inventing a cloud
+        # resource nobody asked for and calling the request finished.
+        unmet = _unautomated_components(session, req)
+        requested = [c.technology_code for c in req.components if c.technology_code]
+        if requested and len(unmet) == len(set(requested)):
+            listed = ", ".join(unmet)
+            req.status = "manual-fulfil"
+            req.status_detail = (
+                f"No cloud resource was created. Nothing in this request has a "
+                f"certified blueprint on {req.deployment_target}: {listed}. The "
+                f"infrastructure team fulfils it.")[:500]
+            append_audit(session, "fulfilment.manual", reference=req.reference,
+                         jira_key=jira_key, actor="poller",
+                         detail={"not_automated": unmet})
+            add_comment(jira_key,
+                        "ℹ️ Approved, and NOT built automatically — no cloud "
+                        f"resource was created. {listed} "
+                        f"{'have' if len(unmet) > 1 else 'has'} no certified "
+                        "blueprint, so this needs the infrastructure team.")
+            session.commit()
+            return req.status
+
         # A permanent failure must not be retried forever (see provision_attempts).
         max_attempts = _max_provision_attempts()
         if (req.provision_attempts or 0) >= max_attempts:

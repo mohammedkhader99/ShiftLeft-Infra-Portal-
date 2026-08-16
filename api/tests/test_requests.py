@@ -501,13 +501,37 @@ def poller():
         session.close()
 
 
-def _submit_request(client, session):
-    """Create + submit a request; return the (Request, jira_key)."""
+def _submit_request(client, session, certify=True):
+    """Create + submit a request; return the (Request, jira_key).
+
+    `certify` gives the request's technology a certified blueprint, because the
+    portal refuses to provision anything when NOTHING in a request is certified —
+    it records manual-fulfil and creates no cloud resource. Without that, every
+    test here that exercises approval mechanics would stop one step earlier than
+    the step it is actually about.
+
+    That refusal is deliberate: a request with nothing certified used to fall
+    through a legacy derivation ending at "oci-bucket", so REQ-2026-0144 asked
+    for Python 3.12 and received an empty bucket, marked provisioned. Pass
+    certify=False to exercise that path on purpose.
+    """
     import api.main as main
+    from db.models import Blueprint
 
     ref = client.post("/api/requests/draft", json=VALID_CREATE).json()["reference"]
     key = client.post(f"/api/requests/{ref}/submit").json()["approval"]["jira_key"]
     req = session.scalar(main.select(main.Request).where(main.Request.reference == ref))
+    if certify:
+        for component in req.components:
+            if session.get(Blueprint, (component.technology_code, req.deployment_target)):
+                continue
+            session.add(Blueprint(
+                technology_code=component.technology_code,
+                deployment_target=req.deployment_target,
+                resource_kind="oci-instance", blueprint_ref="test/fixture",
+                status="certified"))
+        session.commit()
+        main.fulfilment.invalidate_cache()
     return req, key
 
 
@@ -2416,3 +2440,50 @@ def test_api_keys_scoped_to_owner(client):
     assert client.delete(f"/api/api-keys/{kid}", headers=BOB).status_code == 404
     assert all(k["identity"] == "bob@example.com"
                for k in client.get("/api/api-keys", headers=BOB).json()["keys"])
+
+
+def test_an_approved_request_with_nothing_certified_builds_nothing(poller, monkeypatch):
+    """REQ-2026-0144, as a test.
+
+    It asked for Python 3.12, nothing was certified for it, the resource kind
+    fell through a legacy derivation ending at "oci-bucket", and the requester
+    received an empty object storage bucket with the request marked provisioned.
+    Ask for a Kubernetes cluster today and the same thing happens.
+
+    Approval mechanics are untouched — the request is approved, audited, and the
+    infrastructure team fulfils it. What must not happen is a cloud resource
+    nobody asked for.
+    """
+    import api.main as main
+    client, session = poller
+    req, key = _submit_request(client, session, certify=False)
+
+    reached_orchestrator = []
+    monkeypatch.setattr(main, "get_status", lambda k: "approved")
+    monkeypatch.setattr(main, "_post_to_orchestrator",
+                        lambda *a, **k: reached_orchestrator.append(a) or (_PlanResp(), None))
+    monkeypatch.setattr(main, "provision_mode", lambda: "plan")
+    main._advance_request(session, req)
+    session.refresh(req)
+
+    assert req.status == "manual-fulfil"
+    assert not reached_orchestrator, (
+        "the orchestrator was asked to build something for a request in which "
+        "nothing is certified — that is where the bucket came from")
+    assert "No cloud resource was created" in (req.status_detail or "")
+    assert "fulfilment.manual" in _events(session, req.reference)
+
+
+def test_that_request_is_still_approved_and_audited(poller, monkeypatch):
+    """Manual fulfilment is a feature, not a rejection. The portal still does
+    everything it promises except build the thing."""
+    import api.main as main
+    client, session = poller
+    req, key = _submit_request(client, session, certify=False)
+    monkeypatch.setattr(main, "get_status", lambda k: "approved")
+    monkeypatch.setattr(main, "provision_mode", lambda: "plan")
+    main._advance_request(session, req)
+    session.refresh(req)
+    assert req.approval.status == "approved"
+    assert "approval.approved" in _events(session, req.reference)
+    assert req.status != "rejected"

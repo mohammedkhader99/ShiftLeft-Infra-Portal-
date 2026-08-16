@@ -16,7 +16,7 @@ from sqlalchemy.pool import StaticPool
 
 import api.main as main
 from api.main import app, get_session
-from db.models import Approval, ProvisionedResource, Request, RequestComponent, Technology
+from db.models import Blueprint, Approval, ProvisionedResource, Request, RequestComponent, Technology
 from db.seed import seed
 from db.session import Base
 
@@ -121,8 +121,20 @@ def test_handoff_payload_includes_resource_kind(session):
 def test_mock_provision_registers_instance_and_shows_power(session, monkeypatch):
     req = _req(session, ["compute-vm"])
     req.resource_kind = "oci-instance"
+    # A real request always carries a deployment target, and certification is
+    # recorded per (technology, TARGET) — without it the pair can never match.
+    req.deployment_target = "oci"
     req.approval = Approval(jira_key="INFRA-1", status="approved")
+    # The portal builds NOTHING when nothing in a request is certified: it
+    # records manual-fulfil and never calls the orchestrator, because such a
+    # request used to fall through to "oci-bucket" and hand the requester a
+    # bucket they never asked for. This test is about registering a compute
+    # instance and reading its power state, so its blueprint has to exist.
+    session.add(Blueprint(technology_code="compute-vm", deployment_target="oci",
+                          resource_kind="oci-instance",
+                          blueprint_ref="test/fixture", status="certified"))
     session.commit()
+    main.fulfilment.invalidate_cache()
 
     monkeypatch.setattr(main, "get_status", lambda k: "approved")
     monkeypatch.setattr(main, "jira_mode", lambda: "mock")

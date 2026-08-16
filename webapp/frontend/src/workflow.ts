@@ -16,6 +16,13 @@ const TERMINAL_FAIL: Record<string, string> = {
   rejected: 'Approved',
 }
 
+// Approved and deliberately NOT built by the portal: nothing in the request
+// has a certified blueprint, so the infrastructure team fulfils it. Neither a
+// failure nor a completion — the lifecycle simply stops at Approved.
+const STOPS_AT: Record<string, string> = {
+  'manual-fulfil': 'Approved',
+}
+
 // Mirrors the HTMX portal's _workflow_steps: derive the lifecycle stages from
 // the request status + audit trail.
 export function workflowSteps(status: string, audit: AuditEntry[]): WFStep[] {
@@ -49,6 +56,13 @@ export function workflowSteps(status: string, audit: AuditEntry[]): WFStep[] {
       state: 'done',
       when: firstTs['decommissioned'] || firstTs['destroyed'],
     })
+    return steps
+  }
+
+  const stopsAt = STOPS_AT[status]
+  if (stopsAt) {
+    const upTo = steps.findIndex((s) => s.label === stopsAt)
+    steps.forEach((s, i) => (s.state = i <= upTo ? 'done' : 'pending'))
     return steps
   }
 
