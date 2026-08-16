@@ -49,7 +49,15 @@ import oci
 from orchestrator.cloud_state import _oci_config
 
 NAT_NAME = "AI-ShiftLeft-DEV-NATGW"
-ROUTE_TABLE_NAME = "AI-ShiftL-DEV-VM-APP-RT"
+
+# Which subnet to act on, by display name. Defaults to the one the portal builds
+# VMs in; --subnet names another in the SAME VCN.
+#
+# Generalised on 15 Aug 2026 for the OKE worker subnet. OKE worker nodes pull
+# container images, and over a service gateway alone they can reach OCIR and
+# nothing else — no Docker Hub, no quay.io, no ghcr.io. That is the same
+# condition that produced an empty Ubuntu machine this morning, and it would fail
+# a cluster the same way.
 
 
 def _find(items, name):
@@ -64,6 +72,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--apply", action="store_true",
                         help="make the change; without it, only report")
+    parser.add_argument("--subnet", default="",
+                        help="display name of the subnet to act on; defaults to "
+                             "the compute subnet the portal builds VMs in")
     args = parser.parse_args()
 
     subnet_ocid = os.getenv("OCI_COMPUTE_SUBNET_OCID", "")
@@ -73,8 +84,24 @@ def main() -> int:
 
     net = oci.core.VirtualNetworkClient(_oci_config())
     subnet = net.get_subnet(subnet_ocid).data
+    if args.subnet:
+        # Looked up WITHIN the compute subnet's VCN, so a name typed by hand can
+        # never reach a different network by accident.
+        found = [s for s in oci.pagination.list_call_get_all_results(
+                     net.list_subnets, subnet.compartment_id, vcn_id=subnet.vcn_id).data
+                 if s.display_name == args.subnet]
+        if not found:
+            print(f"No subnet called {args.subnet!r} in this VCN. It must be one of:")
+            for s in oci.pagination.list_call_get_all_results(
+                    net.list_subnets, subnet.compartment_id, vcn_id=subnet.vcn_id).data:
+                print(f"   {s.display_name}")
+            return 2
+        subnet = found[0]
     vcn = net.get_vcn(subnet.vcn_id).data
     compartment = subnet.compartment_id
+    # Derived from the subnet so two subnets can never share one table and one
+    # change silently move both.
+    route_table_name = f"{subnet.display_name}-RT"
 
     print(f"VCN     : {vcn.display_name} ({vcn.cidr_block})")
     print(f"subnet  : {subnet.display_name} ({subnet.cidr_block})")
@@ -116,11 +143,11 @@ def main() -> int:
         return 1
 
     tables = net.list_route_tables(compartment, vcn_id=vcn.id).data
-    table = _find(tables, ROUTE_TABLE_NAME)
+    table = _find(tables, route_table_name)
     if table:
         print(f"route table     : exists — {table.display_name}")
     elif not args.apply:
-        print(f"route table     : WOULD CREATE {ROUTE_TABLE_NAME} with "
+        print(f"route table     : WOULD CREATE {route_table_name} with "
               f"{len(service_rules)} service rule(s) + 0.0.0.0/0 -> NAT")
     else:
         rules = [oci.core.models.RouteRule(
@@ -134,19 +161,19 @@ def main() -> int:
             description="Outbound internet for OS package repositories (apt)"))
         table = net.create_route_table(oci.core.models.CreateRouteTableDetails(
             compartment_id=compartment, vcn_id=vcn.id,
-            display_name=ROUTE_TABLE_NAME, route_rules=rules)).data
+            display_name=route_table_name, route_rules=rules)).data
         print(f"route table     : CREATED {table.display_name} with {len(rules)} rules")
 
     # --- 3. point the subnet at it -------------------------------------------
     if table and subnet.route_table_id == table.id:
-        print(f"subnet          : already uses {ROUTE_TABLE_NAME}")
+        print(f"subnet          : already uses {route_table_name}")
     elif not args.apply:
         print(f"subnet          : WOULD MOVE from '{current.display_name}' "
-              f"to '{ROUTE_TABLE_NAME}'")
+              f"to '{route_table_name}'")
     elif table:
         net.update_subnet(subnet.id, oci.core.models.UpdateSubnetDetails(
             route_table_id=table.id))
-        print(f"subnet          : MOVED to {ROUTE_TABLE_NAME}")
+        print(f"subnet          : MOVED to {route_table_name}")
 
     # --- what the other subnets see ------------------------------------------
     others = [s for s in oci.pagination.list_call_get_all_results(
