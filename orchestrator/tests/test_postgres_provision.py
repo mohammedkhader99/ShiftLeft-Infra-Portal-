@@ -296,3 +296,38 @@ def test_psql_version_follows_the_catalogue_name(monkeypatch):
     assert orch_main._psql_version([{"technology": "postgres16"}]) == "16"
     # Nothing PostgreSQL in the request: fall back rather than invent.
     assert orch_main._psql_version([{"technology_code": "nginx"}]) == "14"
+
+
+def test_durability_is_derived_from_the_region_not_hard_coded():
+    """REQ-2026-0158: `is_regionally_durable = true` in a one-AD region.
+
+    OCI refused it — regional durability replicates across availability domains
+    and is only offered where there are three. me-dubai-1 has one.
+
+    Hard-coding `false` would fix Dubai and silently downgrade a 3-AD region to
+    single-AD storage. Both constants are wrong; the region has to be asked.
+    """
+    import pathlib
+    import re
+
+    root = pathlib.Path(__file__).resolve().parents[2]
+    text = (root / "orchestrator" / "terraform" / "main.tf").read_text(encoding="utf-8")
+
+    body = "\n".join(l for l in text.splitlines() if not l.strip().startswith("#"))
+    assert not re.search(r"is_regionally_durable\s*=\s*(true|false)", body), (
+        "durability must come from the AD count, not a literal")
+    assert re.search(r"is_regionally_durable\s*=\s*local\.psql_regionally_durable", body)
+    assert "local.ad_count >= 3" in body
+
+    # The AD lookup must actually run for postgres — it was scoped to compute
+    # only, so the data source would have been empty and the count zero.
+    assert re.search(
+        r'count\s*=\s*contains\(\["oci-instance",\s*"oci-postgres"\]', body), (
+        "the availability-domain data source must be fetched for oci-postgres")
+
+    # And OCI requires the AD when durability is off, rejects it when on. It sits
+    # INSIDE storage_details — the provider rejects it at the top level, which is
+    # where a first attempt put it. Matched loosely so realigning cannot break it.
+    assert re.search(r"availability_domain\s*=\s*local\.psql_availability_domain", body)
+    storage = body.split("storage_details {", 1)[1].split("}", 1)[0]
+    assert "availability_domain" in storage, "must live inside storage_details"

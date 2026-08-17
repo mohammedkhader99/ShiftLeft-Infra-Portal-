@@ -51,10 +51,34 @@ resource "oci_objectstorage_bucket" "env" {
 
 # --- Compute VM (resource_kind = oci-instance) -------------------------------
 
-# Availability domains are listed at the tenancy level; used to place the VM.
+# Availability domains are listed at the tenancy level; used to place the VM,
+# and to decide whether a managed database can be regionally durable.
 data "oci_identity_availability_domains" "ads" {
-  count          = var.resource_kind == "oci-instance" ? 1 : 0
+  count          = contains(["oci-instance", "oci-postgres"], var.resource_kind) ? 1 : 0
   compartment_id = var.tenancy_ocid
+}
+
+locals {
+  # How many availability domains this region actually has. me-dubai-1 has one.
+  ad_count = length(try(
+    data.oci_identity_availability_domains.ads[0].availability_domains, []))
+
+  # Regional durability replicates across availability domains, so OCI only
+  # offers it where there are three. REQ-2026-0158 hard-coded `true` and was
+  # refused: "isRegionallyDurable is set to true but either the region or the
+  # service doesn't support this feature. This feature is only supported in 3 AD
+  # regions. Please set the parameter as false and specify availabilityDomain."
+  #
+  # ASKED, NOT ASSUMED. Hard-coding `false` would fix Dubai and silently
+  # downgrade a 3-AD region to single-AD storage — trading one wrong constant
+  # for another, which is the mistake this module has made three times today.
+  psql_regionally_durable = local.ad_count >= 3
+
+  # OCI requires an explicit availability domain when durability is off, and
+  # rejects one when it is on.
+  psql_availability_domain = (local.psql_regionally_durable || local.ad_count == 0
+    ? null
+    : data.oci_identity_availability_domains.ads[0].availability_domains[0].name)
 }
 
 resource "oci_core_instance" "env" {
@@ -122,7 +146,13 @@ resource "oci_psql_db_system" "env" {
 
   storage_details {
     system_type        = "OCI_OPTIMIZED_STORAGE"
-    is_regionally_durable = true
+    is_regionally_durable = local.psql_regionally_durable
+    # Belongs HERE, beside the durability flag — not at the top level, where the
+    # provider rejects it outright. Confirmed from `terraform providers schema`
+    # rather than assumed: OCI's own error names both parameters together.
+    # Null in a 3-AD region (OCI rejects an AD alongside regional durability);
+    # the region's single AD otherwise, which OCI requires when durability is off.
+    availability_domain   = local.psql_availability_domain
     iops               = var.db_storage_iops
   }
 
