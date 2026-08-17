@@ -47,6 +47,12 @@ _GATE_ENV = {
     # oke_kubernetes_version, which now says where the version CAME from —
     # a constant in this repo was what failed REQ-2026-0148.
     "OKE_VERSION_TTL_SECONDS",
+    # Same job for managed PostgreSQL: how long the shape/version catalogue
+    # fetched from OCI is trusted. Surfaced as part of the psql readiness
+    # reporting rather than as a raw number an admin would have to interpret.
+    # The constants it replaced were both wrong in me-dubai-1 — version 14 for a
+    # catalogue selling postgres16, and an E4 shape OCI does not publish here.
+    "PSQL_CATALOGUE_TTL_SECONDS",
     # Cloud option catalogue: reported as catalogue_mode /
     # catalogue_shapes_allowed (a count, not the list) /
     # catalogue_image_filter_set.

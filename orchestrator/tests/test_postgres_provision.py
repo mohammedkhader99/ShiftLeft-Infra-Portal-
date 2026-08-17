@@ -131,7 +131,11 @@ def test_vars_carry_the_db_identity_and_defaults(monkeypatch):
     v = provisioner._oci_vars("egate-db", {}, "oci-postgres")
     assert v["resource_kind"] == "oci-postgres"
     assert v["db_name"] == "egate-db"
-    assert v["db_version"] == "14"
+    # NO INVENTED VERSION. This asserted "14" — a hard-coded default that was
+    # wrong: the catalogue sells postgres16, so a postgres16 request built
+    # PostgreSQL 14. With nothing named and OCI unreachable the answer is "I was
+    # not told", not a guess. The module fails loudly on an empty version.
+    assert v["db_version"] == ""
     assert v["db_instance_count"] == 1
     assert v["db_admin_username"] == "pgadmin"
     assert v["db_subnet_ocid"] == "ocid1.subnet.oc1..db"
@@ -158,3 +162,72 @@ def test_bucket_vars_unaffected_by_postgres_config(monkeypatch):
     _configure(monkeypatch)
     v = provisioner._oci_vars("egate-bucket", {}, "oci-bucket")
     assert v["bucket_name"] == "egate-bucket" and v["db_name"] == ""
+
+
+def test_the_catalogue_name_decides_the_version(monkeypatch):
+    """postgres16 must build PostgreSQL 16.
+
+    The requester chose a catalogue entry called postgres16 and Jira approved
+    that name. An environment default that quietly built 14 delivered something
+    other than what was approved.
+    """
+    _configure(monkeypatch)
+    v = provisioner._oci_vars("db", {}, "oci-postgres",
+                              sizing={"build": "postgres16"})
+    assert v["db_version"] == "16", v["db_version"]
+
+
+def test_a_size_maps_to_a_shape_that_exists(monkeypatch):
+    """The portal's sizes must resolve to real published shapes.
+
+    "small" in the portal is 2 vCPU / 4 GB. No managed PostgreSQL is that small
+    — the service floor is 16 GB — so the size has to be mapped, not passed
+    through. Driven against a stub so the test states the contract without
+    needing OCI.
+    """
+    from orchestrator import postgres_shapes
+
+    class _Stub:
+        def list_shapes(self, compartment_id=None):
+            items = [type("S", (), {"id": i}) for i in (
+                "PostgreSQL.VM.Standard.E5.Flex.2.32GB",
+                "PostgreSQL.VM.Standard.E5.Flex.4.64GB",
+                "PostgreSQL.VM.Standard.E5.Flex.16.256GB")]
+            return type("D", (), {"data": type("R", (), {"items": items})})
+
+        def list_default_configurations(self):
+            items = [type("C", (), {"db_version": v}) for v in ("15", "16")]
+            return type("D", (), {"data": type("R", (), {"items": items})})
+
+    stub = _Stub()
+    shape, why = postgres_shapes.resolve_shape("small", stub)
+    assert shape == "PostgreSQL.VM.Standard.E5.Flex.2.32GB", shape
+    assert "32 GB" in why
+
+    # And a size nothing satisfies must be refused, never rounded down.
+    postgres_shapes.SIZE_FLOORS["enormous"] = (999, 999)
+    try:
+        shape, why = postgres_shapes.resolve_shape("enormous", stub)
+        assert shape == ""
+        assert "publishes no PostgreSQL shape" in why
+    finally:
+        postgres_shapes.SIZE_FLOORS.pop("enormous", None)
+
+
+def test_a_version_oci_does_not_offer_is_refused_not_swapped():
+    """Substitution is the defect this whole module exists to prevent."""
+    from orchestrator import postgres_shapes
+
+    class _Stub:
+        def list_shapes(self, compartment_id=None):
+            items = [type("S", (), {"id": "PostgreSQL.VM.Standard.E5.Flex.2.32GB"})]
+            return type("D", (), {"data": type("R", (), {"items": items})})
+
+        def list_default_configurations(self):
+            items = [type("C", (), {"db_version": v}) for v in ("15", "16")]
+            return type("D", (), {"data": type("R", (), {"items": items})})
+
+    version, why = postgres_shapes.resolve_version("14", _Stub())
+    assert version == ""
+    assert "does not offer PostgreSQL 14" in why
+    assert "15, 16" in why

@@ -130,6 +130,54 @@ def _require_manifest(resource_kind: str) -> None:
     )
 
 
+class PostgresNotAvailable(RuntimeError):
+    """OCI cannot build the PostgreSQL the request describes.
+
+    Raised instead of substituting. A database that is not the version the
+    requester chose, or not the size that was approved and priced, is a
+    different thing from the one Jira approved.
+    """
+
+
+def _psql_sizing(sizing: dict, resource_kind: str) -> dict:
+    """db_version and db_shape, resolved against what OCI actually offers.
+
+    Only consulted for oci-postgres; every other resource kind gets the same
+    inert values it always did, so nothing else changes behaviour.
+    """
+    from orchestrator import postgres_shapes
+
+    if resource_kind != "oci-postgres":
+        return {"db_version": "", "db_shape": ""}
+
+    # REFUSE only when OCI ANSWERED and the answer was no. Being unable to reach
+    # OCI is not evidence that a version or shape is unavailable, and blocking on
+    # it would turn a network blip into "your database is not supported" — the
+    # same reasoning kubernetes_versions.py records for cluster versions.
+    asked = bool(postgres_shapes.shapes() or postgres_shapes.versions())
+
+    # The catalogue name is the promise the requester accepted and the approval
+    # names, so it decides the version — not an environment default.
+    wanted = (postgres_shapes.version_from_build(str(sizing.get("build", "")))
+              or os.getenv("OCI_PSQL_VERSION", ""))
+    version, why_version = postgres_shapes.resolve_version(wanted)
+    if not version:
+        if asked:
+            raise PostgresNotAvailable(why_version)
+        version = wanted  # unverified, and the module fails loudly if empty
+
+    shape = str(sizing.get("db_shape", "") or "")
+    if not shape:
+        shape, why_shape = postgres_shapes.resolve_shape(
+            str(sizing.get("size", "") or "small"))
+        if not shape:
+            if asked:
+                raise PostgresNotAvailable(why_shape)
+            shape = os.getenv("OCI_PSQL_SHAPE", "")
+
+    return {"db_version": version, "db_shape": shape}
+
+
 def _oci_vars(name: str, tags: dict, resource_kind: str = "oci-bucket",
               sizing: dict | None = None) -> dict:
     sizing = sizing or {}
@@ -227,9 +275,12 @@ def _oci_vars(name: str, tags: dict, resource_kind: str = "oci-bucket",
         # as a value, so it never reaches the plan file or Terraform state.
         "db_compartment_ocid": os.getenv("OCI_PSQL_COMPARTMENT_OCID", ""),
         "db_name": name if resource_kind == "oci-postgres" else "",
-        "db_version": os.getenv("OCI_PSQL_VERSION", "14"),
-        "db_shape": sizing.get("db_shape") or os.getenv(
-            "OCI_PSQL_SHAPE", "PostgreSQL.VM.Standard.E4.Flex.2.32GB"),
+        # Version and shape are RESOLVED AGAINST OCI, not defaulted here. Both
+        # constants that used to live on these two lines were wrong in this
+        # region: the version defaulted to 14 while the catalogue sells
+        # postgres16, and the shape defaulted to an E4 that OCI does not publish
+        # here at all. See orchestrator/postgres_shapes.py.
+        **_psql_sizing(sizing, resource_kind),
         "db_instance_count": int(sizing.get("db_instance_count", 1)),
         "db_subnet_ocid": os.getenv("OCI_PSQL_SUBNET_OCID", ""),
         "db_storage_iops": int(os.getenv("OCI_PSQL_STORAGE_IOPS", "75000")),

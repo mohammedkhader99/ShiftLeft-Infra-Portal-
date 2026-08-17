@@ -302,7 +302,10 @@ services:
       OCI_PSQL_ADMIN_USERNAME: ${OCI_PSQL_ADMIN_USERNAME:-pgadmin}
       OCI_PSQL_COMPARTMENT_OCID: ${OCI_PSQL_COMPARTMENT_OCID:-}
       OCI_PSQL_VERSION: ${OCI_PSQL_VERSION:-14}
-      OCI_PSQL_SHAPE: ${OCI_PSQL_SHAPE:-PostgreSQL.VM.Standard.E4.Flex.2.32GB}
+      # No default shape. E4 is not published in me-dubai-1, so the old default
+      # named a machine OCI cannot build. Resolved from OCI at provision time
+      # (orchestrator/postgres_shapes.py); set this only to pin a shape.
+      OCI_PSQL_SHAPE: ${OCI_PSQL_SHAPE:-}
       OCI_PSQL_STORAGE_IOPS: ${OCI_PSQL_STORAGE_IOPS:-75000}
       # Real backup/restore of that database (F-LCM-06). Live additionally needs
       # OCI_PSQL_ENABLED. NOTE: a restore creates a SECOND, billable DB system —
@@ -326,7 +329,7 @@ services:
       REDUCE_MODE: ${REDUCE_MODE:-mock}
       # The managed-PostgreSQL shape family used when a database is resized;
       # available shapes differ by region and change over time.
-      OCI_PSQL_SHAPE_FAMILY: ${OCI_PSQL_SHAPE_FAMILY:-PostgreSQL.VM.Standard.E4.Flex}
+      OCI_PSQL_SHAPE_FAMILY: ${OCI_PSQL_SHAPE_FAMILY:-}
       # DNS records for environments (GAP-ANALYSIS step 5). A 'dns' request names
       # a provisioned environment; the record is planned into that environment's
       # own Terraform workspace so it shares its lifecycle. Needs the opt-in AND a
@@ -348,6 +351,7 @@ services:
       # Versions are retired on Oracle's schedule, so an hour keeps a
       # long-running orchestrator from holding one past retirement.
       OKE_VERSION_TTL_SECONDS: ${OKE_VERSION_TTL_SECONDS:-}
+      PSQL_CATALOGUE_TTL_SECONDS: ${PSQL_CATALOGUE_TTL_SECONDS:-}
       OCI_OKE_KUBERNETES_VERSION: ${OCI_OKE_KUBERNETES_VERSION:-}
       OCI_OKE_CLUSTER_TYPE: ${OCI_OKE_CLUSTER_TYPE:-}
       # Kafka: a pre-authenticated Object Storage URL for the release archive.
