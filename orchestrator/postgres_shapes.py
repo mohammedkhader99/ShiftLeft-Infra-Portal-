@@ -166,6 +166,46 @@ def resolve_shape(size: str, client=None) -> tuple[str, str]:
     return chosen, f"smallest shape meeting {size} ({ocpu} OCPU / {memory} GB)"
 
 
+def shape_for_spec(ocpus: int, memory_gb: int, client=None) -> tuple[str, str]:
+    """(shape id, why) for a requested CPU/memory, as a floor to meet or beat.
+
+    This replaces building a shape id by string concatenation:
+
+        f"{family}.{ocpus}.{memory_gb}GB"
+
+    which produced `PostgreSQL.VM.Standard.E4.Flex.1.4GB` — a name in the right
+    shape that OCI does not publish, because the portal's "small" is 1 OCPU /
+    4 GB and no managed PostgreSQL is that small. Concatenation cannot fail, so
+    it always yielded something plausible and always got rejected at apply.
+
+    The request's own numbers are the floor, so a database still scales with the
+    request; it is simply rounded UP to something that exists rather than
+    invented.
+    """
+    published = shapes(client)
+    if not published:
+        configured = os.getenv("OCI_PSQL_SHAPE", "").strip()
+        if configured:
+            return configured, "could not ask OCI; using configured OCI_PSQL_SHAPE"
+        return "", ("Could not ask OCI which PostgreSQL shapes it offers, and "
+                    "OCI_PSQL_SHAPE is not set.")
+
+    fits = [s for s in published
+            if _spec(s)[0] >= max(1, int(ocpus or 1))
+            and _spec(s)[1] >= max(1, int(memory_gb or 1))]
+    if not fits:
+        return "", (f"OCI publishes no PostgreSQL shape with at least {ocpus} "
+                    f"OCPU and {memory_gb} GB. Largest offered: "
+                    f"{max(published, key=lambda s: _spec(s))}.")
+
+    chosen = min(fits, key=lambda s: (_spec(s)[0], _spec(s)[1], s))
+    got_ocpu, got_memory = _spec(chosen)
+    why = f"smallest published shape meeting {ocpus} OCPU / {memory_gb} GB"
+    if (got_ocpu, got_memory) != (int(ocpus or 0), int(memory_gb or 0)):
+        why += f" (rounded up to {got_ocpu} OCPU / {got_memory} GB)"
+    return chosen, why
+
+
 def resolve_version(requested: str = "", client=None) -> tuple[str, str]:
     """(version to build, why) for a requested PostgreSQL major version.
 

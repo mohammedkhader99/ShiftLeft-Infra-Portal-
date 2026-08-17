@@ -329,7 +329,6 @@ services:
       REDUCE_MODE: ${REDUCE_MODE:-mock}
       # The managed-PostgreSQL shape family used when a database is resized;
       # available shapes differ by region and change over time.
-      OCI_PSQL_SHAPE_FAMILY: ${OCI_PSQL_SHAPE_FAMILY:-}
       # DNS records for environments (GAP-ANALYSIS step 5). A 'dns' request names
       # a provisioned environment; the record is planned into that environment's
       # own Terraform workspace so it shares its lifecycle. Needs the opt-in AND a

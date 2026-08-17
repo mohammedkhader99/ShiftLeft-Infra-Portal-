@@ -158,7 +158,13 @@ def _psql_sizing(sizing: dict, resource_kind: str) -> dict:
 
     # The catalogue name is the promise the requester accepted and the approval
     # names, so it decides the version — not an environment default.
-    wanted = (postgres_shapes.version_from_build(str(sizing.get("build", "")))
+    # sizing["db_version"] is set by the orchestrator from the request's own
+    # catalogue name. This read sizing["build"] — a key I assumed existed and
+    # never checked. It does not, so the version silently fell through to the
+    # OCI_PSQL_VERSION default of 14 and REQ-2026-0155 built the wrong database
+    # while the resolver reported success.
+    wanted = (str(sizing.get("db_version", "") or "")
+              or postgres_shapes.version_from_build(str(sizing.get("build", "")))
               or os.getenv("OCI_PSQL_VERSION", ""))
     version, why_version = postgres_shapes.resolve_version(wanted)
     if not version:

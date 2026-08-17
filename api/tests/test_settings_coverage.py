@@ -96,7 +96,6 @@ EXCLUDED: dict[str, str] = {
     "OCI_PSQL_COMPARTMENT_OCID": "cloud identifier",
     "OCI_PSQL_VERSION": "cloud sizing detail",
     "OCI_PSQL_SHAPE": "cloud sizing detail",
-    "OCI_PSQL_SHAPE_FAMILY": "cloud sizing detail",
     "OCI_PSQL_STORAGE_IOPS": "cloud sizing detail",
     "OCI_DNS_ZONE": "cloud identifier (surfaced as dns_zone_set)",
     "OCI_DNS_TTL": "record detail",

@@ -162,6 +162,33 @@ def test_only_the_named_component_is_reduced(monkeypatch):
 
 # --- Managed database sizing -------------------------------------------------
 
+# The shapes OCI publishes in me-dubai-1, as of 2026-08-17. Seeded into the
+# resolver's cache below so these tests state the contract without needing a
+# live OCI call — the resolver's own behaviour is covered in
+# test_postgres_provision.py.
+_PUBLISHED = [
+    "PostgreSQL.VM.Standard.E5.Flex.2.32GB",
+    "PostgreSQL.VM.Standard.E5.Flex.4.64GB",
+    "PostgreSQL.VM.Standard.E5.Flex.8.128GB",
+]
+
+
+@pytest.fixture(autouse=True)
+def _published_shapes():
+    """Pretend OCI answered, so shape resolution is deterministic here."""
+    import time as _time
+
+    from orchestrator import postgres_shapes
+    postgres_shapes._shape_cache = list(_PUBLISHED)
+    postgres_shapes._version_cache = ["15", "16"]
+    postgres_shapes._fetched_at = _time.time()
+    yield
+    postgres_shapes.reset() if hasattr(postgres_shapes, "reset") else None
+    postgres_shapes._shape_cache = []
+    postgres_shapes._version_cache = []
+    postgres_shapes._fetched_at = 0.0
+
+
 def test_postgres_shape_tracks_the_sizing(monkeypatch):
     captured: dict = {}
     monkeypatch.setenv("REDUCE_MODE", "live")
@@ -174,8 +201,13 @@ def test_postgres_shape_tracks_the_sizing(monkeypatch):
     body, headers = _signed(payload)
     r = client.post("/reduce", content=body, headers=headers)
     assert r.status_code == 200
-    # 'medium' is 4 vCPU / 16 GB -> 2 OCPUs / 16 GB.
-    assert captured["plan"]["sizing"]["db_shape"].endswith(".2.16GB")
+    # 'medium' is 4 vCPU / 16 GB -> 2 OCPUs / 16 GB, which is BELOW the managed
+    # PostgreSQL floor: OCI publishes nothing smaller than 2 OCPU / 32 GB. The
+    # shape must therefore be a real published id rounded up, not the ".2.16GB"
+    # this once asserted — a name assembled by f-string that OCI always rejected.
+    shape = captured["plan"]["sizing"]["db_shape"]
+    assert shape in _PUBLISHED, shape
+    assert shape == "PostgreSQL.VM.Standard.E5.Flex.2.32GB", shape
 
 
 def test_small_sizes_as_the_catalogue_prices_it():
@@ -193,7 +225,15 @@ def test_unrecognisable_sizing_still_gets_a_safe_default():
         {"policy_input": {"components": [{"size": "nonsense"}]}}) == {"ocpus": 1, "memory_gb": 8}
 
 
-def test_postgres_shape_family_is_configurable(monkeypatch):
-    monkeypatch.setenv("OCI_PSQL_SHAPE_FAMILY", "PostgreSQL.VM.Standard.E5.Flex")
+def test_postgres_shape_comes_from_oci_not_from_a_configured_family(monkeypatch):
+    """The shape family setting is gone, and a stale one must not resurrect it.
+
+    OCI_PSQL_SHAPE_FAMILY used to be glued to the sizing to make an id. It named
+    E4, which OCI does not publish in me-dubai-1, so every apply was rejected —
+    and blanking it produced ".1.4GB", which was worse. The shape is now chosen
+    from what OCI publishes, so a leftover family value changes nothing.
+    """
+    monkeypatch.setenv("OCI_PSQL_SHAPE_FAMILY", "PostgreSQL.VM.Standard.E4.Flex")
     shape = omain._psql_shape({"ocpus": 4, "memory_gb": 64})
-    assert shape == "PostgreSQL.VM.Standard.E5.Flex.4.64GB"
+    assert shape in _PUBLISHED, shape
+    assert "E4" not in shape, shape

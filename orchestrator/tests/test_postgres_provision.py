@@ -231,3 +231,64 @@ def test_a_version_oci_does_not_offer_is_refused_not_swapped():
     assert version == ""
     assert "does not offer PostgreSQL 14" in why
     assert "15, 16" in why
+
+
+def test_the_shape_is_chosen_from_the_published_list_never_assembled():
+    """REQ-2026-0155 shipped `.1.4GB` to OCI and was rejected.
+
+    The old code built the id with an f-string: family + ocpus + memory. String
+    building cannot fail, so an empty family and a below-floor size still
+    produced a plausible name — and OCI rejected every one. A shape must be a
+    member of the list OCI publishes, or nothing.
+    """
+    from orchestrator import postgres_shapes
+
+    published = ["PostgreSQL.VM.Standard.E5.Flex.2.32GB",
+                 "PostgreSQL.VM.Standard.E5.Flex.4.64GB"]
+
+    class _Stub:
+        def list_shapes(self, compartment_id=None):
+            items = [type("S", (), {"id": i}) for i in published]
+            return type("D", (), {"data": type("R", (), {"items": items})})
+
+        def list_default_configurations(self):
+            items = [type("C", (), {"db_version": "16"})]
+            return type("D", (), {"data": type("R", (), {"items": items})})
+
+    stub = _Stub()
+    # The portal's "small" — 1 OCPU / 4 GB — is below every published shape.
+    # It must round UP to a real one, not fabricate a matching name.
+    shape, why = postgres_shapes.shape_for_spec(1, 4, stub)
+    assert shape in published, shape
+    assert shape == "PostgreSQL.VM.Standard.E5.Flex.2.32GB"
+    assert "rounded up" in why
+
+    # A size larger than anything published is refused, not truncated.
+    shape, why = postgres_shapes.shape_for_spec(999, 9999, stub)
+    assert shape == ""
+    assert "no PostgreSQL shape" in why
+
+
+def test_psql_shape_never_returns_a_fabricated_name(monkeypatch):
+    """The orchestrator's helper must not concatenate, whatever the env says.
+
+    Emptying OCI_PSQL_SHAPE_FAMILY used to yield ".1.4GB" — the regression that
+    made REQ-2026-0155's failure so confusing.
+    """
+    from orchestrator import main as orch_main
+
+    monkeypatch.setenv("OCI_PSQL_SHAPE_FAMILY", "")
+    monkeypatch.delenv("OCI_PSQL_SHAPE", raising=False)
+    shape = orch_main._psql_shape({"ocpus": 1, "memory_gb": 4})
+    assert not shape.startswith("."), shape
+    assert "GB" not in shape or shape.startswith("PostgreSQL."), shape
+
+
+def test_psql_version_follows_the_catalogue_name(monkeypatch):
+    """postgres16 must mean 16, whatever OCI_PSQL_VERSION says."""
+    from orchestrator import main as orch_main
+
+    monkeypatch.setenv("OCI_PSQL_VERSION", "14")
+    assert orch_main._psql_version([{"technology": "postgres16"}]) == "16"
+    # Nothing PostgreSQL in the request: fall back rather than invent.
+    assert orch_main._psql_version([{"technology": "nginx"}]) == "14"

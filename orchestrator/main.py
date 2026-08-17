@@ -561,11 +561,44 @@ def _image_for(payload: dict, resource_kind: str = "") -> str:
 
 
 def _psql_shape(sizing: dict) -> str:
-    """The OCI managed-PostgreSQL flex shape for a given sizing, e.g.
-    PostgreSQL.VM.Standard.E4.Flex.2.32GB. The family is configurable because
-    available shapes differ by region and change over time."""
-    family = os.getenv("OCI_PSQL_SHAPE_FAMILY", "PostgreSQL.VM.Standard.E4.Flex").strip()
-    return f"{family}.{int(sizing.get('ocpus', 1))}.{int(sizing.get('memory_gb', 8))}GB"
+    """The OCI managed-PostgreSQL shape for a given sizing, ASKED not assembled.
+
+    This used to concatenate a name:
+
+        f"{family}.{sizing['ocpus']}.{sizing['memory_gb']}GB"
+
+    For REQ-2026-0155 that produced `PostgreSQL.VM.Standard.E4.Flex.1.4GB` and
+    the apply was rejected with the list of shapes OCI actually publishes. Two
+    faults in one line: the E4 family is not offered in me-dubai-1 at all, and
+    the portal's "small" (1 OCPU / 4 GB) is below the service floor — no managed
+    PostgreSQL is smaller than 2 OCPU / 32 GB. String building cannot fail, so it
+    always returned a plausible name and always failed at apply.
+
+    The request's numbers are now a floor, resolved against the published list.
+    """
+    from orchestrator import postgres_shapes
+
+    shape, _why = postgres_shapes.shape_for_spec(
+        int(sizing.get("ocpus", 1) or 1), int(sizing.get("memory_gb", 8) or 8))
+    return shape
+
+
+def _psql_version(components: list[dict]) -> str:
+    """The PostgreSQL major version the REQUEST asked for, e.g. postgres16 -> 16.
+
+    The catalogue name is what the requester chose and what Jira approved, so it
+    decides the version. It used to come from OCI_PSQL_VERSION, which defaulted
+    to 14 — so a postgres16 request built PostgreSQL 14, silently.
+    """
+    from orchestrator import postgres_shapes
+
+    for component in components or []:
+        code = str(component.get("technology") or component.get("code") or "")
+        if "postgres" in code.lower():
+            version = postgres_shapes.version_from_build(code)
+            if version:
+                return version
+    return os.getenv("OCI_PSQL_VERSION", "")
 
 
 def _components_for(payload: dict, resource_kind: str) -> list[dict]:
@@ -687,6 +720,10 @@ def _compute_spec(payload: dict, resource_kind: str = "") -> dict:
         # The managed-PostgreSQL shape for the same sizing, so a database scales
         # with the request like a VM does. Unused for non-database resources.
         "db_shape": _psql_shape(sizing),
+        # The version the catalogue name promises, carried alongside the shape so
+        # the provisioner does not have to guess which key holds it — guessing
+        # that key is why REQ-2026-0155 still built 14.
+        "db_version": _psql_version(components),
     }
 
 
