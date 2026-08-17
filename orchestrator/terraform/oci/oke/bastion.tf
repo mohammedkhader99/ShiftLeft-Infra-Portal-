@@ -12,7 +12,19 @@ resource "oci_core_instance" "bastion" {
 
   create_vnic_details {
     subnet_id                = var.bastion_subnet_id
-    assign_public_ip          = true
+    # NO PUBLIC IP. This asked for one, and OCI refused the VNIC outright:
+    # "Public IP addresses are prohibited in this subnet" — the whole apply died,
+    # and the visible symptom was "2 nodes register timeout", which sent the
+    # investigation to NSGs, security lists and route tables. All three were
+    # correct. The bastion was the fault.
+    #
+    # The module used to build its own subnet and could make it public. It now
+    # consumes subnets the network team provisioned, and every one of them is
+    # private — so a bastion that demands a public IP can never launch in this
+    # VCN. Reached from inside instead, which is what OCI_OKE_BASTION_CIDR
+    # (10.56.39.0/24) already describes, or through OCI's managed Bastion
+    # service.
+    assign_public_ip          = false
     nsg_ids                   = [oci_core_network_security_group.nsg_bastion.id]
     display_name              = "${local.label_prefix}-bastion-vnic"
   }
