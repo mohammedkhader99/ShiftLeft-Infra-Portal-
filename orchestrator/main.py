@@ -592,8 +592,15 @@ def _psql_version(components: list[dict]) -> str:
     """
     from orchestrator import postgres_shapes
 
+    # The key is technology_code. This tried "technology" and "code" — both
+    # guessed, neither present — so REQ-2026-0158 still built 14 with a correct
+    # shape beside it. The unit test guessed the same key and passed, proving the
+    # assumption self-consistent rather than true. All three spellings are read
+    # now, but technology_code is the real one.
     for component in components or []:
-        code = str(component.get("technology") or component.get("code") or "")
+        code = str(component.get("technology_code")
+                   or component.get("technology")
+                   or component.get("code") or "")
         if "postgres" in code.lower():
             version = postgres_shapes.version_from_build(code)
             if version:

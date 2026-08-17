@@ -289,6 +289,10 @@ def test_psql_version_follows_the_catalogue_name(monkeypatch):
     from orchestrator import main as orch_main
 
     monkeypatch.setenv("OCI_PSQL_VERSION", "14")
+    # technology_code is the key the real payload uses. This test used
+    # "technology" — the same guess the code made — so it passed while
+    # REQ-2026-0158 built PostgreSQL 14. Assert the REAL key first.
+    assert orch_main._psql_version([{"technology_code": "postgres16"}]) == "16"
     assert orch_main._psql_version([{"technology": "postgres16"}]) == "16"
     # Nothing PostgreSQL in the request: fall back rather than invent.
-    assert orch_main._psql_version([{"technology": "nginx"}]) == "14"
+    assert orch_main._psql_version([{"technology_code": "nginx"}]) == "14"
