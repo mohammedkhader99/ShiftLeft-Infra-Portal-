@@ -139,6 +139,24 @@ class PostgresNotAvailable(RuntimeError):
     """
 
 
+def _psql_iops(sizing: dict) -> int:
+    """Provisioned IOPS for a managed database, or 0 to let OCI decide.
+
+    Returns 0 rather than a guessed number when nothing is configured. The
+    Terraform module omits the attribute for 0, so OCI applies the default
+    appropriate to the shape — the only value certain to be valid, and certain
+    not to be a bill nobody asked for.
+
+    OCI_PSQL_STORAGE_IOPS still pins a value when a workload genuinely needs
+    provisioned performance. It is a deliberate choice then, not a default.
+    """
+    explicit = str(sizing.get("db_storage_iops", "") or "").strip()
+    if explicit.isdigit():
+        return int(explicit)
+    configured = os.getenv("OCI_PSQL_STORAGE_IOPS", "").strip()
+    return int(configured) if configured.isdigit() else 0
+
+
 def _psql_sizing(sizing: dict, resource_kind: str) -> dict:
     """db_version and db_shape, resolved against what OCI actually offers.
 
@@ -289,7 +307,16 @@ def _oci_vars(name: str, tags: dict, resource_kind: str = "oci-bucket",
         **_psql_sizing(sizing, resource_kind),
         "db_instance_count": int(sizing.get("db_instance_count", 1)),
         "db_subnet_ocid": os.getenv("OCI_PSQL_SUBNET_OCID", ""),
-        "db_storage_iops": int(os.getenv("OCI_PSQL_STORAGE_IOPS", "75000")),
+        # IOPS IS A COST LEVER, AND IT DEFAULTED TO 75000 FOR EVERYTHING.
+        # OCI bills managed PostgreSQL storage on provisioned IOPS, so this was
+        # charged on every database the portal built regardless of size —
+        # including REQ-2026-0159, a "small" development database. Nobody chose
+        # 75000; it was a constant nothing scaled and nothing surfaced.
+        #
+        # Now it follows the request like the shape does. NOT hard-coded to a new
+        # number: an unset value means "send nothing and let OCI apply its own
+        # default", which is the only value guaranteed valid for the shape.
+        "db_storage_iops": _psql_iops(sizing),
         "db_admin_username": os.getenv("OCI_PSQL_ADMIN_USERNAME", "pgadmin"),
         "db_admin_secret_ocid": os.getenv("OCI_PSQL_ADMIN_SECRET_OCID", ""),
         "db_admin_secret_version": int(os.getenv("OCI_PSQL_ADMIN_SECRET_VERSION", "1")),

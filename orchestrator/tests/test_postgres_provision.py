@@ -331,3 +331,33 @@ def test_durability_is_derived_from_the_region_not_hard_coded():
     assert re.search(r"availability_domain\s*=\s*local\.psql_availability_domain", body)
     storage = body.split("storage_details {", 1)[1].split("}", 1)[0]
     assert "availability_domain" in storage, "must live inside storage_details"
+
+
+def test_iops_is_not_a_fixed_expensive_default(monkeypatch):
+    """75000 IOPS was charged on every database the portal built.
+
+    OCI bills managed PostgreSQL storage on provisioned IOPS, so a constant
+    nobody chose became a line on every bill — including REQ-2026-0159, a
+    "small" development database. Unset must mean "let OCI decide", not a
+    number invented here.
+    """
+    import pathlib
+    import re
+
+    monkeypatch.delenv("OCI_PSQL_STORAGE_IOPS", raising=False)
+    assert provisioner._psql_iops({}) == 0, "unset must mean 'OCI decides'"
+
+    # An explicit choice is still honoured, from the request or the environment.
+    assert provisioner._psql_iops({"db_storage_iops": "12000"}) == 12000
+    monkeypatch.setenv("OCI_PSQL_STORAGE_IOPS", "9000")
+    assert provisioner._psql_iops({}) == 9000
+
+    # And 0 must be omitted by the module, never sent as a request for zero.
+    tf = (pathlib.Path(__file__).resolve().parents[2]
+          / "orchestrator" / "terraform" / "main.tf").read_text(encoding="utf-8")
+    body = "\n".join(l for l in tf.splitlines() if not l.strip().startswith("#"))
+    assert re.search(r"iops\s*=\s*var\.db_storage_iops\s*>\s*0\s*\?", body), (
+        "the module must omit iops when unset")
+    assert not re.search(r'OCI_PSQL_STORAGE_IOPS",\s*"75000"',
+                         (pathlib.Path(__file__).resolve().parents[2]
+                          / "orchestrator" / "provisioner.py").read_text(encoding="utf-8"))

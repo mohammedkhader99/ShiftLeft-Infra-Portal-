@@ -153,7 +153,10 @@ resource "oci_psql_db_system" "env" {
     # Null in a 3-AD region (OCI rejects an AD alongside regional durability);
     # the region's single AD otherwise, which OCI requires when durability is off.
     availability_domain   = local.psql_availability_domain
-    iops               = var.db_storage_iops
+    # null (not 0) when unset, so the attribute is omitted and OCI applies its
+    # own default for the shape. Sending 0 would be a request for zero IOPS.
+    # This was 75000 for every database the portal built, priced or not.
+    iops               = var.db_storage_iops > 0 ? var.db_storage_iops : null
   }
 
   credentials {
