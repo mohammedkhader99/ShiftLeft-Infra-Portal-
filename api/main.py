@@ -5273,6 +5273,20 @@ def _decommission(session: Session, req: Request, actor: str) -> dict:
                  if k not in selected_kinds]
     body, signature = _handoff_payload(source, resource_kinds=selected_kinds,
                                        partial_destroy=bool(remaining))
+    # CLAIM THE REQUEST BEFORE THE LONG CALL BELOW.
+    #
+    # _post_to_orchestrator blocks for up to ORCHESTRATOR_TIMEOUT_SECONDS (3000)
+    # while Terraform destroys real infrastructure. This used to leave the
+    # request at 'submitted' for that whole window, and the poller sweep collects
+    # 'submitted' — so every 30 seconds it started ANOTHER destroy of the same
+    # thing. REQ-2026-0161 handed off at 20:40:33 and again at 20:48:20, and the
+    # second run collided with the first on the Terraform state lock.
+    #
+    # The provisioning path already does exactly this: it sets 'in-progress'
+    # before its blocking call and notes that the sweep only ever picks up
+    # 'submitted' and 'planned'. Decommission simply never got the same
+    # treatment. This is that asymmetry closed, not a new mechanism.
+    req.status = "decommissioning"
     append_audit(session, "destroy.handoff", reference=req.reference,
                  jira_key=req.approval.jira_key, actor=actor,
                  detail={"source": source.reference, "kinds": selected_kinds,
@@ -6327,6 +6341,47 @@ def _audit_leader(event: str) -> None:
         pass
 
 
+def sweep_watchdog_seconds() -> float:
+    """How long ONE sweep may run while still holding the leader lease.
+
+    Past this the heartbeat stops, the lease lapses, and a standby may take over
+    — the escape hatch for a genuinely wedged sweep. It must sit comfortably
+    above the longest legitimate sweep (a Terraform apply plus boot reports),
+    or a slow-but-healthy build would be treated as a hang.
+    """
+    default = max(600.0, ORCH_TIMEOUT * 2)
+    try:
+        return max(60.0, float(os.getenv("POLLER_SWEEP_WATCHDOG_SECONDS", str(default))))
+    except ValueError:
+        return default
+
+
+def _renew_lease_during_sweep(stop: threading.Event, every: float,
+                              deadline: float) -> None:
+    """Hold the leader lease while a sweep is working, but not forever.
+
+    WHY THIS EXISTS. _poll_once runs inline and can block for
+    ORCHESTRATOR_TIMEOUT_SECONDS (3000) inside a single handoff, while the lease
+    TTL is 60 seconds. The loop could not reach its own renewal, so the lease
+    lapsed *while the poller was working perfectly well* — on 2026-08-17 it
+    stopped beating at 20:40:24 and looked dead, and restarting the API started a
+    SECOND destroy of the same cluster.
+
+    Renewal therefore runs in its own thread rather than at the top of the loop.
+    The deadline is what keeps this honest: a wedged sweep stops renewing and
+    lets a standby take over, so this cannot become a lease held by a dead loop.
+    """
+    while not stop.wait(every):
+        if time.monotonic() >= deadline:
+            _audit_leader("poller.sweep.watchdog")
+            return
+        try:
+            with SessionLocal() as session:
+                leader.try_acquire(session, "poller")
+        except Exception:  # noqa: BLE001 — a renewal failure is not fatal here
+            pass
+
+
 def _poller_loop() -> None:
     """Run the poller in exactly one replica at a time (F-OPS-01). Each tick we
     renew the leader lease; only the leader runs _poll_once. If the leader dies,
@@ -6353,10 +6408,21 @@ def _poller_loop() -> None:
         now = time.monotonic()
         if is_leader and (now - last_poll) >= interval:
             last_poll = now
+            # Renew from a separate thread for the duration of the sweep. The
+            # sweep itself blocks on real infrastructure work far longer than the
+            # lease TTL, and the loop cannot renew while it does.
+            _sweep_stop = threading.Event()
+            _sweep_hb = threading.Thread(
+                target=_renew_lease_during_sweep,
+                args=(_sweep_stop, renew, time.monotonic() + sweep_watchdog_seconds()),
+                name="poller-heartbeat", daemon=True)
+            _sweep_hb.start()
             try:
                 _poll_once()
             except Exception:  # noqa: BLE001 — the loop must survive anything
                 pass
+            finally:
+                _sweep_stop.set()
         _poller_stop.wait(renew)
 
     # Graceful handover: release the lease so a standby takes over immediately.

@@ -133,6 +133,10 @@ EXCLUDED: dict[str, str] = {
     "CONFIG_PACKAGE_MAP": "image detail (orchestrator)",
     # --- Internal tuning + demo hooks ----------------------------------------
     "POLL_INTERVAL_SECONDS": "internal tuning",
+    # How long a sweep may hold the leader lease before the watchdog stops
+    # renewing it. Internal tuning of the same loop as POLL_INTERVAL_SECONDS;
+    # an admin needs to know the poller is alive, not what its deadline is.
+    "POLLER_SWEEP_WATCHDOG_SECONDS": "internal tuning",
     "LEADER_LEASE_TTL_SECONDS": "internal tuning",
     "SUBSIDIARY_SYNC_INTERVAL_SECONDS": "internal tuning",
     "PROVISION_TTL_DAYS": "internal default",

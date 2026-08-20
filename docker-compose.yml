@@ -144,6 +144,12 @@ services:
       # auto-*applies* (creates real resources) when apply is enabled.
       AUTO_PROVISION: ${AUTO_PROVISION:-false}
       POLL_INTERVAL_SECONDS: ${POLL_INTERVAL_SECONDS:-30}
+      # How long ONE poller sweep may run while still holding the leader lease.
+      # A sweep blocks on real Terraform work far longer than the 60s lease TTL,
+      # so the lease is renewed from a side thread for the duration; past this
+      # deadline renewal stops and a standby may take over. Defaults to twice
+      # ORCHESTRATOR_TIMEOUT_SECONDS.
+      POLLER_SWEEP_WATCHDOG_SECONDS: ${POLLER_SWEEP_WATCHDOG_SECONDS:-}
       PROVISION_MODE: ${PROVISION_MODE:-mock}
       # RBAC (E1.1). ROLE_SOURCE:
       #   portal - the portal's own person->role list (Admin -> Access control).
