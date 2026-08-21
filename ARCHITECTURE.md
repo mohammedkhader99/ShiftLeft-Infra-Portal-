@@ -49,6 +49,10 @@ A self-service portal that lets IMD's internal customers request infrastructure 
 
 **P6 — One language where it helps.** The stack is Python end to end so sizing, costing, policy, and agent logic share models and code rather than crossing a language boundary.
 
+**P7 — Catalogue facts are fetched, never hard-coded.** Versions, shapes, images and service limits are asked of the cloud when they are needed, and cached briefly. A constant in this repository describing a cloud's offering is a defect waiting for a date: eight were found on 17–18 Aug 2026, including a Kubernetes version OCI had retired, a database shape it does not publish in this region, and a worker image chosen by list position that turned out to be Oracle Linux 7.
+
+**P8 — Certification is earned by evidence and revoked by evidence.** A blueprint is certified because a proof build provisioned it, verified it healthy, priced it within budget and destroyed it — not because someone said so — and that certification expires after 30 days without fresh proof (decided 2026-08-21). Withdrawal is automatic; coming back is not.
+
 ---
 
 ## 3. System architecture
@@ -76,7 +80,20 @@ Six cooperating parts.
 - **Approve** — the request is raised in Jira Service Management with configuration **and** cost shown together, plus the Terraform plan preview (F-ORC-02). Approval authority lives in Jira and nowhere else. Dynamic, rule-driven approver sets by type/environment/cost/target/licence.
 - **Execute** — on approval, a signed webhook (HMAC-SHA256, `X-Signature`) reaches the orchestrator, which **independently re-verifies the approval in Jira and re-checks OPA**, then runs the durable workflow. It trusts the signature for authenticity, not for authority. A cost re-validation gate (F-ORC-09) halts if the plan's price exceeds the approved threshold.
 
-If any increment would let the browser, the API, or an agent shortcut this chain, that is a conflict — flag it (§0.2).
+- **Attest (certification runner only)** — the runner proves a blueprint still builds, by building it. It has its own narrow authority to provision **without a Jira approval**, and that authority is bounded on every side:
+  - **sandbox tier only** — currently `Development` (decided 2026-08-21, "for the time being"). An unset or unrecognised sandbox tier makes the runner refuse to start, rather than default to somewhere.
+  - **under a cost cap** — the Terraform plan is priced first, and a proof whose plan exceeds the cap is refused *before* apply. It never discovers the cost by paying it.
+  - **only what it created** — teardown is scoped by a proof marker, never by tier. The sandbox is a real tier holding real environments people are using, so "everything the runner built" and "everything in Development" must never be the same query.
+  - **it destroys everything it builds** — a proof that leaves a resource behind is a failed proof.
+  - **it never touches a user request.** It cannot approve one, advance one, or tear one down.
+
+  Its verdict is a fact about a build, not a permission. It certifies nothing for a user; it records what happened, and certification follows from that record.
+
+**Why this exception exists, in one sentence:** certification was a person clicking a button, and that promise failed in practice — `oci-oke` was certified by hand and then failed four consecutive real requests while staying on offer — so the portal now proves the claim by building the thing, which it cannot do if every proof needs a human approval (decided by the reviewer, 2026-08-21, choosing this over a Jira ticket per proof).
+
+Approval authority for **user requests** remains in Jira and nowhere else. The runner's authority extends to its own sandbox proofs and stops there.
+
+If any increment would let the browser, the API, or an agent shortcut this chain, that is a conflict — flag it (§0.2). The certification runner is the single named exception, with the limits above; anything wider is a new conflict and must be flagged again.
 
 ---
 
