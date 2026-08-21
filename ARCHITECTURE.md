@@ -128,6 +128,14 @@ Requester opens the portal → agent optionally assists in plain language (F-RPT
 - **Prompt-injection defence:** any free-text a requester provides is untrusted data, never instructions to the agent. Tool-use is authorised by the API, not by the model's say-so.
 - AI scope (F-RPT-06/07/08): draft requests confined to approved templates and sizes; explain estimates and required approvals in plain language; summarise provisioning failures and propose remediation **within approved runbooks only**. Never approve, never execute (P3).
 - Every recommendation is written to `agent_interaction` with reasoning; agents are covered by a Langfuse eval harness (golden cases + regression).
+- **Generated infrastructure code (C4, added 2026-08-21).** The AI scope above covers drafting *requests*. It now also covers drafting the *recipe*: an agent may propose a Terraform module and blueprint for a catalogue candidate, and may read a failed proof build and propose a revision. This is a widening of what the agent writes, and none of what it may do:
+  - it produces a **proposal** — files and reasoning, reviewable as a diff. It does not apply them, and nothing it writes is on the path any request takes until a human puts it there.
+  - it **never triggers the orchestrator** and holds no provisioning credentials. The proof build is run by the certification runner (§4), which is deterministic and is not the agent.
+  - its output reaches a user only after a proof build **passes** *and* a human **reviews the diff**. Both, not either.
+
+  **The verdict is never the agent's.** The runner decides from `resource_state` checks, boot reports and a priced plan, so a certification means the same thing on every run and is auditable as a fact rather than an opinion. The agent explains, diagnoses and redrafts; it does not judge its own work.
+
+  Why the split: on 2026-08-17, deciding whether OKE worked was one deterministic check, while working out *why* it had failed took hours of reading 840KB of console output. The first must be reproducible. The second is what an agent is good at.
 
 ---
 
@@ -136,6 +144,7 @@ Requester opens the portal → agent optionally assists in plain language (F-RPT
 OIDC bearer validation against the IdP's JWKS (no mock auth in production) · secrets from a vault, injected at runtime, delivered to environments via time-bound vault links never tickets/email (F-INT-05) · verify `X-Signature` HMAC and restrict the webhook's network exposure · least-privilege DB role, TLS enforced · tamper-evident audit (F-SEC-01) · IaC secret/policy scanning before apply (F-SEC-03) · image CVE gate + SBOM (F-SEC-04) · application hardening: CSP, CSRF, rate limiting, strict sessions (F-SEC-09) · SIEM forwarding of security events (F-INT-12) · optional sovereign/air-gapped profile with cached rate cards and internal identity only (F-SEC-11).
 
 ---
+- **A passing proof says a module builds, not that it is safe (C4).** Public exposure, encryption, compartment placement and tagging are not detectable by a successful build: the OKE bastion carried `assign_public_ip = true` and built correctly for months before the subnet it was moved into refused it. Human review of AI-drafted infrastructure is therefore confined to security, cost and policy — the questions a green build cannot answer — and is not optional.
 
 ## 9. Technology decisions with rationale
 
