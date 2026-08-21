@@ -2,8 +2,7 @@ import { useEffect, useState } from 'react'
 import { Tile, Tag, Button, Toggle, TextInput, InlineNotification } from '@carbon/react'
 import { CheckmarkFilled, Undo } from '@carbon/icons-react'
 import {
-  getBlueprints, certifyBlueprint, decertifyBlueprint, type BlueprintMatrix,
-} from '../api'
+  getBlueprints, certifyBlueprint, decertifyBlueprint, type BlueprintMatrix, getCatalogueGaps, type CatalogueGaps } from '../api'
 
 const TARGET_LABEL: Record<string, string> = {
   onprem: 'on-prem', azure: 'azure', oci: 'oci', aws: 'aws', gcp: 'gcp',
@@ -31,6 +30,10 @@ const STATUS_TAG: Record<string, 'green' | 'blue' | 'red' | 'gray' | 'magenta' |
  */
 export default function Blueprints() {
   const [data, setData] = useState<BlueprintMatrix | null>(null)
+  // NOT `gaps` — that name is already taken on this page for the count of
+  // technology/cloud combinations with no blueprint. This is version drift
+  // between the catalogue and the cloud, which is a different thing.
+  const [versionGaps, setVersionGaps] = useState<CatalogueGaps | null>(null)
   const [showGaps, setShowGaps] = useState(false)
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
   const [busy, setBusy] = useState(false)
@@ -42,6 +45,9 @@ export default function Blueprints() {
 
   function reload() {
     getBlueprints().then((d) => { if (d && d !== 'forbidden') setData(d) })
+    // Asked here rather than with the matrix: it reads through to the cloud, and
+    // a stale answer would be worse than none.
+    getCatalogueGaps().then(setVersionGaps).catch(() => setVersionGaps(null))
   }
   useEffect(reload, [])
 
@@ -96,6 +102,22 @@ export default function Blueprints() {
             style={{ margin: '0.5rem 0', maxWidth: 'none' }}
           />
         )}
+        {/* Where the catalogue and the cloud disagree (C3). A retirement is
+            shown as an error, not a hint: it means the portal is selling
+            something the cloud will refuse, and a user finds out when their
+            approved request fails at apply. That is REQ-2026-0148. */}
+        {versionGaps?.gaps.map((g) => (
+          <InlineNotification
+            key={`${g.family}-${g.severity}`}
+            kind={g.severity === 'retired' ? 'error' : 'info'}
+            lowContrast hideCloseButton
+            title={g.severity === 'retired'
+              ? `${g.label}: the catalogue sells what the cloud has retired`
+              : `${g.label}: the cloud offers newer versions`}
+            subtitle={g.note}
+            style={{ margin: '0.5rem 0', maxWidth: 'none' }}
+          />
+        ))}
         {data.missing > 0 && (
           <InlineNotification
             kind="warning" lowContrast hideCloseButton

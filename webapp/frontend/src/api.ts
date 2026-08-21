@@ -1128,6 +1128,31 @@ export type BootReport = {
   reports: BootReportComponent[]
   note?: string
 }
+// Where the catalogue and the cloud disagree about what exists (C3).
+export type CatalogueGap = {
+  family: string
+  label: string
+  sold: string[]
+  offered: string[]
+  retired: string[]
+  newer: string[]
+  severity: 'retired' | 'behind'
+  note: string
+}
+export type CatalogueGaps = {
+  reachable: boolean
+  gaps: CatalogueGap[]
+  retired?: number
+  behind?: number
+  families_unreachable?: string[]
+  note?: string
+}
+export async function getCatalogueGaps(): Promise<CatalogueGaps | null> {
+  const r = await fetch('/api/catalogue/gaps')
+  if (!r.ok) return null
+  return (await r.json()) as CatalogueGaps
+}
+
 export async function getBootReport(reference: string): Promise<BootReport | null> {
   const r = await fetch(`/api/requests/${reference}/boot-report`)
   if (!r.ok) return null

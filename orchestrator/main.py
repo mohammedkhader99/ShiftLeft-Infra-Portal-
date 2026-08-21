@@ -29,6 +29,7 @@ from orchestrator import (
     kubernetes_versions,
     network_egress,
     oke_networks,
+    postgres_shapes,
     provisioner,
     resource_state,
 )
@@ -254,6 +255,39 @@ async def catalogue_oci_options(request: Request) -> dict:
         # differently — so answer 200 with the reason rather than erroring.
         return {"ok": False, "reason": str(exc), "mode": cloud_catalogue.mode(),
                 "shapes": [], "images": []}
+
+
+@app.post("/catalogue/versions")
+async def catalogue_versions(request: Request) -> dict:
+    """Which VERSIONS of each service the cloud currently offers.
+
+    The portal sells `postgres16` and `oci-oke`, but the cloud decides what it
+    will still build. On 2026-08-17 that gap cost four failed requests: the OKE
+    module pinned Kubernetes v1.29.1, OCI had retired it, and nothing in the
+    portal knew until a real request failed at apply.
+
+    Read-only and signature-only, like /blueprints and /catalogue/oci-options:
+    every call underneath is a list_*. It reports what the cloud says; deciding
+    what that MEANS for the catalogue is the portal's job.
+
+    A family that cannot be asked is reported as `null` rather than as an empty
+    list — "OCI offers no PostgreSQL versions" and "we could not reach OCI" must
+    never look the same, because one of them is a reason to withdraw a product.
+    """
+    body = await request.body()
+    if not verify(WEBHOOK_SECRET, body, request.headers.get("X-Signature", "")):
+        raise HTTPException(status_code=401, detail="Invalid webhook signature.")
+
+    families: dict[str, list[str] | None] = {}
+    try:
+        families["postgres"] = postgres_shapes.versions() or None
+    except Exception:  # noqa: BLE001 — one unreachable family must not hide the rest
+        families["postgres"] = None
+    try:
+        families["kubernetes"] = kubernetes_versions.supported() or None
+    except Exception:  # noqa: BLE001
+        families["kubernetes"] = None
+    return {"families": families, "mode": provisioner.provision_mode()}
 
 
 def _current_monthly(policy_input: dict) -> float | None:

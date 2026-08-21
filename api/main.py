@@ -21,7 +21,7 @@ from fastapi import Request as HTTPRequest
 from fastapi import Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
-from sqlalchemy import func, or_, select, text
+from sqlalchemy import desc, func, or_, select, text
 from sqlalchemy.orm import Session
 
 from api import ai_chat
@@ -33,6 +33,7 @@ from api import blueprint_capabilities
 from api import network_egress
 from api import cloud_options
 from api import component_options
+from api import catalogue_sync
 from api import certification
 from api import fulfilment
 from api import portal_help
@@ -3604,6 +3605,82 @@ def approve(jira_key: str, session: Session = Depends(get_session),
     return {"approval": "approved", "provisioned": True, "result": result}
 
 
+def _orchestrator_offered_versions() -> dict | None:
+    """Which versions of each service the cloud currently offers, or None."""
+    payload = {"issued_at": datetime.now(timezone.utc).isoformat(),
+               "operation": "catalogue-versions"}
+    raw = json.dumps(payload, sort_keys=True).encode()
+    response, _err = _post_to_orchestrator(raw, sign(WEBHOOK_SECRET, raw),
+                                           path="/catalogue/versions")
+    if response is None or response.status_code != 200:
+        return None
+    try:
+        return (response.json() or {}).get("families") or {}
+    except ValueError:
+        return None
+
+
+def _catalogue_gaps(session: Session) -> list[dict]:
+    """What the cloud offers that the catalogue does not, and what it no longer will."""
+    offered = _orchestrator_offered_versions()
+    if offered is None:
+        return []
+    codes = [t.code for t in session.scalars(select(Technology)).all()]
+    return catalogue_sync.find_gaps(
+        offered, codes, pinned_kubernetes=os.getenv("OCI_OKE_KUBERNETES_VERSION", ""))
+
+
+def _sweep_catalogue_gaps(session: Session) -> None:
+    """Notice a catalogue gap ONCE, not every thirty seconds.
+
+    A retirement is worth an audit entry the moment it appears — it means the
+    portal is selling something the cloud will refuse. Repeating that on every
+    sweep would bury it in its own noise, so the signature of the current gaps is
+    compared with the last one recorded, and only a change is written.
+    """
+    gaps = _catalogue_gaps(session)
+    signature = json.dumps([{k: g[k] for k in ("family", "retired", "newer")}
+                            for g in gaps], sort_keys=True)
+    last = session.scalars(
+        select(AuditLog).where(AuditLog.event == "catalogue.gap")
+        .order_by(desc(AuditLog.id)).limit(1)).first()
+    if last is not None and (last.detail or {}).get("signature") == signature:
+        return
+    if not gaps and last is None:
+        return          # nothing to say, and nothing said before
+    append_audit(session, "catalogue.gap", actor="catalogue-sync",
+                 detail={"signature": signature, "gaps": gaps})
+    session.commit()
+
+
+@app.get("/api/catalogue/gaps")
+def catalogue_gaps(session: Session = Depends(get_session),
+                   _auth: str = Depends(require_action("view_overview"))) -> dict:
+    """Where the catalogue and the cloud disagree about what exists.
+
+    Two directions, and the dangerous one is not the obvious one: a version the
+    catalogue still sells but the cloud has retired is a promise the portal
+    cannot keep, and a user discovers it by having an approved request fail at
+    apply. That is REQ-2026-0148.
+    """
+    offered = _orchestrator_offered_versions()
+    if offered is None:
+        return {"reachable": False, "gaps": [],
+                "note": "The execution layer could not be reached, so the cloud "
+                        "could not be asked what it offers."}
+    codes = [t.code for t in session.scalars(select(Technology)).all()]
+    gaps = catalogue_sync.find_gaps(
+        offered, codes, pinned_kubernetes=os.getenv("OCI_OKE_KUBERNETES_VERSION", ""))
+    return {
+        "reachable": True,
+        "gaps": gaps,
+        "retired": sum(1 for g in gaps if g["severity"] == "retired"),
+        "behind": sum(1 for g in gaps if g["severity"] == "behind"),
+        "families_asked": sorted(offered),
+        "families_unreachable": sorted(k for k, v in offered.items() if v is None),
+    }
+
+
 def _orchestrator_boot_reports(reference: str, kinds: list[str]) -> dict | None:
     """The machines' own reports for one request, or None if unreachable.
 
@@ -6336,6 +6413,19 @@ def _poll_once() -> None:
         try:
             with SessionLocal() as session:
                 append_audit(session, "certification.sweep.error", detail={"error": str(exc)})
+                session.commit()
+        except Exception:  # noqa: BLE001
+            pass
+
+    # Catalogue sync (C3): where the catalogue and the cloud disagree about what
+    # exists. Isolated like the sweeps around it.
+    try:
+        with SessionLocal() as session:
+            _sweep_catalogue_gaps(session)
+    except Exception as exc:  # noqa: BLE001
+        try:
+            with SessionLocal() as session:
+                append_audit(session, "catalogue.sync.error", detail={"error": str(exc)})
                 session.commit()
         except Exception:  # noqa: BLE001
             pass
