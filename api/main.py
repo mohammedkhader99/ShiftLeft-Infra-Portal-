@@ -33,6 +33,7 @@ from api import blueprint_capabilities
 from api import network_egress
 from api import cloud_options
 from api import component_options
+from api import ai_blueprint
 from api import catalogue_sync
 from api import certification
 from api import fulfilment
@@ -3651,6 +3652,56 @@ def _sweep_catalogue_gaps(session: Session) -> None:
     append_audit(session, "catalogue.gap", actor="catalogue-sync",
                  detail={"signature": signature, "gaps": gaps})
     session.commit()
+
+
+class DraftBlueprintIn(BaseModel):
+    candidate: str
+    deployment_target: str = "oci"
+
+
+@app.post("/api/catalogue/draft")
+def draft_blueprint(body: DraftBlueprintIn, session: Session = Depends(get_session),
+                    admin: str = Depends(require_action("manage_settings"))) -> dict:
+    """Propose a recipe for a catalogue candidate (C4). Applies nothing.
+
+    ARCHITECTURE.md §7: the agent produces a PROPOSAL — files and reasoning,
+    reviewable as a diff. Nothing here is written to the repository, no
+    orchestrator is called, and nothing reaches a request until a human puts it
+    there and a proof build passes.
+
+    Every draft is linted against the defects this project has already paid for,
+    whether a model wrote it or not. Four of the eight found on 2026-08-17 were
+    written by an AI with the documentation open, so the checks are the gate.
+    """
+    try:
+        proposal = ai_blueprint.draft(body.candidate, session,
+                                      target=body.deployment_target)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    append_audit(session, "blueprint.drafted", actor=admin,
+                 detail={"candidate": body.candidate, "kind": proposal.kind,
+                         "source": proposal.source,
+                         "blocked": proposal.blocked,
+                         "findings": [f.rule for f in proposal.findings]})
+    session.commit()
+    return {
+        "candidate": proposal.candidate,
+        "kind": proposal.kind,
+        "source": proposal.source,
+        "reasoning": proposal.reasoning,
+        "files": proposal.files,
+        "catalogue_rows": proposal.catalogue_rows,
+        "findings": [{"severity": f.severity, "rule": f.rule, "detail": f.detail}
+                     for f in proposal.findings],
+        # Not "rejected" — a blocked draft is still worth reading, and the
+        # findings are the most useful part of it.
+        "blocked": proposal.blocked,
+        "applied": False,
+        "note": ("A proposal only. Nothing has been written to the repository and "
+                 "nothing has been provisioned. It reaches a user only after a "
+                 "human reviews the diff and a proof build passes."),
+    }
 
 
 @app.get("/api/catalogue/gaps")
