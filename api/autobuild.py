@@ -192,3 +192,63 @@ def summarise(result: AutobuildResult) -> dict:
         "detail": result.detail,
         "at": datetime.now(timezone.utc).isoformat(),
     }
+
+
+# --- Making a component buildable, whatever it takes -------------------------
+
+def ensure(candidate: str, session: Session, *, target, shipped, run_proof,
+           publish, certify) -> AutobuildResult:
+    """Make `candidate` provisionable, and certify it — no human involved.
+
+    The reviewer's requirement of 2026-08-21, in full: if the agent cannot find a
+    Terraform module or blueprint for a selected component, it writes one,
+    certifies it itself, and the request proceeds.
+
+    THREE CASES, and only the last one needs a model. Reaching for the drafter
+    when a perfectly good recipe already exists would be the expensive way to be
+    wrong:
+
+      already certified   nothing to do.
+      SHIPPED BUT UNCERTIFIED  the orchestrator already has a recipe that builds
+          this — nginx is exactly here, sharing oci/service-vm with four
+          technologies that ARE certified. Nothing needs writing; it needs
+          proving. Prove it, certify it.
+      nothing ships it    draft, gate, prove, publish, certify — the full loop.
+
+    `shipped(candidate)` returns the manifest of an existing blueprint that
+    builds this candidate, or None.
+    """
+    result = AutobuildResult(candidate=candidate, status="refused")
+
+    if not enabled():
+        result.detail = (
+            "Automatic blueprint building is disabled. Set AUTOBUILD_ENABLED=true "
+            "to allow it — it writes infrastructure code and then builds it for "
+            "real.")
+        return result
+
+    manifest = shipped(candidate)
+    if manifest:
+        # A recipe already exists and somebody simply never certified it. Prove
+        # it and certify it: writing a second recipe for the same thing would be
+        # worse than useless, because two blueprints claiming one resource kind
+        # is the collision the registry refuses.
+        outcome = run_proof(session, manifest)
+        if outcome.status == "passed":
+            certify(manifest, outcome.reference)
+            result.attempts.append(Attempt(1, "proved", "passed", outcome.detail))
+            result.status = "published"
+            result.detail = (
+                f"{candidate} already had a recipe ({manifest.get('ref')}) that "
+                f"nobody had certified. Proved and certified it; nothing was "
+                f"written. {outcome.detail}")
+            return result
+        result.attempts.append(Attempt(1, "proved", "failed", outcome.detail))
+        result.status = "failed"
+        result.detail = (
+            f"{candidate} has a recipe ({manifest.get('ref')}), but it did not "
+            f"pass a proof build, so it has NOT been certified. {outcome.detail}")
+        return result
+
+    return build(candidate, session, blueprint=None, run_proof=run_proof,
+                 publish=publish, target=target)

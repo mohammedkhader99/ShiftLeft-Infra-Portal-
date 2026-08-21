@@ -34,7 +34,10 @@ from datetime import datetime, timedelta, timezone
 # somebody's work at a glance.
 MARKER = "PROOF-"
 
-_REFERENCE = re.compile(r"^PROOF-[A-Z0-9-]{1,30}-\d{8}T\d{6}$")
+# The unique suffix is optional so a reference minted before it existed is still
+# recognised — a proof this runner cannot identify is a proof it cannot tear
+# down, which would strand real infrastructure.
+_REFERENCE = re.compile(r"^PROOF-[A-Z0-9-]{1,30}-\d{8}T\d{6}(-[A-Z0-9]{4,8})?$")
 
 
 class ProofRefused(RuntimeError):

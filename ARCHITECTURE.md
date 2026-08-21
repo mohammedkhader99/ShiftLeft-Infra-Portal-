@@ -131,7 +131,11 @@ Requester opens the portal → agent optionally assists in plain language (F-RPT
 - **Generated infrastructure code (C4, added 2026-08-21).** The AI scope above covers drafting *requests*. It now also covers drafting the *recipe*: an agent may propose a Terraform module and blueprint for a catalogue candidate, and may read a failed proof build and propose a revision. This is a widening of what the agent writes, and none of what it may do:
   - it produces a **proposal** — files and reasoning, reviewable as a diff. It does not apply them, and nothing it writes is on the path any request takes until a human puts it there.
   - it **never triggers the orchestrator** and holds no provisioning credentials. The proof build is run by the certification runner (§4), which is deterministic and is not the agent.
-  - its output reaches a user only after a proof build **passes** *and* a human **reviews the diff**. Both, not either.
+  - its output reaches a user after a proof build **passes**. The human review that once stood beside it was **removed on 2026-08-21 at the reviewer's explicit and repeated instruction**, having been raised as a concern three times and reaffirmed each time as a mandatory requirement.
+
+    What replaced it is not nothing. A draft must survive, in order: the linter carrying every defect this project has already paid for; the IaC scanner in **strict mode**, where a resource type nobody has written a rule for is itself a blocker; a priced plan under the cost cap; and a real build that provisions, verifies healthy and destroys itself. Certification then follows from that record rather than from anyone's opinion — which is a stronger claim than the button it replaces, because a person clicking Certify proved nothing at all.
+
+    **The accepted risk, recorded so nobody rediscovers it by surprise:** a novel security mistake that no rule anticipates will pass every one of those gates and reach production. Strict scanning narrows it by refusing unfamiliar resource types; C1 withdraws a blueprint that fails in service. Neither is prevention. This is a deliberate trade of that exposure against the human bottleneck it removes.
 
   **The verdict is never the agent's.** The runner decides from `resource_state` checks, boot reports and a priced plan, so a certification means the same thing on every run and is auditable as a fact rather than an opinion. The agent explains, diagnoses and redrafts; it does not judge its own work.
 
@@ -144,7 +148,9 @@ Requester opens the portal → agent optionally assists in plain language (F-RPT
 OIDC bearer validation against the IdP's JWKS (no mock auth in production) · secrets from a vault, injected at runtime, delivered to environments via time-bound vault links never tickets/email (F-INT-05) · verify `X-Signature` HMAC and restrict the webhook's network exposure · least-privilege DB role, TLS enforced · tamper-evident audit (F-SEC-01) · IaC secret/policy scanning before apply (F-SEC-03) · image CVE gate + SBOM (F-SEC-04) · application hardening: CSP, CSRF, rate limiting, strict sessions (F-SEC-09) · SIEM forwarding of security events (F-INT-12) · optional sovereign/air-gapped profile with cached rate cards and internal identity only (F-SEC-11).
 
 ---
-- **A passing proof says a module builds, not that it is safe (C4).** Public exposure, encryption, compartment placement and tagging are not detectable by a successful build: the OKE bastion carried `assign_public_ip = true` and built correctly for months before the subnet it was moved into refused it. Human review of AI-drafted infrastructure is therefore confined to security, cost and policy — the questions a green build cannot answer — and is not optional.
+- **A passing proof says a module builds, not that it is safe (C4).** Public exposure, encryption, compartment placement and tagging are not detectable by a successful build: the OKE bastion carried `assign_public_ip = true` and built correctly for months before the subnet it was moved into refused it.
+
+  Since the human review was removed (§7, 2026-08-21), those questions are answered by the **strict IaC scan** instead: rules for public IPs, public cluster endpoints, non-vault credentials and missing cost tags, plus a refusal of any resource type no rule covers. Every rule there was written from a failure this project actually had. **Adding a rule when a new exposure is found is now the only way that class of mistake gets caught, so it is not optional maintenance.**
 
 ## 9. Technology decisions with rationale
 

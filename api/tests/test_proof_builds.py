@@ -366,10 +366,17 @@ def test_a_passing_proof_brings_a_suspended_blueprint_back(db, monkeypatch):
     assert "Re-certified by a passing proof" in bp(db).notes
 
 
-def test_a_passing_proof_does_not_certify_something_never_certified(db, monkeypatch):
-    """A passing build says a recipe BUILDS. It says nothing about whether it is
-    safe or wanted — the OKE bastion carried a public IP and built perfectly for
-    months. First certification stays a human act."""
+def test_a_passing_proof_certifies_even_without_a_human_fingerprint(db, monkeypatch):
+    """CHANGED 2026-08-21 by the reviewer's decision, recorded in ARCHITECTURE §7.
+
+    This asserted the opposite: that first certification stayed a human act,
+    because a passing build says a recipe WORKS and not that it is SAFE. The
+    reviewer raised the requirement three times and it is mandatory — the human
+    is out of the certification path, and the strict IaC scan answers the safety
+    question instead (§8).
+
+    A proof is still required. Nothing is certified without one.
+    """
     from api import certification
 
     allow(monkeypatch)
@@ -379,8 +386,10 @@ def test_a_passing_proof_does_not_certify_something_never_certified(db, monkeypa
     db.commit()
     _passing_proof(db)
 
-    assert certification.restore(db) == []
-    assert bp(db).status == certification.SUSPENDED
+    restored = certification.restore(db)
+    db.commit()
+    assert len(restored) == 1, restored
+    assert bp(db).status == "certified"
 
 
 def test_a_failed_proof_does_not_bring_anything_back(db, monkeypatch):

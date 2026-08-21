@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import re
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -54,10 +55,17 @@ def preflight() -> str:
 
 
 def new_reference(technology_code: str, when: datetime | None = None) -> str:
-    """A proof's own reference, carrying the marker that scopes its teardown."""
+    """A proof's own reference, carrying the marker that scopes its teardown.
+
+    The suffix is not decoration. A second-precision timestamp is not unique
+    enough: two proofs for the same technology in the same second produced the
+    same reference and the second insert failed on the unique constraint, which
+    is exactly what happens when a request names two components or a sweep
+    retries promptly.
+    """
     when = when or datetime.now(timezone.utc)
     slug = re.sub(r"[^A-Za-z0-9]+", "-", technology_code).strip("-").upper()[:30] or "X"
-    return f"{MARKER}{slug}-{when:%Y%m%dT%H%M%S}"
+    return f"{MARKER}{slug}-{when:%Y%m%dT%H%M%S}-{uuid.uuid4().hex[:6].upper()}"
 
 
 def validity_days() -> int:

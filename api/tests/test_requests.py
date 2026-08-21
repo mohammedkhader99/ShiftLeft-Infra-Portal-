@@ -2451,6 +2451,13 @@ def test_api_keys_scoped_to_owner(client):
 def test_an_approved_request_with_nothing_certified_builds_nothing(poller, monkeypatch):
     """REQ-2026-0144, as a test.
 
+    Pins the behaviour WITHOUT the autobuild agent. Since 2026-08-21 an
+    uncertified component is handed to the agent to prove and certify rather than
+    to a person, so manual fulfilment is the fallback for when that fails. This
+    test is the fallback, and it is pinned explicitly rather than left to inherit
+    whatever .env happens to say — a production switch must never decide what a
+    test asserts.
+
     It asked for Python 3.12, nothing was certified for it, the resource kind
     fell through a legacy derivation ending at "oci-bucket", and the requester
     received an empty object storage bucket with the request marked provisioned.
@@ -2460,6 +2467,7 @@ def test_an_approved_request_with_nothing_certified_builds_nothing(poller, monke
     infrastructure team fulfils it. What must not happen is a cloud resource
     nobody asked for.
     """
+    monkeypatch.setenv("AUTOBUILD_ENABLED", "false")
     import api.main as main
     client, session = poller
     req, key = _submit_request(client, session, certify=False)

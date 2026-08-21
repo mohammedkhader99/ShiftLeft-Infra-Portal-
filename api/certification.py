@@ -227,6 +227,38 @@ def expire(session: Session, now: datetime | None = None) -> list[dict]:
     return expired
 
 
+CERTIFIED_BY_RUNNER = "certification-runner"
+
+
+def certify_from_proof(session: Session, technology_code: str, target: str,
+                       blueprint_ref: str, resource_kind: str,
+                       proof_reference: str, version: str = "") -> Blueprint:
+    """Certify a blueprint on the strength of a proof build that passed.
+
+    The agent certifying itself, added 2026-08-21 at the reviewer's repeated
+    instruction. What makes it more than a rubber stamp is that it cannot be
+    reached without a passing proof: the thing was built, verified healthy,
+    priced under the cap and destroyed again.
+
+    `certified_by` records the RUNNER, never a person. An audit trail that
+    attributed this to a human would be a lie, and the one question anybody will
+    ask later is which of these a person approved.
+    """
+    row = session.get(Blueprint, (technology_code, target))
+    if row is None:
+        row = Blueprint(technology_code=technology_code, deployment_target=target)
+        session.add(row)
+    row.blueprint_ref = blueprint_ref
+    row.resource_kind = resource_kind
+    row.version = version or row.version or ""
+    row.status = "certified"
+    row.certified_by = CERTIFIED_BY_RUNNER
+    row.certified_at = datetime.now(timezone.utc)
+    row.notes = (f"Certified automatically by proof build {proof_reference}: "
+                 f"built, verified healthy and destroyed.")[:400]
+    return row
+
+
 def restore(session: Session, now: datetime | None = None) -> list[dict]:
     """Re-certify a blueprint whose proof build passed (ARCHITECTURE.md P8).
 
@@ -251,11 +283,10 @@ def restore(session: Session, now: datetime | None = None) -> list[dict]:
     for row in session.scalars(select(Blueprint)).all():
         if row.status not in (SUSPENDED, STALE):
             continue
-        # certified_by is the fingerprint of a human decision at some point. No
-        # fingerprint means nobody ever approved this, and a build passing is not
-        # the same as somebody wanting it offered.
-        if not row.certified_by:
-            continue
+        # This used to require a human fingerprint (certified_by) before a proof
+        # could bring a blueprint back — first certification stayed a human act.
+        # That requirement was removed on 2026-08-21 with §7: a passing proof is
+        # now sufficient in both directions.
         last = last_passing_proof(session, row.technology_code, row.deployment_target)
         if last is None or proof.is_stale(last, now):
             continue

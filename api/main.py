@@ -35,6 +35,7 @@ from api import network_egress
 from api import cloud_options
 from api import component_options
 from api import ai_blueprint
+from api import autobuild
 from api import catalogue_sync
 from api import certification
 from api import fulfilment
@@ -3636,6 +3637,53 @@ def approve(jira_key: str, session: Session = Depends(get_session),
     return {"approval": "approved", "provisioned": True, "result": result}
 
 
+def _autobuild_component(session: Session, code: str, target: str) -> dict:
+    """Make one component buildable and certify it, on proof evidence.
+
+    Assembles the real collaborators and hands them to autobuild.ensure. Kept
+    here rather than inside the loop above so the request path reads as what it
+    is — ask the agent, then re-check — and so the wiring has one home.
+    """
+    from api import autobuild, certification, proof, proof_wiring
+
+    post = proof_wiring.make_post(_post_to_orchestrator, sign, WEBHOOK_SECRET)
+    price = proof_wiring.make_price(session, target)
+    verify = proof_wiring.make_verify(post)
+    publish = proof_wiring.make_publish()
+
+    def shipped(candidate: str) -> dict | None:
+        """An existing recipe that already builds this, or None.
+
+        nginx lives here: oci/service-vm builds it and four of its five
+        technologies are certified. Nothing needs writing — it needs proving.
+        """
+        for manifest in (_orchestrator_blueprints() or []):
+            if candidate in [str(b) for b in (manifest.get("builds") or [])]:
+                if str(manifest.get("target", "")).lower() == target.lower():
+                    return manifest
+        return None
+
+    def run_proof(sess, manifest):
+        row = Blueprint(technology_code=code, deployment_target=target,
+                        blueprint_ref=(manifest or {}).get("ref", f"{target}/{code}"),
+                        resource_kind=(manifest or {}).get(
+                            "resource_kind", f"{target}-{code}"),
+                        status="draft")
+        return proof.run_proof(sess, row, post=post, price=price, verify=verify)
+
+    def certify(manifest, proof_reference):
+        return certification.certify_from_proof(
+            session, code, target, manifest.get("ref", f"{target}/{code}"),
+            manifest.get("resource_kind", f"{target}-{code}"), proof_reference,
+            version=manifest.get("version", ""))
+
+    result = autobuild.ensure(code, session, target=target, shipped=shipped,
+                              run_proof=run_proof, publish=publish,
+                              certify=certify)
+    session.commit()
+    return {"status": result.status, "detail": result.detail[:300]}
+
+
 def _orchestrator_offered_versions() -> dict | None:
     """Which versions of each service the cloud currently offers, or None."""
     payload = {"issued_at": datetime.now(timezone.utc).isoformat(),
@@ -5998,6 +6046,38 @@ def _advance_request(session: Session, req: Request) -> str:
         # the infrastructure team still builds it. What stops is inventing a cloud
         # resource nobody asked for and calling the request finished.
         unmet = _unautomated_components(session, req)
+
+        # THE AGENT MAKES IT BUILDABLE RATHER THAN HANDING IT OVER (2026-08-21).
+        #
+        # The reviewer's mandatory requirement: if a selected component has no
+        # certified blueprint, the agent proves the recipe — writing one first if
+        # none exists — certifies it on that evidence, and the request proceeds.
+        # Manual fulfilment is now the fallback for when that FAILS, not the
+        # first answer.
+        #
+        # The request is CLAIMED before the attempt, because it involves real
+        # builds taking minutes. Leaving it collectable would have every sweep
+        # start another one — the REQ-2026-0161 defect, thirty seconds apart.
+        if unmet and autobuild.enabled():
+            req.status = "auto-building"
+            append_audit(session, "autobuild.started", reference=req.reference,
+                         jira_key=jira_key, actor="agent",
+                         detail={"components": unmet})
+            session.commit()
+            for code in unmet:
+                try:
+                    outcome = _autobuild_component(session, code, req.deployment_target)
+                except Exception as exc:  # noqa: BLE001 — one failure must not
+                    outcome = {"status": "failed", "detail": str(exc)}  # strand the request
+                append_audit(session, "autobuild.finished", reference=req.reference,
+                             jira_key=jira_key, actor="agent",
+                             detail={"component": code, **outcome})
+            session.commit()
+            # Re-ask rather than assume: the only thing that counts is whether a
+            # certified blueprint exists NOW.
+            unmet = _unautomated_components(session, req)
+            req.status = "in-progress" if not unmet else req.status
+
         requested = [c.technology_code for c in req.components if c.technology_code]
         if requested and len(unmet) == len(set(requested)):
             listed = ", ".join(unmet)
