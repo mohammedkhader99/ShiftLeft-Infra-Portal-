@@ -22,3 +22,9 @@ orchestrator/terraform/*.tfstate.*
 # Local database dumps taken before destructive changes. They contain request
 # rows and requester email addresses, so they stay out of git the same as .env.
 backups/
+
+# Microsoft Office lock files, created while a document is open.
+# They are transient and machine-local; committing one confuses the next
+# person to open the file.
+~$*
+scripts/_slide_geometry.json
