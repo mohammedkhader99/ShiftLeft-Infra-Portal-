@@ -410,3 +410,43 @@ def test_evidence_against_wins_within_one_sweep(db, monkeypatch):
     src = inspect.getsource(main._poll_once)
     assert src.index("certification.review") < src.index("certification.restore")
     assert src.index("certification.expire") < src.index("certification.restore")
+
+
+def test_the_handoff_carries_every_key_the_orchestrator_requires(db, monkeypatch):
+    """Found live, not in a test. A valid proof returned 500 with
+    KeyError: 'idempotency_key' — /provision and /apply both index it directly,
+    so a payload without it is an error rather than a refusal, and an error tells
+    nobody which bound was exceeded.
+
+    Asserted against the endpoints' ACTUAL requirements, read from the
+    orchestrator source, so a new required key fails here rather than at runtime.
+    """
+    import ast
+    import pathlib
+
+    allow(monkeypatch)
+    post = Recorder()
+    proof.run_proof(db, bp(db), post=post, price=lambda c: 10,
+                    verify=lambda r: (True, "ok"))
+
+    src = pathlib.Path(__file__).resolve().parents[2] / "orchestrator" / "main.py"
+    tree = ast.parse(src.read_text(encoding="utf-8"))
+    required: dict[str, set[str]] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if node.name not in ("provision", "apply", "verify_boot", "destroy"):
+            continue
+        keys = set()
+        for sub in ast.walk(node):
+            if (isinstance(sub, ast.Subscript) and isinstance(sub.value, ast.Name)
+                    and sub.value.id == "payload"
+                    and isinstance(sub.slice, ast.Constant)):
+                keys.add(sub.slice.value)
+        required[node.name] = keys
+
+    needed = set().union(*required.values()) if required else set()
+    assert needed, "could not read the orchestrator's requirements"
+    for _path, payload in post.calls:
+        missing = needed - set(payload)
+        assert not missing, f"the handoff omits {sorted(missing)}, required by {required}"

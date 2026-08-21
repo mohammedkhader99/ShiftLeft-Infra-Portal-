@@ -3661,6 +3661,60 @@ class DraftBlueprintIn(BaseModel):
     deployment_target: str = "oci"
 
 
+@app.post("/api/catalogue/autobuild")
+def autobuild_candidate(body: DraftBlueprintIn, session: Session = Depends(get_session),
+                        admin: str = Depends(require_action("manage_settings"))) -> dict:
+    """Draft a recipe, prove it by building it, and publish it if it survives.
+
+    The reviewer's requirement of 2026-08-21: the portal's agent writes its own
+    Terraform. This is the trigger for that loop.
+
+    EXPLICIT, NOT SCHEDULED. Every attempt is a real build in a real tenancy, and
+    the cadence question is still open — a timer here would spend money on a
+    schedule nobody has agreed. An admin asks for one candidate at a time.
+
+    What it publishes is a DRAFT blueprint: discovered by the orchestrator,
+    provable, and NOT offered to requesters until somebody certifies it. That
+    last step is the human review ARCHITECTURE.md §7 requires, and the agent
+    cannot perform it.
+    """
+    from api import autobuild, proof_wiring
+
+    blueprint = session.get(Blueprint, (body.candidate, body.deployment_target.lower()))
+    if blueprint is None:
+        # A blueprint row is what the proof runner names and tags its resources
+        # with. A candidate with no row has never been near this portal.
+        blueprint = Blueprint(technology_code=body.candidate,
+                              deployment_target=body.deployment_target.lower(),
+                              blueprint_ref=f"{body.deployment_target}/{body.candidate}",
+                              resource_kind=f"{body.deployment_target}-{body.candidate}",
+                              status="draft")
+
+    post = proof_wiring.make_post(_post_to_orchestrator, sign, WEBHOOK_SECRET)
+    price = proof_wiring.make_price(session, body.deployment_target)
+    verify = proof_wiring.make_verify(post)
+    publish = proof_wiring.make_publish()
+
+    def run_proof(sess, bp):
+        from api import proof
+        return proof.run_proof(sess, bp, post=post, price=price, verify=verify)
+
+    result = autobuild.build(body.candidate, session, blueprint=blueprint,
+                             run_proof=run_proof, publish=publish,
+                             target=body.deployment_target)
+    record = autobuild.summarise(result)
+    append_audit(session, "blueprint.autobuilt", actor=admin, detail=record)
+    session.commit()
+    return {
+        **record,
+        "certified": False,
+        "note": ("Published as a DRAFT. The orchestrator will discover it, but no "
+                 "requester is offered it until it is certified — that review is "
+                 "the one step the agent cannot do for you."
+                 if result.published else result.detail),
+    }
+
+
 @app.post("/api/catalogue/draft")
 def draft_blueprint(body: DraftBlueprintIn, session: Session = Depends(get_session),
                     admin: str = Depends(require_action("manage_settings"))) -> dict:

@@ -147,6 +147,10 @@ def run_proof(session, blueprint, *, post, price, verify, now=None) -> ProofOutc
     payload = {
         "proof": True,
         "reference": reference,
+        # /provision and /apply both require this. The proof's own reference is
+        # the natural key: one proof, one build, so a retried handoff cannot
+        # quietly build a second copy of something already running.
+        "idempotency_key": reference,
         "policy_input": {
             "deployment_target": blueprint.deployment_target,
             "environment_tier": tier,

@@ -171,6 +171,7 @@ services:
       # default, and bounded: every redraft is a real build in a real tenancy.
       AUTOBUILD_ENABLED: ${AUTOBUILD_ENABLED:-false}
       AUTOBUILD_MAX_ATTEMPTS: ${AUTOBUILD_MAX_ATTEMPTS:-}
+      GENERATED_ROOT: ${GENERATED_ROOT:-/generated}
 
       PROVISION_MODE: ${PROVISION_MODE:-mock}
       # RBAC (E1.1). ROLE_SOURCE:
@@ -245,6 +246,10 @@ services:
       CHANGE_WINDOW_TZ: ${CHANGE_WINDOW_TZ:-UTC}
     ports:
       - "8081:8081"
+    volumes:
+      # The agent writes drafts here; the orchestrator discovers them
+      # from the same directory (C5).
+      - ./generated:/generated
     depends_on:
       db:
         # Don't start the API until the database reports healthy.

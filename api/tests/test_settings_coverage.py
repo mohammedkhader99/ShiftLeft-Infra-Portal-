@@ -159,6 +159,9 @@ EXCLUDED: dict[str, str] = {
     # response, which says plainly when it is off and how to turn it on.
     "AUTOBUILD_ENABLED": "surfaced by the autobuild endpoint",
     "AUTOBUILD_MAX_ATTEMPTS": "internal tuning",
+    # Where the API writes agent drafts. The same directory the orchestrator
+    # discovers from, and reported by /posture as generated_blueprints_dir.
+    "GENERATED_ROOT": "filesystem path (surfaced as generated_blueprints_dir)",
     # How long a proof keeps a blueprint certified. Surfaced through the
     # blueprint listing, where a stale row already says how long it has been.
     "CERTIFICATION_VALIDITY_DAYS": "internal tuning",
