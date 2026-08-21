@@ -14,3 +14,17 @@ dist/
 # Local backups of the environment file. Never in an image, same as .env itself.
 .env.*
 !.env.example
+
+# Office documents and their LOCK FILES. Word/Excel/PowerPoint create a ~$name
+# file while a document is open, and delete it on close. Docker tars the build
+# context up front, so a lock file vanishing mid-tar fails the whole build with
+# "Can't close tar writer: missed writing N bytes" — which is what happened on
+# 2026-08-21 and silently left the API running its previous image.
+#
+# None of these belong in an image anyway: they are deliverables for people, not
+# inputs to the service.
+~$*
+*.pptx
+*.xlsx
+*.docx
+*.pdf
