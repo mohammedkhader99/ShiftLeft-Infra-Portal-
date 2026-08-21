@@ -270,11 +270,27 @@ def test_certification_does_not_expire_while_proofs_are_switched_off(db, monkeyp
     assert bp(db).status == "certified"
 
 
-def test_certification_expires_once_proofs_are_running(db, monkeypatch):
-    """Never proven by a build is stale, and says so plainly."""
+def test_never_proven_is_stale_ONCE_THE_FEATURE_HAS_BEEN_RUNNING(db, monkeypatch):
+    """Never proven by a build is stale, and says so plainly — but only after
+    proofs have been running long enough for one to have happened.
+
+    This test used to assert that merely ENABLING proofs expired an unproven
+    blueprint. It encoded the defect: on 2026-08-21 that took all seven
+    hand-certified blueprints offline the moment the feature was switched on, and
+    every request went to manual fulfilment.
+    """
+    from datetime import datetime, timedelta, timezone
+
     from api import certification
 
     allow(monkeypatch)
+    long_ago = datetime.now(timezone.utc) - timedelta(days=45)
+    db.add(CertificationProof(
+        technology_code="something-else", deployment_target="oci",
+        resource_kind="oci-other", reference="PROOF-OTHER-20260707T090000",
+        status="passed", started_at=long_ago, finished_at=long_ago))
+    db.commit()
+
     expired = certification.expire(db)
     assert len(expired) == 1, expired
     row = bp(db)
@@ -306,10 +322,13 @@ def test_staleness_is_measured_from_the_last_PASSING_proof(db, monkeypatch):
     from api import certification
 
     allow(monkeypatch)
+    # Failing since proofs began 45 days ago: the grace window has long passed,
+    # so the only question left is whether a FAILURE counts as freshness.
+    began = datetime.now(timezone.utc) - timedelta(days=45)
     db.add(CertificationProof(
         technology_code="oci-oke", deployment_target="oci", resource_kind="oci-oke",
-        reference="PROOF-OCI-OKE-20260821T090000", status="failed",
-        finished_at=datetime.now(timezone.utc)))
+        reference="PROOF-OCI-OKE-20260707T090000", status="failed",
+        started_at=began, finished_at=datetime.now(timezone.utc)))
     db.commit()
 
     expired = certification.expire(db)
@@ -450,3 +469,62 @@ def test_the_handoff_carries_every_key_the_orchestrator_requires(db, monkeypatch
     for _path, payload in post.calls:
         missing = needed - set(payload)
         assert not missing, f"the handoff omits {sorted(missing)}, required by {required}"
+
+
+def test_switching_proofs_on_does_not_expire_the_whole_catalogue(db, monkeypatch):
+    """FOUND IN PRODUCTION, 2026-08-21. Gating expiry on "proofs are enabled" was
+    wrong: the moment they were switched on, all seven hand-certified blueprints
+    aged out at once — punished retroactively for missing proofs that had never
+    been possible. Every request then went to manual fulfilment.
+
+    A blueprint cannot have failed to earn a proof before proofs existed.
+    """
+    from api import certification
+
+    allow(monkeypatch)                      # proofs ENABLED, but none has ever run
+    assert certification.expire(db) == [], (
+        "enabling proofs expired blueprints that never had a chance to earn one")
+    assert bp(db).status == "certified"
+
+
+def test_the_clock_starts_when_proofs_start_not_at_the_epoch(db, monkeypatch):
+    """Once proofs ARE running, a blueprint gets the same validity window as
+    everything else to earn its first one — measured from when the feature began,
+    not from whenever it happened to be certified."""
+    from datetime import datetime, timedelta, timezone
+
+    from api import certification
+
+    allow(monkeypatch)
+    # The feature started five days ago and has run for something else.
+    db.add(CertificationProof(
+        technology_code="something-else", deployment_target="oci",
+        resource_kind="oci-other", reference="PROOF-OTHER-20260816T090000",
+        status="passed",
+        started_at=datetime.now(timezone.utc) - timedelta(days=5),
+        finished_at=datetime.now(timezone.utc) - timedelta(days=5)))
+    db.commit()
+
+    # oci-oke still has no proof of its own, but only five days have passed.
+    assert certification.expire(db) == []
+    assert bp(db).status == "certified"
+
+
+def test_a_blueprint_that_never_earns_a_proof_does_eventually_expire(db, monkeypatch):
+    """The rule still bites — it just starts counting from the right moment.
+    'Certified by hand and never exercised' is the oci-oke state this exists for."""
+    from datetime import datetime, timedelta, timezone
+
+    from api import certification
+
+    allow(monkeypatch)
+    long_ago = datetime.now(timezone.utc) - timedelta(days=60)
+    db.add(CertificationProof(
+        technology_code="something-else", deployment_target="oci",
+        resource_kind="oci-other", reference="PROOF-OTHER-20260622T090000",
+        status="passed", started_at=long_ago, finished_at=long_ago))
+    db.commit()
+
+    expired = certification.expire(db)
+    assert len(expired) == 1, "a blueprint unproven for 60 days stayed certified"
+    assert bp(db).status == certification.STALE

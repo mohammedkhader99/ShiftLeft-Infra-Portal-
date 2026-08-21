@@ -166,6 +166,22 @@ def last_passing_proof(session: Session, technology_code: str,
     return row.finished_at if row else None
 
 
+def proofs_began(session: Session) -> datetime | None:
+    """When proof builds actually started running, or None if they never have.
+
+    The staleness clock hangs off this. Gating expiry on "proofs are enabled" was
+    wrong and took the whole catalogue offline the moment they were switched on:
+    seven blueprints certified by hand had no proof history, so all seven aged out
+    at once, retroactively, for a feature that had not yet run a single build.
+
+    A blueprint cannot have failed to earn a proof before proofs existed.
+    """
+    row = session.scalars(
+        select(CertificationProof).order_by(CertificationProof.started_at).limit(1)
+    ).first()
+    return row.started_at if row else None
+
+
 def expire(session: Session, now: datetime | None = None) -> list[dict]:
     """Mark certifications whose proof has aged out (ARCHITECTURE.md P8).
 
@@ -179,13 +195,23 @@ def expire(session: Session, now: datetime | None = None) -> list[dict]:
     if not proof.enabled():
         return []
 
+    # NOTHING AGES OUT OF A FEATURE THAT HAS NEVER RUN. Without this the day
+    # proofs were switched on, every blueprint certified by hand became stale at
+    # once — punished retroactively for missing proofs that were never possible.
+    started = proofs_began(session)
+    if started is None:
+        return []
+
     now = now or datetime.now(timezone.utc)
     expired: list[dict] = []
     for row in session.scalars(select(Blueprint)).all():
         if row.status != "certified":
             continue
         last = last_passing_proof(session, row.technology_code, row.deployment_target)
-        if not proof.is_stale(last, now):
+        # A blueprint with no proof of its own is measured from when proofs
+        # BEGAN, so it gets the same validity window as everything else to earn
+        # its first one, rather than being stale on arrival.
+        if not proof.is_stale(last or started, now):
             continue
         row.status = STALE
         row.notes = (f"Certification expired: no passing proof build in "

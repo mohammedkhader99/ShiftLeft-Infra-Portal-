@@ -1,5 +1,6 @@
 import hmac
 import json
+import logging
 import os
 import re
 import threading
@@ -118,6 +119,32 @@ from db.session import SessionLocal
 load_dotenv()
 
 
+def _ensure_tables() -> None:
+    """Create any table a model declares but the database does not have.
+
+    WHY THIS EXISTS. There is no migration tool here, and `create_all` only ran
+    from `db/seed.py::main()` — a script nobody runs on deploy. So C2's
+    `certification_proof` table was never created, and the certification sweep
+    raised UndefinedTable every thirty seconds from the moment proofs were
+    switched on. The feature was reported as live and was not.
+
+    Deliberately create-only. It adds missing TABLES and touches nothing that
+    already exists — it cannot add a column, drop anything, or alter a type, so
+    it can never be the reason data is lost. A real schema change still needs a
+    migration and a human.
+
+    Failure here must not stop the API: a database that cannot be reached at
+    startup is a much louder problem than a missing table, and the error is
+    logged rather than swallowed.
+    """
+    try:
+        from db.session import Base, engine
+        Base.metadata.create_all(engine, checkfirst=True)
+    except Exception as exc:  # noqa: BLE001 — never block startup on this
+        logging.getLogger("uvicorn.error").warning(
+            "could not ensure database tables exist: %s", exc)
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     """Start the background workers on startup, stop them on shutdown.
@@ -127,6 +154,7 @@ async def _lifespan(app: FastAPI):
     cloud-option refresh runs only when OCI_CATALOGUE_ENABLED is on. So nothing
     runs by default (mock mode / dev / tests).
     """
+    _ensure_tables()
     _start_poller()
     _start_subsync()
     _start_catalogue_refresh()
