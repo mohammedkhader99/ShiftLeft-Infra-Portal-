@@ -857,41 +857,68 @@ export default function MyRequests({ route }: { route: string }) {
                         </div>
                       )}
                       {/* What the machine said about itself at first boot.
-                          The portal already reads this to decide the request is
-                          provisioned; showing it answers "what did I actually
-                          get" far better than a status ever can. */}
+                          Collapsed behind a disclosure, like "What was built":
+                          it is a wall of text most of the time, and the one line
+                          worth seeing without opening it is what the machine
+                          turned out to be. */}
                       {boot[r.reference] && (
-                        <div style={{ marginTop: '1rem' }}>
-                          <div style={{ fontSize: '0.85rem', fontWeight: 600, marginBottom: '0.35rem' }}>
+                        <div style={{ marginTop: '1rem', fontSize: '0.82rem' }}>
+                          <strong>
                             What the machine reported
-                            {boot[r.reference]!.historical && (
-                              <Tag type="gray" size="sm" style={{ marginLeft: '0.5rem' }}>
-                                historical — this environment has been removed
-                              </Tag>
-                            )}
-                          </div>
+                            {boot[r.reference]!.reports.filter((c) => c.available).length > 0
+                              && ` (${boot[r.reference]!.reports.filter((c) => c.available).length})`}
+                          </strong>
+                          {boot[r.reference]!.historical && (
+                            <span style={{ color: 'var(--cds-text-secondary)', marginLeft: '0.5rem' }}>
+                              {/* Plain text, not a Tag: a Tag truncates, and
+                                  "historical — this environment has …" tells
+                                  nobody anything. */}
+                              · historical — this environment has been removed
+                            </span>
+                          )}
                           {!boot[r.reference]!.reachable && (
-                            <div style={{ fontSize: '0.8rem', color: 'var(--cds-text-secondary)' }}>
+                            <div style={{ color: 'var(--cds-text-secondary)', marginTop: '0.3rem' }}>
                               {boot[r.reference]!.note}
                             </div>
                           )}
-                          {boot[r.reference]!.reports.map((c) => (
-                            <div key={c.kind} style={{ marginBottom: '0.6rem' }}>
-                              <div style={{ fontSize: '0.78rem', color: 'var(--cds-text-secondary)' }}>
-                                {c.kind}{!c.available && ` — ${c.note}`}
-                              </div>
-                              {c.available && Object.entries(c.files).map(([name, text]) => (
-                                <pre key={name} style={{
-                                  margin: '0.25rem 0 0', padding: '0.6rem 0.75rem',
-                                  background: 'var(--cds-layer-01)',
-                                  border: '1px solid var(--cds-border-subtle)',
-                                  fontSize: '0.74rem', lineHeight: 1.45,
-                                  whiteSpace: 'pre-wrap', wordBreak: 'break-word',
-                                  maxHeight: '18rem', overflow: 'auto',
-                                }}>{text}</pre>
-                              ))}
-                            </div>
-                          ))}
+                          <Accordion size="sm">
+                            {boot[r.reference]!.reports.map((c) => {
+                              const text = Object.values(c.files)[0] ?? ''
+                              // The one fact worth reading without expanding:
+                              // what the machine turned out to be.
+                              const os = /^os=(.+)$/m.exec(text)?.[1]?.trim()
+                              const bad = /PORTAL FAILURE|NOT INSTALLED|=inactive|=failed/.test(text)
+                              const title = (
+                                <span style={{ fontSize: '0.82rem', opacity: c.available ? 1 : 0.6 }}>
+                                  <strong>{c.kind}</strong>
+                                  {os && <span style={{ color: 'var(--cds-text-secondary)' }}> · {os}</span>}
+                                  {!c.available && (
+                                    <span style={{ color: 'var(--cds-text-secondary)' }}> · {c.note}</span>
+                                  )}
+                                  {bad && (
+                                    <span style={{ color: 'var(--cds-support-error)' }}> · reported a problem</span>
+                                  )}
+                                </span>
+                              )
+                              return (
+                                <AccordionItem key={c.kind} title={title} disabled={!c.available}>
+                                  {Object.entries(c.files).map(([name, body]) => (
+                                    <div key={name}>
+                                      <div style={{ color: 'var(--cds-text-secondary)', fontSize: '0.74rem' }}>{name}</div>
+                                      <pre style={{
+                                        margin: '0.25rem 0 0', padding: '0.6rem 0.75rem',
+                                        background: 'var(--cds-layer-01)',
+                                        border: '1px solid var(--cds-border-subtle)',
+                                        fontSize: '0.74rem', lineHeight: 1.45,
+                                        whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+                                        maxHeight: '22rem', overflow: 'auto',
+                                      }}>{body}</pre>
+                                    </div>
+                                  ))}
+                                </AccordionItem>
+                              )
+                            })}
+                          </Accordion>
                         </div>
                       )}
                       <div style={{ marginTop: '1rem', fontSize: '0.85rem', display: 'flex', gap: '1.5rem', flexWrap: 'wrap' }}>
