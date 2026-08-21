@@ -97,6 +97,19 @@ def is_stale(last_passed_at: datetime | None, now: datetime | None = None,
     return (now - last_passed_at) > timedelta(days=days or validity_days())
 
 
+def plans_to_create(provision_response: str) -> int | None:
+    """How many resources the plan will ADD, or None if it cannot be read.
+
+    Terraform reports "Plan: 1 to add, 0 to change, 0 to destroy." per module.
+    None means the answer was not in the response — a different fault from zero,
+    and it must not be confused with one.
+    """
+    counts = re.findall(r"Plan:\s*(\d+)\s+to add", provision_response or "")
+    if not counts:
+        return None
+    return sum(int(c) for c in counts)
+
+
 # --- Running one proof -------------------------------------------------------
 
 @dataclass
@@ -152,7 +165,12 @@ def run_proof(session, blueprint, *, post, price, verify, now=None) -> ProofOutc
     except ProofRefused as exc:
         return finish("refused", str(exc))
 
-    components = [{"technology_code": blueprint.technology_code, "size": "small"}]
+    # The kind travels WITH the component. A proof prices something that is not
+    # certified yet — that is the entire point of it — so no blueprint row exists
+    # to say whether this is a machine, a bucket or a cluster, and without it the
+    # estimate would be an unpriceable 0.00 that slid under every ceiling.
+    components = [{"technology_code": blueprint.technology_code, "size": "small",
+                   "resource_kind": blueprint.resource_kind or ""}]
     payload = {
         "proof": True,
         "reference": reference,
@@ -177,6 +195,26 @@ def run_proof(session, blueprint, *, post, price, verify, now=None) -> ProofOutc
     ok, detail = post("/provision", payload)
     if not ok:
         return finish("failed", f"Provision refused: {detail}", verdict.monthly)
+
+    # A PROOF OF NOTHING IS NOT A PROOF.
+    #
+    # FOUND 2026-08-21 on REQ-2026-0175. The agent drafted a recipe for keycloak
+    # whose Terraform says, in its own first line, "builds nothing yet" — a
+    # TODO_provider_resource guarded by `count = ... ? 1 : 0` that evaluated to
+    # zero. So the plan created nothing, apply succeeded at creating nothing, and
+    # verify found nothing to check and reported "nothing here files a report".
+    # Three greens, and the proof passed a recipe that cannot build the thing.
+    #
+    # Checked HERE, on the plan, before anything is applied: it is the cheapest
+    # place to learn it and the only one where the answer is unambiguous.
+    planned = plans_to_create(detail)
+    if planned == 0:
+        return finish(
+            "failed",
+            "This recipe creates nothing: the plan adds 0 resources, so building "
+            "it would prove only that Terraform can run. A proof has to build the "
+            "thing it claims to build.",
+            verdict.monthly)
 
     ok, detail = post("/apply", payload)
     if not ok:

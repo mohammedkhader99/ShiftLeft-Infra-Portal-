@@ -28,3 +28,11 @@ backups/
 # person to open the file.
 ~$*
 scripts/_slide_geometry.json
+
+# Agent-written blueprints and Terraform (C5a). The store is mounted into both
+# containers (./generated:/generated), so everything the agent drafts lands here
+# in the working tree. It must NOT be committed: the whole point of keeping
+# generated recipes apart from reviewed ones is that git history can tell them
+# apart. The README is tracked so the directory itself survives a clone.
+generated/*
+!generated/README.md

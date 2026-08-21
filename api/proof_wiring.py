@@ -46,7 +46,10 @@ def make_post(post_to_orchestrator, sign, secret: str):
             # The orchestrator's refusal text is the useful part — it names which
             # bound was exceeded (sandbox tier, cost cap, an unproven reference).
             return False, f"{response.status_code}: {response.text[:300]}"
-        return True, (response.text or "")[:300]
+        # Generous, because run_proof now READS this: the plan summary decides
+        # whether the recipe creates anything at all, and truncating it to 300
+        # characters would silently discard the evidence.
+        return True, (response.text or "")[:4000]
     return post
 
 
@@ -59,8 +62,13 @@ def make_price(session: Session, target: str):
     """
     def price(components: list[dict]) -> float | None:
         try:
-            totals = pricing.estimate_cost(components, target, session).get("totals", {})
-            monthly = totals.get("monthly")
+            estimate = pricing.estimate_cost(components, target, session)
+            # A total of 0.00 means two very different things: "this is free" and
+            # "we could not price it". check_cost approves the first and must
+            # refuse the second, so the difference has to survive to here.
+            if estimate.get("unpriced"):
+                return None
+            monthly = estimate.get("totals", {}).get("monthly")
             return float(monthly) if monthly is not None else None
         except Exception:  # noqa: BLE001 — an unpriceable plan is a refusal, not a crash
             return None

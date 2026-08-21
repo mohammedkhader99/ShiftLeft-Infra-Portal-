@@ -315,3 +315,40 @@ def test_the_proof_is_no_less_patient_than_a_real_request():
     src = inspect.getsource(proof_wiring.make_verify)
     assert "BOOT_VERIFY_DEADLINE_MINUTES" in src
     assert "BOOT_VERIFY_POLL_SECONDS" in src
+
+
+# --- "we could not price it" must not read as "it is free" -------------------
+
+def test_a_plan_that_cannot_be_priced_returns_None_not_zero(monkeypatch):
+    """FOUND IN PRODUCTION, REQ-2026-0175, 2026-08-21.
+
+    `keycloak` had no blueprint, so its resource kind was unknown and its line
+    came back resolved=False — correctly. But the TOTAL was 0.00, and this
+    function read only the total, so the proof's cost gate saw "free", approved
+    it against a AED 300 ceiling, and went on to build for real.
+
+    A total of 0.00 means two different things. check_cost approves one of them
+    and must refuse the other, so the difference has to survive to here.
+    """
+    from api import proof_wiring as pw
+
+    monkeypatch.setattr(pw.pricing, "estimate_cost",
+                        lambda c, t, s: {"unpriced": ["Keycloak"],
+                                         "totals": {"monthly": 0.0}})
+    assert pw.make_price(None, "oci")([{"technology_code": "keycloak"}]) is None
+
+
+def test_something_genuinely_free_is_still_priced_at_zero(monkeypatch):
+    """The refusal must be about not KNOWING, not about the number being small.
+    A component that really costs nothing is priceable and allowed."""
+    from api import proof_wiring as pw
+
+    monkeypatch.setattr(pw.pricing, "estimate_cost",
+                        lambda c, t, s: {"unpriced": [], "totals": {"monthly": 0.0}})
+    assert pw.make_price(None, "oci")([{"technology_code": "x"}]) == 0.0
+
+
+def test_an_unpriced_component_makes_check_cost_refuse():
+    """The two halves joined: None reaches check_cost, and check_cost says no."""
+    from common.proof_rules import check_cost
+    assert check_cost(None).allowed is False

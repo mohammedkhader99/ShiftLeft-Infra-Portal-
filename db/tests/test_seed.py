@@ -30,7 +30,10 @@ def test_seed_populates_reference_data(session):
     assert session.scalar(select(func.count()).select_from(Technology)) == 46  # +24 add-ons + cloud services
     # 46 technologies * 4 sizes (incl. xlarge) = 184 sizing anchors.
     assert session.scalar(select(func.count()).select_from(SizingAnchor)) == 184
-    assert session.scalar(select(func.count()).select_from(RateCard)) == 20  # +3 cloud_aws +3 cloud_gcp
+    # +3 cloud_aws +3 cloud_gcp, then +4 OCI non-VM lines (bucket storage and
+    # its free allowance, the OKE cluster fee, the managed-PostgreSQL vCPU
+    # rate) — without which a bucket was billed a virtual machine's compute.
+    assert session.scalar(select(func.count()).select_from(RateCard)) == 24
 
 
 def test_seed_query_returns_named_rows(session):

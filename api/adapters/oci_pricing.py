@@ -24,6 +24,15 @@ PART_OCPU_HOUR = "B97384"          # Compute - Standard - E5 - OCPU (per OCPU/ho
 PART_MEMORY_GB_HOUR = "B97385"     # Compute - Standard - E5 - Memory (per GB/hour)
 PART_STORAGE_GB_MONTH = "B91961"   # Storage - Block Volume - Storage (per GB/month)
 
+# Parts for the resource kinds that are NOT virtual machines. Until these
+# existed, a bucket and a Kubernetes cluster were both priced as a VM of the
+# requested size — every OCI component came to exactly the same monthly figure,
+# because the estimate was driven by size alone and never by what was being
+# built (found 2026-08-21 while proving oci-objectstorage).
+PART_BUCKET_GB_MONTH = "B91628"    # Object Storage - Storage (per GB/month, tiered)
+PART_OKE_CLUSTER_HOUR = "B96545"   # OCI Kubernetes Engine - Enhanced Cluster (per cluster/hour)
+PART_PSQL_OCPU_HOUR = "B99060"     # Database with PostgreSQL - X86 (per OCPU/hour)
+
 # rates dict cache: {} -> (rates, fetched_at)
 _cache: dict[str, tuple[dict[str, float], float]] = {}
 
@@ -40,12 +49,34 @@ def is_live() -> bool:
     return oci_mode() == "live"
 
 
+def _payg_tiers(item: dict) -> list[dict]:
+    return [p for loc in item.get("currencyCodeLocalizations", [])
+            for p in loc.get("prices", []) if p.get("model") == "PAY_AS_YOU_GO"]
+
+
 def _pay_as_you_go(item: dict) -> float | None:
-    for loc in item.get("currencyCodeLocalizations", []):
-        for price in loc.get("prices", []):
-            if price.get("model") == "PAY_AS_YOU_GO":
-                return float(price.get("value"))
-    return None
+    """The rate actually charged, which is NOT always the first one listed.
+
+    SOME PARTS ARE TIERED AND THE FIRST TIER IS FREE. Object Storage publishes
+    0.00 for the first 10 GB and 0.0936615 beyond it; returning the first match
+    reported object storage as free of charge. Take the highest band — the
+    marginal rate — and let `free_allowance` describe the free tier separately,
+    so the two facts stay distinguishable instead of averaging into a wrong one.
+    """
+    tiers = _payg_tiers(item)
+    if not tiers:
+        return None
+    paid = [t for t in tiers if float(t.get("value") or 0) > 0]
+    chosen = max(paid, key=lambda t: float(t.get("rangeMin") or 0)) if paid else tiers[0]
+    return float(chosen.get("value"))
+
+
+def free_allowance(item: dict) -> float:
+    """Units billed at zero before the marginal rate applies (0 if none)."""
+    for tier in _payg_tiers(item):
+        if float(tier.get("value") or 0) == 0 and tier.get("rangeMax") is not None:
+            return float(tier.get("rangeMax") or 0)
+    return 0.0
 
 
 def _fetch_rates() -> dict[str, float]:
@@ -62,10 +93,15 @@ def _fetch_rates() -> dict[str, float]:
         ocpu_hour = _pay_as_you_go(by_part[PART_OCPU_HOUR])
         memory_gb_hour = _pay_as_you_go(by_part[PART_MEMORY_GB_HOUR])
         storage_gb_month = _pay_as_you_go(by_part[PART_STORAGE_GB_MONTH])
+        bucket_gb_month = _pay_as_you_go(by_part[PART_BUCKET_GB_MONTH])
+        bucket_free_gb = free_allowance(by_part[PART_BUCKET_GB_MONTH])
+        oke_cluster_hour = _pay_as_you_go(by_part[PART_OKE_CLUSTER_HOUR])
+        psql_ocpu_hour = _pay_as_you_go(by_part[PART_PSQL_OCPU_HOUR])
     except KeyError as exc:
         raise OCIUnavailable(f"OCI part not found: {exc}") from exc
 
-    if None in (ocpu_hour, memory_gb_hour, storage_gb_month):
+    if None in (ocpu_hour, memory_gb_hour, storage_gb_month, bucket_gb_month,
+                oke_cluster_hour, psql_ocpu_hour):
         raise OCIUnavailable("OCI parts missing a pay-as-you-go price.")
 
     return {
@@ -73,6 +109,15 @@ def _fetch_rates() -> dict[str, float]:
         "vcpu-hour": ocpu_hour / OCPU_TO_VCPU,
         "memory-gb-hour": memory_gb_hour,
         "storage-gb-month": storage_gb_month,
+        # Not-a-VM rates. A bucket has no OCPUs at all; a cluster is charged a
+        # flat fee for its control plane on top of whatever its nodes cost.
+        "bucket-storage-gb-month": bucket_gb_month,
+        "bucket-free-gb": bucket_free_gb,
+        "oke-cluster-hour": oke_cluster_hour,
+        # Stored per vCPU, like "vcpu-hour" above, because the sizing model
+        # counts vCPUs. Naming it per-OCPU while holding a per-vCPU value
+        # would be a factor-of-two waiting to happen.
+        "psql-vcpu-hour": psql_ocpu_hour / OCPU_TO_VCPU,
     }
 
 

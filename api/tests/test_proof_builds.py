@@ -537,3 +537,66 @@ def test_a_blueprint_that_never_earns_a_proof_does_eventually_expire(db, monkeyp
     expired = certification.expire(db)
     assert len(expired) == 1, "a blueprint unproven for 60 days stayed certified"
     assert bp(db).status == certification.STALE
+
+
+# --- a proof of nothing is not a proof ---------------------------------------
+
+class TestARecipeThatBuildsNothing:
+    """FOUND IN PRODUCTION, REQ-2026-0175, 2026-08-21.
+
+    `keycloak` had no recipe, so the agent drafted one. Its Terraform says in its
+    own opening line "builds nothing yet": a TODO_provider_resource guarded by
+    `count = var.resource_kind == "oci-keycloak" ? 1 : 0`, which evaluated to
+    zero. The invalid resource was therefore never instantiated.
+
+    Every gate went green. The plan succeeded (creating nothing), apply succeeded
+    (creating nothing), and verify found nothing to check and answered "nothing
+    here files a report; it built and tore down". The proof PASSED — 156 seconds
+    spent proving that Terraform can run.
+
+    That is the deepest failure available to this design. The entire claim of
+    certification-by-proof is "something real was built, confirmed working, and
+    destroyed"; a recipe that creates nothing satisfies every step of it while
+    meaning none of it.
+    """
+
+    def test_a_plan_that_adds_nothing_fails_the_proof(self, db, monkeypatch):
+        allow(monkeypatch)
+        posted = []
+
+        def post(path, payload):
+            posted.append(path)
+            if path == "/provision":
+                return True, ('{"plan_summary": "oci-keycloak: Plan: 0 to add, '
+                              '0 to change, 0 to destroy."}')
+            return True, "{}"
+
+        out = proof.run_proof(db, bp(db), post=post,
+                              price=lambda c: 10.0, verify=lambda r, p: (True, "ok"))
+
+        assert out.status == "failed"
+        assert "creates nothing" in out.detail
+        assert "/apply" not in posted, "it built something it already knew was empty"
+
+    def test_a_plan_that_adds_a_resource_proceeds(self, db, monkeypatch):
+        allow(monkeypatch)
+
+        def post(path, payload):
+            if path == "/provision":
+                return True, '{"plan_summary": "oci-service-vm: Plan: 1 to add."}'
+            return True, "{}"
+
+        out = proof.run_proof(db, bp(db), post=post,
+                              price=lambda c: 10.0, verify=lambda r, p: (True, "ok"))
+        assert out.status == "passed", out.detail
+
+    def test_counts_are_summed_across_modules(self):
+        assert proof.plans_to_create(
+            "a: Plan: 0 to add, 0 to change. b: Plan: 2 to add, 0 to change.") == 2
+
+    def test_an_unreadable_plan_is_not_mistaken_for_zero(self):
+        """A different fault, needing a different fix. Treating 'we could not
+        read the plan' as 'the plan is empty' would fail proofs for recipes that
+        build perfectly well."""
+        assert proof.plans_to_create("some other response entirely") is None
+        assert proof.plans_to_create("") is None

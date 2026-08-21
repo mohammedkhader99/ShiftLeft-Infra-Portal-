@@ -176,6 +176,22 @@ RATE_CARDS = [
      "discount_pct": 15.0},
     {"kind": "cloud_oci", "item": "storage-gb-month", "unit": "per GB/month", "rate": 0.08,
      "discount_pct": 15.0},
+    # Rates for the OCI resource kinds that are NOT virtual machines. List
+    # prices in AED, read from Oracle's public price list on 2026-08-21; the
+    # oci_pricing adapter refreshes them live when OCI_PRICING_MODE=live.
+    # Before these existed a bucket was billed a VM's compute (F-FIN).
+    #   B91628  Object Storage - Storage                  per GB/month, first 10 GB free
+    #   B96545  OCI Kubernetes Engine - Enhanced Cluster  per cluster/hour
+    #   B99060  Database with PostgreSQL - X86            per OCPU/hour (= 2 vCPU)
+    {"kind": "cloud_oci", "item": "bucket-storage-gb-month", "unit": "per GB/month",
+     "rate": 0.0936615, "discount_pct": 15.0},
+    # An ALLOWANCE, not a price: never discounted (pricing.NOT_A_RATE).
+    {"kind": "cloud_oci", "item": "bucket-free-gb", "unit": "GB free per month",
+     "rate": 10.0, "discount_pct": 0.0},
+    {"kind": "cloud_oci", "item": "oke-cluster-hour", "unit": "per cluster/hour",
+     "rate": 0.3673, "discount_pct": 15.0},
+    {"kind": "cloud_oci", "item": "psql-vcpu-hour", "unit": "per vCPU/hour",
+     "rate": 0.179977, "discount_pct": 15.0},
     # AWS: compute per hour, storage per GB/month; 10% negotiated discount
     # (indicative rates; live via the AWS Price List API, aws_pricing adapter).
     {"kind": "cloud_aws", "item": "vcpu-hour", "unit": "per vCPU/hour", "rate": 0.13,

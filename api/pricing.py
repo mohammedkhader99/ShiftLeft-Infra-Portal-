@@ -19,7 +19,7 @@ from api.adapters.azure_pricing import AzureUnavailable
 from api.adapters.gcp_pricing import GCPUnavailable
 from api.adapters.oci_pricing import OCIUnavailable
 from api.sizing import resolve_components
-from db.models import RateCard
+from db.models import Blueprint, RateCard
 
 HOURS_PER_MONTH = 730  # standard cloud billing month
 CURRENCY = "AED"
@@ -39,6 +39,65 @@ TECHNOLOGY_LICENCE = {
     "mssql": "mssql-licence",
 }
 
+# --- What kind of thing is this, and how is that kind billed? ---------------
+#
+# FOUND 2026-08-21, proving oci-objectstorage. Every OCI component priced at
+# exactly the same monthly figure, because the estimate came from the SIZE alone:
+# small/medium/large chose a VM shape and that shape's compute was charged to
+# everything. A bucket was billed AED 158.85 of compute for CPUs it does not
+# have; so were a Kubernetes cluster and a managed database.
+#
+# The kind is not guessed. It comes from the blueprint — the recipe that will
+# actually be built — and an unrecognised kind is priced at nothing and marked
+# unresolved, never quietly billed as a VM.
+#
+# WHY NOT Technology.resource_kind: it defaults to "oci-bucket" and is wrong for
+# seven of the nine certified components (it calls NGINX a bucket). Falling back
+# to it would price a VM as storage — roughly AED 1 instead of 162 — and an
+# under-estimate is the dangerous direction: it slips under every cost cap and
+# then builds the expensive thing anyway.
+BILLING_VM = "vm"                  # compute + storage, the original model
+BILLING_BUCKET = "bucket"          # storage only, tiered, no compute at all
+BILLING_CLUSTER = "cluster"        # a flat control-plane fee + its nodes
+BILLING_MANAGED_DB = "managed-db"  # its own OCPU rate + storage
+
+# The rate items each not-a-VM model CANNOT be priced without.
+#
+# FOUND 2026-08-21, minutes after the models above were written. The code was
+# right and the running database had never been given the new rate rows — seeding
+# only ever happened on a fresh database — so `resource.get("oke-cluster-hour",
+# 0.0)` priced a Kubernetes control plane at nothing and reported AED 162.25 with
+# every appearance of confidence. A default of zero on a missing PRICE is the
+# same sin this whole change exists to fix: an answer where there is no answer.
+#
+# Deliberately not declared for the VM model. That one is long-standing, spans
+# five targets with different key sets (on-prem bills per vCPU, clouds per
+# vCPU-hour) and works; tightening it here would risk what already functions to
+# guard against a fault it has never had.
+REQUIRED_RATES = {
+    BILLING_BUCKET: ("bucket-storage-gb-month",),
+    BILLING_CLUSTER: ("oke-cluster-hour", "vcpu-hour", "memory-gb-hour"),
+    BILLING_MANAGED_DB: ("psql-vcpu-hour", "storage-gb-month"),
+}
+
+# Keys in a rate dict that are ALLOWANCES, not prices. A negotiated discount
+# multiplies every rate; applying it to "the first 10 GB are free" would quietly
+# reduce the free tier to 8.5 GB, which is not what a discount means.
+NOT_A_RATE = {"bucket-free-gb"}
+
+BILLING_MODEL = {
+    # Machines. One VM shape, one price — correct as it always was.
+    "oci-service-vm": BILLING_VM,
+    "oci-apache": BILLING_VM,
+    "oci-instance": BILLING_VM,
+    "onprem-vm": BILLING_VM,
+    # Not machines.
+    "oci-bucket": BILLING_BUCKET,
+    "oci-oke": BILLING_CLUSTER,
+    "oci-postgres": BILLING_MANAGED_DB,
+    "oci-psql": BILLING_MANAGED_DB,
+}
+
 # Advanced-option cost modifiers (6.5). Transparent, documented mock/demo
 # constants; an unset option contributes nothing, so base totals are unchanged.
 HA_COMPUTE_MULTIPLIER = 2.0                                # high_availability doubles compute
@@ -47,11 +106,21 @@ MONITORING_MONTHLY = {"basic": 150.0, "enhanced": 500.0}  # flat monthly, by lev
 SUPPORT_PCT = {"business": 0.10, "premium": 0.20}         # x infra subtotal, by tier
 
 
+def _apply_discount(rates: dict[str, float], discount: float) -> dict[str, float]:
+    """Discount the prices and leave the allowances alone (see NOT_A_RATE)."""
+    return {item: (value if item in NOT_A_RATE else value * (1 - discount))
+            for item, value in rates.items()}
+
+
 def _rates(session: Session, kind: str) -> dict[str, float]:
     """Return {item: discounted rate} for one rate-card kind."""
     rows = session.scalars(select(RateCard).where(RateCard.kind == kind)).all()
     return {
-        row.item: float(row.rate) * (1 - float(row.discount_pct) / 100) for row in rows
+        item: value for item, value in (
+            (row.item, float(row.rate) if row.item in NOT_A_RATE
+             else float(row.rate) * (1 - float(row.discount_pct) / 100))
+            for row in rows
+        )
     }
 
 
@@ -88,6 +157,73 @@ def _component_parts(target: str, resource: dict, vcpu: int, memory_gb: int, sto
     return compute, storage
 
 
+def resource_kind_for(component: dict, session: Session, target: str) -> str | None:
+    """Which cloud resource this component becomes, or None if nothing says.
+
+    Order matters, and THE BLUEPRINT WINS:
+      1. the certified blueprint for (technology, target) — authoritative for
+         anything a user can actually order;
+      2. only if none exists, an explicit "resource_kind" on the component.
+
+    That order is a security property, not a preference. `components` arrives
+    from the browser on /api/cost, so a caller that could override a certified
+    component's kind could declare a virtual machine to be a bucket and have it
+    priced at AED 3 instead of 162 — the client holding authority over its own
+    price, which the architecture forbids (P2). Step 2 exists only for the case
+    where nothing else CAN know: a proof prices the component it is about to
+    build precisely because that component is not certified yet.
+
+    There is no third step. Technology.resource_kind exists and is wrong for most
+    components; guessing from it would under-price, and an under-price is the
+    failure that spends money rather than the one that refuses to.
+    """
+    code = (component.get("technology_code") or "").strip()
+    if code:
+        row = session.get(Blueprint, (code, target))
+        if row is not None and row.resource_kind:
+            return row.resource_kind
+    return (component.get("resource_kind") or "").strip() or None
+
+
+def _target_uses_blueprints(session: Session, target: str) -> bool:
+    """Whether this target's catalogue is described by blueprints at all.
+
+    Only OCI is today. On a target with no blueprints there is nothing that
+    could name a resource kind, and everything in its catalogue is generic
+    software on a machine — so the VM model is not an assumption there, it is
+    the whole model, and pricing must go on working exactly as before.
+
+    Asked of the data rather than hard-coded, so this corrects itself the day
+    another target gains blueprints instead of quietly staying wrong.
+    """
+    return session.scalar(
+        select(Blueprint.technology_code)
+        .where(Blueprint.deployment_target == target).limit(1)) is not None
+
+
+def _not_a_vm_parts(model: str, resource: dict, vcpu: int, memory_gb: int,
+                    storage_gb: int) -> tuple[float, float]:
+    """(compute_monthly, storage_monthly) for the kinds that are not machines."""
+    if model == BILLING_BUCKET:
+        # No compute whatsoever, and the first GBs are free.
+        free = resource.get("bucket-free-gb", 0.0)
+        rate = resource.get("bucket-storage-gb-month", resource.get("storage-gb-month", 0.0))
+        return 0.0, max(0.0, storage_gb - free) * rate
+    if model == BILLING_CLUSTER:
+        # The control plane is a flat fee; the node pool is ordinary compute.
+        cluster = resource.get("oke-cluster-hour", 0.0) * HOURS_PER_MONTH
+        # The nodes are ordinary machines — priced by the ordinary formula, RAM
+        # included. Counting only their vCPUs made a cluster look CHEAPER than
+        # the single VM it contains.
+        nodes = _cloud_compute_cached(resource, vcpu, memory_gb)
+        return cluster + nodes, storage_gb * resource.get("storage-gb-month", 0.0)
+    if model == BILLING_MANAGED_DB:
+        # A managed database is charged on its own OCPU rate, not the VM one.
+        rate = resource.get("psql-vcpu-hour", resource.get("vcpu-hour", 0.0))
+        return vcpu * rate * HOURS_PER_MONTH, storage_gb * resource.get("storage-gb-month", 0.0)
+    return 0.0, 0.0
+
+
 def estimate_cost(
     components: list[dict],
     deployment_target: str,
@@ -120,10 +256,7 @@ def estimate_cost(
     if target == "oci" and oci_pricing.is_live():
         try:
             oci_discount = _discount(session, "cloud_oci")
-            resource = {
-                item: rate * (1 - oci_discount)
-                for item, rate in oci_pricing.rates().items()
-            }
+            resource = _apply_discount(oci_pricing.rates(), oci_discount)
             pricing_source = "oci-live"
         except OCIUnavailable:
             pricing_source = "oci-cached"  # keep the cached rate cards
@@ -134,10 +267,7 @@ def estimate_cost(
     if target == "aws" and aws_pricing.is_live():
         try:
             aws_discount = _discount(session, "cloud_aws")
-            resource = {
-                item: rate * (1 - aws_discount)
-                for item, rate in aws_pricing.rates().items()
-            }
+            resource = _apply_discount(aws_pricing.rates(), aws_discount)
             pricing_source = "aws-live"
         except AWSUnavailable:
             pricing_source = "aws-cached"  # keep the cached rate cards
@@ -147,13 +277,12 @@ def estimate_cost(
     if target == "gcp" and gcp_pricing.is_live():
         try:
             gcp_discount = _discount(session, "cloud_gcp")
-            resource = {
-                item: rate * (1 - gcp_discount)
-                for item, rate in gcp_pricing.rates().items()
-            }
+            resource = _apply_discount(gcp_pricing.rates(), gcp_discount)
             pricing_source = "gcp-live"
         except GCPUnavailable:
             pricing_source = "gcp-cached"  # keep the cached rate cards
+
+    blueprint_target = _target_uses_blueprints(session, target) if known_target else False
 
     lines: list[dict] = []
     one_time_total = 0.0
@@ -162,12 +291,39 @@ def estimate_cost(
     storage_total = 0.0
     licence_total = 0.0
 
-    for comp in sizing["components"]:
+    for raw, comp in zip(components, sizing["components"]):
         compute_monthly = 0.0
         storage_monthly = 0.0
         licence_monthly = 0.0
         one_time = 0.0
-        if comp["resolved"] and known_target:
+
+        # WHAT is being built decides HOW it is billed. An unrecognised kind is
+        # left unpriced and unresolved on purpose: "we do not know what this
+        # costs" must not come out looking like a number somebody can approve.
+        kind = resource_kind_for(raw, session, target) if known_target else None
+        if kind:
+            model = BILLING_MODEL.get(kind)
+        elif known_target and not blueprint_target:
+            # No blueprints on this target, so nothing could have named a kind.
+            # Machines are the only thing it builds; that is not a guess.
+            model = BILLING_VM
+        else:
+            # A blueprint target that could not name this kind is a real unknown.
+            model = None
+        # A model whose rate card is incomplete cannot price anything. Say so,
+        # rather than charging zero for whatever is missing.
+        missing = [item for item in REQUIRED_RATES.get(model or "", ())
+                   if item not in resource]
+        priceable = (comp["resolved"] and known_target
+                     and model is not None and not missing)
+
+        if priceable and model != BILLING_VM:
+            compute_monthly, storage_monthly = _not_a_vm_parts(
+                model, resource, comp["vcpu"], comp["memory_gb"], comp["storage_gb"])
+            licence_item = TECHNOLOGY_LICENCE.get(comp["technology_code"])
+            if licence_item:
+                licence_monthly = licences.get(licence_item, 0.0)
+        elif priceable:
             if azure_live:
                 storage_monthly = comp["storage_gb"] * resource.get("storage-gb-month", 0)
                 try:
@@ -198,7 +354,12 @@ def estimate_cost(
             {
                 "technology_name": comp["technology_name"],
                 "size": comp["size"],
-                "resolved": comp["resolved"] and known_target,
+                "resolved": priceable,
+                "resource_kind": kind,
+                "billing_model": model,
+                # Names the rate rows a deployment is missing, so "we cannot
+                # price this" arrives with the reason attached.
+                "unpriceable": ("missing rates: " + ", ".join(missing)) if missing else None,
                 "compute_monthly": round(compute_monthly, 2),
                 "storage_monthly": round(storage_monthly, 2),
                 "resource_monthly": round(resource_monthly, 2),
@@ -216,8 +377,18 @@ def estimate_cost(
     support_total = round(support_base * SUPPORT_PCT.get(advanced.get("support_tier"), 0.0), 2)
     monthly_total += backup_total + monitoring_total + support_total
 
+    # WHAT COULD NOT BE PRICED, at the top level where a decision can see it.
+    #
+    # FOUND 2026-08-21 on REQ-2026-0175. The line for `keycloak` correctly said
+    # resolved=False, and the total said 0.00 — so the proof's cost gate read
+    # "free", approved it against a AED 300 ceiling, and built for real. An
+    # honest signal that only the line carries is not a signal at all: whatever
+    # ACTS on the number must be able to see it.
+    unpriced = [li["technology_name"] for li in lines if not li["resolved"]]
+
     return {
         "currency": CURRENCY,
+        "unpriced": unpriced,
         "deployment_target": target or None,
         "known_target": known_target,
         "pricing_source": pricing_source,
