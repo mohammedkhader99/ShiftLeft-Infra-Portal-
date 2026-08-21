@@ -154,6 +154,20 @@ services:
       # certification (C1). Three, so one bad request or a cloud having a moment
       # cannot pull a working recipe off the catalogue.
       CERTIFICATION_FAILURE_THRESHOLD: ${CERTIFICATION_FAILURE_THRESHOLD:-}
+      # --- Certification proof builds (C2, ARCHITECTURE.md §4 "Attest") -------
+      # OFF by default: a proof build creates real, billable infrastructure. Both
+      # the api and the orchestrator must allow it — the orchestrator re-verifies
+      # every limit itself rather than trusting the caller.
+      CERTIFICATION_PROOF_ENABLED: ${CERTIFICATION_PROOF_ENABLED:-false}
+      # The ONLY tier a proof may build in. No default on purpose: an unset or
+      # unrecognised tier makes the runner refuse to start rather than pick one.
+      CERTIFICATION_SANDBOX_TIER: ${CERTIFICATION_SANDBOX_TIER:-}
+      # Monthly ceiling for one proof, checked against the PLAN before any apply,
+      # so a proof never discovers its price by paying it.
+      CERTIFICATION_COST_CAP_MONTHLY: ${CERTIFICATION_COST_CAP_MONTHLY:-}
+      # How long a passing proof keeps a blueprint certified (P8, 30 days).
+      CERTIFICATION_VALIDITY_DAYS: ${CERTIFICATION_VALIDITY_DAYS:-}
+
       PROVISION_MODE: ${PROVISION_MODE:-mock}
       # RBAC (E1.1). ROLE_SOURCE:
       #   portal - the portal's own person->role list (Admin -> Access control).
@@ -360,6 +374,18 @@ services:
       # Versions are retired on Oracle's schedule, so an hour keeps a
       # long-running orchestrator from holding one past retirement.
       OKE_VERSION_TTL_SECONDS: ${OKE_VERSION_TTL_SECONDS:-}
+      # --- Certification proof builds (C2, ARCHITECTURE.md §4 "Attest") -------
+      # OFF by default: a proof build creates real, billable infrastructure. Both
+      # the api and the orchestrator must allow it — the orchestrator re-verifies
+      # every limit itself rather than trusting the caller.
+      CERTIFICATION_PROOF_ENABLED: ${CERTIFICATION_PROOF_ENABLED:-false}
+      # The ONLY tier a proof may build in. No default on purpose: an unset or
+      # unrecognised tier makes the runner refuse to start rather than pick one.
+      CERTIFICATION_SANDBOX_TIER: ${CERTIFICATION_SANDBOX_TIER:-}
+      # Monthly ceiling for one proof, checked against the PLAN before any apply,
+      # so a proof never discovers its price by paying it.
+      CERTIFICATION_COST_CAP_MONTHLY: ${CERTIFICATION_COST_CAP_MONTHLY:-}
+
       PSQL_CATALOGUE_TTL_SECONDS: ${PSQL_CATALOGUE_TTL_SECONDS:-}
       OCI_OKE_KUBERNETES_VERSION: ${OCI_OKE_KUBERNETES_VERSION:-}
       OCI_OKE_CLUSTER_TYPE: ${OCI_OKE_CLUSTER_TYPE:-}

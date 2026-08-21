@@ -47,6 +47,13 @@ _GATE_ENV = {
     # oke_kubernetes_version, which now says where the version CAME from —
     # a constant in this repo was what failed REQ-2026-0148.
     "OKE_VERSION_TTL_SECONDS",
+    # Certification proof builds (C2). Reported by /posture as proof_enabled,
+    # proof_sandbox_tier and proof_cost_cap_monthly — this is the gate that lets
+    # the portal provision without a Jira approval, so it is the one an admin
+    # most needs to see. The tier and cap are shown by value deliberately: they
+    # are the bounds, not secrets.
+    "CERTIFICATION_PROOF_ENABLED", "CERTIFICATION_SANDBOX_TIER",
+    "CERTIFICATION_COST_CAP_MONTHLY",
     # Same job for managed PostgreSQL: how long the shape/version catalogue
     # fetched from OCI is trusted. Surfaced as part of the psql readiness
     # reporting rather than as a raw number an admin would have to interpret.
@@ -141,6 +148,9 @@ EXCLUDED: dict[str, str] = {
     # listing instead: a suspended row already carries the count and the request
     # references in its reason, which is what an admin actually needs to see.
     "CERTIFICATION_FAILURE_THRESHOLD": "internal tuning",
+    # How long a proof keeps a blueprint certified. Surfaced through the
+    # blueprint listing, where a stale row already says how long it has been.
+    "CERTIFICATION_VALIDITY_DAYS": "internal tuning",
     "LEADER_LEASE_TTL_SECONDS": "internal tuning",
     "SUBSIDIARY_SYNC_INTERVAL_SECONDS": "internal tuning",
     "PROVISION_TTL_DAYS": "internal default",

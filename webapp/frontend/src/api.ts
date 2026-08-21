@@ -995,7 +995,10 @@ export type BlueprintRow = {
   version: string
   // 'suspended' is withdrawn BY EVIDENCE (C1) — the portal pulled it after
   // consecutive failures — which is a different thing from never certified.
-  state: 'certified' | 'available' | 'missing' | 'draft' | 'suspended' | 'none'
+  // 'stale' = certified once, and its proof aged out (C2). Distinct from
+  // 'suspended', where the evidence turned against it: nothing failed here, the
+  // evidence simply expired.
+  state: 'certified' | 'available' | 'missing' | 'draft' | 'suspended' | 'stale' | 'none'
   certified_by: string | null
   certified_at: string | null
   // Why it was withdrawn, naming the requests that failed.
@@ -1011,6 +1014,7 @@ export type BlueprintMatrix = {
   certified: number
   missing: number
   suspended: number
+  stale: number
   targets: string[]
 }
 export async function getBlueprints(): Promise<BlueprintMatrix | 'forbidden' | null> {

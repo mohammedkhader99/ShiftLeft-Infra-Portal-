@@ -37,7 +37,7 @@ from datetime import datetime, timezone
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
-from db.models import Blueprint, ProvisionedResource, Request
+from db.models import Blueprint, CertificationProof, ProvisionedResource, Request
 
 # "Terraform apply failed for oci-postgres: ..." — the orchestrator writes the
 # resource kind it was building. Anchored on the whole marker so a stray
@@ -60,6 +60,10 @@ SUCCESS_STATUSES = ("provisioned", "decommissioned")
 # Deleting would discard the reason, and the reason is the entire point: an admin
 # looking at the console needs to know the portal withdrew this and why.
 SUSPENDED = "suspended"
+
+# Certified once, never re-proven since. Distinct from SUSPENDED, which means the
+# evidence turned against it: stale means the evidence simply ran out.
+STALE = "stale"
 
 # How many recent finished requests to look back through when attributing
 # outcomes. Generous enough that a busy week of unrelated builds cannot hide a
@@ -146,6 +150,100 @@ def should_withdraw(outcomes: list[tuple[str, bool, str]],
     if len(outcomes) < threshold:
         return False
     return all(not ok for _ref, ok, _detail in outcomes[:threshold])
+
+
+def last_passing_proof(session: Session, technology_code: str,
+                       target: str) -> datetime | None:
+    """When this blueprint was last proven by a build, or None."""
+    row = session.scalars(
+        select(CertificationProof)
+        .where(CertificationProof.technology_code == technology_code)
+        .where(CertificationProof.deployment_target == target)
+        .where(CertificationProof.status == "passed")
+        .order_by(desc(CertificationProof.finished_at))
+        .limit(1)
+    ).first()
+    return row.finished_at if row else None
+
+
+def expire(session: Session, now: datetime | None = None) -> list[dict]:
+    """Mark certifications whose proof has aged out (ARCHITECTURE.md P8).
+
+    ONLY WHEN PROOF BUILDS ARE RUNNING. With them switched off there is no clock
+    to age against: applying the 30-day rule anyway would take the entire
+    catalogue offline on day 31 for a feature nobody enabled, which is a worse
+    outcome than the staleness it was meant to prevent.
+    """
+    from api import proof
+
+    if not proof.enabled():
+        return []
+
+    now = now or datetime.now(timezone.utc)
+    expired: list[dict] = []
+    for row in session.scalars(select(Blueprint)).all():
+        if row.status != "certified":
+            continue
+        last = last_passing_proof(session, row.technology_code, row.deployment_target)
+        if not proof.is_stale(last, now):
+            continue
+        row.status = STALE
+        row.notes = (f"Certification expired: no passing proof build in "
+                     f"{proof.validity_days()} days"
+                     + (f" (last passed {last:%Y-%m-%d})" if last else
+                        " — it has never been proven by a build"))[:400]
+        expired.append({
+            "technology": row.technology_code,
+            "target": row.deployment_target,
+            "last_passed_at": last.isoformat() if last else None,
+            "reason": row.notes,
+        })
+    return expired
+
+
+def restore(session: Session, now: datetime | None = None) -> list[dict]:
+    """Re-certify a blueprint whose proof build passed (ARCHITECTURE.md P8).
+
+    THE WAY BACK that C1 promised. A blueprint the portal suspended or expired
+    returns to service when a proof build provisions it, verifies it healthy,
+    prices it within budget and destroys it again — the evidence C1 said it would
+    need, rather than someone deciding it is probably fine now.
+
+    IT WILL NOT CERTIFY SOMETHING NEVER CERTIFIED. A passing proof says a recipe
+    BUILDS; it says nothing about whether it is safe, correctly scoped, or
+    something this organisation wants to offer. The OKE bastion carried
+    `assign_public_ip = true` and built perfectly for months. First certification
+    stays a human act; only coming BACK is earned by proof.
+    """
+    from api import proof
+
+    if not proof.enabled():
+        return []
+
+    now = now or datetime.now(timezone.utc)
+    restored: list[dict] = []
+    for row in session.scalars(select(Blueprint)).all():
+        if row.status not in (SUSPENDED, STALE):
+            continue
+        # certified_by is the fingerprint of a human decision at some point. No
+        # fingerprint means nobody ever approved this, and a build passing is not
+        # the same as somebody wanting it offered.
+        if not row.certified_by:
+            continue
+        last = last_passing_proof(session, row.technology_code, row.deployment_target)
+        if last is None or proof.is_stale(last, now):
+            continue
+        was = row.status
+        row.status = "certified"
+        row.notes = (f"Re-certified by a passing proof build on "
+                     f"{last:%Y-%m-%d %H:%M} UTC, after being {was}.")[:400]
+        restored.append({
+            "technology": row.technology_code,
+            "target": row.deployment_target,
+            "was": was,
+            "proved_at": last.isoformat(),
+        })
+    return restored
 
 
 def review(session: Session, threshold: int | None = None) -> list[dict]:

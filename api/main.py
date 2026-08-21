@@ -733,6 +733,13 @@ _EXECUTION_GATE_LABELS = {
     "oke_kubernetes_version": "OKE Kubernetes version",
     "oke_cluster_type": "OKE cluster type",
     "kafka_source_set": "Kafka archive source configured",
+    # The gate that lets the portal provision WITHOUT a Jira approval
+    # (ARCHITECTURE.md §4, "Attest"). Its bounds are shown by value, not as
+    # booleans: "proofs are on" is not useful without "in which tier, and up to
+    # what monthly cost".
+    "proof_enabled": "Certification proof builds allowed (real, billable)",
+    "proof_sandbox_tier": "Proof builds restricted to this tier",
+    "proof_cost_cap_monthly": "Proof build cost ceiling (monthly)",
     "catalogue_mode": "Cloud option catalogue mode",
     "catalogue_shapes_allowed": "Compute shapes allow-listed (0 = offer none)",
     "catalogue_image_filter_set": "OS image filter configured",
@@ -949,6 +956,11 @@ def list_blueprints(session: Session = Depends(get_session),
             # Certified but the orchestrator no longer ships it — the dangerous
             # direction, surfaced rather than quietly dropped.
             state = "certified" if row_avail else "missing"
+        elif row_cert and row_cert.status == certification.STALE:
+            # Certified once, and the proof has aged out (ARCHITECTURE.md P8).
+            # Not the same as suspended: nothing failed, the evidence simply
+            # expired. An admin re-proves it rather than investigating it.
+            state = "stale"
         elif row_cert and row_cert.status == certification.SUSPENDED:
             # WITHDRAWN BY EVIDENCE (C1), not merely un-approved. Its own state,
             # because "nobody certified this yet" and "this was certified and
@@ -986,6 +998,7 @@ def list_blueprints(session: Session = Depends(get_session),
         "certified": sum(1 for r in rows if r["state"] == "certified"),
         "missing": sum(1 for r in rows if r["state"] == "missing"),
         "suspended": sum(1 for r in rows if r["state"] == "suspended"),
+        "stale": sum(1 for r in rows if r["state"] == "stale"),
         "targets": sorted(DEPLOYMENT_TARGETS),
     }
 
@@ -6249,6 +6262,14 @@ def _poll_once() -> None:
             for gone in certification.review(session):
                 append_audit(session, "blueprint.suspended", actor="certification",
                              detail=gone)
+            for aged in certification.expire(session):
+                append_audit(session, "blueprint.expired", actor="certification",
+                             detail=aged)
+            # Restoration runs LAST, so within a single sweep any evidence
+            # against a blueprint is applied before evidence for it.
+            for back in certification.restore(session):
+                append_audit(session, "blueprint.recertified", actor="certification",
+                             detail=back)
             session.commit()
             fulfilment.invalidate_cache()
     except Exception as exc:  # noqa: BLE001

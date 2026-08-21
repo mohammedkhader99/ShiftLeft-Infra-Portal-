@@ -1,8 +1,8 @@
 # PROPOSAL — A self-certifying catalogue
 
-**Status: DRAFT FOR APPROVAL. Nothing here is in force.**
-`ARCHITECTURE.md` and `PLAN.md` are unchanged. This file exists so the wording can
-be argued with before it becomes authority.
+**Status: PARTLY IN FORCE.** C0, C1 and C2 are built. `ARCHITECTURE.md` §2 and
+§4 were amended on 2026-08-21 with the reviewer's approval (commit ddf5a85);
+`PLAN.md` is still unchanged. C3 and C4 remain proposals.
 
 Raised by Mohammed Khader, 2026-08-18: *"every component we are manually
 certifying… I don't want to have this human dependency."*
@@ -120,7 +120,7 @@ first must be reproducible; the second is exactly what an agent is good at.
 
 Ordered so each is useful alone and nothing depends on the agent.
 
-### Increment C0 — fix the foundation first (prerequisite)
+### Increment C0 — fix the foundation first — DONE (52d3325)
 
 Two defects found 2026-08-17/18 that automation would otherwise be built on:
 
@@ -132,7 +132,7 @@ Two defects found 2026-08-17/18 that automation would otherwise be built on:
 **Acceptance:** an approved decommission completes and the request reaches a
 terminal status; a hung Jira call cannot stall the poll loop or retain the lease.
 
-### Increment C1 — auto-decertification (no new spend)
+### Increment C1 — auto-decertification — DONE (8a53d52)
 
 Feed signals already collected — `apply-failed`, `verify-failed`, resource-state
 checks — back into `Blueprint.status`. N consecutive failures withdraw
@@ -142,7 +142,7 @@ certification and surface the reason in the Admin console.
 it decertifies automatically and the console names why. This alone would have
 stopped `oci-oke` being offered while it was failing.
 
-### Increment C2 — certification runner + cost envelope
+### Increment C2 — certification runner + cost envelope — DONE
 
 Scheduled job: provision into the sandbox tier at the smallest resolvable shape →
 verify (`resource_state` / boot reports) → destroy → record proof with timestamp.
@@ -225,9 +225,18 @@ Required consequences, to be enforced by tests in C2:
 Revisit if proof builds start colliding with real Development work — a dedicated
 tier costs a little more and removes the whole class of risk.
 
-## Open questions for you
+## Decided since
 
-1. **Cadence and budget** — nightly for cheap resources, weekly for expensive?
-   An OKE proof is ~35 minutes of live cluster.
-2. **Certification TTL** — 7 days? 30?
-3. **Does a passing proof plus review auto-merge, or does a human merge?**
+- **Proof authority** (2026-08-21): the runner self-approves in the sandbox,
+  chosen over a Jira ticket per proof. Recorded in ARCHITECTURE.md §4 as a named
+  exception with explicit bounds; anything wider is a new conflict to flag.
+- **Certification validity**: 30 days without a fresh passing proof.
+- **First certification stays a human act.** A passing proof can bring a
+  suspended or stale blueprint BACK, but cannot certify one nobody ever approved
+  — a build passing says the recipe builds, not that it is safe or wanted.
+
+## Still open
+
+1. **Cadence and budget** — nothing schedules proof runs yet. The runner exists
+   and is off by default; deciding when it runs is what turns C2 on.
+2. **Does a passing proof plus review auto-merge, or does a human merge?** (C4)

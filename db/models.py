@@ -834,3 +834,41 @@ class ApiKey(Base):
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class CertificationProof(Base):
+    """One attempt to prove a blueprint still builds, by building it (C2).
+
+    A NEW TABLE rather than columns on Blueprint, for two reasons. There is no
+    migration mechanism here — `create_all` adds missing tables but not missing
+    columns, so new columns would silently not exist on a database that already
+    has a blueprint table. And a proof is an event with a history worth keeping,
+    not a single mutable field: 'this failed three times then passed' is exactly
+    the kind of thing someone will want to read later.
+
+    Certification is DERIVED from these rows (ARCHITECTURE.md P8): a blueprint is
+    certified while its most recent proof passed and is younger than the validity
+    period. Nobody sets a flag.
+    """
+
+    __tablename__ = "certification_proof"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    technology_code: Mapped[str] = mapped_column(String(48), index=True)
+    deployment_target: Mapped[str] = mapped_column(String(16))
+    resource_kind: Mapped[str] = mapped_column(String(32), default="")
+    # The proof's own reference, e.g. PROOF-OCI-OKE-20260821T0930. Carries the
+    # marker that scopes teardown — see ARCHITECTURE.md §4, "only what it created".
+    reference: Mapped[str] = mapped_column(String(48), unique=True, index=True)
+    # running | passed | failed | refused | abandoned
+    #   refused  = never built. Over the cost cap, or the sandbox was not set.
+    #   abandoned = built and could not be torn down. The loudest outcome there
+    #               is, because it means the runner left something billing.
+    status: Mapped[str] = mapped_column(String(16), default="running")
+    detail: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # What the plan was priced at, and the ceiling it was checked against, so a
+    # refusal can say "1,240 exceeds the 200 cap" rather than just "too expensive".
+    planned_monthly: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)
+    cost_cap: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

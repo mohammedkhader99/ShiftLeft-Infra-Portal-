@@ -17,6 +17,7 @@ import re
 import httpx
 from fastapi import FastAPI, HTTPException, Request
 
+from common import proof_rules
 from common.signing import verify
 from orchestrator import (
     backups,
@@ -154,6 +155,13 @@ async def posture(request: Request) -> dict:
         "oke_cluster_type": os.getenv("OCI_OKE_CLUSTER_TYPE", "") or "BASIC_CLUSTER",
         # Set-or-not: the value is a pre-authenticated URL, which is a credential.
         "kafka_source_set": bool(os.getenv("OCI_KAFKA_SOURCE_URL")),
+        # Certification proof builds (C2). Shown because this is the one gate
+        # that lets the portal provision without a Jira approval — an admin
+        # should be able to see, at a glance, whether that is switched on and
+        # what bounds it.
+        "proof_enabled": proof_rules.enabled(),
+        "proof_sandbox_tier": os.getenv("CERTIFICATION_SANDBOX_TIER", "") or "(unset — refuses)",
+        "proof_cost_cap_monthly": proof_rules.cost_cap(),
         "backup_mode": backups.backup_mode(),
         "restore_mode": backups.restore_mode(),
         "reduce_mode": os.getenv("REDUCE_MODE", "mock").strip().lower(),
@@ -206,6 +214,65 @@ def _current_monthly(policy_input: dict) -> float | None:
     return resp.json().get("totals", {}).get("monthly")
 
 
+def _authorise_proof(payload: dict, policy_input: dict) -> dict:
+    """Authority for a certification proof build (ARCHITECTURE.md §4).
+
+    The runner may provision without a Jira approval, bounded on every side. The
+    orchestrator checks those bounds against ITS OWN configuration rather than
+    believing the payload — a caller that could assert its own sandbox tier or
+    its own cost cap would have no bounds at all.
+
+    Refusals are 403 and name the limit, so a misconfiguration reads as a
+    misconfiguration instead of a mysterious silence.
+    """
+    if not proof_rules.enabled():
+        raise HTTPException(
+            status_code=403,
+            detail="Proof builds are not enabled on the orchestrator "
+                   "(CERTIFICATION_PROOF_ENABLED). Both services must allow them.")
+
+    reference = str(payload.get("reference") or "")
+    if not proof_rules.is_proof_reference(reference):
+        raise HTTPException(
+            status_code=403,
+            detail=f"{reference!r} is not a proof reference. A proof may only "
+                   f"act under a reference this runner minted.")
+
+    try:
+        sandbox = proof_rules.configured_sandbox_tier()
+    except proof_rules.ProofRefused as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    tier = str(policy_input.get("environment_tier") or "")
+    if tier != sandbox:
+        raise HTTPException(
+            status_code=403,
+            detail=f"A proof may build only in the sandbox tier ({sandbox}); this "
+                   f"one asked for {tier or 'no tier'}.")
+
+    # Re-check OPA, exactly as for a user request. A proof is not exempt from
+    # policy just because it is the portal testing itself.
+    try:
+        result = httpx.post(
+            f"{OPA_URL}/v1/data/infra/authz", json={"input": policy_input}, timeout=5.0
+        ).json().get("result", {})
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Could not re-check policy: {exc}")
+    if not result.get("allow"):
+        raise HTTPException(status_code=403, detail="Policy re-check failed at execution.")
+
+    # THE COST CEILING, applied before anything is built. Priced here rather than
+    # taken from the payload for the same reason as the tier.
+    try:
+        monthly = _current_monthly(policy_input)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Could not price the proof: {exc}")
+    verdict = proof_rules.check_cost(monthly)
+    if not verdict.allowed:
+        raise HTTPException(status_code=409, detail=verdict.reason)
+
+    return payload
+
+
 def _authorise(body: bytes, signature: str) -> dict:
     """Verify authenticity + authority + policy + cost. Returns the payload."""
     if not verify(WEBHOOK_SECRET, body, signature):
@@ -215,8 +282,16 @@ def _authorise(body: bytes, signature: str) -> dict:
     if payload.get("contract_version") != SUPPORTED_CONTRACT:
         raise HTTPException(status_code=400, detail="Unsupported contract version.")
 
-    jira_key = payload["jira_key"]
     policy_input = payload.get("policy_input", {})
+
+    # A CERTIFICATION PROOF carries its own authority (ARCHITECTURE.md §4,
+    # "Attest"). Every limit is re-verified HERE, from this service's own
+    # environment — the signature proves who sent it, never what they may do,
+    # which is the same stance taken on a Jira approval two lines below.
+    if payload.get("proof"):
+        return _authorise_proof(payload, policy_input)
+
+    jira_key = payload["jira_key"]
 
     # Authority: re-verify the approval in Jira (mock = API).
     try:
@@ -739,7 +814,7 @@ async def provision(request: Request) -> dict:
     """Approve handoff: plan only (mock returns a mock result). Creates nothing."""
     body = await request.body()
     payload = _authorise(body, request.headers.get("X-Signature", ""))
-    reference, jira_key = payload["reference"], payload["jira_key"]
+    reference, jira_key = payload["reference"], payload.get("jira_key", "")
     key = payload["idempotency_key"]
 
     if key in _provisioned:
@@ -800,7 +875,7 @@ async def apply(request: Request) -> dict:
 
     body = await request.body()
     payload = _authorise(body, request.headers.get("X-Signature", ""))
-    reference, jira_key = payload["reference"], payload["jira_key"]
+    reference, jira_key = payload["reference"], payload.get("jira_key", "")
     key = payload["idempotency_key"]
 
     if key in _provisioned:  # already created — do not create twice (F-ORC-01)
@@ -1219,8 +1294,21 @@ async def destroy(request: Request) -> dict:
     if not verify(WEBHOOK_SECRET, body, request.headers.get("X-Signature", "")):
         raise HTTPException(status_code=401, detail="Invalid webhook signature.")
     payload = json.loads(body)
-    name, tags = _bucket_and_tags(payload)
     reference = payload["reference"]
+
+    # A PROOF MAY ONLY DESTROY ITS OWN WORK (ARCHITECTURE.md §4, "only what it
+    # created"). Checked here as well as in the runner: this endpoint takes
+    # authority from the signature alone, so a runner that was wrong — or a
+    # payload that was tampered with before signing — would otherwise be able to
+    # delete somebody's environment. Scoped by MARKER, never by tier: the sandbox
+    # is a real tier full of real work.
+    if payload.get("proof") and not proof_rules.may_destroy(reference):
+        raise HTTPException(
+            status_code=403,
+            detail=f"A proof teardown may only target a proof reference; "
+                   f"{reference!r} is not one.")
+
+    name, tags = _bucket_and_tags(payload)
     rkind = _resource_kind(payload)
     kinds = _resource_kinds(payload)
 
