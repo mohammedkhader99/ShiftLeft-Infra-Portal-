@@ -1,8 +1,13 @@
 # PROPOSAL — A self-certifying catalogue
 
-**Status: PARTLY IN FORCE.** C0, C1 and C2 are built. `ARCHITECTURE.md` §2 and
-§4 were amended on 2026-08-21 with the reviewer's approval (commit ddf5a85);
-`PLAN.md` is still unchanged. C3 and C4 remain proposals.
+**Status: BUILT.** C0 through C4 are all built and committed.
+`ARCHITECTURE.md` was amended on 2026-08-21 with the reviewer's approval — §2 and
+§4 in ddf5a85 (the runner's authority), §7 and §8 in f6798c7 (generated code).
+`PLAN.md` is still unchanged.
+
+What is NOT yet true: C2 has never run for real. Nothing schedules a proof, and
+its transport is injected. Turning it on is the cadence decision plus wiring
+post/price/verify to real implementations — see "Still open" at the end.
 
 Raised by Mohammed Khader, 2026-08-18: *"every component we are manually
 certifying… I don't want to have this human dependency."*
@@ -168,7 +173,7 @@ real environments people are using. Scope by **marker, not tier**:
 Plant-tested, as with every guard added on 2026-08-17: the tests must be shown
 failing against a runner that scopes by tier.
 
-### Increment C3 — catalogue sync
+### Increment C3 — catalogue sync — DONE (87afe7d)
 
 Poll OCI for versions, shapes and images not modelled in the catalogue; raise
 candidates. Honest limit: OCI publishes no "list every service" API, so genuinely
@@ -178,7 +183,7 @@ versions and shapes, which is fully automatable.
 **Acceptance:** OCI offers PostgreSQL 13–18 while the catalogue sells only 16;
 the sync raises 17 and 18 as candidates without a human noticing first.
 
-### Increment C4 — AI blueprint drafter (last, deliberately)
+### Increment C4 — AI blueprint drafter — DONE (ff9f7f7)
 
 Agent drafts module + blueprint for a candidate, opens a branch and diff, and on
 a failed proof diagnoses and redrafts. Closed loop — draft, prove, diagnose,
