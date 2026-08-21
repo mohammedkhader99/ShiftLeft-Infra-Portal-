@@ -9,10 +9,13 @@ const TARGET_LABEL: Record<string, string> = {
   onprem: 'on-prem', azure: 'azure', oci: 'oci', aws: 'aws', gcp: 'gcp',
 }
 
-const STATUS_TAG: Record<string, 'green' | 'blue' | 'red' | 'gray'> = {
+const STATUS_TAG: Record<string, 'green' | 'blue' | 'red' | 'gray' | 'magenta'> = {
   certified: 'green',   // approved — the portal builds this automatically
   draft: 'blue',        // recipe exists, nobody has approved it yet
   missing: 'red',       // certified here but the orchestrator no longer ships it
+  suspended: 'magenta', // WAS certified; the portal withdrew it after repeated
+                        // failures (C1). Distinct from draft on purpose: nobody
+                        // has to wonder whether it was ever approved.
   none: 'gray',         // no recipe — fulfilled by the infrastructure team
 }
 
@@ -144,7 +147,7 @@ export default function Blueprints() {
                     : <span style={{ color: 'var(--cds-text-secondary)' }}>—</span>}
                 </td>
                 <td style={td}>
-                  {b.state === 'draft' ? (
+                  {(b.state === 'draft' || b.state === 'suspended') ? (
                     <TextInput
                       id={`v-${b.technology_code}-${b.deployment_target}`}
                       labelText="" size="sm" placeholder="e.g. 1.2.0"
@@ -159,6 +162,12 @@ export default function Blueprints() {
                 </td>
                 <td style={td}>
                   <Tag type={STATUS_TAG[b.state] || 'gray'} size="sm" style={{ margin: 0 }}>{b.state}</Tag>
+                  {b.state === 'suspended' && b.notes && (
+                    <div style={{ marginTop: '0.25rem', fontSize: '0.7rem',
+                                  color: 'var(--cds-text-secondary)', maxWidth: '22rem' }}>
+                      {b.notes}
+                    </div>
+                  )}
                   {b.state !== 'none' && b.ready === false && (
                     <div style={{ marginTop: '0.2rem' }}>
                       <Tag type="magenta" size="sm" style={{ margin: 0 }}
@@ -172,7 +181,7 @@ export default function Blueprints() {
                   {b.certified_by || <span style={{ color: 'var(--cds-text-secondary)' }}>—</span>}
                 </td>
                 <td style={{ ...td, textAlign: 'right', whiteSpace: 'nowrap' }}>
-                  {b.state === 'draft' && (
+                  {(b.state === 'draft' || b.state === 'suspended') && (
                     <Button size="sm" kind="ghost" renderIcon={CheckmarkFilled} hasIconOnly
                             iconDescription={`Certify ${b.technology_code} on ${b.deployment_target}`}
                             disabled={busy}

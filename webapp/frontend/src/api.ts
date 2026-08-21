@@ -993,9 +993,13 @@ export type BlueprintRow = {
   deployment_target: string
   blueprint_ref: string
   version: string
-  state: 'certified' | 'available' | 'missing' | 'draft'
+  // 'suspended' is withdrawn BY EVIDENCE (C1) — the portal pulled it after
+  // consecutive failures — which is a different thing from never certified.
+  state: 'certified' | 'available' | 'missing' | 'draft' | 'suspended' | 'none'
   certified_by: string | null
   certified_at: string | null
+  // Why it was withdrawn, naming the requests that failed.
+  notes: string | null
   description: string
   ready: boolean
   missing_config: string[]
@@ -1006,6 +1010,7 @@ export type BlueprintMatrix = {
   blueprints: BlueprintRow[]
   certified: number
   missing: number
+  suspended: number
   targets: string[]
 }
 export async function getBlueprints(): Promise<BlueprintMatrix | 'forbidden' | null> {

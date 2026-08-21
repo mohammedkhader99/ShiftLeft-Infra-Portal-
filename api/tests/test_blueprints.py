@@ -230,3 +230,34 @@ def test_withdrawing_returns_to_the_legacy_derivation(client, session, shipped):
     assert _environment_resource_kind(session, req) == "oci-apache"
     client.delete("/api/blueprints/apache/oci")
     assert _environment_resource_kind(session, req) == "oci-bucket"
+
+
+# --- Withdrawn by evidence (C1) ----------------------------------------------
+
+def test_a_suspended_blueprint_is_not_shown_as_a_plain_draft(client, session, shipped):
+    """The console must distinguish 'nobody certified this' from 'the portal
+    withdrew this after it kept failing'.
+
+    Those need different actions from an admin, and collapsing both to 'draft'
+    hides the second — which is the state that means something is broken.
+    """
+    from api import certification
+
+    session.add(Blueprint(technology_code="postgres16", deployment_target="oci",
+                          blueprint_ref="oci/postgres", resource_kind="oci-postgres",
+                          status=certification.SUSPENDED,
+                          certified_by="mohammed.khader@emaratechg.ae",
+                          notes="Certification withdrawn automatically after 3 "
+                                "consecutive failures: REQ-2026-0155, REQ-2026-0158."))
+    session.commit()
+
+    body = client.get("/api/blueprints").json()
+    row = next(b for b in body["blueprints"]
+               if (b["technology_code"], b["deployment_target"]) == ("postgres16", "oci"))
+
+    assert row["state"] == "suspended", row["state"]
+    # And it must carry the reason, or the console has nothing to show.
+    assert "REQ-2026-0155" in (row["notes"] or ""), row["notes"]
+    assert body["suspended"] == 1
+    # It is emphatically not certified any more.
+    assert body["certified"] == 0

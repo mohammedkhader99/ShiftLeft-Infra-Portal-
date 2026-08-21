@@ -33,6 +33,7 @@ from api import blueprint_capabilities
 from api import network_egress
 from api import cloud_options
 from api import component_options
+from api import certification
 from api import fulfilment
 from api import portal_help
 from api import resource_details
@@ -948,6 +949,12 @@ def list_blueprints(session: Session = Depends(get_session),
             # Certified but the orchestrator no longer ships it — the dangerous
             # direction, surfaced rather than quietly dropped.
             state = "certified" if row_avail else "missing"
+        elif row_cert and row_cert.status == certification.SUSPENDED:
+            # WITHDRAWN BY EVIDENCE (C1), not merely un-approved. Its own state,
+            # because "nobody certified this yet" and "this was certified and
+            # then failed three times running" mean very different things to an
+            # admin deciding what to do next. The reason travels with it.
+            state = "suspended"
         elif row_avail:
             state = "draft"        # recipe exists, nobody has approved it
         elif row_cert:
@@ -962,6 +969,9 @@ def list_blueprints(session: Session = Depends(get_session),
             "state": state,
             "certified_by": row_cert.certified_by if row_cert else None,
             "certified_at": row_cert.certified_at.isoformat() if row_cert and row_cert.certified_at else None,
+            # Why the portal withdrew it, when it did. A suspension with no
+            # explanation is just an outage nobody can act on.
+            "notes": (row_cert.notes if row_cert else None),
             "description": (row_avail or {}).get("description", ""),
             # From the manifest: whether this recipe's own preconditions are met.
             # Lets the page say 'certified but not configured' rather than the
@@ -975,6 +985,7 @@ def list_blueprints(session: Session = Depends(get_session),
         "blueprints": rows,
         "certified": sum(1 for r in rows if r["state"] == "certified"),
         "missing": sum(1 for r in rows if r["state"] == "missing"),
+        "suspended": sum(1 for r in rows if r["state"] == "suspended"),
         "targets": sorted(DEPLOYMENT_TARGETS),
     }
 
@@ -6226,6 +6237,24 @@ def _poll_once() -> None:
         try:
             with SessionLocal() as session:
                 append_audit(session, "ttl.sweep.error", detail={"error": str(exc)})
+                session.commit()
+        except Exception:  # noqa: BLE001
+            pass
+
+    # Certification review (C1): withdraw certification from any blueprint whose
+    # recent record is nothing but failures. Isolated like the sweeps around it —
+    # it must never be the reason requests stop being advanced.
+    try:
+        with SessionLocal() as session:
+            for gone in certification.review(session):
+                append_audit(session, "blueprint.suspended", actor="certification",
+                             detail=gone)
+            session.commit()
+            fulfilment.invalidate_cache()
+    except Exception as exc:  # noqa: BLE001
+        try:
+            with SessionLocal() as session:
+                append_audit(session, "certification.sweep.error", detail={"error": str(exc)})
                 session.commit()
         except Exception:  # noqa: BLE001
             pass

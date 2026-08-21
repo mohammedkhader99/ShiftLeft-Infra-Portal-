@@ -137,6 +137,10 @@ EXCLUDED: dict[str, str] = {
     # renewing it. Internal tuning of the same loop as POLL_INTERVAL_SECONDS;
     # an admin needs to know the poller is alive, not what its deadline is.
     "POLLER_SWEEP_WATCHDOG_SECONDS": "internal tuning",
+    # The certification-withdrawal threshold. Surfaced through the blueprint
+    # listing instead: a suspended row already carries the count and the request
+    # references in its reason, which is what an admin actually needs to see.
+    "CERTIFICATION_FAILURE_THRESHOLD": "internal tuning",
     "LEADER_LEASE_TTL_SECONDS": "internal tuning",
     "SUBSIDIARY_SYNC_INTERVAL_SECONDS": "internal tuning",
     "PROVISION_TTL_DAYS": "internal default",

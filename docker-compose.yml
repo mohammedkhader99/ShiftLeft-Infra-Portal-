@@ -150,6 +150,10 @@ services:
       # deadline renewal stops and a standby may take over. Defaults to twice
       # ORCHESTRATOR_TIMEOUT_SECONDS.
       POLLER_SWEEP_WATCHDOG_SECONDS: ${POLLER_SWEEP_WATCHDOG_SECONDS:-}
+      # How many consecutive attributable failures withdraw a blueprint's
+      # certification (C1). Three, so one bad request or a cloud having a moment
+      # cannot pull a working recipe off the catalogue.
+      CERTIFICATION_FAILURE_THRESHOLD: ${CERTIFICATION_FAILURE_THRESHOLD:-}
       PROVISION_MODE: ${PROVISION_MODE:-mock}
       # RBAC (E1.1). ROLE_SOURCE:
       #   portal - the portal's own person->role list (Admin -> Access control).
