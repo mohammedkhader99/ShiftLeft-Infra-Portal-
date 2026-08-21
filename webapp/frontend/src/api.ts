@@ -1110,6 +1110,30 @@ export async function resetAdminSetting(key: string): Promise<{ status: number; 
 
 export type AuditEntry = { event: string; created_at: string }
 
+// What the machines of a request said about themselves at first boot.
+//
+// The reports live behind a pre-authenticated OCI URL — a bearer token in URL
+// form — so this is a PROXY, never a link. The API fetches the text server-side;
+// the browser is never given the URL, and must not be.
+export type BootReportComponent = {
+  kind: string
+  available: boolean
+  files: Record<string, string>
+  note: string
+}
+export type BootReport = {
+  reference: string
+  reachable: boolean
+  historical?: boolean
+  reports: BootReportComponent[]
+  note?: string
+}
+export async function getBootReport(reference: string): Promise<BootReport | null> {
+  const r = await fetch(`/api/requests/${reference}/boot-report`)
+  if (!r.ok) return null
+  return (await r.json()) as BootReport
+}
+
 export async function getAudit(reference: string): Promise<AuditEntry[]> {
   const r = await fetch(`/api/requests/${reference}/audit`)
   if (!r.ok) return []

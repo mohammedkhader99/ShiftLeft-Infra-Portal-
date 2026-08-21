@@ -115,6 +115,58 @@ async def network_egress_report(request: Request) -> dict:
     return network_egress.report()
 
 
+@app.post("/boot-report")
+async def boot_report(request: Request) -> dict:
+    """The machines' self-reports for one request, verbatim, for a person to read.
+
+    The portal already reads these to decide whether a request is provisioned,
+    and then throws them away. They are the most direct answer to "what did I
+    actually get" that exists — the OS, the package versions, whether the service
+    is running, whether the port answers — so a requester should be able to see
+    the same thing the portal judged.
+
+    SIGNATURE ONLY, like /blueprints and /network/egress: this reads a bucket and
+    changes nothing. WHO may see it is the portal's decision, made against the
+    signed-in user; this layer holds the credential, not the policy.
+
+    The credential never travels. OCI_BOOT_REPORT_PAR_URL is a pre-authenticated
+    URL — anyone holding it could read every machine's report forever, without
+    signing in — so the text is fetched here and returned as text. The browser is
+    never given the URL.
+    """
+    body = await request.body()
+    if not verify(WEBHOOK_SECRET, body, request.headers.get("X-Signature", "")):
+        raise HTTPException(status_code=401, detail="Invalid webhook signature.")
+    payload = json.loads(body)
+    reference = str(payload.get("reference") or "")
+    if not reference:
+        raise HTTPException(status_code=400, detail="No reference given.")
+
+    reports: list[dict] = []
+    for kind in (payload.get("resource_kinds") or []):
+        expected, why = _report_expected(kind)
+        if not expected:
+            # Says WHY there is nothing rather than returning an empty panel: "a
+            # bucket files no boot report" and "the machine has not answered yet"
+            # look identical otherwise, and mean completely different things.
+            reports.append({"kind": kind, "available": False, "files": {},
+                            "note": why})
+            continue
+        try:
+            found = boot_reports.reports_for(reference, kind)
+        except boot_reports.BootReportUnavailable as exc:
+            reports.append({"kind": kind, "available": False, "files": {},
+                            "note": f"the report store could not be read: {exc}"})
+            continue
+        if not found:
+            reports.append({"kind": kind, "available": False, "files": {},
+                            "note": "no machine has reported for this component"})
+            continue
+        reports.append({"kind": kind, "available": True, "files": found,
+                        "note": ""})
+    return {"reference": reference, "reports": reports}
+
+
 @app.post("/posture")
 async def posture(request: Request) -> dict:
     """Report which execution gates are open in THIS process, for the admin

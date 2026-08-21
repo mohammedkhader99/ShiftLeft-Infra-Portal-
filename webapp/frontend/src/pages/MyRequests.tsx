@@ -22,7 +22,7 @@ import {
   AccordionItem,
 } from '@carbon/react'
 import { WarningAltFilled, Renew, UserFollow, Search, Pause, Play } from '@carbon/icons-react'
-import { getMe, getRequests, getAudit, renewRequest, transferOwner, checkDrift, reconcileState, triageFailure, actuate, setRequestShutdown, createBackup, grantAccess, revokeAccess, setOwnerGroup, type RequestRow, type ShutdownPolicy } from '../api'
+import { getMe, getRequests, getAudit, renewRequest, transferOwner, checkDrift, reconcileState, triageFailure, actuate, setRequestShutdown, createBackup, grantAccess, revokeAccess, setOwnerGroup, type RequestRow, type ShutdownPolicy, getBootReport, type BootReport } from '../api'
 import { workflowSteps, fmtWhen, type WFStep } from '../workflow'
 
 const FILTER_KEYS = ['status', 'request_type', 'technology', 'deployment_target', 'created_week', 'requested_by', 'subsidiary', 'reference']
@@ -284,6 +284,7 @@ export default function MyRequests({ route }: { route: string }) {
   const [rows, setRows] = useState<RequestRow[]>([])
   const [loaded, setLoaded] = useState(false)
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const [boot, setBoot] = useState<Record<string, BootReport | null>>({})
   const [steps, setSteps] = useState<Record<string, WFStep[]>>({})
 
   const query = parseQuery(route)
@@ -331,6 +332,14 @@ export default function MyRequests({ route }: { route: string }) {
       getAudit(ref)
         .then((a) => setSteps((s) => ({ ...s, [ref]: workflowSteps(status, a) })))
         .catch(() => {})
+      // What the machine said about itself. Fetched on expand rather than with
+      // the list: it is a per-request read through to the orchestrator, and most
+      // rows are never opened.
+      if (boot[ref] === undefined) {
+        getBootReport(ref)
+          .then((b) => setBoot((s) => ({ ...s, [ref]: b })))
+          .catch(() => setBoot((s) => ({ ...s, [ref]: null })))
+      }
     })
   }, [expanded, rows])
 
@@ -845,6 +854,44 @@ export default function MyRequests({ route }: { route: string }) {
                               </li>
                             ))}
                           </ul>
+                        </div>
+                      )}
+                      {/* What the machine said about itself at first boot.
+                          The portal already reads this to decide the request is
+                          provisioned; showing it answers "what did I actually
+                          get" far better than a status ever can. */}
+                      {boot[r.reference] && (
+                        <div style={{ marginTop: '1rem' }}>
+                          <div style={{ fontSize: '0.85rem', fontWeight: 600, marginBottom: '0.35rem' }}>
+                            What the machine reported
+                            {boot[r.reference]!.historical && (
+                              <Tag type="gray" size="sm" style={{ marginLeft: '0.5rem' }}>
+                                historical — this environment has been removed
+                              </Tag>
+                            )}
+                          </div>
+                          {!boot[r.reference]!.reachable && (
+                            <div style={{ fontSize: '0.8rem', color: 'var(--cds-text-secondary)' }}>
+                              {boot[r.reference]!.note}
+                            </div>
+                          )}
+                          {boot[r.reference]!.reports.map((c) => (
+                            <div key={c.kind} style={{ marginBottom: '0.6rem' }}>
+                              <div style={{ fontSize: '0.78rem', color: 'var(--cds-text-secondary)' }}>
+                                {c.kind}{!c.available && ` — ${c.note}`}
+                              </div>
+                              {c.available && Object.entries(c.files).map(([name, text]) => (
+                                <pre key={name} style={{
+                                  margin: '0.25rem 0 0', padding: '0.6rem 0.75rem',
+                                  background: 'var(--cds-layer-01)',
+                                  border: '1px solid var(--cds-border-subtle)',
+                                  fontSize: '0.74rem', lineHeight: 1.45,
+                                  whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+                                  maxHeight: '18rem', overflow: 'auto',
+                                }}>{text}</pre>
+                              ))}
+                            </div>
+                          ))}
                         </div>
                       )}
                       <div style={{ marginTop: '1rem', fontSize: '0.85rem', display: 'flex', gap: '1.5rem', flexWrap: 'wrap' }}>

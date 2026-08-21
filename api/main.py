@@ -3604,6 +3604,66 @@ def approve(jira_key: str, session: Session = Depends(get_session),
     return {"approval": "approved", "provisioned": True, "result": result}
 
 
+def _orchestrator_boot_reports(reference: str, kinds: list[str]) -> dict | None:
+    """The machines' own reports for one request, or None if unreachable.
+
+    The orchestrator holds the credential that can read them; this asks it. The
+    pre-authenticated URL never comes back here and never reaches a browser —
+    only the text does.
+    """
+    payload = {"issued_at": datetime.now(timezone.utc).isoformat(),
+               "operation": "boot-report", "reference": reference,
+               "resource_kinds": kinds}
+    raw = json.dumps(payload, sort_keys=True).encode()
+    response, _err = _post_to_orchestrator(raw, sign(WEBHOOK_SECRET, raw),
+                                           path="/boot-report")
+    if response is None or response.status_code != 200:
+        return None
+    try:
+        return response.json() or {}
+    except ValueError:
+        return None
+
+
+@app.get("/api/requests/{reference}/boot-report")
+def request_boot_report(reference: str, session: Session = Depends(get_session),
+                        _auth: str = Depends(require_action("view_audit"))) -> dict:
+    """What the machines of this request said about themselves, in their own words.
+
+    The portal already reads these to decide whether a request provisioned, and
+    then discards them. They answer "what did I actually get" better than any
+    status can: the OS, the package versions, whether the service is running,
+    whether the port answers, whether the firewall is open.
+
+    A PROXY, NOT A LINK. The reports live behind a pre-authenticated OCI URL,
+    which is a credential — publishing it would give anyone who ever saw it
+    permanent, sign-in-free read access to every machine's report. The text is
+    fetched server-side and returned; the URL stays in the orchestrator.
+
+    Guarded by view_audit: the same people already trusted with this request's
+    history. The report lists open ports and package versions of a live machine,
+    which is useful to its owner and reconnaissance to anyone else.
+    """
+    req = _load_request(reference, session)
+    kinds = _environment_resource_kinds(session, req)
+    found = _orchestrator_boot_reports(reference, kinds)
+    if found is None:
+        # Distinguished from "no report yet": one is a portal problem the user
+        # can do nothing about, the other is a machine that has not answered.
+        return {"reference": reference, "reachable": False, "reports": [],
+                "note": "The execution layer could not be reached, so the "
+                        "machines could not be asked."}
+    return {
+        "reference": reference,
+        "reachable": True,
+        # A decommissioned environment often still has its report, and that is
+        # usually exactly what someone wants to look back at. Shown, labelled as
+        # historical, rather than hidden.
+        "historical": req.status in ("decommissioned", "expired"),
+        "reports": found.get("reports", []),
+    }
+
+
 @app.get("/api/requests/{reference}/audit")
 def request_audit(reference: str, session: Session = Depends(get_session),
                   _auth: str = Depends(require_action("view_audit"))) -> dict:
