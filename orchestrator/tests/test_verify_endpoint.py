@@ -58,7 +58,10 @@ def _reports(monkeypatch, mapping):
 def _verify(payload_kinds, monkeypatch, mapping):
     _reports(monkeypatch, mapping)
     payload = {"reference": "REQ-2026-0199", "resource_kinds": payload_kinds}
-    monkeypatch.setattr(omain, "_authorise", lambda body, sig: payload)
+    # read_only: /verify is a read, so it is authorised on the read path — the
+    # stub has to accept the same call the endpoint actually makes.
+    monkeypatch.setattr(omain, "_authorise",
+                        lambda body, sig, read_only=False: payload)
 
     import asyncio
 

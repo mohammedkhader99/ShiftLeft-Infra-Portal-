@@ -261,3 +261,26 @@ def test_a_blueprint_that_is_not_configured_refuses_with_the_missing_setting(mon
     assert "OCI_COMPUTE_SUBNET_OCID" in str(exc.value)
     # ...and destroying is never blocked by a spend/config gate.
     provisioner._require_cloud("oci", "oci-apache", creating=False)
+
+
+# --- the suite must not read or write the real generated store ---------------
+
+def test_the_test_run_never_touches_the_production_generated_store():
+    """FOUND 2026-08-21. GENERATED_BLUEPRINT_DIR defaults to a CONTAINER path,
+    "/generated/blueprints". Running the suite on Windows resolved that to
+    C:\generated\ and wrote a real draft blueprint and Terraform there — outside
+    the repository, on the developer's machine.
+
+    Then it read them back. Two tests in this file failed for a reason that had
+    nothing to do with the code under test: they saw a blueprint left behind by
+    an earlier run. A suite whose result depends on what is already on the
+    machine cannot be trusted to say whether a change is good.
+    """
+    import os
+    from pathlib import Path
+
+    configured = os.environ.get("GENERATED_BLUEPRINT_DIR", "")
+    assert configured, "GENERATED_BLUEPRINT_DIR is not pinned; the suite would use /generated"
+    assert Path(configured) != Path("/generated/blueprints"), (
+        "the suite is pointed at the production generated store")
+    assert blueprint_registry.GENERATED_DIR == Path(configured)

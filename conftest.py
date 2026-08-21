@@ -67,3 +67,16 @@ os.environ["DEPARTED_OWNERS"] = ""
 # 'testclient' host) could trip it and break unrelated tests. The rate-limit test
 # sets a low value itself.
 os.environ["RATE_LIMIT_PER_MINUTE"] = "0"
+# Agent-written blueprints (C5a): GENERATED_BLUEPRINT_DIR defaults to
+# "/generated/blueprints" — a path INSIDE THE CONTAINER. Unpinned, a test run on
+# Windows resolved that to C:\generated\ and really wrote there: an
+# onprem/postgres16 draft and its Terraform, outside the repository, created by
+# the suite on 2026-08-21. Two failures followed from it, and both were the same
+# fault — the tests read a directory that production had written to, so the
+# result depended on what a previous run had left on the machine.
+#
+# mkdtemp, not tmp_path: this must be set before any module reads it at import
+# time, which is before a fixture could run.
+import tempfile as _tempfile
+
+os.environ["GENERATED_BLUEPRINT_DIR"] = _tempfile.mkdtemp(prefix="portal-generated-")

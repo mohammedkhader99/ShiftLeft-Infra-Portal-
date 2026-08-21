@@ -773,6 +773,10 @@ _EXECUTION_GATE_LABELS = {
     "proof_enabled": "Certification proof builds allowed (real, billable)",
     "proof_sandbox_tier": "Proof builds restricted to this tier",
     "proof_cost_cap_monthly": "Proof build cost ceiling (monthly)",
+    # Shown so a version skew is visible BEFORE a proof rather than during
+    # one. When the two services disagree here, every proof is refused with
+    # "not a proof reference" — which reads like an attack, not a stale image.
+    "proof_reference_pattern": "Proof reference format the runner accepts",
     "catalogue_mode": "Cloud option catalogue mode",
     "catalogue_shapes_allowed": "Compute shapes allow-listed (0 = offer none)",
     "catalogue_image_filter_set": "OS image filter configured",
@@ -3637,6 +3641,26 @@ def approve(jira_key: str, session: Session = Depends(get_session),
     return {"approval": "approved", "provisioned": True, "result": result}
 
 
+def _proof_contract_skew() -> str:
+    """A sentence naming the mismatch if the two services disagree, else "".
+
+    Compared against the orchestrator's own reported pattern rather than assumed
+    equal: they run from separate images, and only one of them may have been
+    rebuilt.
+    """
+    from common import proof_rules
+
+    posture = _orchestrator_posture()
+    if not posture:
+        return ""          # unreachable is a different problem, reported elsewhere
+    theirs = posture.get("proof_reference_pattern")
+    if theirs and theirs != proof_rules._REFERENCE.pattern:
+        return ("The API and the orchestrator disagree on what a proof reference "
+                "looks like, so every proof would be refused. They share "
+                "common/proof_rules.py — rebuild BOTH images.")
+    return ""
+
+
 def _autobuild_component(session: Session, code: str, target: str) -> dict:
     """Make one component buildable and certify it, on proof evidence.
 
@@ -3676,6 +3700,14 @@ def _autobuild_component(session: Session, code: str, target: str) -> dict:
             session, code, target, manifest.get("ref", f"{target}/{code}"),
             manifest.get("resource_kind", f"{target}-{code}"), proof_reference,
             version=manifest.get("version", ""))
+
+    # BOTH SERVICES MUST AGREE ON WHAT A PROOF LOOKS LIKE. common/proof_rules.py
+    # is shared, so a change to it needs BOTH images rebuilt — and when only one
+    # was, every proof failed with "not a proof reference", which reads like an
+    # attack rather than a stale container.
+    skew = _proof_contract_skew()
+    if skew:
+        return {"status": "refused", "detail": skew}
 
     result = autobuild.ensure(code, session, target=target, shipped=shipped,
                               run_proof=run_proof, publish=publish,

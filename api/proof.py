@@ -117,7 +117,8 @@ def run_proof(session, blueprint, *, post, price, verify, now=None) -> ProofOutc
 
         post(path, payload)   -> (ok: bool, detail: str)   the signed handoff
         price(components)     -> monthly cost or None      the plan's price
-        verify(reference)     -> (healthy: bool, detail)   resource_state / boot
+        verify(reference, policy_input)
+                              -> (healthy: bool, detail)   resource_state / boot
 
     ORDER MATTERS. The cost cap is checked before anything is built, and the
     record is written before the build starts — a proof that dies mid-flight must
@@ -189,7 +190,10 @@ def run_proof(session, blueprint, *, post, price, verify, now=None) -> ProofOutc
                           verdict.monthly)
         return finish("failed", f"Apply failed: {detail}", verdict.monthly)
 
-    healthy, vdetail = verify(reference)
+    # The SAME policy_input the build used. Verifying is a read, but it still
+    # has to say which thing it is reading: the orchestrator derives the
+    # resource kinds from it, and an empty one asked about nothing at all.
+    healthy, vdetail = verify(reference, payload["policy_input"])
 
     # ALWAYS tear down, pass or fail. A proof that leaves a resource behind is a
     # failed proof however healthy the resource was (ARCHITECTURE.md §4).

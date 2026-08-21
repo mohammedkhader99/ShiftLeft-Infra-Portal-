@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import time
 from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
@@ -66,37 +67,83 @@ def make_price(session: Session, target: str):
     return price
 
 
-def make_verify(post):
-    """Ask the orchestrator whether what it built is actually healthy.
+def make_verify(post, *, deadline_seconds: int | None = None,
+                interval_seconds: int | None = None, sleep=time.sleep):
+    """Ask the orchestrator whether what it built is actually healthy — patiently.
 
-    The same /verify the poller uses after a real request: boot self-reports for
-    machines, resource-state checks for the things that file none. Terraform
-    exiting zero says an API call was accepted; this says the thing works.
+    IT WAITS, and that is the whole point. Terraform returns when an instance
+    reaches RUNNING, which is BEFORE cloud-init has finished installing anything.
+    Asking once, straight after apply, finds no report and calls a healthy
+    machine silent — which would refuse to certify a component that works. A
+    proof stricter than the real path is worse than no proof: it takes working
+    things off the menu.
+
+    So it waits on the SAME terms the real request path waits on
+    (BOOT_VERIFY_DEADLINE_MINUTES, BOOT_VERIFY_POLL_SECONDS) and reads the SAME
+    fields of the same response — `checked`, `settled`, `all_ok`. Reading it a
+    second, private way is how two services come to disagree about one answer.
     """
-    def verify(reference: str) -> tuple[bool, str]:
-        ok, detail = post("/verify", {"reference": reference,
-                                      "proof": True,
-                                      "policy_input": {}})
-        if not ok:
-            return False, f"could not verify: {detail}"
+    from api import settings
+
+    def _cfg(key: str, fallback: int) -> int:
         try:
-            body = json.loads(detail) if detail.strip().startswith("{") else {}
-        except ValueError:
-            body = {}
-        # No news is NOT good news. A verification that returned nothing readable
-        # is unknown, and unknown must not read as healthy — that inference is
-        # what reported four broken machines as provisioned.
-        if not body:
-            return False, "the verification result could not be read"
-        resources = body.get("resources") or []
-        broken = [r for r in resources if r.get("state") in ("broken", "unreadable")]
-        waiting = [r for r in resources if r.get("state") == "waiting"]
-        if broken:
-            return False, "; ".join(f"{r['kind']}: {r.get('note', 'broken')}"
-                                    for r in broken)[:300]
-        if waiting:
-            return False, "still waiting for a machine to report"
-        return True, "verified healthy"
+            return max(0, int(settings.env(key, str(fallback))))
+        except (TypeError, ValueError):
+            return fallback
+
+    def verify(reference: str, policy_input: dict) -> tuple[bool, str]:
+        # policy_input is REQUIRED, not defaulted. Posting an empty one was a
+        # real defect (PROOF-NGINX-20260821T161305): the orchestrator reads the
+        # resource kinds out of it, so an empty one asked "is nothing healthy?"
+        # — and was refused for naming no tier before it could even answer.
+        deadline = (deadline_seconds if deadline_seconds is not None
+                    else _cfg("BOOT_VERIFY_DEADLINE_MINUTES", 15) * 60)
+        interval = (interval_seconds if interval_seconds is not None
+                    else _cfg("BOOT_VERIFY_POLL_SECONDS", 20))
+        give_up_at = time.monotonic() + deadline
+        payload = {"reference": reference, "proof": True,
+                   "policy_input": policy_input}
+        last_problem = "no answer was ever read"
+
+        while True:
+            ok, detail = post("/verify", payload)
+            if not ok:
+                last_problem = f"could not verify: {detail}"
+            else:
+                try:
+                    body = json.loads(detail) if detail.strip().startswith("{") else {}
+                except ValueError:
+                    body = {}
+                # No news is NOT good news. A verification that returned nothing
+                # readable is unknown, and unknown must not read as healthy —
+                # that inference is what reported four broken machines as
+                # provisioned.
+                if not body:
+                    last_problem = "the verification result could not be read"
+                elif not body.get("checked", 0):
+                    # Nothing here CAN report — a bucket, a managed database, or
+                    # mock mode. Silence is the complete and correct answer, and
+                    # waiting for it would burn the deadline every time.
+                    return True, "nothing here files a report; it built and tore down"
+                elif body.get("settled"):
+                    if body.get("all_ok"):
+                        return True, "verified healthy"
+                    hurt = (body.get("broken") or []) + (body.get("unreadable") or [])
+                    notes = "; ".join(
+                        f"{r['kind']}: {r.get('note', 'broken')}"
+                        for r in (body.get("resources") or [])
+                        if r.get("state") in ("broken", "unreadable"))
+                    return False, (notes or f"not healthy: {', '.join(hurt)}")[:300]
+                else:
+                    last_problem = ("still waiting for "
+                                    f"{', '.join(body.get('waiting') or ['a machine'])} "
+                                    "to report")
+
+            # Read the clock ONCE per pass. Asking twice lets the deadline fall
+            # between the two readings, which turns one fault into another.
+            if time.monotonic() >= give_up_at:
+                return False, last_problem
+            sleep(interval)
     return verify
 
 

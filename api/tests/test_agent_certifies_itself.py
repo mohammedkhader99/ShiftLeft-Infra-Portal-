@@ -203,3 +203,43 @@ def test_an_agent_certified_blueprint_is_still_withdrawn_when_it_fails(db):
     certification.review(db)
     db.commit()
     assert nginx(db).status == certification.SUSPENDED
+
+
+# --- The two services must agree on what a proof looks like ------------------
+
+def test_a_contract_skew_is_refused_with_a_sentence_that_names_it(monkeypatch):
+    """FOUND IN PRODUCTION, 2026-08-21. common/proof_rules.py is shared by both
+    images. The API was rebuilt with a new reference format and the orchestrator
+    was not, so every proof came back:
+
+        'PROOF-NGINX-...' is not a proof reference. A proof may only act under a
+        reference this runner minted.
+
+    Correct behaviour, and an alarming thing to read: it describes an impostor,
+    not a stale container. A skew should be named as a skew.
+    """
+    import api.main as main
+
+    monkeypatch.setattr(main, "_orchestrator_posture",
+                        lambda: {"proof_reference_pattern": "^SOMETHING-ELSE$"})
+    skew = main._proof_contract_skew()
+    assert "rebuild BOTH images" in skew
+    assert "proof_rules" in skew
+
+
+def test_agreement_is_not_reported_as_a_problem(monkeypatch):
+    import api.main as main
+    from common import proof_rules
+
+    monkeypatch.setattr(main, "_orchestrator_posture",
+                        lambda: {"proof_reference_pattern": proof_rules._REFERENCE.pattern})
+    assert main._proof_contract_skew() == ""
+
+
+def test_an_unreachable_orchestrator_is_not_mistaken_for_a_skew(monkeypatch):
+    """Different problem, reported elsewhere. Calling it a skew would send
+    somebody rebuilding images to fix a network fault."""
+    import api.main as main
+
+    monkeypatch.setattr(main, "_orchestrator_posture", lambda: None)
+    assert main._proof_contract_skew() == ""

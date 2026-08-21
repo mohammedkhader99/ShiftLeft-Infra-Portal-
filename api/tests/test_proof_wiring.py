@@ -73,17 +73,22 @@ def _post_returning(ok, detail):
 def test_an_unreadable_verification_is_not_healthy():
     """No news is NOT good news. Reading an empty answer as healthy is the exact
     inference that reported four broken machines as provisioned."""
-    verify = proof_wiring.make_verify(_post_returning(True, "not json at all"))
-    healthy, detail = verify("PROOF-X-20260821T090000")
+    verify = proof_wiring.make_verify(_post_returning(True, "not json at all"), deadline_seconds=0, sleep=lambda s: None)
+    healthy, detail = verify("PROOF-X-20260821T090000", {"environment_tier": "Development"})
     assert healthy is False
     assert "could not be read" in detail
 
 
 def test_a_broken_resource_is_reported_with_its_own_words():
-    body = json.dumps({"resources": [
-        {"kind": "oci-oke", "state": "broken", "note": "node pool never reached ACTIVE"}]})
-    verify = proof_wiring.make_verify(_post_returning(True, body))
-    healthy, detail = verify("PROOF-X-20260821T090000")
+    # The REAL response shape. These fixtures used to carry `resources` alone,
+    # which /verify never sends — so they tested a reading of an answer that did
+    # not exist.
+    body = json.dumps({"checked": 1, "settled": True, "all_ok": False,
+                       "broken": ["oci-oke"], "resources": [
+                           {"kind": "oci-oke", "expected": True, "state": "broken",
+                            "note": "node pool never reached ACTIVE"}]})
+    verify = proof_wiring.make_verify(_post_returning(True, body), deadline_seconds=0, sleep=lambda s: None)
+    healthy, detail = verify("PROOF-X-20260821T090000", {"environment_tier": "Development"})
     assert healthy is False
     assert "never reached ACTIVE" in detail
 
@@ -91,21 +96,25 @@ def test_a_broken_resource_is_reported_with_its_own_words():
 def test_still_waiting_is_not_healthy_either():
     """A machine that has not reported yet is unknown, and unknown is not a pass
     — the proof would otherwise tear it down and call it proven."""
-    body = json.dumps({"resources": [{"kind": "oci-apache", "state": "waiting"}]})
-    verify = proof_wiring.make_verify(_post_returning(True, body))
-    assert verify("r")[0] is False
+    body = json.dumps({"checked": 1, "settled": False, "all_ok": False,
+                       "waiting": ["oci-apache"], "resources": [
+                           {"kind": "oci-apache", "expected": True, "state": "waiting"}]})
+    verify = proof_wiring.make_verify(_post_returning(True, body), deadline_seconds=0, sleep=lambda s: None)
+    assert verify("r", {"environment_tier": "Development"})[0] is False
 
 
 def test_everything_healthy_passes():
-    body = json.dumps({"resources": [{"kind": "oci-apache", "state": "ok"}]})
-    verify = proof_wiring.make_verify(_post_returning(True, body))
-    healthy, detail = verify("r")
+    body = json.dumps({"checked": 1, "settled": True, "all_ok": True, "waiting": [],
+                       "resources": [{"kind": "oci-apache", "expected": True,
+                                      "state": "ok"}]})
+    verify = proof_wiring.make_verify(_post_returning(True, body), deadline_seconds=0, sleep=lambda s: None)
+    healthy, detail = verify("r", {"environment_tier": "Development"})
     assert healthy is True and "verified healthy" in detail
 
 
 def test_an_unreachable_orchestrator_is_not_healthy():
-    verify = proof_wiring.make_verify(_post_returning(False, "unreachable: timed out"))
-    healthy, detail = verify("r")
+    verify = proof_wiring.make_verify(_post_returning(False, "unreachable: timed out"), deadline_seconds=0, sleep=lambda s: None)
+    healthy, detail = verify("r", {"environment_tier": "Development"})
     assert healthy is False
     assert "could not verify" in detail
 
@@ -169,3 +178,140 @@ def test_every_handoff_is_signed_and_versioned():
     assert captured["signature"] == "SIGNED"
     assert captured["body"]["contract_version"] == "1.0"
     assert captured["body"]["reference"] == "PROOF-X-20260821T090000"
+
+
+# --- verify must say WHAT it is verifying ------------------------------------
+
+SANDBOX = {"deployment_target": "oci", "environment_tier": "Development",
+           "components": [{"technology_code": "nginx", "size": "small"}]}
+
+
+def test_the_verification_carries_the_policy_input_it_was_given():
+    """FOUND IN PRODUCTION, PROOF-NGINX-20260821T161305. nginx built cleanly,
+    tore down cleanly, and then failed on:
+
+        403: A proof may build only in the sandbox tier (Development); this one
+             asked for no tier.
+
+    Because this posted `"policy_input": {}`. Two defects in one line: the tier
+    was missing, and the orchestrator derives the resource kinds from that same
+    object — so even authorised, it would have asked "is nothing healthy?".
+    """
+    sent = []
+
+    def post(path, payload):
+        sent.append((path, payload))
+        return True, json.dumps({"resources": [{"kind": "oci-service-vm",
+                                                "state": "healthy"}]})
+
+    healthy, _ = proof_wiring.make_verify(post, deadline_seconds=0, sleep=lambda s: None)("PROOF-NGINX-20260821T161305", SANDBOX)
+
+    assert healthy is True
+    path, payload = sent[0]
+    assert path == "/verify"
+    assert payload["policy_input"] == SANDBOX, "the tier and components were dropped"
+    assert payload["policy_input"], "an empty policy_input asks about nothing"
+
+
+def test_verifying_without_a_policy_input_is_a_visible_break():
+    """Not defaulted to {}. A default would have hidden this exact bug: the proof
+    reported a failure of nginx when the failure was in the call."""
+    with pytest.raises(TypeError):
+        proof_wiring.make_verify(_post_returning(True, "{}"), deadline_seconds=0, sleep=lambda s: None)("PROOF-X-20260821T090000")
+
+
+def test_run_proof_hands_verify_the_same_input_it_built_with():
+    """The two must not drift. Verifying a different shape than was built would
+    certify something nobody proved."""
+    from api import proof as proof_mod
+    import inspect
+
+    src = inspect.getsource(proof_mod.run_proof)
+    assert 'verify(reference, payload["policy_input"])' in src, (
+        "verify is no longer given the payload the build used")
+
+
+# --- it must WAIT for a machine that is still installing ---------------------
+
+def _answers(*bodies):
+    """A /verify that returns each body in turn, then repeats the last."""
+    seq = list(bodies)
+    def post(path, payload):
+        body = seq.pop(0) if len(seq) > 1 else seq[0]
+        return True, json.dumps(body)
+    return post
+
+
+WAITING = {"checked": 1, "settled": False, "all_ok": False,
+           "waiting": ["oci-service-vm"], "resources": [
+               {"kind": "oci-service-vm", "expected": True, "state": "waiting"}]}
+HEALTHY = {"checked": 1, "settled": True, "all_ok": True, "waiting": [],
+           "resources": [{"kind": "oci-service-vm", "expected": True, "state": "ok"}]}
+
+
+def test_a_machine_still_installing_is_waited_for_not_failed():
+    """THE defect this prevents. Terraform returns when the instance reaches
+    RUNNING — before cloud-init has installed anything. Asking once finds no
+    report and calls a working machine silent, which would refuse to certify
+    nginx for being slow to boot rather than for being broken.
+    """
+    naps = []
+    verify = proof_wiring.make_verify(_answers(WAITING, WAITING, HEALTHY),
+                                      deadline_seconds=300, interval_seconds=20,
+                                      sleep=naps.append)
+    healthy, detail = verify("PROOF-NGINX-20260821T161305", SANDBOX)
+
+    assert healthy is True, detail
+    assert naps == [20, 20], "it did not wait between attempts"
+
+
+def test_the_wait_is_bounded_and_says_what_it_waited_for():
+    """A proof holds real, billable infrastructure while it waits. It may not
+    wait forever, and when it gives up it must name the machine."""
+    verify = proof_wiring.make_verify(_answers(WAITING), deadline_seconds=0,
+                                      sleep=lambda s: None)
+    healthy, detail = verify("PROOF-NGINX-20260821T161305", SANDBOX)
+
+    assert healthy is False
+    assert "oci-service-vm" in detail and "report" in detail
+
+
+def test_a_broken_machine_is_not_waited_out(monkeypatch):
+    """Settled and broken is an answer, not a delay. Waiting on it would burn
+    fifteen minutes of real infrastructure to learn what it already said."""
+    broken = {"checked": 1, "settled": True, "all_ok": False,
+              "broken": ["oci-service-vm"], "resources": [
+                  {"kind": "oci-service-vm", "expected": True, "state": "broken",
+                   "note": "nginx failed to start: port 80 already in use"}]}
+    naps = []
+    verify = proof_wiring.make_verify(_answers(broken), deadline_seconds=900,
+                                      sleep=naps.append)
+    healthy, detail = verify("PROOF-NGINX-20260821T161305", SANDBOX)
+
+    assert healthy is False
+    assert "port 80 already in use" in detail
+    assert naps == [], "it waited on an answer it already had"
+
+
+def test_something_that_cannot_report_is_not_waited_for_either():
+    """A bucket and a managed database file no boot report and never will. The
+    build and the teardown ARE the evidence there; waiting would spend the whole
+    deadline to learn nothing."""
+    naps = []
+    verify = proof_wiring.make_verify(
+        _answers({"checked": 0, "settled": True, "all_ok": True, "resources": []}),
+        deadline_seconds=900, sleep=naps.append)
+    healthy, detail = verify("PROOF-PG-20260821T161305", SANDBOX)
+
+    assert healthy is True
+    assert naps == []
+
+
+def test_the_proof_is_no_less_patient_than_a_real_request():
+    """If a proof gave up sooner than the poller does, it would refuse to certify
+    components that work in production — the worst possible asymmetry, because it
+    silently shrinks the catalogue."""
+    import inspect
+    src = inspect.getsource(proof_wiring.make_verify)
+    assert "BOOT_VERIFY_DEADLINE_MINUTES" in src
+    assert "BOOT_VERIFY_POLL_SECONDS" in src

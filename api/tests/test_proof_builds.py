@@ -83,7 +83,7 @@ def test_proof_builds_are_off_by_default(db, monkeypatch):
     """A proof creates real, billable infrastructure. Nothing spends by accident."""
     post = Recorder()
     out = proof.run_proof(db, bp(db), post=post, price=lambda c: 10,
-                          verify=lambda r: (True, "ok"))
+                          verify=lambda r, p: (True, "ok"))
     assert out.status == "refused"
     assert "CERTIFICATION_PROOF_ENABLED" in out.detail
     assert post.calls == [], "something was sent despite proofs being disabled"
@@ -95,7 +95,7 @@ def test_an_unset_sandbox_tier_refuses_rather_than_choosing_one(db, monkeypatch)
     monkeypatch.setenv("CERTIFICATION_PROOF_ENABLED", "true")
     post = Recorder()
     out = proof.run_proof(db, bp(db), post=post, price=lambda c: 10,
-                          verify=lambda r: (True, "ok"))
+                          verify=lambda r, p: (True, "ok"))
     assert out.status == "refused"
     assert "CERTIFICATION_SANDBOX_TIER" in out.detail
     assert post.calls == []
@@ -107,7 +107,7 @@ def test_a_tier_that_is_not_a_tier_refuses_and_says_so(db, monkeypatch):
     allow(monkeypatch, tier="Devlopment")          # deliberate typo
     post = Recorder()
     out = proof.run_proof(db, bp(db), post=post, price=lambda c: 10,
-                          verify=lambda r: (True, "ok"))
+                          verify=lambda r, p: (True, "ok"))
     assert out.status == "refused"
     assert "Devlopment" in out.detail and "Development" in out.detail
     assert post.calls == []
@@ -120,7 +120,7 @@ def test_a_plan_over_the_cap_is_refused_before_apply(db, monkeypatch):
     allow(monkeypatch, cap="250")
     post = Recorder()
     out = proof.run_proof(db, bp(db), post=post, price=lambda c: 1240.0,
-                          verify=lambda r: (True, "ok"))
+                          verify=lambda r, p: (True, "ok"))
 
     assert out.status == "refused"
     assert "1,240.00" in out.detail and "250.00" in out.detail
@@ -132,7 +132,7 @@ def test_an_unpriceable_plan_is_refused_not_waved_through(db, monkeypatch):
     allow(monkeypatch)
     post = Recorder()
     out = proof.run_proof(db, bp(db), post=post, price=lambda c: None,
-                          verify=lambda r: (True, "ok"))
+                          verify=lambda r, p: (True, "ok"))
     assert out.status == "refused"
     assert post.calls == []
 
@@ -160,7 +160,7 @@ def test_a_proof_only_ever_tears_down_its_own_reference(db, monkeypatch):
     allow(monkeypatch)
     post = Recorder()
     out = proof.run_proof(db, bp(db), post=post, price=lambda c: 10,
-                          verify=lambda r: (True, "ok"))
+                          verify=lambda r, p: (True, "ok"))
 
     destroys = [pl for p, pl in post.calls if p == "/destroy"]
     assert destroys, "it never tore down what it built"
@@ -174,7 +174,7 @@ def test_every_handoff_is_confined_to_the_sandbox_tier(db, monkeypatch):
     allow(monkeypatch, tier="Development")
     post = Recorder()
     proof.run_proof(db, bp(db), post=post, price=lambda c: 10,
-                    verify=lambda r: (True, "ok"))
+                    verify=lambda r, p: (True, "ok"))
     assert post.calls
     for _path, payload in post.calls:
         assert payload["policy_input"]["environment_tier"] == "Development"
@@ -186,7 +186,7 @@ def test_a_working_blueprint_passes_and_is_torn_down(db, monkeypatch):
     allow(monkeypatch)
     post = Recorder()
     out = proof.run_proof(db, bp(db), post=post, price=lambda c: 10,
-                          verify=lambda r: (True, "healthy"))
+                          verify=lambda r, p: (True, "healthy"))
 
     assert out.status == "passed", out.detail
     assert post.paths() == ["/provision", "/apply", "/destroy"]
@@ -200,7 +200,7 @@ def test_a_broken_blueprint_fails_and_is_still_torn_down(db, monkeypatch):
     allow(monkeypatch)
     post = Recorder({"/apply": (False, "Invalid Kubernetes version v1.29.1")})
     out = proof.run_proof(db, bp(db), post=post, price=lambda c: 10,
-                          verify=lambda r: (True, "ok"))
+                          verify=lambda r, p: (True, "ok"))
 
     assert out.status == "failed"
     assert "v1.29.1" in out.detail
@@ -214,7 +214,7 @@ def test_built_but_unhealthy_is_a_failure(db, monkeypatch):
     allow(monkeypatch)
     post = Recorder()
     out = proof.run_proof(db, bp(db), post=post, price=lambda c: 10,
-                          verify=lambda r: (False, "node pool never reached ACTIVE"))
+                          verify=lambda r, p: (False, "node pool never reached ACTIVE"))
 
     assert out.status == "failed"
     assert "did not verify healthy" in out.detail
@@ -230,7 +230,7 @@ def test_a_proof_that_cannot_tear_down_is_abandoned_and_says_so(db, monkeypatch)
     allow(monkeypatch)
     post = Recorder({"/destroy": (False, "state lock held")})
     out = proof.run_proof(db, bp(db), post=post, price=lambda c: 10,
-                          verify=lambda r: (True, "healthy"))
+                          verify=lambda r, p: (True, "healthy"))
 
     assert out.status == "abandoned"
     assert "may still be running" in out.detail
@@ -250,7 +250,7 @@ def test_the_attempt_is_recorded_before_the_build_starts(db, monkeypatch):
         return True, "ok"
 
     proof.run_proof(db, bp(db), post=post, price=lambda c: 10,
-                    verify=lambda r: (True, "ok"))
+                    verify=lambda r, p: (True, "ok"))
     assert seen["during"], "no record existed while the build was running"
     assert seen["during"][0][1] == "running"
 
@@ -455,7 +455,7 @@ def test_the_handoff_carries_every_key_the_orchestrator_requires(db, monkeypatch
     allow(monkeypatch)
     post = Recorder()
     proof.run_proof(db, bp(db), post=post, price=lambda c: 10,
-                    verify=lambda r: (True, "ok"))
+                    verify=lambda r, p: (True, "ok"))
 
     src = pathlib.Path(__file__).resolve().parents[2] / "orchestrator" / "main.py"
     tree = ast.parse(src.read_text(encoding="utf-8"))

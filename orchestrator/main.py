@@ -218,6 +218,12 @@ async def posture(request: Request) -> dict:
                                      if b.get("origin") == "generated"]),
         "generated_blueprints_dir": str(blueprint_registry.GENERATED_DIR),
         "proof_enabled": proof_rules.enabled(),
+        # The reference format THIS service will accept. Published so the API can
+        # notice a version skew before a proof rather than during one: on
+        # 2026-08-21 the API was rebuilt with a new reference format and the
+        # orchestrator was not, so every proof was refused with "not a proof
+        # reference" — correct behaviour, and an alarming thing to read.
+        "proof_reference_pattern": proof_rules._REFERENCE.pattern,
         "proof_sandbox_tier": os.getenv("CERTIFICATION_SANDBOX_TIER", "") or "(unset — refuses)",
         "proof_cost_cap_monthly": proof_rules.cost_cap(),
         "backup_mode": backups.backup_mode(),
@@ -305,7 +311,8 @@ def _current_monthly(policy_input: dict) -> float | None:
     return resp.json().get("totals", {}).get("monthly")
 
 
-def _authorise_proof(payload: dict, policy_input: dict) -> dict:
+def _authorise_proof(payload: dict, policy_input: dict,
+                     read_only: bool = False) -> dict:
     """Authority for a certification proof build (ARCHITECTURE.md §4).
 
     The runner may provision without a Jira approval, bounded on every side. The
@@ -340,6 +347,16 @@ def _authorise_proof(payload: dict, policy_input: dict) -> dict:
             detail=f"A proof may build only in the sandbox tier ({sandbox}); this "
                    f"one asked for {tier or 'no tier'}.")
 
+    # A READ stops here. The remaining two checks — OPA and the cost ceiling —
+    # govern what may be BUILT, and /verify builds nothing; it reports on what
+    # already exists. Pricing a read is not merely pointless, it is harmful: the
+    # pricing call can fail 502, and that would fail a proof whose infrastructure
+    # was perfectly healthy, for a reason having nothing to do with the thing
+    # under test. Everything above still applies — proofs enabled, a reference
+    # this runner minted, and the sandbox tier.
+    if read_only:
+        return payload
+
     # Re-check OPA, exactly as for a user request. A proof is not exempt from
     # policy just because it is the portal testing itself.
     try:
@@ -364,7 +381,7 @@ def _authorise_proof(payload: dict, policy_input: dict) -> dict:
     return payload
 
 
-def _authorise(body: bytes, signature: str) -> dict:
+def _authorise(body: bytes, signature: str, read_only: bool = False) -> dict:
     """Verify authenticity + authority + policy + cost. Returns the payload."""
     if not verify(WEBHOOK_SECRET, body, signature):
         raise HTTPException(status_code=401, detail="Invalid webhook signature.")
@@ -380,7 +397,7 @@ def _authorise(body: bytes, signature: str) -> dict:
     # environment — the signature proves who sent it, never what they may do,
     # which is the same stance taken on a Jira approval two lines below.
     if payload.get("proof"):
-        return _authorise_proof(payload, policy_input)
+        return _authorise_proof(payload, policy_input, read_only)
 
     jira_key = payload["jira_key"]
 
@@ -1043,7 +1060,7 @@ async def verify_boot(request: Request) -> dict:
     the whole project is built to run on.
     """
     body = await request.body()
-    payload = _authorise(body, request.headers.get("X-Signature", ""))
+    payload = _authorise(body, request.headers.get("X-Signature", ""), read_only=True)
     reference = payload["reference"]
 
     name, _tags = _bucket_and_tags(payload)
