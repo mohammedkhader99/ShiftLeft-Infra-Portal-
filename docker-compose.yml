@@ -167,6 +167,10 @@ services:
       CERTIFICATION_COST_CAP_MONTHLY: ${CERTIFICATION_COST_CAP_MONTHLY:-}
       # How long a passing proof keeps a blueprint certified (P8, 30 days).
       CERTIFICATION_VALIDITY_DAYS: ${CERTIFICATION_VALIDITY_DAYS:-}
+      # The agent writes its own Terraform and then builds it (C5c). OFF by
+      # default, and bounded: every redraft is a real build in a real tenancy.
+      AUTOBUILD_ENABLED: ${AUTOBUILD_ENABLED:-false}
+      AUTOBUILD_MAX_ATTEMPTS: ${AUTOBUILD_MAX_ATTEMPTS:-}
 
       PROVISION_MODE: ${PROVISION_MODE:-mock}
       # RBAC (E1.1). ROLE_SOURCE:

@@ -153,6 +153,12 @@ EXCLUDED: dict[str, str] = {
     # listing instead: a suspended row already carries the count and the request
     # references in its reason, which is what an admin actually needs to see.
     "CERTIFICATION_FAILURE_THRESHOLD": "internal tuning",
+    # The autobuild loop (C5c). Read by the API, not the orchestrator, so it is
+    # not an execution gate — but it is the switch that lets a model write
+    # infrastructure code, so it is surfaced through the autobuild endpoint's own
+    # response, which says plainly when it is off and how to turn it on.
+    "AUTOBUILD_ENABLED": "surfaced by the autobuild endpoint",
+    "AUTOBUILD_MAX_ATTEMPTS": "internal tuning",
     # How long a proof keeps a blueprint certified. Surfaced through the
     # blueprint listing, where a stale row already says how long it has been.
     "CERTIFICATION_VALIDITY_DAYS": "internal tuning",
