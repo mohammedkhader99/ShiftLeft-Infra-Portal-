@@ -54,6 +54,11 @@ _GATE_ENV = {
     # are the bounds, not secrets.
     "CERTIFICATION_PROOF_ENABLED", "CERTIFICATION_SANDBOX_TIER",
     "CERTIFICATION_COST_CAP_MONTHLY",
+    # Where agent-written blueprints and modules land (C5a). Reported through
+    # /posture as generated_blueprints_dir and a count, so an admin can see at a
+    # glance whether anything has been written by a model — which is the fact
+    # that matters, not the path.
+    "GENERATED_BLUEPRINT_DIR", "GENERATED_MODULE_DIR",
     # Same job for managed PostgreSQL: how long the shape/version catalogue
     # fetched from OCI is trusted. Surfaced as part of the psql readiness
     # reporting rather than as a raw number an admin would have to interpret.

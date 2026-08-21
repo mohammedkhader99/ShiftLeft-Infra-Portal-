@@ -22,6 +22,18 @@ from pathlib import Path
 
 BLUEPRINT_DIR = Path(__file__).resolve().parent / "blueprints"
 
+# Where an agent-written blueprint lands (C5a). A MOUNTED directory, not part of
+# the image: modules baked in at build time cannot be added to at run time, so
+# without this the agent could write a module the orchestrator would never see
+# and that would vanish on the next restart.
+#
+# Kept separate from the shipped directory on purpose. A generated blueprint is
+# not a reviewed one, and the two must never become indistinguishable — every
+# entry carries its origin, and a generated manifest may not take the name of a
+# shipped one (see _collides).
+GENERATED_DIR = Path(os.getenv("GENERATED_BLUEPRINT_DIR", "/generated/blueprints"))
+GENERATED_MODULE_ROOT = Path(os.getenv("GENERATED_MODULE_DIR", "/generated/terraform"))
+
 _REQUIRED_FIELDS = ("ref", "target", "resource_kind", "builds")
 
 
@@ -113,26 +125,46 @@ def _refuted_for(builds: list) -> dict:
     return out
 
 
-def discover(directory: Path | None = None) -> list[dict]:
-    """Every valid manifest in the blueprints directory, newest-safe and sorted.
+def _manifest_paths(root: Path) -> list[Path]:
+    try:
+        return sorted(root.glob("*.yaml")) + sorted(root.glob("*.yml"))
+    except OSError:
+        return []
+
+
+def discover(directory: Path | None = None,
+             generated: Path | None = None) -> list[dict]:
+    """Every valid manifest, shipped and generated, each carrying its origin.
 
     Never raises: discovery failing closed would make the portal believe the
     orchestrator ships nothing, which reads as 'no automation available'.
+
+    SHIPPED WINS. A generated manifest that claims the name or resource kind of a
+    reviewed one is rejected and reported, never merged and never silently
+    preferred. Otherwise an agent could shadow a blueprint that people have
+    already trusted — the one failure in this area nobody would catch by reading
+    a status page.
     """
     import yaml
 
     root = directory or BLUEPRINT_DIR
+    gen_root = generated if generated is not None else GENERATED_DIR
+
     found: list[dict] = []
-    try:
-        paths = sorted(root.glob("*.yaml")) + sorted(root.glob("*.yml"))
-    except OSError:
+    shipped_names: set[str] = set()
+    shipped_kinds: set[str] = set()
+
+    paths = [(p, "shipped") for p in _manifest_paths(root)]
+    paths += [(p, "generated") for p in _manifest_paths(gen_root)]
+    if not paths:
         return []
 
-    for path in paths:
+    for path, origin in paths:
         try:
             manifest = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
         except Exception:  # noqa: BLE001 — a broken file must not hide the rest
             found.append({"ref": path.stem, "error": "manifest could not be parsed",
+                          "origin": origin,
                           "builds": [], "target": "", "resource_kind": ""})
             continue
         if not isinstance(manifest, dict):
@@ -140,12 +172,30 @@ def discover(directory: Path | None = None) -> list[dict]:
         if any(not manifest.get(f) for f in _REQUIRED_FIELDS):
             found.append({"ref": manifest.get("ref") or path.stem,
                           "error": f"manifest is missing one of {', '.join(_REQUIRED_FIELDS)}",
+                          "origin": origin,
                           "builds": [], "target": manifest.get("target", ""),
                           "resource_kind": manifest.get("resource_kind", "")})
             continue
 
+        ref = str(manifest["ref"])
+        kind = str(manifest["resource_kind"])
+        if origin == "shipped":
+            shipped_names.add(ref)
+            shipped_kinds.add(kind)
+        elif ref in shipped_names or kind in shipped_kinds:
+            # A generated blueprint may not take the name of a reviewed one.
+            # Reported rather than dropped: silently ignoring it would leave the
+            # agent believing it had published something.
+            found.append({
+                "ref": ref, "origin": origin, "builds": [],
+                "target": str(manifest.get("target", "")), "resource_kind": kind,
+                "error": ("a shipped blueprint already uses this ref or resource "
+                          "kind; a generated one may not shadow it")})
+            continue
+
         ready, missing = _readiness(manifest)
         found.append({
+            "origin": origin,
             "ref": str(manifest["ref"]),
             "target": str(manifest["target"]).strip().lower(),
             "resource_kind": str(manifest["resource_kind"]),

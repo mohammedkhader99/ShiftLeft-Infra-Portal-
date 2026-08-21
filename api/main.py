@@ -739,6 +739,8 @@ _EXECUTION_GATE_LABELS = {
     # (ARCHITECTURE.md §4, "Attest"). Its bounds are shown by value, not as
     # booleans: "proofs are on" is not useful without "in which tier, and up to
     # what monthly cost".
+    "generated_blueprints": "Blueprints written by the agent (not reviewed)",
+    "generated_blueprints_dir": "Where agent-written blueprints land",
     "proof_enabled": "Certification proof builds allowed (real, billable)",
     "proof_sandbox_tier": "Proof builds restricted to this tier",
     "proof_cost_cap_monthly": "Proof build cost ceiling (monthly)",

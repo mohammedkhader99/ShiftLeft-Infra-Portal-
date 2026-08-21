@@ -212,6 +212,11 @@ async def posture(request: Request) -> dict:
         # that lets the portal provision without a Jira approval — an admin
         # should be able to see, at a glance, whether that is switched on and
         # what bounds it.
+        # Agent-written blueprints (C5a). The COUNT is the fact an admin needs:
+        # "has a model written anything into this orchestrator, and how much".
+        "generated_blueprints": len([b for b in blueprint_registry.discover()
+                                     if b.get("origin") == "generated"]),
+        "generated_blueprints_dir": str(blueprint_registry.GENERATED_DIR),
         "proof_enabled": proof_rules.enabled(),
         "proof_sandbox_tier": os.getenv("CERTIFICATION_SANDBOX_TIER", "") or "(unset — refuses)",
         "proof_cost_cap_monthly": proof_rules.cost_cap(),

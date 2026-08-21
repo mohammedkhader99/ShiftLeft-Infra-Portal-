@@ -376,8 +376,15 @@ def _module_dir(cloud: str, resource_kind: str = "") -> Path:
         manifest = blueprint_registry.for_resource_kind(resource_kind) or {}
         module = (manifest.get("module") or "").strip()
         if module and module != ".":
-            candidate = MODULE_DIR / module
-            if candidate.is_dir():
+            # A GENERATED blueprint's Terraform lives in the mounted store, not
+            # in the image (C5a). Resolved from the manifest's own origin rather
+            # than by trying both roots: a generated manifest must never be able
+            # to reach a shipped module by naming its path, which is how a
+            # written-at-runtime recipe would inherit a reviewed one's trust.
+            root = (blueprint_registry.GENERATED_MODULE_ROOT
+                    if manifest.get("origin") == "generated" else MODULE_DIR)
+            candidate = (root / module).resolve()
+            if candidate.is_dir() and candidate.is_relative_to(root.resolve()):
                 return candidate
     return MODULE_DIR / "aws" if cloud == "aws" else MODULE_DIR
 

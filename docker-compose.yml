@@ -385,6 +385,11 @@ services:
       # Monthly ceiling for one proof, checked against the PLAN before any apply,
       # so a proof never discovers its price by paying it.
       CERTIFICATION_COST_CAP_MONTHLY: ${CERTIFICATION_COST_CAP_MONTHLY:-}
+      # Where agent-written blueprints and modules live (C5a). Mounted, never
+      # baked in: a module written into the image at run time is invisible to
+      # discovery and gone on the next restart.
+      GENERATED_BLUEPRINT_DIR: ${GENERATED_BLUEPRINT_DIR:-/generated/blueprints}
+      GENERATED_MODULE_DIR: ${GENERATED_MODULE_DIR:-/generated/terraform}
 
       PSQL_CATALOGUE_TTL_SECONDS: ${PSQL_CATALOGUE_TTL_SECONDS:-}
       OCI_OKE_KUBERNETES_VERSION: ${OCI_OKE_KUBERNETES_VERSION:-}
@@ -417,6 +422,12 @@ services:
       - "9091:9091"
     volumes:
       - ./secrets:/secrets:ro
+      # Agent-written blueprints and modules (C5a). MOUNTED, not baked into the
+      # image: a module written at run time into the image would be invisible to
+      # discovery and would vanish on the next restart, so the loop could never
+      # close. Kept apart from the shipped recipes on purpose — a generated
+      # blueprint is not a reviewed one, and may not shadow one.
+      - ./generated:/generated
       # Durable per-request Terraform state (2.6c) — survives restarts.
       - tfstate:/tfstate
     depends_on:
