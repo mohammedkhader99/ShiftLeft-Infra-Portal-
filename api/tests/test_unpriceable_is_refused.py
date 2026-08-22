@@ -1,5 +1,13 @@
 """A price nobody can compute is not a price of zero (REQ-2026-0176).
 
+UPDATED 2026-08-22. These used keycloak as the example, and keycloak is no
+longer unpriceable: the agent's classifier knows it would be built as software
+on a machine, so pricing projects that model and returns a real figure marked
+PROVISIONAL (see test_provisional_pricing). What remains genuinely unknowable is
+a cloud-managed service with no blueprint — nothing can say whether it is a
+bucket, a cluster or a database, and those differ by 100x. That is the case
+these now use.
+
 The portal quoted 0.00 AED for keycloak, a human approved it at that figure, and
 the orchestrator then refused to build it: "monthly 90.59 exceeds approved 0.00
 by more than 10%". The execution guard was right. What was wrong was that a
@@ -64,7 +72,7 @@ def test_an_unpriceable_component_is_named_at_the_top_level(db_session):
     """The signal a decision can actually see. A line-level resolved=False is
     invisible to anything reading totals."""
     est = pricing.estimate_cost(
-        [{"technology_code": "keycloak", "size": "small"}], "oci", db_session)
+        [{"technology_code": "oci-adb", "size": "small"}], "oci", db_session)
 
     assert est["unpriced"], "nothing said this could not be priced"
     assert est["totals"]["monthly"] == 0.0
@@ -74,7 +82,7 @@ def test_zero_and_unknown_are_distinguishable(db_session):
     """The whole defect in one assertion. Both come back as 0.00; only
     `unpriced` tells them apart, so anything acting on the number must read it."""
     unknown = pricing.estimate_cost(
-        [{"technology_code": "keycloak", "size": "small"}], "oci", db_session)
+        [{"technology_code": "oci-adb", "size": "small"}], "oci", db_session)
     assert unknown["totals"]["monthly"] == 0.0 and unknown["unpriced"]
 
 
@@ -96,7 +104,7 @@ def test_an_unpriceable_request_is_still_SUBMITTABLE(client):
         "business_justification": "checking the refusal",
         "required_delivery_date": "2026-12-01", "data_classification": "internal",
         "priority": "low", "business_criticality": "tier4",
-        "components": [{"technology_code": "keycloak", "size": "small"}],
+        "components": [{"technology_code": "oci-adb", "size": "small"}],
     })
     assert created.status_code in (200, 201), created.text
     reference = created.json()["reference"]
@@ -118,14 +126,14 @@ def test_the_approver_is_warned_that_the_estimate_is_not_the_whole_cost(client):
         "business_justification": "checking the guidance",
         "required_delivery_date": "2026-12-01", "data_classification": "internal",
         "priority": "low", "business_criticality": "tier4",
-        "components": [{"technology_code": "keycloak", "size": "small"}],
+        "components": [{"technology_code": "oci-adb", "size": "small"}],
     })
     reference = created.json()["reference"]
     body = client.post(f"/api/requests/{reference}/submit").json()
     warnings = " ".join(body.get("policy_warnings") or [])
 
     assert "Not costed" in warnings, "the approver was shown a figure with no caveat"
-    assert "Keycloak" in warnings
+    assert "Oracle Autonomous Database" in warnings
     assert "NOT the whole cost" in warnings
 
 
@@ -155,9 +163,9 @@ def test_the_form_is_told_which_components_cannot_be_priced(db_session):
     `unpriced` is what lets the panel say "Not priced" instead of a figure.
     """
     est = pricing.estimate_cost(
-        [{"technology_code": "keycloak", "size": "small"}], "oci", db_session)
+        [{"technology_code": "oci-adb", "size": "small"}], "oci", db_session)
 
-    assert est["unpriced"] == ["Keycloak"], (
+    assert est["unpriced"] == ["Oracle Autonomous Database"], (
         "the cost endpoint does not name what it could not price, so the form "
         "cannot show anything but the total")
 

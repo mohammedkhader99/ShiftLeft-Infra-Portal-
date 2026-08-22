@@ -3185,9 +3185,18 @@ def submit_request(
     # The approver sees an absence rather than a zero, which is the honest thing
     # a warning can do and a refusal cannot.
     unpriced_components = breakdown.get("unpriced") or []
+    provisional_components = breakdown.get("provisional") or []
     if unpriced_components:
         append_audit(session, "cost.unpriceable", reference=req.reference,
                      detail={"components": unpriced_components})
+    if provisional_components:
+        # Priced, on a component nothing has certified yet. Recorded separately
+        # from unpriceable because the approver is signing a REAL figure here —
+        # the same arithmetic execution will do — and the evidence pack should
+        # show that the number was provisional at the time it was approved.
+        append_audit(session, "cost.provisional", reference=req.reference,
+                     detail={"components": provisional_components,
+                             "monthly": monthly})
 
     # Budget guardrail (F-FIN-02): compare the cost centre's projected committed
     # spend against its budget. Over budget hard-blocks only when enforcement is
@@ -3287,7 +3296,19 @@ def submit_request(
         f"is charged — so the estimate below excludes it and is NOT the whole cost. "
         f"It will be fulfilled by the infrastructure team unless it is certified first."
     ] if unpriced_components else [])
-    warnings = policy_warnings + budget_warnings + unpriced_warning
+    # A DIFFERENT THING, SAID DIFFERENTLY. This figure is real — the same
+    # calculation execution will make — but the component is not certified yet,
+    # so whether it gets built this way is still open. Saying "not costed" here
+    # would understate what is known; saying nothing would overstate it.
+    provisional_warning = ([
+        f"Provisional: {', '.join(str(c) for c in provisional_components)} is not "
+        f"certified yet. The figure below is what it will cost if the portal builds "
+        f"it as software on a machine, which is what it would do — but if that "
+        f"cannot be proven, the infrastructure team fulfils it instead and the "
+        f"final cost may differ."
+    ] if provisional_components else [])
+    warnings = (policy_warnings + budget_warnings + unpriced_warning
+                + provisional_warning)
 
     session.commit()
     out = RequestOut.model_validate(req)
@@ -4709,7 +4730,12 @@ def retry_request(reference: str, session: Session = Depends(get_session),
 # cancel close the record while the resources kept running is precisely how an
 # orphan is made, and this portal already has a page for finding those.
 CANCELLABLE = {"draft", "submitted", "planned", "in-progress",
-               "apply-failed", "verify-failed", "manual-fulfil"}
+               "apply-failed", "verify-failed", "manual-fulfil",
+               # Waiting for somebody to agree a price it did not have when it
+               # was approved. Nothing has been built, and a request whose only
+               # exit is an approval that may never come is how REQ-2026-0176
+               # ended up closed by editing the database.
+               "awaiting-reapproval"}
 CANCELLED = "cancelled"
 
 
@@ -6152,6 +6178,65 @@ def _record_scan(session: Session, req: Request, jira_key: str, scan: dict | Non
     session.commit()
 
 
+# --- a price that became knowable after approval ------------------------------
+
+REAPPROVAL_NEEDED = "awaiting-reapproval"
+
+
+def _needs_reapproval(raw: str) -> bool:
+    """Whether the orchestrator refused because the cost changed since approval.
+
+    Matched on the orchestrator's own refusal text rather than a status code,
+    because 409 also carries the proof cost cap and an IaC scan block, and those
+    are different problems needing different actions.
+    """
+    return "Cost re-validation failed" in (raw or "")
+
+
+def _current_monthly_for(session: Session, req) -> float | None:
+    """What this request costs NOW, with whatever is certified today."""
+    try:
+        components = [component_options.as_dict(c) for c in req.components]
+        return float(estimate_cost(components, req.deployment_target, session,
+                                   req.advanced_options)["totals"]["monthly"])
+    except Exception:  # noqa: BLE001 — a missing figure must not block the ask
+        return None
+
+
+def _ask_for_reapproval(session: Session, req, jira_key: str | None,
+                        monthly: float | None) -> None:
+    """Put the request back in front of its approver, at the price it now has.
+
+    NOT a retry and not a failure. The work succeeded — a component the portal
+    could not price has been certified, and the request now has a real cost that
+    nobody has agreed to. Jira holds the approval (ARCHITECTURE.md §4), so Jira
+    is where it goes back to; the portal only asks.
+    """
+    from api.pricing import CURRENCY
+
+    figure = f"{monthly:.2f} {CURRENCY}" if monthly is not None else "a real figure"
+    req.status = REAPPROVAL_NEEDED
+    req.status_detail = (
+        f"Approved before this could be priced, and it now costs {figure} a month. "
+        f"Nothing has been built. The component was certified automatically while "
+        f"this request was in flight, so the price is real for the first time — and "
+        f"a cost nobody has agreed to is not one the portal will build. Approve it "
+        f"again at this figure, or cancel the request.")
+    append_audit(session, "cost.reapproval_requested", reference=req.reference,
+                 jira_key=jira_key, actor="poller",
+                 detail={"monthly": monthly, "was_approved_at": "unpriced"})
+    if jira_key:
+        try:
+            add_comment(jira_key,
+                        f"This request was approved before its cost could be "
+                        f"calculated. The component has since been certified "
+                        f"automatically, so it now has a real price: {figure} a "
+                        f"month. Nothing has been built. Please approve again at "
+                        f"this figure, or cancel the request.")
+        except Exception as exc:  # noqa: BLE001 — a comment must not block the state
+            logger.warning("re-approval: could not comment on %s: %s", jira_key, exc)
+
+
 def _advance_request(session: Session, req: Request) -> str:
     """Advance one request as far as its live Jira status allows, in one pass.
 
@@ -6303,6 +6388,25 @@ def _advance_request(session: Session, req: Request) -> str:
             req.provision_attempts = (req.provision_attempts or 0) + 1
             append_audit(session, "plan.failed", reference=req.reference, jira_key=jira_key,
                          detail={"error": raw, "attempt": req.provision_attempts})
+            # THE PRICE BECAME REAL AFTER SOMEBODY APPROVED ITS ABSENCE.
+            #
+            # REQ-2026-0176 and REQ-2026-0178 both hit this: an uncertified
+            # component was approved with no price, the agent then certified it
+            # mid-flight, and execution correctly refused to build a 90.59/month
+            # resource against a 0.00 approval. The guard is right and must not
+            # be weakened — the whole separation of authority rests on the
+            # executing layer re-checking what was actually approved.
+            #
+            # What was wrong is that the request then sat in-progress for ever,
+            # looking active, with the work done and nothing to do about it. A
+            # cost that has become knowable is not a failure to retry; it is a
+            # different request from the one that was approved, and the person
+            # who approved the first one is the only one who can approve this.
+            if _needs_reapproval(raw):
+                _ask_for_reapproval(session, req, jira_key, monthly=_current_monthly_for(session, req))
+                session.commit()
+                return req.status
+
             if req.provision_attempts >= max_attempts:
                 req.status_detail = (
                     f"Held after {req.provision_attempts} failed attempts — the portal has "

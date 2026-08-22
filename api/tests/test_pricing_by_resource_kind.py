@@ -137,6 +137,12 @@ def test_technology_resource_kind_is_never_used_as_a_fallback(db):
     """It defaults to "oci-bucket" and calls NGINX a bucket. Trusting it would
     price a machine as storage — roughly AED 1 instead of 162 — and slide under
     every cost cap before building the expensive thing anyway.
+
+    UPDATED 2026-08-22: an uncertified component is no longer left unpriced. The
+    classifier says nginx is software on a machine, so it is PROJECTED as a VM
+    and priced accordingly. The property under test is unchanged and is the one
+    that matters — a machine must never be priced as storage — but it is now
+    protected by projecting the right model rather than by refusing to price.
     """
     from db.models import Technology
     from sqlalchemy import select
@@ -148,8 +154,10 @@ def test_technology_resource_kind_is_never_used_as_a_fallback(db):
     db.commit()
 
     li = line(db, "nginx")
-    assert li["resolved"] is False, "it fell back to Technology.resource_kind"
-    assert li["monthly"] == 0.0, "an uncertified VM was priced as a bucket"
+    assert li["billing_model"] == pricing.BILLING_VM, (
+        "it fell back to Technology.resource_kind and called a machine a bucket")
+    assert li["provisional"] is True, "an uncertified figure must say it is one"
+    assert li["monthly"] == 162.25, "an uncertified VM was priced as a bucket"
 
 
 # --- targets without blueprints must not regress -----------------------------

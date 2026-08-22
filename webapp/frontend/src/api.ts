@@ -66,6 +66,10 @@ export type Cost = {
   // now only the TOTAL reached this form, which read 0.00 and looked free.
   // REQ-2026-0176 was approved at that fiction.
   unpriced?: string[]
+  // Priced, but on a component nothing has certified yet. The figure is the
+  // same arithmetic execution will do; what is uncertain is whether the thing
+  // gets built that way at all.
+  provisional?: string[]
 }
 
 async function json<T>(r: Response): Promise<T> {

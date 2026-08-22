@@ -1509,7 +1509,25 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
                   REQ-2026-0176 reached an approver at a figure that was never
                   real. Say so here, while the form is still being filled in,
                   rather than refusing only at submit. */}
-              {cost.unpriced?.length ? (
+              {/* Priced, but not yet certified. The figure is REAL — the same
+                  calculation execution will make — so it is shown as a figure
+                  and labelled, rather than hidden behind "Not priced". Showing
+                  0.00 got a 90.59/month resource approved at zero twice. */}
+              {!cost.unpriced?.length && cost.provisional?.length ? (
+                <>
+                  <p style={{ fontSize: '2rem', fontWeight: 300, margin: '0.25rem 0' }}>
+                    {cost.totals.monthly.toFixed(2)} <span style={{ fontSize: '0.9rem' }}>{cost.currency}/mo</span>
+                  </p>
+                  <InlineNotification
+                    kind="info"
+                    lowContrast
+                    hideCloseButton
+                    title="Provisional — not yet certified"
+                    subtitle={`${cost.provisional.join(', ')} has no certified blueprint yet. This is what it will cost if the portal builds it as software on a machine, which is what it would do — if that cannot be proven, the infrastructure team fulfils it instead and the final cost may differ.`}
+                    style={{ maxWidth: 'none', marginBottom: '0.5rem' }}
+                  />
+                </>
+              ) : cost.unpriced?.length ? (
                 <>
                   <p style={{ fontSize: '1.5rem', fontWeight: 300, margin: '0.25rem 0' }}>
                     Not priced

@@ -185,6 +185,41 @@ def resource_kind_for(component: dict, session: Session, target: str) -> str | N
     return (component.get("resource_kind") or "").strip() or None
 
 
+def projected_model(component: dict, session: Session) -> str | None:
+    """The billing model a component with NO blueprint would be built under.
+
+    REQ-2026-0176 and REQ-2026-0178 both showed 0.00 AED for keycloak, were
+    approved at that fiction, and were then correctly refused at execution:
+    "monthly 90.59 exceeds approved 0.00 by more than 10%". The guard was right
+    every time. What was wrong is that the portal HAD the answer and never asked
+    for it.
+
+    What decides a price is the billing model, and for an uncertified component
+    the agent's own classifier already decides that: `vm-service` means it will
+    be built by extending oci/service-vm — `_ensure_vm_service` certifies against
+    the manifest it extended, so the kind is determined, not guessed. Software on
+    a machine is billed as a machine.
+
+    A cloud-managed service (`oci-*`, `aws-*`) is a real unknown until a
+    blueprint exists, and returns None: an estimate nobody can derive must stay
+    an absence rather than become a number.
+
+    Deliberately NOT a resource_kind: naming one here would hard-code a string
+    that belongs to the orchestrator's manifests. The model is the whole of what
+    pricing needs.
+    """
+    from api import ai_blueprint
+
+    code = (component.get("technology_code") or "").strip()
+    if not code:
+        return None
+    try:
+        kind, _sibling = ai_blueprint.classify(code, session)
+    except Exception:  # noqa: BLE001 — an estimate must never break the form
+        return None
+    return BILLING_VM if kind == "vm-service" else None
+
+
 def _target_uses_blueprints(session: Session, target: str) -> bool:
     """Whether this target's catalogue is described by blueprints at all.
 
@@ -301,6 +336,7 @@ def estimate_cost(
         # left unpriced and unresolved on purpose: "we do not know what this
         # costs" must not come out looking like a number somebody can approve.
         kind = resource_kind_for(raw, session, target) if known_target else None
+        provisional = False
         if kind:
             model = BILLING_MODEL.get(kind)
         elif known_target and not blueprint_target:
@@ -308,8 +344,12 @@ def estimate_cost(
             # Machines are the only thing it builds; that is not a guess.
             model = BILLING_VM
         else:
-            # A blueprint target that could not name this kind is a real unknown.
-            model = None
+            # No blueprint yet — but the agent's classifier already knows what it
+            # would build this as, and that decides the billing model. The figure
+            # is real; what is provisional is whether the thing gets certified at
+            # all, which is why the line says so and the form repeats it.
+            model = projected_model(raw, session) if known_target else None
+            provisional = model is not None
         # A model whose rate card is incomplete cannot price anything. Say so,
         # rather than charging zero for whatever is missing.
         missing = [item for item in REQUIRED_RATES.get(model or "", ())
@@ -355,6 +395,11 @@ def estimate_cost(
                 "technology_name": comp["technology_name"],
                 "size": comp["size"],
                 "resolved": priceable,
+                # The component has no certified blueprint, so this figure is
+                # what it WOULD cost if the agent certifies it as expected —
+                # real arithmetic, uncertain outcome. Shown labelled rather than
+                # hidden, because 0.00 was read as free and approved as free.
+                "provisional": provisional and priceable,
                 "resource_kind": kind,
                 "billing_model": model,
                 # Names the rate rows a deployment is missing, so "we cannot
@@ -385,10 +430,16 @@ def estimate_cost(
     # honest signal that only the line carries is not a signal at all: whatever
     # ACTS on the number must be able to see it.
     unpriced = [li["technology_name"] for li in lines if not li["resolved"]]
+    # Priced, but on a component nothing has certified yet. Named at the top
+    # level for the same reason `unpriced` is: whatever ACTS on the number has
+    # to be able to see its status, and only the total reaches most callers.
+    provisional_names = [li["technology_name"] for li in lines
+                         if li.get("provisional")]
 
     return {
         "currency": CURRENCY,
         "unpriced": unpriced,
+        "provisional": provisional_names,
         "deployment_target": target or None,
         "known_target": known_target,
         "pricing_source": pricing_source,
