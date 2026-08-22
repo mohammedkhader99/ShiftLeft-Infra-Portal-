@@ -110,6 +110,17 @@ def plans_to_create(provision_response: str) -> int | None:
     return sum(int(c) for c in counts)
 
 
+def plan_covers(provision_response: str, resource_kind: str) -> bool:
+    """Whether the plan is for the resource kind under test.
+
+    Terraform's summary is prefixed with the module it came from, and the
+    orchestrator forwards it verbatim: "oci-service-vm: Plan: 1 to add, ...".
+    An unreadable response is NOT treated as covered — the whole reason this
+    exists is that a proof was silently building the wrong thing.
+    """
+    return bool(resource_kind) and resource_kind in (provision_response or "")
+
+
 # --- Running one proof -------------------------------------------------------
 
 @dataclass
@@ -130,7 +141,7 @@ def run_proof(session, blueprint, *, post, price, verify, now=None) -> ProofOutc
 
         post(path, payload)   -> (ok: bool, detail: str)   the signed handoff
         price(components)     -> monthly cost or None      the plan's price
-        verify(reference, policy_input)
+        verify(reference, payload)
                               -> (healthy: bool, detail)   resource_state / boot
 
     ORDER MATTERS. The cost cap is checked before anything is built, and the
@@ -171,9 +182,19 @@ def run_proof(session, blueprint, *, post, price, verify, now=None) -> ProofOutc
     # estimate would be an unpriceable 0.00 that slid under every ceiling.
     components = [{"technology_code": blueprint.technology_code, "size": "small",
                    "resource_kind": blueprint.resource_kind or ""}]
+    kind = (blueprint.resource_kind or "").strip()
     payload = {
         "proof": True,
         "reference": reference,
+        # WHAT TO BUILD. Without these the orchestrator falls back to
+        # `payload.get("resource_kind", "oci-bucket")` — so every proof ever run
+        # built a BUCKET, whatever it claimed to be proving. nginx and keycloak
+        # were both certified on the evidence of a bucket being created and
+        # destroyed (found 2026-08-22, REQ-2026-0176). A proof that does not
+        # build the thing under test is worth less than no proof at all, because
+        # it puts a certification badge on an untested component.
+        "resource_kind": kind,
+        "resource_kinds": [kind] if kind else [],
         # /provision and /apply both require this. The proof's own reference is
         # the natural key: one proof, one build, so a retried handoff cannot
         # quietly build a second copy of something already running.
@@ -207,6 +228,17 @@ def run_proof(session, blueprint, *, post, price, verify, now=None) -> ProofOutc
     #
     # Checked HERE, on the plan, before anything is applied: it is the cheapest
     # place to learn it and the only one where the answer is unambiguous.
+    # AND IT MUST BE THE RIGHT THING. Terraform names the module in its plan
+    # summary ("oci-service-vm: Plan: 1 to add"), so the cheapest possible check
+    # is to read the name back and refuse when it is not the kind under test.
+    if kind and not plan_covers(detail, kind):
+        return finish(
+            "failed",
+            f"The plan does not build {kind}. A proof that builds something else "
+            f"proves nothing about this recipe, however well it succeeds. Plan: "
+            f"{(detail or '')[:200]}",
+            verdict.monthly)
+
     planned = plans_to_create(detail)
     if planned == 0:
         return finish(
@@ -228,10 +260,14 @@ def run_proof(session, blueprint, *, post, price, verify, now=None) -> ProofOutc
                           verdict.monthly)
         return finish("failed", f"Apply failed: {detail}", verdict.monthly)
 
-    # The SAME policy_input the build used. Verifying is a read, but it still
-    # has to say which thing it is reading: the orchestrator derives the
-    # resource kinds from it, and an empty one asked about nothing at all.
-    healthy, vdetail = verify(reference, payload["policy_input"])
+    # THE SAME PAYLOAD, forwarded whole rather than reassembled.
+    #
+    # It used to be handed just the policy_input, and the verifier built its own
+    # payload around it — which carried no resource_kind, so /verify asked about
+    # a bucket while /apply had built something else. Two places composing what
+    # should be one message is how they came to disagree; there is now one
+    # payload and every call uses it.
+    healthy, vdetail = verify(reference, payload)
 
     # ALWAYS tear down, pass or fail. A proof that leaves a resource behind is a
     # failed proof however healthy the resource was (ARCHITECTURE.md §4).

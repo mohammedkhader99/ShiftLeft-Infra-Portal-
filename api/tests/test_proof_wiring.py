@@ -186,7 +186,7 @@ SANDBOX = {"deployment_target": "oci", "environment_tier": "Development",
            "components": [{"technology_code": "nginx", "size": "small"}]}
 
 
-def test_the_verification_carries_the_policy_input_it_was_given():
+def test_the_verification_carries_the_whole_payload_it_was_given():
     """FOUND IN PRODUCTION, PROOF-NGINX-20260821T161305. nginx built cleanly,
     tore down cleanly, and then failed on:
 
@@ -204,13 +204,24 @@ def test_the_verification_carries_the_policy_input_it_was_given():
         return True, json.dumps({"resources": [{"kind": "oci-service-vm",
                                                 "state": "healthy"}]})
 
-    healthy, _ = proof_wiring.make_verify(post, deadline_seconds=0, sleep=lambda s: None)("PROOF-NGINX-20260821T161305", SANDBOX)
+    handoff = {"resource_kind": "oci-service-vm",
+               "resource_kinds": ["oci-service-vm"], "policy_input": SANDBOX}
+    healthy, _ = proof_wiring.make_verify(
+        post, deadline_seconds=0, sleep=lambda s: None)(
+            "PROOF-NGINX-20260821T161305", handoff)
 
     assert healthy is True
     path, payload = sent[0]
     assert path == "/verify"
     assert payload["policy_input"] == SANDBOX, "the tier and components were dropped"
-    assert payload["policy_input"], "an empty policy_input asks about nothing"
+    # THE SECOND HALF, added 2026-08-22. Composing a payload here instead of
+    # forwarding the proof's own is what let /verify ask about a bucket while
+    # /apply built a machine: the orchestrator defaults resource_kind to
+    # "oci-bucket" when the handoff does not name one, so every proof this
+    # project had ever run verified an object store.
+    assert payload["resource_kind"] == "oci-service-vm", (
+        "verify asked about a different resource kind than the proof built")
+    assert payload["proof"] is True
 
 
 def test_verifying_without_a_policy_input_is_a_visible_break():
@@ -227,7 +238,7 @@ def test_run_proof_hands_verify_the_same_input_it_built_with():
     import inspect
 
     src = inspect.getsource(proof_mod.run_proof)
-    assert 'verify(reference, payload["policy_input"])' in src, (
+    assert "verify(reference, payload)" in src, (
         "verify is no longer given the payload the build used")
 
 

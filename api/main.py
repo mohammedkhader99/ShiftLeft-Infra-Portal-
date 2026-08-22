@@ -3165,6 +3165,29 @@ def submit_request(
     breakdown = estimate_cost(components_data, req.deployment_target, session, req.advanced_options)
     monthly = float(breakdown["totals"]["monthly"])
 
+    # A PRICE NOBODY CAN COMPUTE IS NOT A PRICE OF ZERO.
+    #
+    # REQ-2026-0176 was quoted 0.00 AED for keycloak, approved by a human at that
+    # figure, and then refused at execution because the real cost was 90.59 —
+    # "exceeds approved 0.00 by more than 10%". The execution guard was right;
+    # what was wrong was letting a fictional price reach an approver at all.
+    #
+    # The form refuses here rather than showing a zero, and says what would make
+    # it priceable, because a refusal that does not tell you what to do next is
+    # only half a refusal.
+    unpriced = breakdown.get("unpriced") or []
+    if unpriced:
+        names = ", ".join(str(u) for u in unpriced)
+        append_audit(session, "cost.unpriceable", reference=req.reference,
+                     detail={"components": unpriced})
+        session.commit()
+        return JSONResponse(status_code=422, content={"errors": [
+            f"This request cannot be priced, so it cannot be approved: {names}. "
+            f"A component is priceable once it has a certified blueprint saying "
+            f"what it builds — a machine, a bucket, a cluster — because that is "
+            f"what decides how it is charged. Ask the infrastructure team to "
+            f"certify it, or remove it from this request."]})
+
     # Budget guardrail (F-FIN-02): compare the cost centre's projected committed
     # spend against its budget. Over budget hard-blocks only when enforcement is
     # on; otherwise over/near is an advisory warning. Undefined budgets are ungated.

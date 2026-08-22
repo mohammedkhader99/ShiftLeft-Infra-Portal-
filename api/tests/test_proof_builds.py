@@ -64,7 +64,16 @@ class Recorder:
 
     def __call__(self, path, payload):
         self.calls.append((path, payload))
-        return self.results.get(path, (True, "ok"))
+        if path in self.results:
+            return self.results[path]
+        if path == "/provision":
+            # Answer the way the real orchestrator does: a plan summary naming
+            # the module it came from. run_proof reads this to check the proof is
+            # building the kind under test — a fake that just says "ok" would let
+            # a proof of the wrong thing pass, which is the defect of 2026-08-22.
+            kind = payload.get("resource_kind") or ""
+            return True, '{"plan_summary": "%s: Plan: 1 to add, 0 to change."}' % kind
+        return True, "ok"
 
     def paths(self):
         return [p for p, _ in self.calls]
@@ -567,7 +576,7 @@ class TestARecipeThatBuildsNothing:
         def post(path, payload):
             posted.append(path)
             if path == "/provision":
-                return True, ('{"plan_summary": "oci-keycloak: Plan: 0 to add, '
+                return True, ('{"plan_summary": "oci-oke: Plan: 0 to add, '
                               '0 to change, 0 to destroy."}')
             return True, "{}"
 
@@ -583,7 +592,7 @@ class TestARecipeThatBuildsNothing:
 
         def post(path, payload):
             if path == "/provision":
-                return True, '{"plan_summary": "oci-service-vm: Plan: 1 to add."}'
+                return True, '{"plan_summary": "oci-oke: Plan: 1 to add."}'
             return True, "{}"
 
         out = proof.run_proof(db, bp(db), post=post,

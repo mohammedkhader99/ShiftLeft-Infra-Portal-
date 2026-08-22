@@ -99,18 +99,17 @@ def make_verify(post, *, deadline_seconds: int | None = None,
         except (TypeError, ValueError):
             return fallback
 
-    def verify(reference: str, policy_input: dict) -> tuple[bool, str]:
-        # policy_input is REQUIRED, not defaulted. Posting an empty one was a
-        # real defect (PROOF-NGINX-20260821T161305): the orchestrator reads the
-        # resource kinds out of it, so an empty one asked "is nothing healthy?"
-        # — and was refused for naming no tier before it could even answer.
+    def verify(reference: str, payload: dict) -> tuple[bool, str]:
+        # THE PROOF'S OWN PAYLOAD, forwarded whole. Composing a second one here
+        # is what let /verify ask about a different resource kind than /apply
+        # built, and an earlier version of that same mistake posted an empty
+        # policy_input and asked "is nothing healthy?".
         deadline = (deadline_seconds if deadline_seconds is not None
                     else _cfg("BOOT_VERIFY_DEADLINE_MINUTES", 15) * 60)
         interval = (interval_seconds if interval_seconds is not None
                     else _cfg("BOOT_VERIFY_POLL_SECONDS", 20))
         give_up_at = time.monotonic() + deadline
-        payload = {"reference": reference, "proof": True,
-                   "policy_input": policy_input}
+        payload = {**(payload or {}), "reference": reference, "proof": True}
         last_problem = "no answer was ever read"
 
         while True:
