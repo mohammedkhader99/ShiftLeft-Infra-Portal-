@@ -135,12 +135,24 @@ def make_verify(post, *, deadline_seconds: int | None = None,
                 elif body.get("settled"):
                     if body.get("all_ok"):
                         return True, "verified healthy"
+                    # THE MACHINE'S OWN WORDS, not a verdict to take on trust.
+                    #
+                    # A machine-backed resource reports `problems`; only the
+                    # resource-state path (a bucket, a cluster) sets `note`.
+                    # Reading `note` alone collapsed "package keycloak is not
+                    # installed" into the bare word "broken" on REQ-2026-0177 —
+                    # discarding the one thing a boot report exists to carry, and
+                    # leaving whoever reads the failure nothing to act on.
                     hurt = (body.get("broken") or []) + (body.get("unreadable") or [])
-                    notes = "; ".join(
-                        f"{r['kind']}: {r.get('note', 'broken')}"
-                        for r in (body.get("resources") or [])
-                        if r.get("state") in ("broken", "unreadable"))
-                    return False, (notes or f"not healthy: {', '.join(hurt)}")[:300]
+                    said = []
+                    for r in (body.get("resources") or []):
+                        if r.get("state") not in ("broken", "unreadable"):
+                            continue
+                        words = ("; ".join(r.get("problems") or [])
+                                 or r.get("note") or "broken")
+                        said.append(f"{r.get('kind')}: {words}")
+                    return False, ("; ".join(said)
+                                   or f"not healthy: {', '.join(hurt)}")[:400]
                 else:
                     last_problem = ("still waiting for "
                                     f"{', '.join(body.get('waiting') or ['a machine'])} "

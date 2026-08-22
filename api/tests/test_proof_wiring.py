@@ -363,3 +363,46 @@ def test_an_unpriced_component_makes_check_cost_refuse():
     """The two halves joined: None reaches check_cost, and check_cost says no."""
     from common.proof_rules import check_cost
     assert check_cost(None).allowed is False
+
+
+def test_a_broken_machine_reports_in_its_own_words_not_just_broken():
+    """FOUND ON REQ-2026-0177. The keycloak proof failed with "oci-service-vm:
+    broken" while the machine had actually said "package keycloak is not
+    installed" — the one fact anybody reading the failure needed.
+
+    A machine-backed resource carries `problems`; only the resource-state path
+    sets `note`. Reading `note` alone discarded exactly what the boot report
+    exists to carry, and the orchestrator's own comment says so: "the machine's
+    own words, so the portal can show a human WHY rather than a verdict they
+    have to take on trust."
+    """
+    body = json.dumps({
+        "checked": 1, "settled": True, "all_ok": False, "broken": ["oci-service-vm"],
+        "resources": [{"kind": "oci-service-vm", "expected": True, "state": "broken",
+                       "problems": ["package keycloak is not installed",
+                                    "keycloak did not start"]}],
+    })
+    verify = proof_wiring.make_verify(_post_returning(True, body),
+                                      deadline_seconds=0, sleep=lambda s: None)
+    healthy, detail = verify("PROOF-KEYCLOAK-X", {"environment_tier": "Development"})
+
+    assert healthy is False
+    assert "package keycloak is not installed" in detail, (
+        f"the machine's own words were thrown away: {detail!r}")
+    assert detail != "oci-service-vm: broken"
+
+
+def test_the_resource_state_path_still_uses_its_note():
+    """A bucket or a cluster has no boot report; its detail arrives as `note`.
+    Fixing the machine path must not break that one."""
+    body = json.dumps({
+        "checked": 1, "settled": True, "all_ok": False, "broken": ["oci-bucket"],
+        "resources": [{"kind": "oci-bucket", "expected": True, "state": "broken",
+                       "note": "the bucket does not exist"}],
+    })
+    verify = proof_wiring.make_verify(_post_returning(True, body),
+                                      deadline_seconds=0, sleep=lambda s: None)
+    healthy, detail = verify("PROOF-X", {"environment_tier": "Development"})
+
+    assert healthy is False
+    assert "the bucket does not exist" in detail
