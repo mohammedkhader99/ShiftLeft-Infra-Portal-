@@ -49,6 +49,15 @@ export function workflowSteps(status: string, audit: AuditEntry[]): WFStep[] {
     state: done ? 'done' : 'pending',
   }))
 
+  // Cancelled is neither a failure nor a completion: the lifecycle stopped
+  // where it had got to, on purpose. Marking a stage 'failed' would send
+  // somebody hunting an error that does not exist, and marking one 'current'
+  // would suggest it is still moving.
+  if (status === 'cancelled') {
+    steps.push({ label: 'Cancelled', state: 'done', when: firstTs['request.cancelled'] })
+    return steps
+  }
+
   if (status === 'decommissioned') {
     steps.forEach((s) => (s.state = 'done'))
     steps.push({

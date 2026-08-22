@@ -4686,6 +4686,108 @@ def retry_request(reference: str, session: Session = Depends(get_session),
             "message": f"{reference} will be retried on the next cycle."}
 
 
+# --- Cancelling a request ----------------------------------------------------
+
+# Statuses a request can be cancelled FROM. Everything here has the same
+# property: the portal is not part-way through building something.
+#
+# `provisioned` is deliberately absent — a running environment is torn down by
+# DECOMMISSION, which destroys the infrastructure and closes the loop. Letting
+# cancel close the record while the resources kept running is precisely how an
+# orphan is made, and this portal already has a page for finding those.
+CANCELLABLE = {"draft", "submitted", "planned", "in-progress",
+               "apply-failed", "verify-failed", "manual-fulfil"}
+CANCELLED = "cancelled"
+
+
+class CancelIn(BaseModel):
+    reason: str = ""
+
+
+@app.post("/api/requests/{reference}/cancel", response_model=RequestOut)
+def cancel_request(reference: str, body: CancelIn,
+                   session: Session = Depends(get_session),
+                   requester: str = Depends(require_action("create_request"))):
+    """Stop a request that is not going to be fulfilled. Creates nothing, destroys nothing.
+
+    REQ-2026-0176 is why this exists. It was quoted 0.00 AED for an unpriceable
+    component, approved at that fiction, and refused at execution — leaving it
+    sitting in `in-progress` for ever, looking active. There was no way to close
+    it, so it was closed by hand in the database.
+
+    THE RULE IS ABOUT RESOURCES, NOT STATUS. A request that owns anything real is
+    refused and pointed at decommission, whatever state its record is in: closing
+    the record while the infrastructure keeps running is how an orphan is made,
+    and it would still be billing.
+    """
+    req = _load_request(reference, session)
+    actor = requester
+
+    if req.status == CANCELLED:
+        return RequestOut.model_validate(req)
+
+    # Yours, or you hold oversight. A requester cancelling their own request
+    # needs no ceremony; cancelling somebody else's is an operational act.
+    oversight = roles_mod.can(roles_mod.resolve_roles(actor), "view_overview")
+    if (req.requester or "").lower() != (actor or "").lower() and not oversight:
+        raise HTTPException(
+            status_code=403,
+            detail="You can cancel your own requests; cancelling someone else's "
+                   "needs oversight.")
+
+    built = session.scalars(
+        select(ProvisionedResource).where(
+            ProvisionedResource.reference == reference)).all()
+    if built:
+        kinds = ", ".join(sorted({r.kind for r in built})) or "resources"
+        raise HTTPException(
+            status_code=409,
+            detail=(f"{reference} has already built {kinds}, so it cannot be "
+                    f"cancelled — cancelling would close the record and leave the "
+                    f"infrastructure running and billing. Decommission it instead, "
+                    f"which destroys what was built and then closes it."))
+
+    if req.status not in CANCELLABLE:
+        raise HTTPException(
+            status_code=409,
+            detail=(f"{reference} is {req.status} and cannot be cancelled. "
+                    f"Cancellable: {', '.join(sorted(CANCELLABLE))}."))
+
+    was = req.status
+    reason = (body.reason or "").strip()
+    req.status = CANCELLED
+    req.status_detail = (
+        f"Cancelled by {actor}. Nothing was created."
+        + (f" Reason: {reason}" if reason else ""))
+
+    # The ticket is the system of record, so it must not be left open behind a
+    # closed request. A comment always; the transition only if Jira offers one,
+    # because a workflow without a cancelled state must not turn this into a 500.
+    jira_key = req.approval.jira_key if req.approval else None
+    if jira_key:
+        try:
+            add_comment(jira_key, f"Cancelled in the portal by {actor}. "
+                                  f"Nothing was created."
+                                  + (f" Reason: {reason}" if reason else ""))
+        except Exception as exc:  # noqa: BLE001 — a comment must not block the close
+            logger.warning("cancel: could not comment on %s: %s", jira_key, exc)
+        # JIRA_REJECTED_STATUSES is a list because workflows differ; try each in
+        # turn and stop at the first that this project actually offers.
+        for target in [t.strip() for t in os.getenv(
+                "JIRA_REJECTED_STATUSES", "Rejected,Cancelled").split(",") if t.strip()]:
+            try:
+                transition_issue(jira_key, target)
+                break
+            except Exception:  # noqa: BLE001 — try the next configured name
+                continue
+
+    append_audit(session, "request.cancelled", reference=reference,
+                 jira_key=jira_key, actor=actor,
+                 detail={"was": was, "reason": reason})
+    session.commit()
+    return RequestOut.model_validate(req)
+
+
 @app.post("/api/requests/{reference}/apply")
 def apply_request(reference: str, background_tasks: BackgroundTasks,
                   session: Session = Depends(get_session),

@@ -405,6 +405,18 @@ export async function renewRequest(
   return { status: r.status, body: await r.json().catch(() => ({})) }
 }
 
+export async function cancelRequest(
+  reference: string,
+  reason: string,
+): Promise<{ status: number; body: any }> {
+  const r = await fetch(`/api/requests/${reference}/cancel`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reason }),
+  })
+  return { status: r.status, body: await r.json().catch(() => ({})) }
+}
+
 export async function getMe(): Promise<{ email: string; roles: string[] } | null> {
   const r = await fetch('/api/me')
   if (r.status === 401) {

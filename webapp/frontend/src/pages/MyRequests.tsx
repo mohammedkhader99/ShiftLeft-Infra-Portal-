@@ -21,8 +21,8 @@ import {
   Accordion,
   AccordionItem,
 } from '@carbon/react'
-import { WarningAltFilled, Renew, UserFollow, Search, Pause, Play } from '@carbon/icons-react'
-import { getMe, getRequests, getAudit, renewRequest, transferOwner, checkDrift, reconcileState, triageFailure, actuate, setRequestShutdown, createBackup, grantAccess, revokeAccess, setOwnerGroup, type RequestRow, type ShutdownPolicy, getBootReport, type BootReport } from '../api'
+import { WarningAltFilled, Renew, UserFollow, Search, Pause, Play, Close } from '@carbon/icons-react'
+import { getMe, getRequests, getAudit, renewRequest, cancelRequest, transferOwner, checkDrift, reconcileState, triageFailure, actuate, setRequestShutdown, createBackup, grantAccess, revokeAccess, setOwnerGroup, type RequestRow, type ShutdownPolicy, getBootReport, type BootReport } from '../api'
 import { workflowSteps, fmtWhen, type WFStep } from '../workflow'
 
 const FILTER_KEYS = ['status', 'request_type', 'technology', 'deployment_target', 'created_week', 'requested_by', 'subsidiary', 'reference']
@@ -362,6 +362,30 @@ export default function MyRequests({ route }: { route: string }) {
     refresh()
   }
 
+  // Cancelling a request that is not going to be fulfilled. It closes the
+  // record and destroys NOTHING, so the API refuses when the request already
+  // owns cloud resources and points at decommission instead; the refusal it
+  // sends back is shown verbatim rather than reworded, because it names what
+  // was built and what to do about it.
+  const [cancelReason, setCancelReason] = useState<Record<string, string>>({})
+  const [cancelError, setCancelError] = useState<Record<string, string>>({})
+  async function onCancel(ref: string) {
+    const reason = (cancelReason[ref] || '').trim()
+    const { status, body } = await cancelRequest(ref, reason)
+    if (status >= 400) {
+      setCancelError((e) => ({ ...e, [ref]: body?.detail || 'Could not cancel this request.' }))
+      return
+    }
+    setCancelError((e) => ({ ...e, [ref]: '' }))
+    setCancelReason((r) => ({ ...r, [ref]: '' }))
+    refresh()
+  }
+
+  // Mirrors the API's CANCELLABLE set. A button offered where the API would
+  // refuse is a worse experience than no button at all.
+  const CANCELLABLE = ['draft', 'submitted', 'planned', 'in-progress',
+                       'apply-failed', 'verify-failed', 'manual-fulfil']
+
   const [transferInputs, setTransferInputs] = useState<Record<string, string>>({})
   async function onTransfer(ref: string) {
     const newOwner = (transferInputs[ref] || '').trim()
@@ -648,6 +672,36 @@ export default function MyRequests({ route }: { route: string }) {
                           subtitle={r.status_detail}
                           style={{ maxWidth: 'none', marginBottom: '1rem' }}
                         />
+                      )}
+                      {CANCELLABLE.includes(r.status) && (
+                        <div style={{ marginBottom: '1.25rem', display: 'flex', alignItems: 'flex-end', gap: '0.75rem', flexWrap: 'wrap' }}>
+                          <TextInput
+                            id={`cancel-reason-${r.reference}`}
+                            labelText="Cancel this request"
+                            helperText="Closes the request. Nothing is created or destroyed."
+                            placeholder="Reason (optional)"
+                            size="sm"
+                            style={{ maxWidth: '22rem' }}
+                            value={cancelReason[r.reference] || ''}
+                            onChange={(e) =>
+                              setCancelReason((c) => ({ ...c, [r.reference]: e.target.value }))
+                            }
+                          />
+                          <Button size="sm" kind="danger--tertiary" renderIcon={Close}
+                                  onClick={() => onCancel(r.reference)}>
+                            Cancel request
+                          </Button>
+                          {cancelError[r.reference] && (
+                            <InlineNotification
+                              kind="error"
+                              lowContrast
+                              hideCloseButton
+                              title="Not cancelled"
+                              subtitle={cancelError[r.reference]}
+                              style={{ maxWidth: 'none', marginTop: '0.5rem' }}
+                            />
+                          )}
+                        </div>
                       )}
                       {canDiagnose && (r.status.endsWith('failed') || r.status === 'rejected' || !!r.status_detail) && (
                         <div style={{ marginBottom: '1.25rem' }}>
