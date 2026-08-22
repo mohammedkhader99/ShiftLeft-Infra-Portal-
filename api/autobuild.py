@@ -200,7 +200,8 @@ def summarise(result: AutobuildResult) -> dict:
 
 def ensure(candidate: str, session: Session, *, target, shipped, run_proof,
            publish, certify, withdraw=None,
-           shipped_codes: frozenset[str] = frozenset()) -> AutobuildResult:
+           shipped_codes: frozenset[str] = frozenset(),
+           reachable=None) -> AutobuildResult:
     """Make `candidate` provisionable, and certify it — no human involved.
 
     The reviewer's requirement of 2026-08-21, in full: if the agent cannot find a
@@ -266,14 +267,15 @@ def ensure(candidate: str, session: Session, *, target, shipped, run_proof,
         return _ensure_vm_service(candidate, session, proposal, target=target,
                                   shipped=shipped, run_proof=run_proof,
                                   publish=publish, certify=certify,
-                                  withdraw=withdraw)
+                                  withdraw=withdraw, reachable=reachable)
 
     return build(candidate, session, blueprint=None, run_proof=run_proof,
                  publish=publish, target=target, shipped_codes=shipped_codes)
 
 
 def _ensure_vm_service(candidate, session, proposal, *, target, shipped,
-                       run_proof, publish, certify, withdraw) -> AutobuildResult:
+                       run_proof, publish, certify, withdraw,
+                       reachable=None) -> AutobuildResult:
     """Teach the proven machine blueprint one more technology, and prove it.
 
     THE ORDER IS INVERTED HERE, deliberately. Everywhere else a draft is proved
@@ -299,6 +301,30 @@ def _ensure_vm_service(candidate, session, proposal, *, target, shipped,
             f"The profile drafted for {candidate} was refused before any machine "
             f"was booted: " + "; ".join(f.detail for f in blockers)[:300])
         return result
+
+    # CAN THIS MACHINE EVEN FETCH IT? An archive install needs the public
+    # internet, and a subnet with only a service gateway installs Oracle's
+    # packages perfectly and then cannot reach the release host. The route table
+    # already answers this, so asking it here costs nothing and spending a real
+    # sandbox VM to be told the same thing costs eight minutes and a machine.
+    if reachable is not None:
+        import json as _json
+
+        wants_archive = any(
+            isinstance(_json.loads(body).get("archive"), dict)
+            for body in proposal.files.values()
+            if body.strip().startswith("{"))
+        if wants_archive and not reachable():
+            result.status = "refused"
+            result.detail = (
+                f"{candidate} is installed from a release archive on the public "
+                f"internet, and the build subnet has no route there — so a proof "
+                f"would boot a machine that installs its dependencies and then "
+                f"cannot fetch the software. Nothing was built. Add a NAT gateway "
+                f"to the build subnet, or fulfil this one by hand.")
+            result.attempts.append(Attempt(
+                1, "preflight", "refused", "no internet egress from the build subnet"))
+            return result
 
     written = publish(proposal.files)
     result.files = proposal.files

@@ -93,6 +93,35 @@ def can_install(family: str, fetcher) -> bool:
     return family in known
 
 
+def reaches_internet(fetcher) -> bool:
+    """Whether the build subnet has a route to the public internet.
+
+    Absent an answer this says YES, matching can_install: refusing everything
+    because a lookup failed would take the portal down, and the machine's own
+    boot report is the backstop for what this misses.
+    """
+    answer = current(fetcher) or {}
+    if not answer.get("known"):
+        return True
+    return bool(answer.get("internet"))
+
+
+def archive_guidance(code: str, fetcher) -> str:
+    """Why software that fetches its own archive cannot be built here.
+
+    Separate from `guidance` because the cause is different and so is the fix:
+    the OS is fine and its packages install, but this technology fetches its
+    software from a release host on the public internet.
+    """
+    answer = current(fetcher) or {}
+    where = answer.get("subnet_name") or "this environment's subnet"
+    return (f"{code} is not installed from a package repository — it is fetched "
+            f"as a release archive from the public internet, and {where} has no "
+            f"route there. Oracle's own mirrors are reachable, so package-based "
+            f"software still builds here; ask for a NAT gateway to be added to "
+            f"{where} if you need this one.")
+
+
 def guidance(family: str, fetcher) -> str:
     """Why this OS cannot be built here and what to do — the orchestrator's own
     words, since it is the layer that can see the network."""

@@ -487,6 +487,22 @@ def validate(session: Session, technology_code: str, deployment_target: str,
         errors["image"] = network_egress.guidance(family, _fetch_egress)
         return errors
 
+    # THE SAME QUESTION, ASKED PER TECHNOLOGY. The check above is keyed on OS
+    # family, and a family answer cannot see that ONE technology on a perfectly
+    # supported OS still needs the public internet: an archive install fetches
+    # its software from a release host, so keycloak on Oracle Linux installs its
+    # java dependency from Oracle's mirrors and then cannot reach github.
+    #
+    # Without this the portal spends a real sandbox machine to learn what the
+    # subnet's route table already said. The orchestrator declares the need
+    # (blueprint manifests, plus any agent-written profile that fetches an
+    # archive) and reports it with the rest of the capabilities.
+    if (blueprint_capabilities.needs_internet(technology_code)
+            and not network_egress.reaches_internet(_fetch_egress)):
+        errors["technology_code"] = network_egress.archive_guidance(
+            technology_code, _fetch_egress)
+        return errors
+
     # The combination check, before the per-field ones: picking an Ubuntu image
     # for software we can only install on Red Hat would otherwise sail through —
     # the image is offered and the technology is offered, and the machine would

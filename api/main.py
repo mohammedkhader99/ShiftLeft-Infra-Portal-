@@ -3751,10 +3751,16 @@ def _autobuild_component(session: Session, code: str, target: str) -> dict:
         str(b) for m in (_orchestrator_blueprints() or [])
         for b in (set(m.get("builds") or []) - set(m.get("builds_generated") or [])))
 
+    # Whether the build subnet can reach the public internet — asked of the
+    # orchestrator, which is the layer that can see the network. An archive
+    # install needs it and the OS-family check cannot see that.
+    def reachable() -> bool:
+        return network_egress.reaches_internet(_orchestrator_network_egress)
+
     result = autobuild.ensure(code, session, target=target, shipped=shipped,
                               run_proof=run_proof, publish=publish,
                               certify=certify, withdraw=withdraw,
-                              shipped_codes=shipped_codes)
+                              shipped_codes=shipped_codes, reachable=reachable)
     session.commit()
     return {"status": result.status, "detail": result.detail[:300]}
 

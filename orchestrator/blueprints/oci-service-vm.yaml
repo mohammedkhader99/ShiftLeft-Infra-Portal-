@@ -40,6 +40,16 @@ builds: [nginx, redis7, java21, python312, nodejs20]
 # blueprint that says nothing about the operating systems it can configure is
 # exactly how Apache came to be offered on Ubuntu.
 os_families: [rhel, debian]
+# Technologies whose INSTALL needs the public internet, over and above whatever
+# the OS family needs for its packages. Oracle Linux reaches its own mirrors
+# through a service gateway, so a machine can install every RPM here and still
+# fail to fetch software that ships as a release archive from github.
+#
+# Empty for the shipped technologies — all five install from the OS repositories.
+# The registry ADDS any agent-written profile that declares an archive, so the
+# portal can refuse the request instead of spending a sandbox machine to learn
+# what the subnet's route table already said.
+needs_internet: []
 description: A service installed on a private OCI Compute instance at first boot — package, systemd unit and firewall port from the technology's profile.
 # The Terraform variable this module names its resource with.
 name_var: instance_name

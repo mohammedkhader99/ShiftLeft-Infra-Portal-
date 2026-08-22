@@ -28,6 +28,8 @@ import time
 # {technology_code: {os families}} plus when it was fetched. Guarded by a lock
 # because several requests can miss the cache at once.
 _cache: dict[str, set[str]] | None = None
+# {technology codes whose install needs the public internet}
+_internet: set[str] = set()
 _limits: dict[str, tuple[str, int]] = {}
 _refusals: dict[tuple[str, str], str] = {}
 _proven: dict[str, set[str]] = {}
@@ -121,12 +123,15 @@ def refresh(fetcher) -> bool:
         _unverifiable.clear()
         _network_tiers.clear()
         _streams.clear()
+        _internet.clear()
         for bp in shipped or []:
             for code, why in (bp.get("cannot_verify") or {}).items():
                 _unverifiable[str(code)] = str(why)
             for code, families in (bp.get("streams") or {}).items():
                 for family, values in (families or {}).items():
                     _streams[(str(code), str(family).strip().lower())] = list(values)
+            for code in bp.get("needs_internet") or []:
+                _internet.add(str(code))
             if bp.get("network_tiers") is not None:
                 for code in bp.get("builds") or []:
                     _network_tiers[str(code)] = list(bp["network_tiers"])
@@ -136,6 +141,21 @@ def refresh(fetcher) -> bool:
                     str(f).strip().lower() for f in families or [])
         _fetched_at = time.time()
     return True
+
+
+def needs_internet(code: str) -> bool:
+    """Whether installing this technology needs the public internet.
+
+    Asked of the orchestrator's manifests over the signed channel, never worked
+    out here: the API image has no orchestrator code and no view of the store
+    where agent-written profiles live.
+
+    False when capabilities are unknown, on purpose and unlike `families_for`.
+    An unknown here would refuse every technology on a subnet whose egress could
+    not be read, which takes the portal down to protect against a machine that
+    the boot report would have caught anyway.
+    """
+    return (code or "").strip() in _internet
 
 
 def families_for(code: str, fetcher) -> set[str] | None:
@@ -237,6 +257,7 @@ def reset() -> None:
     global _cache, _fetched_at
     with _lock:
         _cache, _fetched_at = None, 0.0
+        _internet.clear()
         _limits.clear()
         _refusals.clear()
         _proven.clear()

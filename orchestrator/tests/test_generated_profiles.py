@@ -300,3 +300,43 @@ def test_a_family_without_a_block_is_still_refused(store, monkeypatch):
     time."""
     write(store, ARCHIVE_PROFILE)
     assert configure.profile_for("keycloak", "debian") is None
+
+
+# --- declaring the egress an archive install needs ---------------------------
+
+def test_an_archive_profile_declares_that_it_needs_the_internet(store):
+    """The check the portal makes BEFORE spending a machine is only as good as
+    what the orchestrator tells it. An archive fetches its software from a
+    release host, so a subnet with only a service gateway installs every Oracle
+    RPM and then cannot reach github — and the OS-family check cannot see that,
+    because the family (rhel) is perfectly supported."""
+    write(store, ARCHIVE_PROFILE)
+    vm = next(b for b in blueprint_registry.discover()
+              if b.get("ref") == "oci/service-vm")
+
+    assert "keycloak" in vm["needs_internet"], (
+        "the portal cannot refuse this up front and will spend a sandbox VM to "
+        "learn what the subnet's route table already said")
+
+
+def test_a_package_profile_declares_no_such_need(store):
+    """Oracle Linux packages come over the service gateway. Claiming otherwise
+    would refuse the whole catalogue on a subnet with no NAT."""
+    write(store, {**ARCHIVE_PROFILE, "code": "haproxy",
+                  "archive": None, "rhel": {"packages": ["haproxy"],
+                                            "services": ["haproxy"]}})
+    vm = next(b for b in blueprint_registry.discover()
+              if b.get("ref") == "oci/service-vm")
+    assert "haproxy" not in vm["needs_internet"]
+
+
+def test_the_shipped_manifest_declares_the_field(store):
+    """Declared in the manifest even though it currently lists nothing — a field
+    that only appears when it is non-empty is a field nobody knows to set."""
+    vm = next(b for b in blueprint_registry.discover()
+              if b.get("ref") == "oci/service-vm")
+    assert "needs_internet" in vm
+    for shipped in ("nginx", "redis7", "java21", "python312", "nodejs20"):
+        assert shipped not in vm["needs_internet"], (
+            f"{shipped} installs from the OS repositories and must not be "
+            f"refused on a subnet with no NAT")

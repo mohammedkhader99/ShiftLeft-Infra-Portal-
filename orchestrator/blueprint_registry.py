@@ -161,6 +161,13 @@ def discover(directory: Path | None = None,
     # module being written for a resource kind that already has one — the
     # collision this registry refuses two screens down.
     extra_builds: dict[str, list[str]] = {}
+    # Technologies whose INSTALL needs the public internet, beyond whatever the
+    # OS family needs. An archive install fetches its software from a release
+    # host (github.com for keycloak), so a machine on a subnet with only a
+    # service gateway installs Oracle's packages perfectly and then fails to
+    # fetch the archive. The portal must be able to refuse that up front instead
+    # of spending a sandbox VM to discover it.
+    extra_internet: dict[str, list[str]] = {}
     try:
         from orchestrator import configure
 
@@ -168,8 +175,10 @@ def discover(directory: Path | None = None,
             on = str(profile.get("builds_on") or "").strip()
             if on:
                 extra_builds.setdefault(on, []).append(code)
+                if isinstance(profile.get("archive"), dict):
+                    extra_internet.setdefault(on, []).append(code)
     except Exception:  # noqa: BLE001 — a broken profile must not hide the catalogue
-        extra_builds = {}
+        extra_builds, extra_internet = {}, {}
 
     found: list[dict] = []
     shipped_names: set[str] = set()
@@ -229,6 +238,14 @@ def discover(directory: Path | None = None,
             # person put on this blueprint from what a machine added to it.
             "builds_generated": sorted(
                 extra_builds.get(ref, []) if origin == "shipped" else []),
+            # Which of `builds` cannot be installed without reaching the public
+            # internet — the manifest's own declaration, plus any agent-written
+            # profile that fetches an archive. Read by the portal so a subnet
+            # with no NAT refuses the request rather than building a machine that
+            # cannot finish.
+            "needs_internet": sorted(set(
+                [str(b) for b in manifest.get("needs_internet") or []]
+                + (extra_internet.get(ref, []) if origin == "shipped" else []))),
             # OS families this blueprint's own first-boot configuration can
             # handle. Empty means it configures no operating system at all — a
             # bucket, a managed database — and the portal makes no OS claim for
