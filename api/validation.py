@@ -19,7 +19,15 @@ from db.models import (ENVIRONMENT_TIERS, Backup, Blueprint, CostCentre, Environ
                        ProvisionedResource, Request, Subsidiary, Technology)
 
 REQUEST_TYPES = {"dns", "create", "add", "resize", "decommission", "refresh", "restore",
-                 "clone", "sandbox", "temporary", "reduce", "dr"}
+                 "clone", "sandbox", "temporary", "reduce", "dr",
+                 # Asking the infrastructure team for a CAPABILITY — backup,
+                 # centralised logging, monitoring — rather than for a component.
+                 # These have no package, no archive and no cloud resource, so
+                 # they carry no sizing and no price and never reach the build
+                 # path: there is nothing there to fail at. What they do carry is
+                 # the justification, the approval and the audit trail, which is
+                 # the whole reason to raise them here rather than by email.
+                 "platform-service"}
 SIZES = {"small", "medium", "large", "xlarge"}
 # Size ladder for the reduce-capacity guardrail (F-CAT): new size must rank below.
 SIZE_ORDER = {"small": 0, "medium": 1, "large": 2, "xlarge": 3}
@@ -203,6 +211,8 @@ def validate_submission(data: dict, session: Session) -> dict[str, str]:
         _validate_reduce_fields(data, session, errors)
     elif request_type == "dns":
         _validate_dns_fields(data, session, errors)
+    elif request_type == "platform-service":
+        _validate_platform_service_fields(data, session, errors)
     else:  # add | resize
         target = (data.get("target_environment") or "").strip()
         if not target:
@@ -592,6 +602,62 @@ def _validate_dr_fields(data: dict, session: Session, errors: dict[str, str]) ->
 # Each dot-separated part is validated, so "app.egate" is fine but "-app" is not.
 DNS_TYPES = {"A", "CNAME"}
 _DNS_LABEL = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
+
+
+def _validate_platform_service_fields(data: dict, session: Session,
+                                      errors: dict[str, str]) -> None:
+    """Asking the infrastructure team for a CAPABILITY, not for a component.
+
+    "Backup & Recovery", "Centralised Logging", "Monitoring & Alerting" — these
+    have no package, no archive and no cloud resource, so there is nothing to
+    size, nothing to price and no build path to fail at. They used to sit in the
+    component list beside NGINX, where a requester could select one, have it
+    approved, and receive a work item instead of infrastructure; REQ-2026-0183
+    spent a real machine discovering that `dnf install backup` finds nothing.
+
+    What this DOES carry is the justification, the approval and the audit trail,
+    which is the whole reason to raise it here rather than by email.
+    """
+    from db.models import TechnologyDelivery
+
+    # The capability rides in the existing components relationship — one entry,
+    # no size. Deliberately not a new column: there is no migration mechanism
+    # here, so a column added to `request` would silently not exist on a database
+    # that already has one, and every platform-service request would carry
+    # nothing at all.
+    components = data.get("components") or []
+    code = ""
+    if components:
+        code = (components[0].get("technology_code") or "").strip()
+
+    if not code:
+        errors["components"] = (
+            "Choose the capability you need — backup, centralised logging, "
+            "monitoring, an API gateway, a service mesh or Kubernetes.")
+        return
+    if len(components) > 1:
+        errors["components"] = (
+            "Ask for one capability at a time. Each is scoped and delivered "
+            "separately, and bundling them hides what was actually agreed.")
+        return
+
+    row = session.get(TechnologyDelivery, code)
+    if row is None or row.delivery_model != "capability":
+        # Named something that is not a capability. Says which door to use,
+        # because a refusal that only says no gets worked around.
+        errors["components"] = (
+            f"'{code}' is not a platform service. If it is software or a cloud "
+            f"resource, raise a normal create request for it instead — that "
+            f"path sizes it, prices it and can build it.")
+        return
+
+    if not (data.get("business_justification") or "").strip():
+        # The only substance this request type has. Without it the team receives
+        # a component name and no idea what it is meant to achieve.
+        errors["business_justification"] = (
+            f"Say what {code} needs to do — what it should protect, cover or "
+            f"watch, and how well. There is nothing else in this request for the "
+            f"infrastructure team to work from.")
 
 
 def _validate_dns_fields(data: dict, session: Session, errors: dict[str, str]) -> None:

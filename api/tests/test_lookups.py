@@ -45,7 +45,15 @@ def test_lookups_returns_all_categories(client):
     data = response.json()
     assert len(data["projects"]) == 3
     assert len(data["cost_centres"]) == 3
-    assert len(data["technologies"]) == 46  # 22 + 24 add-ons + cloud services
+    # 46 catalogue entries, SIX of which are capabilities and are offered
+    # separately (2026-08-22). "Backup & Recovery" and its like have no package,
+    # no archive and no cloud resource — listing them as components let a
+    # requester select infrastructure and receive a work item, and REQ-2026-0183
+    # spent a real machine discovering `dnf install backup` finds nothing.
+    assert len(data["technologies"]) == 40
+    assert len(data["platform_services"]) == 6
+    assert len(data["technologies"]) + len(data["platform_services"]) == 46, (
+        "an entry went missing rather than moving")
     assert len(data["environments"]) == 2
 
 

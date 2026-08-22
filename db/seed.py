@@ -15,6 +15,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from db.models import (
+    TechnologyDelivery,
     CostCentre,
     Environment,
     Project,
@@ -39,6 +40,74 @@ COST_CENTRES = [
 ]
 
 # Placeholder subsidiaries — adjust the codes/names to your real org structure.
+# How each catalogue entry is delivered (F-CAT). Replaces a rule that read the
+# technology CODE: anything not prefixed oci-/aws-/azure-/gcp- was assumed to be
+# software you install on a machine, which called OCI's managed PostgreSQL
+# "software" and "Backup & Recovery" installable. REQ-2026-0183 spent a real
+# machine learning the second one.
+#
+# Anything absent from here falls back to that old guess, so a technology added
+# tomorrow still works — it is just guessed at rather than known.
+DELIVERY = {
+    # --- the cloud runs it; we consume an endpoint -------------------------
+    "oci-objectstorage": ("managed", "OCI Object Storage — a bucket, billed per GB."),
+    "oci-oke": ("managed", "OCI Container Engine for Kubernetes — a managed control plane."),
+    "oci-adb": ("managed", "Oracle Autonomous Database — fully managed by OCI."),
+    "oci-functions": ("managed", "OCI Functions — serverless; there is no machine."),
+    "postgres16": ("managed",
+                   "OCI Database with PostgreSQL — the MANAGED service, not PostgreSQL "
+                   "installed on a VM. The plain name hides that, which is why it is "
+                   "recorded here rather than inferred."),
+    "aws-s3": ("managed", "Amazon S3."),
+    "aws-rds": ("managed", "Amazon RDS — managed relational database."),
+    "aws-lambda": ("managed", "AWS Lambda — serverless."),
+    "aws-dynamodb": ("managed", "Amazon DynamoDB."),
+    "aws-eks": ("managed", "Amazon EKS — managed Kubernetes."),
+    "azure-blob": ("managed", "Azure Blob Storage."),
+    "azure-sql": ("managed", "Azure SQL Database."),
+    "azure-functions": ("managed", "Azure Functions — serverless."),
+    "azure-aks": ("managed", "Azure Kubernetes Service."),
+    "azure-cosmos": ("managed", "Azure Cosmos DB."),
+    "gcp-gcs": ("managed", "Google Cloud Storage."),
+    "gcp-cloudsql": ("managed", "Google Cloud SQL."),
+    "gcp-functions": ("managed", "Google Cloud Functions — serverless."),
+    "gcp-gke": ("managed", "Google Kubernetes Engine."),
+    "gcp-firestore": ("managed", "Firestore."),
+
+    # --- a bare machine; nothing is installed on it ------------------------
+    "compute-vm": ("machine", "A virtual machine with no software installed."),
+    "rhel9": ("machine", "A Red Hat Enterprise Linux 9 machine."),
+    "win2019": ("machine", "A Windows Server 2019 machine."),
+
+    # --- an outcome, not an installable thing ------------------------------
+    #
+    # These have no package, no archive and no cloud resource. A requester
+    # picking one is asking for a capability the platform team designs and
+    # builds; the portal must say so rather than guess at a package name.
+    "backup": ("capability",
+               "Backup and recovery is a capability, not a package — there is no "
+               "`backup` to install. Ask the infrastructure team what it should "
+               "protect and how often."),
+    "logging": ("capability",
+                "Centralised logging is a capability. The portal can build the "
+                "components it runs on (Elasticsearch, OpenSearch) but not "
+                "\"logging\" itself."),
+    "monitoring": ("capability",
+                   "Monitoring and alerting is a capability, not a package."),
+    "api-gateway": ("capability",
+                    "An API gateway is a capability. NGINX can serve as one and is "
+                    "installable; this entry is not."),
+    "service-mesh": ("capability",
+                     "A service mesh (Istio) is installed INTO a Kubernetes cluster, "
+                     "not onto a bare machine. Request OCI Container Engine (OKE) "
+                     "first."),
+    "k8s": ("capability",
+            "Generic Kubernetes. On OCI the buildable thing is OCI Container Engine "
+            "(oci-oke) — request that instead."),
+}
+# Everything else in the catalogue is software installed on a machine the
+# customer owns: nginx, keycloak, kafka, oracle-db, mssql and their like.
+
 SUBSIDIARIES = [
     {"code": "EMRTECH", "name": "emaratech"},
     {"code": "GDRFAD", "name": "GDRFA Dubai"},
@@ -227,6 +296,11 @@ def seed(session: Session) -> None:
     _upsert_by(session, CostCentre, "code", COST_CENTRES)
     _upsert_by(session, Subsidiary, "code", SUBSIDIARIES)
     _upsert_by(session, Technology, "code", TECHNOLOGIES)
+    # Delivery model per technology. Anything not listed keeps the old
+    # code-name guess, so a technology added tomorrow still works.
+    _upsert_by(session, TechnologyDelivery, "technology_code",
+               [{"technology_code": code, "delivery_model": model, "note": note}
+                for code, (model, note) in DELIVERY.items()])
     session.flush()  # flush new technologies (e.g. compute-vm) BEFORE the update
     # below, so a freshly-inserted compute type is classified too (the app session
     # has autoflush off, so the Core UPDATE wouldn't see the pending insert).

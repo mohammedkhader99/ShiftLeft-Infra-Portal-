@@ -836,6 +836,48 @@ class ApiKey(Base):
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+# How a technology reaches a requester, and therefore who operates it.
+#
+# "SaaS versus IaaS" is the question people ask; these are the answers that
+# actually differ. Nothing in this catalogue is SaaS in the strict sense (a
+# finished business application), so naming the models after what they DO avoids
+# a label that would be wrong however it were used.
+DELIVERY_MANAGED = "managed"        # the cloud runs it; we consume an endpoint
+DELIVERY_SOFTWARE = "software"      # installed on a machine the customer owns
+DELIVERY_MACHINE = "machine"        # a bare VM; nothing is installed on it
+DELIVERY_CAPABILITY = "capability"  # an outcome, not an installable thing
+DELIVERY_MODELS = (DELIVERY_MANAGED, DELIVERY_SOFTWARE, DELIVERY_MACHINE,
+                   DELIVERY_CAPABILITY)
+
+
+class TechnologyDelivery(Base):
+    """How each catalogue entry is delivered — a fact about the entry, not its name.
+
+    The agent used to infer this from the CODE: anything not prefixed `oci-`,
+    `aws-`, `azure-` or `gcp-` was assumed to be software you install on a
+    machine. That is a naming convention doing a domain model's job, and it was
+    wrong in both directions. `postgres16` is OCI's MANAGED database service and
+    reads as software by that rule; "Backup & Recovery" is an outcome nobody can
+    install and reads as software too — REQ-2026-0183 spent a real machine
+    discovering that `dnf install backup` finds nothing.
+
+    A NEW TABLE rather than a column on Technology, for the reason
+    CertificationProof gives: create_all adds missing tables and NOT missing
+    columns, so a new column would silently not exist on a database that already
+    has a technology table, and the agent would read None for every entry and
+    fall back to exactly the guess this replaces.
+    """
+
+    __tablename__ = "technology_delivery"
+
+    technology_code: Mapped[str] = mapped_column(String(48), primary_key=True)
+    # managed | software | machine | capability
+    delivery_model: Mapped[str] = mapped_column(String(16))
+    # Why, in a sentence — shown to a requester who picked something the portal
+    # cannot build, so a refusal explains rather than merely declines.
+    note: Mapped[str] = mapped_column(String(300), default="")
+
+
 class RecipeRefutation(Base):
     """A recipe a real machine disproved, so no machine has to disprove it twice.
 

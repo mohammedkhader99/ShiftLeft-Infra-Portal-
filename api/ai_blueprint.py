@@ -137,6 +137,28 @@ def review_draft(files: dict[str, str]) -> list[Finding]:
 CLOUD_SERVICE_PREFIX = re.compile(r"^(oci|aws|azure|gcp)-")
 
 
+def delivery_model(code: str, session: Session) -> str:
+    """How the catalogue says this technology is delivered, or "" if unrecorded.
+
+    Read from the catalogue rather than inferred from the code, and returning ""
+    rather than a default: "we have not classified this" and "this is software"
+    are different facts, and conflating them is what put a machine behind
+    `dnf install backup`.
+    """
+    from db.models import TechnologyDelivery
+
+    row = session.get(TechnologyDelivery, (code or "").strip().lower())
+    return (row.delivery_model or "") if row is not None else ""
+
+
+def delivery_note(code: str, session: Session) -> str:
+    """Why, in a sentence a requester can act on."""
+    from db.models import TechnologyDelivery
+
+    row = session.get(TechnologyDelivery, (code or "").strip().lower())
+    return (row.note or "") if row is not None else ""
+
+
 def classify(candidate: str, session: Session) -> tuple[str, Technology | None]:
     """('version-bump', sibling) | ('vm-service', None) | ('new-service', None).
 
@@ -153,6 +175,24 @@ def classify(candidate: str, session: Session) -> tuple[str, Technology | None]:
     would inherit none of those lessons.
     """
     code = (candidate or "").strip().lower()
+
+    # THE CATALOGUE, NOT THE CODE NAME. The rule below reads a naming convention
+    # and gets it wrong in both directions: `postgres16` is OCI's MANAGED
+    # database and looks like software by that rule, while "Backup & Recovery"
+    # is an outcome nobody can install and looks like software too — REQ-2026-0183
+    # spent a real machine discovering `dnf install backup` finds nothing.
+    #
+    # A technology with no recorded delivery model falls through to the guess, so
+    # one added tomorrow still works; it is guessed at rather than known, and
+    # `delivery_model` says which.
+    declared = delivery_model(code, session)
+    if declared == "capability":
+        return "capability", None
+    if declared == "managed":
+        return "new-service", None
+    if declared in ("software", "machine"):
+        return "vm-service", None
+
     match = VERSIONED_CODE.match(code)
     if not match:
         if code and not CLOUD_SERVICE_PREFIX.match(code):
@@ -163,8 +203,9 @@ def classify(candidate: str, session: Session) -> tuple[str, Technology | None]:
         other = VERSIONED_CODE.match((row.code or "").lower())
         if other and other.group(1) == family and row.code.lower() != candidate.lower():
             return "version-bump", row
-    # A versioned code with no sibling is still software on a machine
-    # (postgres16 was; kafka4 would be), not a cloud-managed service.
+    # A versioned code with no sibling falls through to the same guess. Note
+    # that postgres16 no longer reaches here: the catalogue records it as
+    # managed, which is what it actually is.
     if not CLOUD_SERVICE_PREFIX.match(code):
         return "vm-service", None
     return "new-service", None

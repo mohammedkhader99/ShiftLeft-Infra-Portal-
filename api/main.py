@@ -2230,6 +2230,11 @@ class LookupsResponse(BaseModel):
     subsidiaries: list[CostCentreOut]
     technologies: list[TechnologyOut]
     environments: list[EnvironmentOut]
+    # Capabilities, offered separately from components. They have nothing to
+    # size, nothing to price and nothing to build, so putting them in the same
+    # list as NGINX asked a requester to choose between two different kinds of
+    # thing without telling them so.
+    platform_services: list[dict] = []
 
 
 def _technology_out(tech: Technology, certified: set | None = None) -> TechnologyOut:
@@ -2242,6 +2247,13 @@ def _technology_out(tech: Technology, certified: set | None = None) -> Technolog
     out = TechnologyOut.model_validate(tech)
     out.automated_targets = fulfilment.automated_targets(tech, out.targets, certified)
     return out
+
+
+def _is_capability(code: str, session: Session) -> bool:
+    """Whether this catalogue entry is an outcome rather than an installable thing."""
+    from api import ai_blueprint
+
+    return ai_blueprint.delivery_model(code, session) == "capability"
 
 
 @app.get("/api/lookups", response_model=LookupsResponse)
@@ -2261,8 +2273,26 @@ def lookups(session: Session = Depends(get_session)) -> LookupsResponse:
         subsidiaries=session.scalars(
             select(Subsidiary).where(Subsidiary.active.is_(True)).order_by(Subsidiary.name)
         ).all(),
+        # CAPABILITIES ARE NOT COMPONENTS. "Backup & Recovery", "Centralised
+        # Logging" and their like have no package, no archive and no cloud
+        # resource behind them — nothing can ever provision one. Listing them
+        # beside NGINX invited a requester to select infrastructure and receive a
+        # work item, and REQ-2026-0183 spent a real machine discovering that
+        # `dnf install backup` finds nothing.
+        #
+        # They keep their route: a `platform-service` request asks the
+        # infrastructure team directly, with no sizing, no price and no build
+        # path to fail at.
         technologies=[_technology_out(t, fulfilment.certified_pairs(session)) for t in
-                      session.scalars(select(Technology).order_by(Technology.name)).all()],
+                      session.scalars(select(Technology).order_by(Technology.name)).all()
+                      if not _is_capability(t.code, session)],
+        # Offered separately, so the form can ask for one without pretending it
+        # is a component.
+        platform_services=[
+            {"code": t.code, "name": t.name,
+             "note": ai_blueprint.delivery_note(t.code, session)}
+            for t in session.scalars(select(Technology).order_by(Technology.name)).all()
+            if _is_capability(t.code, session)],
         environments=session.scalars(select(Environment).order_by(Environment.name)).all(),
     )
 
@@ -3161,6 +3191,14 @@ def submit_request(
                 status_code=422, content={"policy_violations": verdict["violations"]}
             )
 
+    # A PLATFORM SERVICE HAS NO PRICE, and that is not the same as costing zero.
+    # It buys the infrastructure team's time, not a cloud resource, so there is
+    # nothing for estimate_cost to compute and nothing for the cost guard to
+    # re-validate. Pricing it would produce the fictional 0.00 this portal spent
+    # a day removing.
+    if req.request_type == "platform-service":
+        components_data = []
+
     # Server-computed estimate (1.6) — needed now for the budget guardrail below.
     breakdown = estimate_cost(components_data, req.deployment_target, session, req.advanced_options)
     monthly = float(breakdown["totals"]["monthly"])
@@ -3935,6 +3973,72 @@ def draft_blueprint(body: DraftBlueprintIn, session: Session = Depends(get_sessi
         "note": ("A proposal only. Nothing has been written to the repository and "
                  "nothing has been provisioned. It reaches a user only after a "
                  "human reviews the diff and a proof build passes."),
+    }
+
+
+@app.get("/api/catalogue/delivery")
+def catalogue_delivery(target: str = "oci",
+                       session: Session = Depends(get_session),
+                       _auth: str = Depends(require_action("create_request"))) -> dict:
+    """The catalogue grouped by HOW each entry is delivered, and who operates it.
+
+    "SaaS or IaaS?" is the question people ask about a catalogue like this, and
+    neither word answers it: nothing here is SaaS in the strict sense (a finished
+    business application), and "IaaS" covers both a bare machine and a machine
+    with Kafka on it — which are very different asks. The groups below are named
+    for what actually differs: who runs it, who patches it, and whether there is
+    a machine at all.
+
+    It also exposes what the agent now reads instead of guessing from the code
+    name, so the grouping a requester sees and the decision the agent makes come
+    from ONE source. They were two, and the two disagreed: `postgres16` is OCI's
+    managed database and the old rule read it as software.
+    """
+    from api import ai_blueprint
+    from db.models import Technology
+
+    target = (target or "oci").strip().lower()
+    groups: dict[str, list[dict]] = {m: [] for m in
+                                     ("managed", "software", "machine", "capability")}
+    unrecorded: list[dict] = []
+
+    certified = {b.technology_code: b for b in session.scalars(
+        select(Blueprint).where(Blueprint.deployment_target == target))}
+
+    for tech in session.scalars(select(Technology).order_by(Technology.code)):
+        if target not in (tech.targets or ""):
+            continue
+        blueprint = certified.get(tech.code)
+        entry = {
+            "code": tech.code,
+            "name": tech.name,
+            "certified": blueprint is not None,
+            "certified_by": blueprint.certified_by if blueprint else None,
+            "resource_kind": blueprint.resource_kind if blueprint else None,
+            "note": ai_blueprint.delivery_note(tech.code, session),
+        }
+        model = ai_blueprint.delivery_model(tech.code, session)
+        if model in groups:
+            groups[model].append(entry)
+        else:
+            # Not classified. Reported separately rather than defaulted into a
+            # group, because "we have not decided" is a different fact from any
+            # of the four and hiding it would make the catalogue look complete.
+            entry["guessed_as"] = ai_blueprint.classify(tech.code, session)[0]
+            unrecorded.append(entry)
+
+    return {
+        "target": target,
+        "labels": {
+            "managed": "Managed cloud services — the provider runs it",
+            "software": "Self-managed software on a machine you own",
+            "machine": "Bare infrastructure — a machine, nothing installed",
+            "capability": "Capabilities — an outcome, not an installable thing",
+        },
+        "groups": groups,
+        "unclassified": unrecorded,
+        "totals": {model: len(items) for model, items in groups.items()}
+              | {"unclassified": len(unrecorded)},
     }
 
 

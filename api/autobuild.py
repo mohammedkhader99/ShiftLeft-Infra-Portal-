@@ -261,6 +261,27 @@ def ensure(candidate: str, session: Session, *, target, shipped, run_proof,
         return result
 
     # Nothing ships it. What kind of thing is it?
+    # A CAPABILITY IS NOT AN INSTALLABLE THING, and the catalogue says so.
+    #
+    # "Backup & Recovery", "Centralised Logging", "Monitoring & Alerting" — these
+    # are outcomes a platform team designs, with no package, no archive and no
+    # cloud resource behind them. REQ-2026-0183 guessed `dnf install backup`,
+    # booted a real VM and was told it does not exist: correct, honest, and five
+    # minutes and a machine to learn something the catalogue could have said.
+    #
+    # Refused here BEFORE anything is drafted, so it costs nothing at all rather
+    # than one machine and a remembered refutation.
+    declared = ai_blueprint.delivery_model(candidate, session)
+    if declared == "capability":
+        result.status = "refused"
+        result.detail = (
+            ai_blueprint.delivery_note(candidate, session)
+            or f"{candidate} is a capability rather than installable software.")
+        result.detail += (" Nothing was built, and no machine was spent finding "
+                          "that out. The infrastructure team fulfils this.")
+        result.attempts.append(Attempt(1, "catalogue", "refused", result.detail[:300]))
+        return result
+
     proposal = ai_blueprint.draft(candidate, session, target=target,
                                   shipped_codes=shipped_codes)
     if proposal.kind == "vm-service":
