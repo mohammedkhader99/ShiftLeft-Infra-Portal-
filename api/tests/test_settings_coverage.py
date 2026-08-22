@@ -59,6 +59,10 @@ _GATE_ENV = {
     # glance whether anything has been written by a model — which is the fact
     # that matters, not the path.
     "GENERATED_BLUEPRINT_DIR", "GENERATED_MODULE_DIR",
+    # Agent-written TECHNOLOGY PROFILES (C6). Reported as generated_profiles_dir
+    # and a count, for the same reason: what an admin needs to see is whether the
+    # agent has taught the machine blueprint anything, not where the files sit.
+    "GENERATED_PROFILE_DIR",
     # Same job for managed PostgreSQL: how long the shape/version catalogue
     # fetched from OCI is trusted. Surfaced as part of the psql readiness
     # reporting rather than as a raw number an admin would have to interpret.

@@ -134,16 +134,28 @@ def test_a_version_bump_explains_why_there_is_no_terraform(db):
     assert "proof build" in proposal.reasoning
 
 
-def test_an_unknown_family_is_a_new_service(db):
+def test_an_unknown_family_that_is_software_needs_a_profile_not_a_module(db):
+    """CHANGED 2026-08-22 (C6). This asserted `new-service` — meaning "write it a
+    Terraform module". REQ-2026-0175 showed why that is wrong for software: the
+    module the agent drafts builds nothing, and `oci/service-vm` already builds
+    machines correctly. Cassandra runs on a machine."""
     kind, sibling = ab.classify("cassandra5", db)
-    assert kind == "new-service" and sibling is None
+    assert kind == "vm-service" and sibling is None
+
+
+def test_a_cloud_managed_service_is_still_a_new_service(db):
+    """A bucket, a function, a managed cluster — no package installs one, so
+    these still need Terraform written for them."""
+    for code in ("oci-newthing", "aws-newthing", "azure-newthing", "gcp-newthing"):
+        kind, sibling = ab.classify(code, db)
+        assert kind == "new-service" and sibling is None, code
 
 
 def test_a_new_service_scaffold_refuses_to_guess(db, monkeypatch):
     """A confident-looking wrong module is more dangerous than an obviously
     unfinished one. This project lost four builds to values that looked right."""
     monkeypatch.setenv("AI_MODE", "mock")
-    proposal = ab.draft("cassandra5", db)
+    proposal = ab.draft("oci-cassandra", db)
 
     assert proposal.kind == "new-service"
     tf = next(v for k, v in proposal.files.items() if k.endswith(".tf"))
@@ -155,7 +167,7 @@ def test_a_new_service_scaffold_refuses_to_guess(db, monkeypatch):
 
 def test_the_scaffolds_manifest_is_complete_enough_to_be_discovered(db, monkeypatch):
     monkeypatch.setenv("AI_MODE", "mock")
-    proposal = ab.draft("cassandra5", db)
+    proposal = ab.draft("oci-cassandra", db)
     manifest = next(v for k, v in proposal.files.items() if k.endswith(".yaml"))
     for key in ("ref:", "target:", "resource_kind:", "builds:"):
         assert key in manifest
@@ -202,8 +214,10 @@ def test_a_blocked_draft_is_still_returned_with_its_findings(client, monkeypatch
         candidate=c, kind="new-service",
         files={"main.tf": "assign_public_ip = true"}))
     monkeypatch.setenv("AI_MODE", "mock")
+    # A cloud-managed name, so this still exercises the Terraform scaffold it is
+    # about: a plain `cassandra5` is software on a machine and now gets a profile.
     body = client.post("/api/catalogue/draft",
-                       json={"candidate": "cassandra5"}).json()
+                       json={"candidate": "oci-cassandra"}).json()
 
     assert body["blocked"] is True
     assert body["files"], "the draft was withheld instead of shown"

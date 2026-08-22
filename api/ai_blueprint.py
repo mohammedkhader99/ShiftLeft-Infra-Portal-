@@ -26,6 +26,7 @@ reproduce its habits, so the checks are the gate, not the prompt.
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 
@@ -125,20 +126,46 @@ def review_draft(files: dict[str, str]) -> list[Finding]:
 
 # --- Classifying the candidate ----------------------------------------------
 
+# Codes that name a CLOUD-MANAGED service rather than software you install.
+# `oci-objectstorage` is a bucket; `aws-lambda` is a function; neither is a
+# package on a machine. Everything else in this catalogue — keycloak, kafka,
+# mongodb, vault, opensearch, rabbitmq — is software that runs on a VM.
+#
+# A prefix rule rather than a list, because a list would go stale the first time
+# somebody adds a cloud service nobody updated it for.
+CLOUD_SERVICE_PREFIX = re.compile(r"^(oci|aws|azure|gcp)-")
+
+
 def classify(candidate: str, session: Session) -> tuple[str, Technology | None]:
-    """('version-bump', the sibling row) or ('new-service', None).
+    """('version-bump', sibling) | ('vm-service', None) | ('new-service', None).
 
     A bump is recognised by the catalogue already selling the same family: the
     module behind it is version-agnostic, so there is nothing to write.
+
+    A VM-SERVICE NEEDS NO TERRAFORM AT ALL, and recognising that is the most
+    valuable thing this function does. `oci/service-vm` already builds machines
+    properly — it resolves the image from OCI at run time filtered by shape,
+    keeps the instance private, and makes it report what it became; every one of
+    those behaviours was bought with a failed request. What keycloak needs from
+    us is a package, a systemd unit and a port. Writing it a second Terraform
+    module would duplicate a working one and collide on its resource kind, and
+    would inherit none of those lessons.
     """
-    match = VERSIONED_CODE.match((candidate or "").strip().lower())
+    code = (candidate or "").strip().lower()
+    match = VERSIONED_CODE.match(code)
     if not match:
+        if code and not CLOUD_SERVICE_PREFIX.match(code):
+            return "vm-service", None
         return "new-service", None
     family = match.group(1)
     for row in session.scalars(select(Technology)).all():
         other = VERSIONED_CODE.match((row.code or "").lower())
         if other and other.group(1) == family and row.code.lower() != candidate.lower():
             return "version-bump", row
+    # A versioned code with no sibling is still software on a machine
+    # (postgres16 was; kafka4 would be), not a cloud-managed service.
+    if not CLOUD_SERVICE_PREFIX.match(code):
+        return "vm-service", None
     return "new-service", None
 
 
@@ -239,7 +266,106 @@ def _scaffold_draft(candidate: str, target: str = "oci") -> Draft:
     )
 
 
-def draft(candidate: str, session: Session, target: str = "oci") -> Draft:
+# --- The profile linter: what a recipe must say before a machine is booted ---
+#
+# These are cheap checks against expensive lessons. Each one is a real failure:
+# nothing here is style.
+
+def review_profile(profile: dict,
+                   shipped_codes: frozenset[str] = frozenset()) -> list[Finding]:
+    """Judge a technology profile before it costs a machine to find out.
+
+    `shipped_codes` is passed IN rather than read from the orchestrator: the
+    API image does not contain orchestrator/, so `from orchestrator import
+    configure` imports cleanly under pytest and raises ModuleNotFoundError in
+    the container. That asymmetry is how the Apache-on-Ubuntu refusal shipped
+    inert — green suite, no effect in production (api/blueprint_capabilities).
+    """
+    findings: list[Finding] = []
+
+    def block(rule, detail):
+        findings.append(Finding("blocker", rule, detail))
+
+    code = str(profile.get("code") or "").strip()
+    if not code:
+        block("no-code", "The profile names no technology, so nothing could install it.")
+
+    if not str(profile.get("builds_on") or "").strip():
+        block("no-blueprint",
+              "The profile names no blueprint to extend. A technology absent from a "
+              "blueprint's `builds` is dropped by _components_for before first-boot "
+              "configuration is even considered — the machine boots bare and reports "
+              "success.")
+
+    families = [f for f in ("rhel", "debian") if isinstance(profile.get(f), dict)]
+    if not families:
+        block("no-family",
+              "The profile covers no OS family. Package and service names differ per "
+              "family — Apache is `httpd` on Oracle Linux and `apache2` on Ubuntu — so "
+              "a profile that names neither cannot install anything.")
+
+    for family in families:
+        blk = profile[family]
+        if not blk.get("packages"):
+            block("no-packages", f"The {family} block installs no package.")
+        if not blk.get("services"):
+            findings.append(Finding(
+                "warning", "no-service",
+                f"The {family} block enables no systemd unit, so the software would be "
+                f"installed but not running."))
+
+    if not str(profile.get("version_command") or "").strip():
+        block("no-version-command",
+              "The profile gives no way to ask the machine what it actually received. "
+              "A package called `redis` delivered Redis 6.2 on Oracle Linux while the "
+              "catalogue promised Redis 7, and nothing noticed until somebody logged "
+              "in. A recipe that cannot be checked cannot be certified.")
+
+    if code and code in shipped_codes:
+        block("shadows-shipped",
+              f"`{code}` already has a reviewed profile. A generated one may not take "
+              f"its place — the same rule the blueprint registry applies to manifests.")
+
+    return findings
+
+
+def draft_profile(candidate: str, target: str = "oci") -> Draft:
+    """Propose a technology PROFILE — package, unit, port — not Terraform.
+
+    The scaffold deliberately proposes the obvious thing: a package named after
+    the technology. That is right surprisingly often (nginx, redis, kafka) and
+    wrong in a way that COSTS NOTHING TO DISCOVER, because the proof boots a real
+    machine and the machine reports whether the package installed and at what
+    version. A wrong guess fails on evidence and feeds the next attempt.
+
+    What it must never do is claim a version it cannot verify. `expects` is left
+    unset here: the scaffold has no grounds to promise one, and a promise nobody
+    checks is how "Redis 7" shipped 6.2.
+    """
+    code = (candidate or "").strip().lower()
+    profile = {
+        "code": code,
+        "builds_on": "oci/service-vm" if target == "oci" else "",
+        "ports": [],
+        "version_command": f"{code} --version 2>&1",
+        "rhel": {"packages": [code], "services": [code]},
+        "_note": ("DRAFT — proposed by the agent, proven by booting a machine. "
+                  "The package name is the obvious guess and may not exist in the "
+                  "image's repositories; the machine's own report decides."),
+    }
+    return Draft(
+        candidate=candidate, kind="vm-service",
+        files={f"generated/profiles/{code}.json": json.dumps(profile, indent=2)},
+        reasoning=(
+            f"{candidate} is software that runs on a machine, and oci/service-vm "
+            f"already builds machines correctly. It needs a package, a unit and a "
+            f"port — not a second Terraform module for a resource kind that "
+            f"already has one."),
+        source="deterministic")
+
+
+def draft(candidate: str, session: Session, target: str = "oci",
+          shipped_codes: frozenset[str] = frozenset()) -> Draft:
     """Propose a recipe for one catalogue candidate. Never applies anything."""
     candidate = (candidate or "").strip()
     if not candidate:
@@ -248,6 +374,13 @@ def draft(candidate: str, session: Session, target: str = "oci") -> Draft:
     kind, sibling = classify(candidate, session)
     if kind == "version-bump" and sibling is not None:
         proposal = _bump_draft(candidate, sibling)
+    elif kind == "vm-service":
+        proposal = draft_profile(candidate, target)
+        # A profile is judged by the profile rules, not the Terraform ones —
+        # review_draft would find no Terraform and say nothing at all.
+        proposal.findings = review_profile(
+            json.loads(next(iter(proposal.files.values()))), shipped_codes)
+        return proposal
     elif ai_mode() == "live":
         try:
             proposal = _model_draft(candidate, target)

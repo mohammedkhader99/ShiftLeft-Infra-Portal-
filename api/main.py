@@ -777,6 +777,8 @@ _EXECUTION_GATE_LABELS = {
     # one. When the two services disagree here, every proof is refused with
     # "not a proof reference" — which reads like an attack, not a stale image.
     "proof_reference_pattern": "Proof reference format the runner accepts",
+    "generated_profiles_dir": "Where agent-written technology profiles are kept",
+    "generated_profiles": "Technology profiles the agent has written",
     "catalogue_mode": "Cloud option catalogue mode",
     "catalogue_shapes_allowed": "Compute shapes allow-listed (0 = offer none)",
     "catalogue_image_filter_set": "OS image filter configured",
@@ -3674,6 +3676,7 @@ def _autobuild_component(session: Session, code: str, target: str) -> dict:
     price = proof_wiring.make_price(session, target)
     verify = proof_wiring.make_verify(post)
     publish = proof_wiring.make_publish()
+    withdraw = proof_wiring.make_withdraw()
 
     def shipped(candidate: str) -> dict | None:
         """An existing recipe that already builds this, or None.
@@ -3709,9 +3712,19 @@ def _autobuild_component(session: Session, code: str, target: str) -> dict:
     if skew:
         return {"status": "refused", "detail": skew}
 
+    # Technologies a REVIEWED manifest already builds. Asked of the orchestrator
+    # over the signed channel, never by importing it: orchestrator/ is not in this
+    # image, so the import would pass every test and raise in the container.
+    # `builds_generated` is subtracted so the agent's own earlier profiles do not
+    # count as shipped — otherwise it could never correct one of its own.
+    shipped_codes = frozenset(
+        str(b) for m in (_orchestrator_blueprints() or [])
+        for b in (set(m.get("builds") or []) - set(m.get("builds_generated") or [])))
+
     result = autobuild.ensure(code, session, target=target, shipped=shipped,
                               run_proof=run_proof, publish=publish,
-                              certify=certify)
+                              certify=certify, withdraw=withdraw,
+                              shipped_codes=shipped_codes)
     session.commit()
     return {"status": result.status, "detail": result.detail[:300]}
 

@@ -217,6 +217,12 @@ async def posture(request: Request) -> dict:
         "generated_blueprints": len([b for b in blueprint_registry.discover()
                                      if b.get("origin") == "generated"]),
         "generated_blueprints_dir": str(blueprint_registry.GENERATED_DIR),
+        # Agent-written technology profiles (C6): a package, a systemd unit
+        # and a port that extend a blueprint which already builds machines
+        # correctly, rather than a second module for a resource kind that
+        # already has one.
+        "generated_profiles_dir": str(configure.GENERATED_PROFILE_DIR),
+        "generated_profiles": len(configure._generated_profiles()),
         "proof_enabled": proof_rules.enabled(),
         # The reference format THIS service will accept. Published so the API can
         # notice a version skew before a proof rather than during one: on

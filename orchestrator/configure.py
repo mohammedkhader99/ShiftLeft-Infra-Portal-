@@ -27,6 +27,18 @@ from __future__ import annotations
 
 import json
 import os
+import pathlib
+
+# Where the agent's own technology profiles land (C6). Separate from TEMPLATES
+# for the same reason generated blueprints are separate from shipped ones: git
+# history, and a reader, must be able to tell what a person reviewed from what a
+# machine proposed.
+#
+# A profile here is NOT a claim that it works. It is a claim that it is worth
+# BOOTING A MACHINE to find out — which is what the proof then does, and the
+# machine reports the version it actually received.
+GENERATED_PROFILE_DIR = pathlib.Path(
+    os.getenv("GENERATED_PROFILE_DIR", "/generated/profiles"))
 
 # technology code -> {packages, services, ports}. Deliberately a small, defensible
 # set of services installable from the base repositories; adding one is a data
@@ -552,6 +564,37 @@ def _package_overrides() -> dict:
         return {}
 
 
+def _generated_profiles() -> dict[str, dict]:
+    """Agent-written technology profiles, read from the generated store.
+
+    A GENERATED PROFILE MAY NEVER SHADOW A SHIPPED ONE. The same rule the
+    blueprint registry applies to generated manifests, for the same reason: a
+    reviewed recipe that a machine can silently replace is not reviewed. nginx
+    has a profile somebody checked against a real image; an agent proposing a
+    different one must not be able to take its place.
+
+    A malformed file is skipped rather than raising — one bad draft must not
+    take first-boot configuration off the air for every other technology.
+    """
+    profiles: dict[str, dict] = {}
+    try:
+        entries = sorted(GENERATED_PROFILE_DIR.glob("*.json"))
+    except OSError:
+        return {}
+    for path in entries:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        code = str(data.get("code") or path.stem).strip()
+        if not code or code in TEMPLATES:
+            continue          # shipped wins, always
+        profiles[code] = data
+    return profiles
+
+
 def profile_for(code: str, family: str = "") -> dict | None:
     """The configuration profile for a technology on one OS family.
 
@@ -568,7 +611,9 @@ def profile_for(code: str, family: str = "") -> dict | None:
     family = (family or os_family()).strip().lower()
     if family not in _INSTALL:
         return None
-    merged = {**TEMPLATES, **_package_overrides()}
+    # Order is the authority order: what a person shipped, then what the agent
+    # proposed, then what an operator set by hand to correct a live image.
+    merged = {**TEMPLATES, **_generated_profiles(), **_package_overrides()}
     prof = merged.get((code or "").strip())
     if not isinstance(prof, dict):
         return None
@@ -646,7 +691,8 @@ def ports_for(components: list[dict], family: str = "") -> list[int]:
 
 def configurable_codes() -> set[str]:
     """Technologies that have a first-boot configuration template."""
-    return set(TEMPLATES) | {k for k in _package_overrides() if isinstance(k, str)}
+    return (set(TEMPLATES) | set(_generated_profiles())
+            | {k for k in _package_overrides() if isinstance(k, str)})
 
 
 def enabled() -> bool:

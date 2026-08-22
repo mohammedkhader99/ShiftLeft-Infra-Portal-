@@ -399,6 +399,10 @@ services:
       # discovery and gone on the next restart.
       GENERATED_BLUEPRINT_DIR: ${GENERATED_BLUEPRINT_DIR:-/generated/blueprints}
       GENERATED_MODULE_DIR: ${GENERATED_MODULE_DIR:-/generated/terraform}
+      # Agent-written technology profiles (C6). Same mounted store, kept in
+      # its own directory so configure.py reads recipes and the registry
+      # reads manifests without either tripping over the other.
+      GENERATED_PROFILE_DIR: ${GENERATED_PROFILE_DIR:-/generated/profiles}
 
       PSQL_CATALOGUE_TTL_SECONDS: ${PSQL_CATALOGUE_TTL_SECONDS:-}
       OCI_OKE_KUBERNETES_VERSION: ${OCI_OKE_KUBERNETES_VERSION:-}

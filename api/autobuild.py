@@ -93,7 +93,8 @@ def _findings_as_dicts(findings) -> list[dict]:
 
 
 def build(candidate: str, session: Session, *, blueprint, run_proof, publish,
-          target: str = "oci") -> AutobuildResult:
+          target: str = "oci",
+          shipped_codes: frozenset[str] = frozenset()) -> AutobuildResult:
     """Draft a recipe for `candidate`, prove it, and publish it if it survives.
 
     The three collaborators are injected so the whole loop — including the
@@ -119,7 +120,8 @@ def build(candidate: str, session: Session, *, blueprint, run_proof, publish,
     failure_detail = ""
 
     for attempt_no in range(1, limit + 1):
-        proposal = ai_blueprint.draft(candidate, session, target=target)
+        proposal = ai_blueprint.draft(candidate, session, target=target,
+                                      shipped_codes=shipped_codes)
 
         # A previous failure is CONTEXT for this draft, not a verdict on it.
         # Overwriting the draft's own findings with the diagnosis blocked the
@@ -197,7 +199,8 @@ def summarise(result: AutobuildResult) -> dict:
 # --- Making a component buildable, whatever it takes -------------------------
 
 def ensure(candidate: str, session: Session, *, target, shipped, run_proof,
-           publish, certify) -> AutobuildResult:
+           publish, certify, withdraw=None,
+           shipped_codes: frozenset[str] = frozenset()) -> AutobuildResult:
     """Make `candidate` provisionable, and certify it — no human involved.
 
     The reviewer's requirement of 2026-08-21, in full: if the agent cannot find a
@@ -213,10 +216,16 @@ def ensure(candidate: str, session: Session, *, target, shipped, run_proof,
           this — nginx is exactly here, sharing oci/service-vm with four
           technologies that ARE certified. Nothing needs writing; it needs
           proving. Prove it, certify it.
-      nothing ships it    draft, gate, prove, publish, certify — the full loop.
+      NOTHING SHIPS IT, but it is software on a machine — keycloak, kafka,
+          mongodb. `oci/service-vm` already builds machines correctly; what is
+          missing is a package, a unit and a port. The agent writes a PROFILE,
+          which extends that blueprint rather than competing with it.
+      nothing ships it and it is not a machine  draft Terraform — the full loop.
 
     `shipped(candidate)` returns the manifest of an existing blueprint that
-    builds this candidate, or None.
+    builds this candidate, or None. `withdraw(files)` removes a published draft;
+    it is needed because a profile has to be in the store BEFORE the proof can
+    use it, so a failed proof must take it back out again.
     """
     result = AutobuildResult(candidate=candidate, status="refused")
 
@@ -250,5 +259,87 @@ def ensure(candidate: str, session: Session, *, target, shipped, run_proof,
             f"pass a proof build, so it has NOT been certified. {outcome.detail}")
         return result
 
+    # Nothing ships it. What kind of thing is it?
+    proposal = ai_blueprint.draft(candidate, session, target=target,
+                                  shipped_codes=shipped_codes)
+    if proposal.kind == "vm-service":
+        return _ensure_vm_service(candidate, session, proposal, target=target,
+                                  shipped=shipped, run_proof=run_proof,
+                                  publish=publish, certify=certify,
+                                  withdraw=withdraw)
+
     return build(candidate, session, blueprint=None, run_proof=run_proof,
-                 publish=publish, target=target)
+                 publish=publish, target=target, shipped_codes=shipped_codes)
+
+
+def _ensure_vm_service(candidate, session, proposal, *, target, shipped,
+                       run_proof, publish, certify, withdraw) -> AutobuildResult:
+    """Teach the proven machine blueprint one more technology, and prove it.
+
+    THE ORDER IS INVERTED HERE, deliberately. Everywhere else a draft is proved
+    before it is published; a profile must be published FIRST, because the proof
+    builds through the orchestrator and the orchestrator reads the profile from
+    the store when it renders first-boot configuration. Proving before publishing
+    would boot a machine with nothing to install on it — which succeeds, and
+    proves nothing, exactly as REQ-2026-0175 did.
+
+    So it is staged: written, proved, and TAKEN BACK OUT if the proof fails. An
+    unproven profile left behind would make an uninstallable technology look
+    installable to every later request.
+    """
+    result = AutobuildResult(candidate=candidate, status="refused")
+
+    blockers = [f for f in proposal.findings if f.severity == "blocker"]
+    if blockers:
+        result.status = "failed"
+        result.attempts.append(Attempt(
+            1, "linted", "blocked", "; ".join(f.detail for f in blockers)[:300],
+            _findings_as_dicts(blockers)))
+        result.detail = (
+            f"The profile drafted for {candidate} was refused before any machine "
+            f"was booted: " + "; ".join(f.detail for f in blockers)[:300])
+        return result
+
+    written = publish(proposal.files)
+    result.files = proposal.files
+
+    def take_it_back(why: str) -> AutobuildResult:
+        if withdraw:
+            withdraw(proposal.files)
+        result.status = "failed"
+        result.detail = why
+        return result
+
+    # DID THE PROFILE ACTUALLY WIRE UP? Two gates have to accept it — the
+    # blueprint's `builds` list and configure.py's templates — and missing either
+    # is silent. Asking the orchestrator again is the only honest way to know:
+    # it re-reads the store, so a manifest coming back that builds this candidate
+    # is proof that both gates took it.
+    manifest = shipped(candidate)
+    if not manifest:
+        result.attempts.append(Attempt(1, "published", "failed",
+                                       "the profile did not reach the blueprint"))
+        return take_it_back(
+            f"A profile for {candidate} was written to the generated store, but the "
+            f"orchestrator still reports no blueprint that builds it. It has been "
+            f"withdrawn rather than left behind. Nothing was built.")
+
+    outcome = run_proof(session, manifest)
+    if outcome.status == "passed":
+        certify(manifest, outcome.reference)
+        result.attempts.append(Attempt(1, "proved", "passed", outcome.detail))
+        result.status = "published"
+        result.detail = (
+            f"{candidate} is software on a machine, so no new Terraform was "
+            f"written: a technology profile now extends {manifest.get('ref')}, "
+            f"which already builds machines correctly. Proved on a real machine "
+            f"and certified. {outcome.detail}")
+        return result
+
+    result.attempts.append(Attempt(1, "proved", "failed", outcome.detail,
+                                   _findings_as_dicts(
+                                       ai_blueprint.diagnose(outcome.detail,
+                                                             proposal.files))))
+    return take_it_back(
+        f"The profile drafted for {candidate} did not survive a proof build, so it "
+        f"has been withdrawn and {candidate} is NOT certified. {outcome.detail}")

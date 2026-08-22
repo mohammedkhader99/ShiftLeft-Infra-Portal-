@@ -155,6 +155,38 @@ def make_verify(post, *, deadline_seconds: int | None = None,
     return verify
 
 
+def make_withdraw(root: pathlib.Path | None = None):
+    """Remove a published draft from the generated store.
+
+    Needed because a technology profile must be in the store BEFORE its proof can
+    use it — the orchestrator reads it when rendering first-boot configuration —
+    so a proof that fails has to take it back out. Left behind, an unproven
+    profile makes an uninstallable technology look installable to every later
+    request.
+
+    Confined to the store by the same rule as writing, and silent about files
+    that are already gone: withdrawing twice is not an error.
+    """
+    base = (root or GENERATED_ROOT).resolve()
+
+    def withdraw(files: dict[str, str]) -> list[str]:
+        removed: list[str] = []
+        for path in (files or {}):
+            name = pathlib.PurePosixPath(str(path)).name
+            if not name or name.startswith("."):
+                continue
+            for sub in ("profiles", "blueprints", "terraform"):
+                target = (base / sub / name).resolve()
+                if not target.is_relative_to(base):
+                    raise ValueError(
+                        f"refusing to delete outside the generated store: {path}")
+                if target.exists():
+                    target.unlink()
+                    removed.append(str(target))
+        return removed
+    return withdraw
+
+
 def make_publish(root: pathlib.Path | None = None):
     """Write an agent's draft into the generated store.
 
@@ -173,7 +205,16 @@ def make_publish(root: pathlib.Path | None = None):
             name = pathlib.PurePosixPath(str(path)).name
             if not name or name.startswith("."):
                 continue
-            sub = "blueprints" if name.endswith((".yaml", ".yml")) else "terraform"
+            # Three stores, by what the file IS. A technology profile is not
+            # Terraform and must not land among modules, or configure.py
+            # would never read it and the machine would boot with nothing
+            # installed while every step reported success.
+            if name.endswith(".json"):
+                sub = "profiles"
+            elif name.endswith((".yaml", ".yml")):
+                sub = "blueprints"
+            else:
+                sub = "terraform"
             target = (base / sub / name).resolve()
             if not target.is_relative_to(base):
                 raise ValueError(

@@ -150,6 +150,27 @@ def discover(directory: Path | None = None,
     root = directory or BLUEPRINT_DIR
     gen_root = generated if generated is not None else GENERATED_DIR
 
+    # Agent-written technology profiles, grouped by the blueprint they extend
+    # (C6). MOST NEW COMPONENTS NEED NO NEW TERRAFORM: keycloak, kafka, mongodb
+    # and their like are software on a machine, and oci/service-vm already builds
+    # machines properly — resolving the image from the cloud at run time, keeping
+    # it on a private subnet, making it report what it became. What they need is
+    # a package, a unit and a port, which is a profile.
+    #
+    # So a profile EXTENDS a shipped blueprint's `builds` rather than a second
+    # module being written for a resource kind that already has one — the
+    # collision this registry refuses two screens down.
+    extra_builds: dict[str, list[str]] = {}
+    try:
+        from orchestrator import configure
+
+        for code, profile in configure._generated_profiles().items():
+            on = str(profile.get("builds_on") or "").strip()
+            if on:
+                extra_builds.setdefault(on, []).append(code)
+    except Exception:  # noqa: BLE001 — a broken profile must not hide the catalogue
+        extra_builds = {}
+
     found: list[dict] = []
     shipped_names: set[str] = set()
     shipped_kinds: set[str] = set()
@@ -201,7 +222,13 @@ def discover(directory: Path | None = None,
             "resource_kind": str(manifest["resource_kind"]),
             "module": str(manifest.get("module") or "."),
             "version": str(manifest.get("version") or ""),
-            "builds": [str(b) for b in manifest.get("builds") or []],
+            "builds": ([str(b) for b in manifest.get("builds") or []]
+                       + sorted(extra_builds.get(ref, []) if origin == "shipped" else [])),
+            # Which of `builds` came from an agent-written profile rather than
+            # from the manifest. Reported so a reader can always tell what a
+            # person put on this blueprint from what a machine added to it.
+            "builds_generated": sorted(
+                extra_builds.get(ref, []) if origin == "shipped" else []),
             # OS families this blueprint's own first-boot configuration can
             # handle. Empty means it configures no operating system at all — a
             # bucket, a managed database — and the portal makes no OS claim for

@@ -132,7 +132,9 @@ def test_a_draft_with_a_known_defect_never_reaches_a_cloud(db, bp, monkeypatch):
         return ProofOutcome("r", "passed", "ok")
 
     pub = Publisher()
-    result = autobuild.build("cassandra5", db, blueprint=bp,
+    # A cloud-managed name so this still exercises `build`, the Terraform route:
+    # a plain `cassandra5` is software on a machine and now gets a profile (C6).
+    result = autobuild.build("oci-cassandra", db, blueprint=bp,
                              run_proof=counting_proof, publish=pub)
 
     assert proofs == [], "a blocked draft was still sent to be built"

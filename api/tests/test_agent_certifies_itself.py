@@ -128,18 +128,33 @@ def test_a_recipe_that_fails_its_proof_is_NOT_certified(db):
 
 # --- No recipe at all: the full loop -----------------------------------------
 
-def test_a_component_with_no_recipe_falls_through_to_drafting(db):
-    """The requirement's other half: if there is no Terraform, write one."""
+def test_a_component_with_no_recipe_is_written_a_profile_not_a_module(db):
+    """The requirement's other half — and it changed on 2026-08-22 (C6).
+
+    This test used to assert that a component with no recipe got a .tf and a
+    .yaml. REQ-2026-0175 showed why that was wrong: the Terraform the agent
+    drafts for software-on-a-machine is a skeleton that builds nothing, and it
+    would collide with `oci/service-vm`, which already builds machines correctly.
+
+    cassandra5 is software on a machine. It gets a PROFILE — a package, a unit
+    and a way to ask the machine what it actually installed — and the proof boots
+    a real machine to find out whether that package exists at all.
+    """
     written = []
     result = autobuild.ensure(
-        "cassandra5", db, target="oci", shipped=lambda c: None,
-        run_proof=proof("passed"), publish=written.append, certify=certifier(db))
+        "cassandra5", db, target="oci",
+        # The orchestrator re-read: once the profile is in the store, the
+        # blueprint that builds machines reports that it now builds this too.
+        shipped=lambda c: (SERVICE_VM if written else None),
+        run_proof=proof("passed"), publish=written.append, certify=certifier(db),
+        withdraw=lambda f: None)
 
-    assert result.status == "published"
+    assert result.status == "published", result.detail
     assert written, "nothing was written for a component that had no recipe"
     files = written[0]
-    assert any(p.endswith(".tf") for p in files)
-    assert any(p.endswith(".yaml") for p in files)
+    assert any(p.endswith(".json") for p in files), f"expected a profile: {files}"
+    assert not any(p.endswith(".tf") for p in files), (
+        "it wrote a second Terraform module for a resource kind that has one")
 
 
 def test_drafting_is_not_reached_when_a_recipe_already_exists(db):
