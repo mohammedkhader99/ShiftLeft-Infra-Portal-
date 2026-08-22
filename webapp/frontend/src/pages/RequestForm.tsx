@@ -1503,9 +1503,31 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
           </p>
           {cost ? (
             <>
-              <p style={{ fontSize: '2rem', fontWeight: 300, margin: '0.25rem 0' }}>
-                {cost.totals.monthly.toFixed(2)} <span style={{ fontSize: '0.9rem' }}>{cost.currency}/mo</span>
-              </p>
+              {/* A PRICE NOBODY CAN COMPUTE IS NOT A PRICE OF ZERO. The server
+                  says which components it could not price; showing the total
+                  alone rendered 0.00 and read as free, which is how
+                  REQ-2026-0176 reached an approver at a figure that was never
+                  real. Say so here, while the form is still being filled in,
+                  rather than refusing only at submit. */}
+              {cost.unpriced?.length ? (
+                <>
+                  <p style={{ fontSize: '1.5rem', fontWeight: 300, margin: '0.25rem 0' }}>
+                    Not priced
+                  </p>
+                  <InlineNotification
+                    kind="warning"
+                    lowContrast
+                    hideCloseButton
+                    title="This cannot be costed yet"
+                    subtitle={`${cost.unpriced.join(', ')} — no certified blueprint says what this builds, and what it builds is what decides how it is charged. It cannot be submitted until it is certified, or removed from the request.`}
+                    style={{ maxWidth: 'none', marginBottom: '0.5rem' }}
+                  />
+                </>
+              ) : (
+                <p style={{ fontSize: '2rem', fontWeight: 300, margin: '0.25rem 0' }}>
+                  {cost.totals.monthly.toFixed(2)} <span style={{ fontSize: '0.9rem' }}>{cost.currency}/mo</span>
+                </p>
+              )}
               {cost.by_category && (
                 <div style={{ fontSize: '0.8rem', color: 'var(--cds-text-secondary)', lineHeight: 1.9, borderTop: '1px solid var(--cds-border-subtle)', paddingTop: '0.5rem', marginTop: '0.25rem' }}>
                   <div style={{ textTransform: 'uppercase', fontSize: '0.68rem', letterSpacing: '0.02em', marginBottom: '0.15rem' }}>Monthly by category</div>

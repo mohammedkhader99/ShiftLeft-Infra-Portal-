@@ -3165,28 +3165,29 @@ def submit_request(
     breakdown = estimate_cost(components_data, req.deployment_target, session, req.advanced_options)
     monthly = float(breakdown["totals"]["monthly"])
 
-    # A PRICE NOBODY CAN COMPUTE IS NOT A PRICE OF ZERO.
+    # A PRICE NOBODY CAN COMPUTE IS NOT A PRICE OF ZERO — SAY SO, DO NOT BLOCK.
     #
-    # REQ-2026-0176 was quoted 0.00 AED for keycloak, approved by a human at that
-    # figure, and then refused at execution because the real cost was 90.59 —
-    # "exceeds approved 0.00 by more than 10%". The execution guard was right;
-    # what was wrong was letting a fictional price reach an approver at all.
+    # REQ-2026-0176 was quoted 0.00 AED for keycloak, approved at that figure,
+    # and then refused at execution: "monthly 90.59 exceeds approved 0.00". The
+    # execution guard was right; what was wrong was a fictional price reaching an
+    # approver looking like a real one.
     #
-    # The form refuses here rather than showing a zero, and says what would make
-    # it priceable, because a refusal that does not tell you what to do next is
-    # only half a refusal.
-    unpriced = breakdown.get("unpriced") or []
-    if unpriced:
-        names = ", ".join(str(u) for u in unpriced)
+    # THIS MUST NOT REFUSE THE SUBMISSION. Manual fulfilment is a documented
+    # feature — the portal validates, prices, approves and audits requests the
+    # infrastructure team builds by hand — and a component with no certified
+    # blueprint is exactly the case it serves. Blocking here took kafka, mongodb,
+    # vault, elasticsearch and every other uncertified technology off the portal
+    # entirely; the whole of test_no_substitute_resource.py exists to say that
+    # refusing manual fulfilment is not the fix for anything.
+    #
+    # So it warns, loudly, on the same channel as budget and policy warnings, and
+    # the form shows "Not priced" instead of a figure while it is being filled in.
+    # The approver sees an absence rather than a zero, which is the honest thing
+    # a warning can do and a refusal cannot.
+    unpriced_components = breakdown.get("unpriced") or []
+    if unpriced_components:
         append_audit(session, "cost.unpriceable", reference=req.reference,
-                     detail={"components": unpriced})
-        session.commit()
-        return JSONResponse(status_code=422, content={"errors": [
-            f"This request cannot be priced, so it cannot be approved: {names}. "
-            f"A component is priceable once it has a certified blueprint saying "
-            f"what it builds — a machine, a bucket, a cluster — because that is "
-            f"what decides how it is charged. Ask the infrastructure team to "
-            f"certify it, or remove it from this request."]})
+                     detail={"components": unpriced_components})
 
     # Budget guardrail (F-FIN-02): compare the cost centre's projected committed
     # spend against its budget. Over budget hard-blocks only when enforcement is
@@ -3280,7 +3281,13 @@ def submit_request(
     if policy_warnings:
         append_audit(session, "policy.warnings", reference=req.reference,
                      detail={"warnings": policy_warnings})
-    warnings = policy_warnings + budget_warnings
+    unpriced_warning = ([
+        f"Not costed: {', '.join(str(u) for u in unpriced_components)}. No certified "
+        f"blueprint says what this builds, and what it builds is what decides how it "
+        f"is charged — so the estimate below excludes it and is NOT the whole cost. "
+        f"It will be fulfilled by the infrastructure team unless it is certified first."
+    ] if unpriced_components else [])
+    warnings = policy_warnings + budget_warnings + unpriced_warning
 
     session.commit()
     out = RequestOut.model_validate(req)
@@ -4755,10 +4762,18 @@ def cancel_request(reference: str, body: CancelIn,
 
     was = req.status
     reason = (body.reason or "").strip()
+    before = (req.status_detail or "").strip()
     req.status = CANCELLED
-    req.status_detail = (
-        f"Cancelled by {actor}. Nothing was created."
-        + (f" Reason: {reason}" if reason else ""))
+    # KEEP WHY IT WAS IN TROUBLE. Overwriting status_detail discards the very
+    # thing somebody reading this later wants: a request is usually cancelled
+    # BECAUSE of what that field said, and "Cancelled by X" on its own turns a
+    # diagnosis into a shrug. REQ-2026-0176 lost "quoted 0.00 AED for an
+    # unpriceable component" that way.
+    req.status_detail = " ".join(filter(None, [
+        f"Cancelled by {actor}. Nothing was created.",
+        f"Reason: {reason}" if reason else "",
+        f"Before cancelling: {before}" if before else "",
+    ]))[:2000]
 
     # The ticket is the system of record, so it must not be left open behind a
     # closed request. A comment always; the transition only if Jira offers one,

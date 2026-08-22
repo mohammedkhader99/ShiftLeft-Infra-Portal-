@@ -62,6 +62,10 @@ export type Cost = {
     support: number
   }
   totals: { one_time: number; monthly: number; annual: number }
+  // Components the server could not price — it knows what they are, and until
+  // now only the TOTAL reached this form, which read 0.00 and looked free.
+  // REQ-2026-0176 was approved at that fiction.
+  unpriced?: string[]
 }
 
 async function json<T>(r: Response): Promise<T> {

@@ -175,3 +175,33 @@ def test_a_cancelled_request_is_not_swept_up_and_provisioned(client, session):
     client.post("/api/requests/REQ-CANCEL-9/cancel", json={"reason": ""})
     row = session.scalar(select(Request).where(Request.reference == "REQ-CANCEL-9"))
     assert row.status not in ("submitted", "planned")
+
+
+# --- the fuller story stays on the request -----------------------------------
+
+def test_cancelling_keeps_why_the_request_was_in_trouble(client, session):
+    """A request is usually cancelled BECAUSE of what status_detail said.
+    Overwriting it with "Cancelled by X" turns a diagnosis into a shrug —
+    REQ-2026-0176 lost "quoted 0.00 AED for an unpriceable component" that way.
+    """
+    req = make(session, "REQ-CANCEL-10", "apply-failed")
+    req.status_detail = "Cost re-validation failed: monthly 90.59 exceeds approved 0.00."
+    session.commit()
+
+    client.post("/api/requests/REQ-CANCEL-10/cancel", json={"reason": "not worth chasing"})
+
+    detail = session.scalar(select(Request).where(
+        Request.reference == "REQ-CANCEL-10")).status_detail
+    assert "Cancelled by" in detail
+    assert "not worth chasing" in detail
+    assert "monthly 90.59" in detail, "the reason it was failing was thrown away"
+
+
+def test_a_request_with_nothing_to_preserve_reads_cleanly(client, session):
+    """No trailing 'Before cancelling:' when there was nothing before."""
+    make(session, "REQ-CANCEL-11", "draft")
+    client.post("/api/requests/REQ-CANCEL-11/cancel", json={"reason": ""})
+
+    detail = session.scalar(select(Request).where(
+        Request.reference == "REQ-CANCEL-11")).status_detail
+    assert detail == "Cancelled by a@b.com. Nothing was created." or "Before" not in detail
