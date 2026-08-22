@@ -836,6 +836,52 @@ class ApiKey(Base):
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class RecipeRefutation(Base):
+    """A recipe a real machine disproved, so no machine has to disprove it twice.
+
+    REQ-2026-0183 asked for "Backup & Recovery". The agent guessed `dnf install
+    backup`, booted a real VM, and the machine said "backup NOT INSTALLED" —
+    correct, honest, and five minutes and a machine to learn that a capability
+    name is not an RPM. Six catalogue entries are in that category (backup,
+    logging, monitoring, api-gateway, service-mesh, k8s), and NOTHING remembered
+    the answer: the next request would spend another machine on the identical
+    guess, and so would the one after that.
+
+    KEYED ON THE RECIPE, NOT THE COMPONENT. keycloak was refuted as a package
+    guess on REQ-2026-0177 and then SUCCEEDED as an archive install on 0178 — a
+    component-level block would have prevented that. What was disproved is one
+    specific way of installing something, and changing the recipe must be allowed
+    to change the answer.
+
+    A NEW TABLE rather than a column on CertificationProof, for the reason that
+    table gives itself: create_all adds missing tables and not missing columns,
+    so a new column would silently not exist on a database that already has this
+    schema — which is how the certification sweep ran for a day against a table
+    that was not there.
+
+    Refutations EXPIRE on the same clock as certifications. A package absent from
+    Oracle Linux today may be packaged tomorrow, and evidence about the world has
+    a shelf life exactly as evidence about a recipe does.
+    """
+
+    __tablename__ = "recipe_refutation"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    technology_code: Mapped[str] = mapped_column(String(48), index=True)
+    deployment_target: Mapped[str] = mapped_column(String(16))
+    # What was tried, as a stable digest of the install-relevant fields only.
+    # Cosmetic differences (a reworded note) must not make an old refutation
+    # look like a new recipe.
+    fingerprint: Mapped[str] = mapped_column(String(64), index=True)
+    # Which machine disproved it, so the refusal can cite its evidence.
+    proof_reference: Mapped[str] = mapped_column(String(48), default="")
+    # The machine's own words. A refusal that says "this was tried" without
+    # saying what happened teaches nobody anything.
+    detail: Mapped[str] = mapped_column(String(1000), default="")
+    refuted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
 class CertificationProof(Base):
     """One attempt to prove a blueprint still builds, by building it (C2).
 

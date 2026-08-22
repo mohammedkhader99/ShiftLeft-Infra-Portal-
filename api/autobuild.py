@@ -42,7 +42,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
-from api import ai_blueprint, proof
+from api import ai_blueprint, proof, recipe_memory
 
 
 def max_attempts() -> int:
@@ -291,6 +291,11 @@ def _ensure_vm_service(candidate, session, proposal, *, target, shipped,
     """
     result = AutobuildResult(candidate=candidate, status="refused")
 
+    import json as _json
+
+    recipe = next((_json.loads(body) for body in proposal.files.values()
+                   if body.strip().startswith("{")), None)
+
     blockers = [f for f in proposal.findings if f.severity == "blocker"]
     if blockers:
         result.status = "failed"
@@ -324,6 +329,25 @@ def _ensure_vm_service(candidate, session, proposal, *, target, shipped,
                 f"to the build subnet, or fulfil this one by hand.")
             result.attempts.append(Attempt(
                 1, "preflight", "refused", "no internet egress from the build subnet"))
+            return result
+
+    # HAS A MACHINE ALREADY DISPROVED THIS EXACT RECIPE?
+    #
+    # REQ-2026-0183 guessed `dnf install backup`, booted a real VM, and was told
+    # "backup NOT INSTALLED" — correct, and five minutes and a machine to learn
+    # that a capability name is not an RPM. The evidence was recorded and nothing
+    # read it, so the next request would have spent another machine on the
+    # identical guess.
+    #
+    # Keyed on the RECIPE: keycloak was refuted as a package and then succeeded
+    # as an archive, so changing the recipe must be allowed to change the answer.
+    if session is not None:
+        already = recipe_memory.previously_refuted(session, candidate, target, recipe)
+        if already:
+            result.status = "refused"
+            result.detail = f"{candidate} was not built. {already}"
+            result.attempts.append(Attempt(
+                1, "remembered", "refused", already[:300]))
             return result
 
     written = publish(proposal.files)
@@ -366,6 +390,14 @@ def _ensure_vm_service(candidate, session, proposal, *, target, shipped,
                                    _findings_as_dicts(
                                        ai_blueprint.diagnose(outcome.detail,
                                                              proposal.files))))
+    # A MACHINE SAID NO. Record it so the next request does not buy the same
+    # answer again — but only when the machine actually reported, which
+    # recipe_memory.refutes() decides: a cost-cap refusal or a failed teardown
+    # is our problem, not the recipe's.
+    if session is not None and recipe_memory.refutes(outcome.status, outcome.detail):
+        recipe_memory.remember(session, candidate, target, recipe,
+                               outcome.reference, outcome.detail)
+        session.commit()
     return take_it_back(
         f"The profile drafted for {candidate} did not survive a proof build, so it "
         f"has been withdrawn and {candidate} is NOT certified. {outcome.detail}")
