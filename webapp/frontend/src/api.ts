@@ -9,6 +9,10 @@ export type Lookups = {
   // other target the request is governed here and fulfilled by the infra team.
   technologies: { code: string; name: string; lifecycle_state: string; targets: string[]; automated_targets: string[] }[]
   environments: { name: string; environment_class: string }[]
+  // Capabilities, offered separately from components. They have no package, no
+  // archive and no cloud resource, so nothing can provision one — the note says
+  // what to ask for instead.
+  platform_services?: { code: string; name: string; note: string }[]
 }
 
 // The detail fields are optional everywhere: a component that carries none

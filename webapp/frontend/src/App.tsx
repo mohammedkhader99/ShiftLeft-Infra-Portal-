@@ -57,11 +57,17 @@ const REQUEST_TYPES: [string, string][] = [
   ['refresh', 'Refresh environment'],
   ['restore', 'Restore from backup'],
   ['decommission', 'Decommission'],
+  // Asking the infrastructure team for a CAPABILITY rather than a component.
+  // Backup, centralised logging, monitoring and their like have no package, no
+  // archive and no cloud resource — they used to sit in the component list
+  // beside NGINX, where selecting one returned a work item instead of
+  // infrastructure. Listed last because it is the least common ask.
+  ['platform-service', 'Platform service'],
 ]
 const RT_LABEL = Object.fromEntries(REQUEST_TYPES) as Record<string, string>
 
 function parseRequestType(route: string): string {
-  const m = route.match(/^#\/request\/new\/(create|clone|sandbox|temporary|dr|add|resize|reduce|refresh|restore|decommission)/)
+  const m = route.match(/^#\/request\/new\/(create|clone|sandbox|temporary|dr|add|resize|reduce|refresh|restore|decommission|platform-service)/)
   return m ? m[1] : 'create'
 }
 

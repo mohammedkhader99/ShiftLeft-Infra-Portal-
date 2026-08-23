@@ -87,6 +87,7 @@ const RTYPE_LABEL: Record<string, string> = {
   temporary: 'Temporary environment',
   add: 'Add component',
   resize: 'Resize component',
+  'platform-service': 'Platform service',
 }
 const PRIORITIES = ['low', 'medium', 'high', 'critical']
 const CRITICALITIES: [string, string][] = [
@@ -294,6 +295,10 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
   const isRefresh = requestType === 'refresh'
   const isRestore = requestType === 'restore'
   const isReduce = requestType === 'reduce'
+  // A capability, not a component: nothing to size, nothing to price, and no
+  // build path to fail at. What it carries is the justification, the approval
+  // and the audit trail — the reason to raise it here rather than by email.
+  const isPlatformService = requestType === 'platform-service'
   const NONPROD_TIERS = ['dev', 'test', 'sit', 'uat', 'preprod']
 
   // Load the user's provisioned requests once an env-targeting type is chosen
@@ -344,7 +349,11 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
 
   // What we price: the chosen stack (create/add/resize/clone/…), the technologies
   // being torn down (decommission), or the reduced components at their new sizes.
-  const pricedTarget = isRefresh || isRestore ? '' : (isDecommission || isReduce) ? sourceObj?.deployment_target ?? '' : target
+  // A platform service buys the infrastructure team's time, not a cloud
+  // resource. An empty target stops the cost fetch entirely — the same way
+  // refresh and restore do — so nothing shows a figure where there is none.
+  // Showing 0.00 here would be the fiction this portal spent a day removing.
+  const pricedTarget = isPlatformService || isRefresh || isRestore ? '' : (isDecommission || isReduce) ? sourceObj?.deployment_target ?? '' : target
   const pricedComponents = isDecommission
     ? selectedComponents
     : isReduce
@@ -390,7 +399,10 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
   const chosenImages = components.map((c) => `${c.technology_code}:${c.image ?? ''}`).join(',')
   useEffect(() => {
     const codes = chosenCodes ? chosenCodes.split(',') : []
-    if (!codes.length) return
+    // A capability has no shape to choose: no size, no image, no version. Asking
+    // the catalogue for its options would 404 on something that is not a
+    // provisionable component.
+    if (!codes.length || isPlatformService) return
     let cancelled = false
     Promise.all(
       codes.map((code) =>
@@ -569,7 +581,11 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
       advanced_options: cleanAdvanced(advanced),
       components: filledComponents,
     }
-    if (isCreateLike) {
+    if (isCreateLike || isPlatformService) {
+      // A platform service names the environment it is FOR — which estate needs
+      // backing up, which tier needs monitoring — not an existing environment it
+      // operates on. Sending target_environment here would ask the team to act
+      // on something rather than to build something.
       p.project_code = projectCode || null
       p.environment_name = envName || null
       p.environment_tier = envTier || null
@@ -1045,7 +1061,7 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
                   ) : null}
                 </>
               )}
-              {isCreateLike && (
+              {(isCreateLike || isPlatformService) && (
                 <Select id="project_code" labelText="Project" value={projectCode} onChange={(e) => setProjectCode(e.target.value)} invalid={!!errors.project_code} invalidText={errors.project_code}>
                   <SelectItem value="" text="— select —" />
                   {lookups.projects.map((p) => (
@@ -1103,7 +1119,7 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
                 </Select>
               )}
 
-              {isCreateLike && (
+              {(isCreateLike || isPlatformService) && (
                 <Select id="environment_tier" labelText="Environment tier" value={envTier} onChange={(e) => setEnvTier(e.target.value)} disabled={isDr} invalid={!!errors.environment_tier} invalidText={errors.environment_tier}>
                   <SelectItem value="" text="— select —" />
                   {(isDr
@@ -1117,7 +1133,7 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
                 </Select>
               )}
 
-              {isCreateLike && (
+              {(isCreateLike || isPlatformService) && (
                 <Select id="data_classification" labelText="Data classification" value={classification} onChange={(e) => setClassification(e.target.value)} invalid={!!errors.data_classification} invalidText={errors.data_classification}>
                   <SelectItem value="" text="— select —" />
                   {CLASSIFICATIONS.map((c) => (
@@ -1142,6 +1158,56 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
               </div>
 
               <div id="section-stack">
+              {/* A CAPABILITY, NOT A COMPONENT. Backup, centralised logging and
+                  monitoring have no package, no archive and no cloud resource —
+                  nothing can provision one. They used to sit in the component
+                  list beside NGINX, where a requester could select one, have it
+                  priced, have it approved, and receive a work item; the agent
+                  even spent a real machine discovering `dnf install backup`
+                  finds nothing (REQ-2026-0183). Asked for here instead, with no
+                  sizing and no price, because there is nothing to size or price. */}
+              {isPlatformService && (
+                <FormGroup legendText="What do you need?">
+                  {errors.components && (
+                    <p style={{ color: 'var(--cds-text-error)', fontSize: '0.75rem', marginBottom: '0.5rem' }}>{errors.components}</p>
+                  )}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                    {(lookups.platform_services || []).map((svc) => {
+                      const chosen = components[0]?.technology_code === svc.code
+                      return (
+                        <button
+                          key={svc.code}
+                          type="button"
+                          onClick={() => setComponents([{ technology_code: svc.code, size: null }])}
+                          style={{
+                            textAlign: 'left', cursor: 'pointer', padding: '0.85rem 1rem',
+                            borderRadius: 4, background: 'var(--cds-layer)',
+                            border: chosen
+                              ? '2px solid var(--cds-border-interactive)'
+                              : '1px solid var(--cds-border-subtle)',
+                          }}
+                        >
+                          <div style={{ fontWeight: 500, marginBottom: '0.25rem' }}>{svc.name}</div>
+                          {/* The note says what this is and, where one exists,
+                              what to request instead — a service mesh needs a
+                              Kubernetes cluster first, and generic "Kubernetes"
+                              means OCI Container Engine here. */}
+                          <div style={{ fontSize: '0.78rem', color: 'var(--cds-text-secondary)', lineHeight: 1.5 }}>
+                            {svc.note}
+                          </div>
+                        </button>
+                      )
+                    })}
+                  </div>
+                  <p style={{ fontSize: '0.78rem', color: 'var(--cds-text-secondary)', marginTop: '0.9rem', lineHeight: 1.5 }}>
+                    One at a time — each is scoped and delivered separately. There is
+                    nothing to size and no price: this asks the infrastructure team to
+                    design and build a capability, and what it carries is your
+                    justification, the approval and the audit trail.
+                  </p>
+                </FormGroup>
+              )}
+              {!isPlatformService && (
               <FormGroup legendText="Components">
                 {errors.components && (
                   <p style={{ color: 'var(--cds-text-error)', fontSize: '0.75rem', marginBottom: '0.5rem' }}>{errors.components}</p>
@@ -1288,6 +1354,7 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
                   </div>
                 )}
               </FormGroup>
+              )}
               </div>
 
               <div id="section-details" style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
