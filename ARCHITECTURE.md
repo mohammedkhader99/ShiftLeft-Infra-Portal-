@@ -221,6 +221,20 @@ The complete feature surface, grouped conceptually into four layers — **experi
 | F-CAT-09 | Catalogue administration UI | Should | Add technologies/sizes/rates/rules without a release |
 | F-CAT-10 | Blueprint certification pipeline | Should | Test and approve blueprints before publication |
 | F-CAT-11 | Custom-size review workflow | Should | Non-standard sizing routed to architecture review |
+| F-CAT-13 | Catalogue sync from the cloud | Should | Detect services, versions and shapes the cloud offers that the portal does not, and raise them as candidates |
+| F-CAT-14 | Certification runner | Must | Prove a blueprint by building it on real infrastructure, certify it on that evidence, and expire the certification on a clock |
+| F-CAT-15 | Auto-decertification on evidence | Must | A failed proof, or repeated request failures, withdraws a certification without waiting for a human |
+| F-CAT-16 | AI blueprint drafter | Must | The agent drafts blueprints and technology profiles for what it cannot yet build — recommend-only, proof-gated, and never its own approver |
+
+> **F-CAT-13 to F-CAT-16** come from `PROPOSAL-self-certifying-catalogue.md`,
+> which was accepted and built (increments C0–C6e). They were referenced in
+> commit messages from the start and, until 2026-08-23, never written into this
+> table — so the design authority did not name features that were already
+> shipped. Recorded here now.
+>
+> **There is no F-CAT-12.** The proposal's numbering began at 13 and nothing has
+> ever claimed 12. It is left unused rather than renumbering four IDs that are
+> already cited across the git history.
 
 ### 10.4 Cost Management & FinOps (FIN)
 | ID | Feature | Priority | Purpose |

@@ -36,3 +36,14 @@ scripts/_slide_geometry.json
 # apart. The README is tracked so the directory itself survives a clone.
 generated/*
 !generated/README.md
+
+# Working documents — roadmaps, vendor material, meeting notes. They live on
+# your machine, not in the source repo: nothing here builds or deploys, and a
+# binary that changes often makes every diff noisier without telling anyone
+# anything. Scoped to the repo root so a document that IS part of the product
+# (a diagram under docs/, say) still gets tracked deliberately.
+/Porject Documents/
+/*.pdf
+/*.docx
+/*.pptx
+/*.xlsx
