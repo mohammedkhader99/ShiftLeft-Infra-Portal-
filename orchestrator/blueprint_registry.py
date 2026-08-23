@@ -168,6 +168,25 @@ def discover(directory: Path | None = None,
     # fetch the archive. The portal must be able to refuse that up front instead
     # of spending a sandbox VM to discover it.
     extra_internet: dict[str, list[str]] = {}
+    # WHICH OS FAMILIES EACH TECHNOLOGY ACTUALLY HAS A RECIPE FOR.
+    #
+    # `os_families` below says what the BLUEPRINT's cloud-init can handle, and
+    # oci/service-vm can handle both — it builds machines, and a machine is a
+    # machine. That is not the same question as whether the software on it can
+    # be installed, and the portal was answering the second with the first: a
+    # requester could pick an Ubuntu image for HashiCorp Vault, whose profile has
+    # only an `rhel` block, and validation would accept it. The machine then
+    # boots, installs nothing, and reports
+    #
+    #     PORTAL FAILURE: vault has no install recipe for debian
+    #
+    # after the request was approved and a real VM was paid for. The proof cannot
+    # catch it either, because a proof carries no image and is earned on rhel.
+    #
+    # The recipe knows the answer — `supported_families` reads the family blocks
+    # off the profile — but it lives here and the portal cannot import it. So it
+    # travels in the manifest, like `needs_internet` and `refuted` before it.
+    installs_on: dict[str, list[str]] = {}
     try:
         from orchestrator import configure
 
@@ -175,10 +194,25 @@ def discover(directory: Path | None = None,
             on = str(profile.get("builds_on") or "").strip()
             if on:
                 extra_builds.setdefault(on, []).append(code)
-                if isinstance(profile.get("archive"), dict):
+                # A REPOSITORY NEEDS THE INTERNET AS MUCH AS AN ARCHIVE DOES.
+                # rpm.releases.hashicorp.com is no more reachable from a subnet
+                # with only a service gateway than github.com is, and listing
+                # only archives here left the portal able to accept a request it
+                # already knew would fail.
+                if (isinstance(profile.get("archive"), dict)
+                        or isinstance(profile.get("repo"), dict)):
                     extra_internet.setdefault(on, []).append(code)
+
+        for code in configure.configurable_codes():
+            families = sorted(configure.supported_families(code))
+            if families:
+                # Empty is NOT recorded: it means this code has no profile at
+                # all, and claiming "installs on nothing" for it would hide every
+                # image from a technology the blueprint may configure some other
+                # way. Absent means "no claim", which the portal reads as before.
+                installs_on[code] = families
     except Exception:  # noqa: BLE001 — a broken profile must not hide the catalogue
-        extra_builds, extra_internet = {}, {}
+        extra_builds, extra_internet, installs_on = {}, {}, {}
 
     found: list[dict] = []
     shipped_names: set[str] = set()
@@ -246,6 +280,15 @@ def discover(directory: Path | None = None,
             "needs_internet": sorted(set(
                 [str(b) for b in manifest.get("needs_internet") or []]
                 + (extra_internet.get(ref, []) if origin == "shipped" else []))),
+            # {technology: families its RECIPE covers}. Narrower than
+            # `os_families` below, which is about this blueprint's cloud-init.
+            # A code absent here makes no claim and the portal falls back to
+            # `os_families`, exactly as it did before this existed.
+            "installs_on": {code: installs_on[code]
+                            for code in ([str(b) for b in manifest.get("builds") or []]
+                                         + (extra_builds.get(ref, [])
+                                            if origin == "shipped" else []))
+                            if code in installs_on},
             # OS families this blueprint's own first-boot configuration can
             # handle. Empty means it configures no operating system at all — a
             # bucket, a managed database — and the portal makes no OS claim for

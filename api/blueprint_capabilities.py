@@ -62,10 +62,27 @@ def _build(shipped: list[dict]) -> dict[str, set[str]]:
     for bp in shipped or []:
         families = {str(f).strip().lower() for f in (bp.get("os_families") or [])}
         refuted = bp.get("refuted") or {}
+        installs_on = bp.get("installs_on") or {}
         for code in bp.get("builds") or []:
             code = str(code)
             disproven = {str(f).strip().lower() for f in (refuted.get(code) or {})}
-            out.setdefault(code, set()).update(families - disproven)
+            usable = families - disproven
+            # THE BLUEPRINT'S FAMILIES ARE NOT THE RECIPE'S FAMILIES.
+            #
+            # oci/service-vm declares [rhel, debian] because it builds machines
+            # and a machine is a machine. Whether the SOFTWARE can be installed
+            # on one is a different question, and answering it with the first
+            # let a requester choose an Ubuntu image for HashiCorp Vault, whose
+            # profile has only an `rhel` block. Validation accepted it, the
+            # request was approved, a real VM was paid for, and the machine
+            # reported "vault has no install recipe for debian".
+            #
+            # A code that makes no claim is left alone, so this can only ever
+            # narrow — never widen — what was offered before.
+            recipe = {str(f).strip().lower() for f in (installs_on.get(code) or [])}
+            if recipe:
+                usable &= recipe
+            out.setdefault(code, set()).update(usable)
     return out
 
 
