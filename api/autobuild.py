@@ -81,6 +81,17 @@ class AutobuildResult:
     attempts: list[Attempt] = field(default_factory=list)
     files: dict[str, str] = field(default_factory=dict)
     detail: str = ""
+    # Whether a machine was BUILT, ASKED, and said no to this recipe.
+    #
+    # `status == "failed"` cannot answer that: a cost-cap refusal, a contract
+    # skew, a profile that never wired up and a machine that reported
+    # "NOT INSTALLED" all arrive here as failures, and only the last says
+    # anything about the recipe. The escalation ladder needs the difference —
+    # climbing to the next install method is only sensible when a machine
+    # disproved this one — and so does the sentence shown to the requester,
+    # which claimed machines had refuted every rung whether or not any had been
+    # built. Same rule, same predicate, as recipe_memory.refutes().
+    machine_refuted: bool = False
 
     @property
     def published(self) -> bool:
@@ -285,10 +296,74 @@ def ensure(candidate: str, session: Session, *, target, shipped, run_proof,
     proposal = ai_blueprint.draft(candidate, session, target=target,
                                   shipped_codes=shipped_codes)
     if proposal.kind == "vm-service":
-        return _ensure_vm_service(candidate, session, proposal, target=target,
-                                  shipped=shipped, run_proof=run_proof,
-                                  publish=publish, certify=certify,
-                                  withdraw=withdraw, reachable=reachable)
+        # ESCALATE THROUGH THE INSTALL METHODS, learning from each machine.
+        #
+        # REQ-2026-0184 asked for HashiCorp Vault. The agent guessed `dnf install
+        # vault`, booted a real machine, was told "package vault is not
+        # installed" — and stopped. One attempt, one method, and the request went
+        # to manual fulfilment with the answer sitting one method away: Vault is
+        # not in Oracle's repositories, it is in HashiCorp's.
+        #
+        # A machine refuting ONE way of installing something says nothing about
+        # the others, so the loop now tries the next one. Cheapest first: an OS
+        # package grants no trust, a vendor repository trusts a publisher for
+        # everything it will ever serve, an archive fetches one verified file.
+        # Each attempt is a REAL machine, so the ladder is short and every rung
+        # is remembered — a method already refuted is skipped without building.
+        methods = ai_blueprint.install_methods(candidate)
+        last = None
+        refuted_by_a_machine: list[str] = []
+        for method in methods:
+            attempt = ai_blueprint.draft(candidate, session, target=target,
+                                         shipped_codes=shipped_codes, method=method)
+            last = _ensure_vm_service(candidate, session, attempt, target=target,
+                                      shipped=shipped, run_proof=run_proof,
+                                      publish=publish, certify=certify,
+                                      withdraw=withdraw, reachable=reachable,
+                                      method=method)
+            if last.status == "published":
+                return last
+            # A RUNG ALREADY REFUTED IS SKIPPED, NOT A REASON TO STOP. The
+            # memory says a machine disproved THIS method; the next one is
+            # exactly what should be tried, and treating the skip as a verdict
+            # would strand vault on the package guess for ever.
+            if last.attempts and last.attempts[-1].stage == "remembered":
+                continue
+            # ONLY A MACHINE'S VERDICT IS A REASON TO TRY ANOTHER RECIPE.
+            #
+            # This used to read `if last.status == "refused"`, which was inert
+            # for most of the cases its own comment named: an egress preflight
+            # and a memory hit are the only two that return "refused", while a
+            # cost cap, an unset sandbox tier, a contract skew, a profile that
+            # never wired up and a teardown that was abandoned all come back as
+            # "failed" — and the ladder climbed on every one of them, paying the
+            # same non-recipe refusal again at each rung.
+            #
+            # `abandoned` matters most here. build() stops dead on it because
+            # another attempt would build a second copy of something already
+            # leaking, and the ladder had no such brake at all.
+            #
+            # TWO things are a verdict on the recipe in hand, and the next rung
+            # is a different recipe: a machine that was built and said no, and
+            # the linter refusing to publish this profile at all. An archive
+            # missing its checksum is blocked while the same software's vendor
+            # repository may be perfectly acceptable, so a block must not strand
+            # the ladder any more than a refutation does.
+            if not (last.machine_refuted or last.status == "blocked"):
+                return last
+            if last.machine_refuted:
+                refuted_by_a_machine.append(method)
+        if last is not None:
+            if len(refuted_by_a_machine) > 1:
+                # SAY ONLY WHAT HAPPENED. This sentence used to claim "a machine
+                # refuted each one" whenever more than one method existed —
+                # including when nothing was ever built — in text a requester and
+                # an approver read as evidence.
+                last.detail = (
+                    f"{last.detail} Tried {len(refuted_by_a_machine)} install "
+                    f"methods ({', '.join(refuted_by_a_machine)}); a machine was "
+                    f"built for each and refuted it.")
+            return last
 
     return build(candidate, session, blueprint=None, run_proof=run_proof,
                  publish=publish, target=target, shipped_codes=shipped_codes)
@@ -296,7 +371,7 @@ def ensure(candidate: str, session: Session, *, target, shipped, run_proof,
 
 def _ensure_vm_service(candidate, session, proposal, *, target, shipped,
                        run_proof, publish, certify, withdraw,
-                       reachable=None) -> AutobuildResult:
+                       reachable=None, method="") -> AutobuildResult:
     """Teach the proven machine blueprint one more technology, and prove it.
 
     THE ORDER IS INVERTED HERE, deliberately. Everywhere else a draft is proved
@@ -336,18 +411,26 @@ def _ensure_vm_service(candidate, session, proposal, *, target, shipped,
     if reachable is not None:
         import json as _json
 
-        wants_archive = any(
+        # AN ARCHIVE **OR** A VENDOR REPOSITORY. Both fetch from the public
+        # internet — one pulls a release file, the other adds a publisher the
+        # package manager then downloads from — and a subnet with only a service
+        # gateway defeats each of them identically. Checking only archives would
+        # send a vault request to build a machine that cannot reach
+        # rpm.releases.hashicorp.com, which is the failure this check exists for.
+        wants_internet = any(
             isinstance(_json.loads(body).get("archive"), dict)
+            or isinstance(_json.loads(body).get("repo"), dict)
             for body in proposal.files.values()
             if body.strip().startswith("{"))
-        if wants_archive and not reachable():
+        if wants_internet and not reachable():
             result.status = "refused"
             result.detail = (
-                f"{candidate} is installed from a release archive on the public "
-                f"internet, and the build subnet has no route there — so a proof "
-                f"would boot a machine that installs its dependencies and then "
-                f"cannot fetch the software. Nothing was built. Add a NAT gateway "
-                f"to the build subnet, or fulfil this one by hand.")
+                f"{candidate} is installed from the public internet — a release "
+                f"archive or the vendor's own package repository — and the build "
+                f"subnet has no route there. A proof would boot a machine that "
+                f"installs its dependencies and then cannot fetch the software. "
+                f"Nothing was built. Add a NAT gateway to the build subnet, or "
+                f"fulfil this one by hand.")
             result.attempts.append(Attempt(
                 1, "preflight", "refused", "no internet egress from the build subnet"))
             return result
@@ -366,7 +449,9 @@ def _ensure_vm_service(candidate, session, proposal, *, target, shipped,
         already = recipe_memory.previously_refuted(session, candidate, target, recipe)
         if already:
             result.status = "refused"
-            result.detail = f"{candidate} was not built. {already}"
+            result.detail = (f"{candidate} was not built"
+                             + (f" by the {method} method" if method else "")
+                             + f". {already}")
             result.attempts.append(Attempt(
                 1, "remembered", "refused", already[:300]))
             return result
@@ -415,7 +500,8 @@ def _ensure_vm_service(candidate, session, proposal, *, target, shipped,
     # answer again — but only when the machine actually reported, which
     # recipe_memory.refutes() decides: a cost-cap refusal or a failed teardown
     # is our problem, not the recipe's.
-    if session is not None and recipe_memory.refutes(outcome.status, outcome.detail):
+    result.machine_refuted = recipe_memory.refutes(outcome.status, outcome.detail)
+    if session is not None and result.machine_refuted:
         recipe_memory.remember(session, candidate, target, recipe,
                                outcome.reference, outcome.detail)
         session.commit()

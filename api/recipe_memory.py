@@ -46,7 +46,37 @@ from db.models import RecipeRefutation
 # something, and treating it as one would let the agent burn a machine per
 # rephrasing.
 _INSTALL_FIELDS = ("packages", "services")
-_ARCHIVE_FIELDS = ("url", "sha256", "dest")
+# `module` is here because a module stream IS the fix for a whole class of
+# refutation: "Redis 7" installing Redis 6.2 was corrected by pinning `redis:7`,
+# and nothing else about that recipe changed. Without it the correction hashes
+# as the recipe a machine refuted and is skipped for a month.
+_MODULE_FIELDS = ("module", "module_name")
+# `user` and the unit's `environment` change what root runs and what it runs
+# with; a description does not.
+_ARCHIVE_FIELDS = ("url", "sha256", "dest", "user")
+
+# WHAT THE MACHINE IS ASKED TO SHOW is part of the recipe too.
+#
+# REQ-2026-0185 installed Vault 2.0.4 from HashiCorp's own repository on a real
+# machine: package present, service active, socket listening on 8200, firewall
+# open, first boot clean. It was refuted anyway, because the recipe demanded
+# version "1" of software now on 2.x and a 200 from an API root that answers
+# 400. The install was right; the questions were wrong.
+#
+# Correcting those questions changes not one install field, so without these the
+# corrected recipe hashes IDENTICALLY to the refuted one — and the memory, doing
+# exactly its job, would skip the rung that works for a month. A memory that
+# cannot tell a fixed recipe from a broken one stops being a saving and becomes
+# a cage.
+_EVIDENCE_FIELDS = ("expects", "version_command")
+
+# Bumped whenever the material above changes shape. It is hashed IN rather than
+# prefixed to the digest, because the fingerprint column has a fixed width and
+# this project has no migration tool — a longer string would need a schema
+# change that `create_all` cannot make to a running database. Hashing it in
+# means rows written under an older scheme simply never match again: inert,
+# not wrong.
+_SCHEME = 2
 
 
 def fingerprint(recipe: dict | None) -> str:
@@ -70,6 +100,17 @@ def fingerprint(recipe: dict | None) -> str:
                 field: sorted(str(v) for v in (block.get(field) or []))
                 for field in _INSTALL_FIELDS
             }
+            material[family].update(
+                {field: str(block.get(field) or "") for field in _MODULE_FIELDS})
+
+    # THE REPOSITORY IS PART OF THE RECIPE. Without this, installing `vault`
+    # from HashiCorp's repository hashes identically to `dnf install vault`
+    # against Oracle's — the two differ only in where the package comes from,
+    # which is the entire difference. The memory would then read the vendor-repo
+    # attempt as already refuted and skip the rung that works.
+    repo = recipe.get("repo")
+    if isinstance(repo, dict):
+        material["repo"] = {f: str(repo.get(f) or "") for f in ("url", "gpg_key")}
 
     archive = recipe.get("archive")
     if isinstance(archive, dict):
@@ -77,13 +118,30 @@ def fingerprint(recipe: dict | None) -> str:
         unit = archive.get("unit")
         if isinstance(unit, dict):
             material["archive"]["exec_start"] = str(unit.get("exec_start") or "")
+            # What the unit runs WITH. A service that failed for want of an
+            # environment variable is corrected by adding one and nothing else,
+            # so leaving this out makes that correction invisible.
+            material["archive"]["environment"] = json.dumps(
+                unit.get("environment") or {}, sort_keys=True, default=str)
 
     if not material:
         # A shipped manifest rather than a profile: what identifies the attempt
-        # is which module was built and at what version.
+        # is which module was built and at what version. It carries no evidence
+        # contract of its own — the module owns that — so `asks` is deliberately
+        # NOT added here. Adding it unconditionally would make this branch
+        # unreachable and collapse every shipped manifest onto one digest.
         material = {"ref": str(recipe.get("ref") or ""),
                     "version": str(recipe.get("version") or "")}
+    else:
+        material["asks"] = {
+            **{field: str(recipe.get(field) or "") for field in _EVIDENCE_FIELDS},
+            # Ports are asked about too: each one becomes an http_<port> check
+            # and a firewall check on the machine, so changing them changes what
+            # the machine must prove.
+            "ports": sorted(str(p) for p in (recipe.get("ports") or [])),
+        }
 
+    material["_scheme"] = _SCHEME
     return hashlib.sha256(
         json.dumps(material, sort_keys=True).encode()).hexdigest()
 

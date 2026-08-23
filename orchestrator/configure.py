@@ -327,6 +327,17 @@ def is_verified(code: str, family: str) -> bool:
 # Enabling a module stream is a Red Hat family concept. The other families have
 # no equivalent, so a profile declaring a module simply has nothing emitted.
 _MODULE_ENABLE = {"rhel": "dnf module enable -y", "debian": "true", "suse": "true"}
+# How each family adds a vendor repository. Only the Red Hat family is wired:
+# Debian uses signed-by keyrings and sources.list entries, which is a different
+# shape and needs its own proof on a real machine before it is offered.
+# `false` alone, with NO trailing comment. The rendered line is
+# `<add-repo> <url> || echo 'PORTAL FAILURE: ...'`, so a `#` here commented out
+# the failure marker that follows it on the same line: the step failed silently
+# and the machine reported nothing wrong. A placeholder that disables the alarm
+# it exists to trigger is worse than no placeholder.
+_REPO_ADD = {"rhel": "dnf config-manager --add-repo",
+             "debian": "false",
+             "suse": "false"}
 
 _INSTALL = {
     "rhel": "dnf install -y",
@@ -432,7 +443,8 @@ def boot_report_url(reference: str, resource_kind: str) -> str:
 def _report_script(wanted: list[tuple[str, str]], packages: list[str],
                    services: list[str], ports: list[int], family: str,
                    report_url: str,
-                   archives: list[tuple[str, dict]] | None = None) -> list[str]:
+                   archives: list[tuple[str, dict]] | None = None,
+                   repos: list[tuple[str, dict]] | None = None) -> list[str]:
     """The self-check a machine runs on itself, as cloud-config write_files lines.
 
     WHY A MACHINE REPORTS ON ITSELF.
@@ -474,6 +486,24 @@ def _report_script(wanted: list[tuple[str, str]], packages: list[str],
     # would report NOT INSTALLED for software that installed perfectly. The
     # evidence for an archive is its destination existing — and "failed" is the
     # word used because the verdict parser already treats key=failed as broken.
+    for code, spec in (repos or []):
+        # Evidence the repository is actually there, separate from whether the
+        # package installed: "the repo was not added" and "the package is not in
+        # it" need different fixes, and one failure line cannot say which.
+        #
+        # TESTED BY THE FILE, NOT BY THE TECHNOLOGY NAME. `dnf config-manager
+        # --add-repo <url>` writes /etc/yum.repos.d/<basename of the url>, and
+        # that basename is the VENDOR's — hashicorp.repo, not vault.repo. An
+        # earlier version grepped `dnf repolist` for the technology code and
+        # would have reported repo_vault=failed on a machine where HashiCorp's
+        # repository had been added perfectly, failing the proof for a reason
+        # that was not true.
+        basename = (spec.get("url", "").rstrip("/").rsplit("/", 1)[-1]
+                    or f"{code}.repo")
+        key = profile_rules.report_key(code)
+        checks.append(
+            f'  echo "repo_{key}=$(test -f /etc/yum.repos.d/{shlex.quote(basename)} '
+            f'&& echo present || echo failed)"')
     for code, spec in (archives or []):
         dest = shlex.quote(spec.get("dest", f"/opt/{code}"))
         # NON-EMPTY, not merely present: the unpack step creates the directory,
@@ -512,7 +542,12 @@ def _report_script(wanted: list[tuple[str, str]], packages: list[str],
     # agent-written recipe was never version-checked at all — the machine
     # installed something, reported it active, and nobody ever asked which
     # version arrived. That silence is precisely how Redis 6.2 shipped as 7.
-    merged = {**TEMPLATES, **_generated_profiles()}
+    # _package_overrides() included, matching profile_for(). Without it a
+    # technology introduced solely by CONFIG_PACKAGE_MAP was installed and
+    # never asked what it got, and an override's own `expects` was ignored
+    # in favour of the shipped one — a redis7 override pinning 8 was still
+    # checked against 7.
+    merged = {**TEMPLATES, **_generated_profiles(), **_package_overrides()}
 
     def _command(code: str) -> str:
         spec = merged.get(code, {})
@@ -522,16 +557,32 @@ def _report_script(wanted: list[tuple[str, str]], packages: list[str],
     versioned = [(code, wanted_version or merged.get(code, {}).get("expects", ""),
                   _command(code))
                  for code, wanted_version in wanted]
-    versioned = [(c, w, cmd) for c, w, cmd in versioned if w and cmd]
+    # `cmd`, NOT `w and cmd`. An empty `expects` used to drop the technology from
+    # this list entirely, so the machine was never asked — and a question never
+    # asked is the silence that shipped Redis 6.2 under an entry called Redis 7.
+    # Software installed from a vendor's own repository has no promised version
+    # (the repository serves whatever is current), which made "no promise" and
+    # "no evidence" the same thing. They are not: ASK ALWAYS, compare only when
+    # a promise exists, and say plainly which of the two happened.
+    versioned = [(c, w, cmd) for c, w, cmd in versioned if cmd]
     if versioned:
         checks.append("  echo '--- versions ---'")
     for code, want, command in versioned:
+        vkey = profile_rules.report_key(code)
         checks.append(f"  RAW=$({command})")
         # r"" so the backslash reaches grep rather than being a Python escape.
         checks.append(r"  GOT=$(echo " '"$RAW"' r" | grep -oE '[0-9]+(\.[0-9]+)*'"
                       " | head -1)")
+        if not want:
+            # Reported, never compared. UNPROMISED is a distinct word rather than
+            # a missing line so a human reading the report can tell "nobody
+            # promised a version" from "nobody checked" — and $RAW is left out
+            # deliberately: it is multi-line for several of these tools, and a
+            # stray line here would be parsed as another key=value fact.
+            checks.append(
+                f'  echo "version_{vkey}=UNPROMISED (${{GOT:-none}})"')
+            continue
         checks.append("  case \"$GOT\" in")
-        vkey = profile_rules.report_key(code)
         checks.append(f"    {want}|{want}.*) echo \"version_{vkey}=OK ($GOT)\" ;;")
         checks.append(f"    *) echo \"version_{vkey}=WRONG wanted {want} got "
                       f"${{GOT:-none}} [$RAW]\" ;;")
@@ -674,6 +725,10 @@ def profile_for(code: str, family: str = "") -> dict | None:
 
     return {"family": family,
             "archive": archive,
+            # A vendor repository to add BEFORE installing. `dnf install vault`
+            # finds nothing on Oracle Linux because HashiCorp ships Vault from
+            # its own repository — REQ-2026-0184 spent a machine learning that.
+            "repo": prof.get("repo") if isinstance(prof.get("repo"), dict) else None,
             "packages": list(block.get("packages") or []),
             "services": list(block.get("services") or []),
             # Ports belong to the software, not the distribution, so they sit at
@@ -803,9 +858,12 @@ def render(components: list[dict], family: str = "", report_url: str = "") -> st
     # (C6b). Its dependencies still ride the packages list — java for keycloak is
     # a real RPM — but the software itself is fetched, checked, and unpacked.
     archives: list[tuple[str, dict]] = []
+    repos: list[tuple[str, dict]] = []
     for code, version, prof in profiles:
         if prof.get("archive"):
             archives.append((code, prof["archive"]))
+        if prof.get("repo"):
+            repos.append((code, prof["repo"]))
         stream = module_stream(code, version, family)
         if stream and stream not in modules:
             modules.append(stream)
@@ -891,7 +949,7 @@ def render(components: list[dict], family: str = "", report_url: str = "") -> st
         for check in _report_script(
                 [(code, version) for code, version, _profile in profiles],
                 packages, services, ports, family, report_url,
-                archives=archives):
+                archives=archives, repos=repos):
             lines.append(f"      {check}")
     lines.append("runcmd:")
     # Module streams are enabled BEFORE the install, or the default stream is
@@ -899,6 +957,25 @@ def render(components: list[dict], family: str = "", report_url: str = "") -> st
     for mod in modules:
         lines.append(cmd(f"{_MODULE_ENABLE[family]} {mod} || echo 'PORTAL FAILURE: could not "
                          f"enable module {mod}' >> /var/log/infra-portal.log"))
+    # VENDOR REPOSITORIES, before any package install — the whole point is that
+    # the packages below do not exist until these are added.
+    #
+    # The GPG key is imported explicitly rather than left to dnf's prompt: a
+    # non-interactive boot would otherwise either hang or silently install
+    # unverified packages, and the second is worse. gpgcheck is enforced in the
+    # rules, so a repo reaching here has a key.
+    for code, spec in repos:
+        url = shlex.quote(spec.get("url", ""))
+        key = shlex.quote(spec.get("gpg_key", ""))
+        lines.append(cmd(
+            f"rpm --import {key} || echo 'PORTAL FAILURE: could not import the "
+            f"signing key for {code}' >> /var/log/infra-portal.log"))
+        lines.append(cmd(
+            f"{_REPO_ADD[family]} {url} || echo 'PORTAL FAILURE: could not add "
+            f"the {code} repository' >> /var/log/infra-portal.log"))
+    if repos:
+        lines.append(cmd("dnf clean all >/dev/null 2>&1 || true"))
+
     if packages:
         # `|| true` keeps a failed install from aborting the rest of cloud-init, so
         # the marker + log survive for diagnosis instead of a silent dead VM.
@@ -982,7 +1059,11 @@ def render(components: list[dict], family: str = "", report_url: str = "") -> st
         # instant enable returned would call a healthy machine broken on the port
         # check. Bounded: a service that never answers still fails, five minutes
         # later, on the same evidence.
-        if archives:
+        # `archives or repos`, not archives alone. A service installed from a
+        # vendor repository is just as capable of taking a minute to bind — and
+        # reporting the instant `systemctl enable` returns would call it broken
+        # on the port check, which is this whole file's recurring failure.
+        if archives or repos:
             for port in ports:
                 lines.append(cmd(
                     f"for i in $(seq 1 60); do curl -s -o /dev/null -m 5 "

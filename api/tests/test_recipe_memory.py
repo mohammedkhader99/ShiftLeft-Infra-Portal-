@@ -65,9 +65,121 @@ def test_the_same_recipe_fingerprints_the_same():
 
 def test_a_cosmetic_change_is_not_a_new_idea():
     """A reworded note is not a different way of installing something, and
-    treating it as one would burn a machine per rephrasing."""
-    reworded = {**PACKAGE_GUESS, "_note": "DRAFT — reworded", "ports": [80]}
+    treating it as one would burn a machine per rephrasing.
+
+    NARROWED on 2026-08-23. This used to count a changed `ports` list as cosmetic
+    too. It is not: every port becomes an http_ check, an `ss` check and a
+    firewall check on the machine, and is opened in the firewall. That was
+    wishful grouping, and REQ-2026-0185 showed what it costs.
+    """
+    reworded = {**PACKAGE_GUESS, "_note": "DRAFT — reworded",
+                "description": "Backup and recovery tooling"}
     assert recipe_memory.fingerprint(reworded) == recipe_memory.fingerprint(PACKAGE_GUESS)
+
+
+# --- what the machine is ASKED is part of the recipe (REQ-2026-0185) ----------
+#
+# Vault installed perfectly from HashiCorp's repository — rpm present, unit
+# active, listening on 8200, firewall open — and was refuted anyway, because the
+# recipe demanded version "1" of software now on 2.x and a 200 from an API root
+# that answers 400. Every install field was right. If the memory cannot tell
+# that recipe from its correction, it skips the rung that works for a month and
+# the fix, though real, changes nothing.
+
+WORKS = {"code": "vault", "builds_on": "oci/service-vm", "ports": [8200],
+         "expects": "1", "version_command": "vault version 2>&1",
+         "repo": {"url": "https://rpm.releases.hashicorp.com/RHEL/hashicorp.repo",
+                  "gpg_key": "https://rpm.releases.hashicorp.com/gpg"},
+         "rhel": {"packages": ["vault"], "services": ["vault"]}}
+
+
+def test_correcting_a_wrong_version_expectation_is_a_new_attempt():
+    """THE REQ-2026-0185 defect. Dropping an `expects` that was recalled rather
+    than measured leaves every install field untouched."""
+    corrected = {**WORKS, "expects": ""}
+    assert recipe_memory.fingerprint(corrected) != recipe_memory.fingerprint(WORKS), (
+        "a corrected expectation hashes as the recipe a machine refuted, so it "
+        "would be skipped as already-disproved and never re-tried")
+
+
+def test_asking_the_machine_a_different_question_is_a_new_attempt():
+    changed = {**WORKS, "version_command": "vault status 2>&1"}
+    assert recipe_memory.fingerprint(changed) != recipe_memory.fingerprint(WORKS)
+
+
+def test_a_different_port_is_a_new_attempt():
+    """A port is opened in the firewall and probed three ways. Changing it
+    changes both what is built and what must be proved."""
+    changed = {**WORKS, "ports": [8201]}
+    assert recipe_memory.fingerprint(changed) != recipe_memory.fingerprint(WORKS)
+
+
+def test_the_install_fields_alone_no_longer_decide():
+    """Stated as its own fact, so the next person to 'simplify' the fingerprint
+    back to packages-and-services has to delete a test that says why not."""
+    same_install = {**WORKS, "expects": "", "ports": [8201],
+                    "version_command": "vault status 2>&1"}
+    assert same_install["rhel"] == WORKS["rhel"]
+    assert same_install["repo"] == WORKS["repo"]
+    assert recipe_memory.fingerprint(same_install) != recipe_memory.fingerprint(WORKS)
+
+
+def test_pinning_a_module_stream_is_a_new_attempt():
+    """The correction that fixed the original Redis defect was `redis:7` and
+    nothing else — same package, same service. If that hashes as the recipe the
+    machine refuted, the one fix this project is named after gets skipped."""
+    base = {"code": "redis7", "ports": [6379],
+            "version_command": "redis-server --version",
+            "rhel": {"packages": ["redis"], "services": ["redis"]}}
+    pinned = {**base, "rhel": {**base["rhel"], "module": "redis:7"}}
+    assert recipe_memory.fingerprint(pinned) != recipe_memory.fingerprint(base)
+
+
+def test_changing_what_the_unit_runs_with_is_a_new_attempt():
+    """A service that failed for want of an environment variable is corrected by
+    adding one and changing nothing else."""
+    base = {"code": "thing", "rhel": {"packages": [], "services": ["thing"]},
+            "archive": {"url": "https://x/t.tar.gz", "sha256": "a" * 64,
+                        "dest": "/opt/thing", "user": "thing",
+                        "unit": {"exec_start": "/opt/thing/run"}}}
+    with_env = {**base, "archive": {**base["archive"],
+                                    "unit": {"exec_start": "/opt/thing/run",
+                                             "environment": {"JAVA_HOME": "/usr"}}}}
+    assert recipe_memory.fingerprint(with_env) != recipe_memory.fingerprint(base)
+
+
+def test_changing_the_user_root_hands_the_software_to_is_a_new_attempt():
+    base = {"code": "thing", "rhel": {"packages": [], "services": ["thing"]},
+            "archive": {"url": "https://x/t.tar.gz", "sha256": "a" * 64,
+                        "dest": "/opt/thing", "user": "thing",
+                        "unit": {"exec_start": "/opt/thing/run"}}}
+    other = {**base, "archive": {**base["archive"], "user": "keycloak"}}
+    assert recipe_memory.fingerprint(other) != recipe_memory.fingerprint(base)
+
+
+def test_a_shipped_manifest_is_still_identified_by_its_module_and_version():
+    """The `asks` block must not be bolted onto a manifest that has no install
+    fields — that branch is what tells one shipped module from another, and
+    making it unreachable would collapse every manifest onto a single digest."""
+    a = {"ref": "oci/service-vm", "target": "oci", "version": "1.0.0"}
+    b = {"ref": "oci/service-vm", "target": "oci", "version": "1.1.0"}
+    c = {"ref": "oci/bucket", "target": "oci", "version": "1.0.0"}
+    assert recipe_memory.fingerprint(a) != recipe_memory.fingerprint(b)
+    assert recipe_memory.fingerprint(a) != recipe_memory.fingerprint(c)
+
+
+def test_a_refutation_written_under_the_old_scheme_no_longer_matches(db):
+    """Changing what a fingerprint covers changes every digest. Rows written
+    before the change describe recipes under a different definition, so they go
+    INERT rather than matching the wrong thing — the safe direction: at worst a
+    machine re-proves something, never a working recipe silently skipped."""
+    db.add(RecipeRefutation(
+        technology_code="vault", deployment_target="oci",
+        fingerprint="3147c800559aa195" + "0" * 48,   # a digest from the old scheme
+        proof_reference="PROOF-OLD", detail="vault is the wrong version"))
+    db.commit()
+
+    assert recipe_memory.previously_refuted(db, "vault", "oci", WORKS) == ""
 
 
 def test_a_different_package_is_a_different_recipe():

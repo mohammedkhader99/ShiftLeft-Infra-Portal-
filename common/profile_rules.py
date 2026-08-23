@@ -88,6 +88,21 @@ ENV_VALUE = re.compile(r"^[\x20-\x7E]{0,512}$")
 # recipe when the defect is in our renderer. Refusing it up front says which.
 ARCHIVE_SUFFIXES = (".tar.gz", ".tgz")
 
+# A vendor repository definition file, e.g.
+# https://rpm.releases.hashicorp.com/RHEL/hashicorp.repo
+#
+# THE THIRD WAY TO INSTALL SOFTWARE, and the one whose absence sent REQ-2026-0184
+# to manual fulfilment: `dnf install vault` finds nothing on Oracle Linux because
+# HashiCorp ships Vault from its own repository, not Oracle's. The same is true
+# of MongoDB, Elasticsearch, SQL Server and RabbitMQ — most of what remains
+# uncertified in this catalogue.
+#
+# Adding a repository is MORE dangerous than fetching one archive, not less: it
+# does not install one verified file, it tells the package manager to trust a
+# publisher for everything it offers, now and at every future update. So the
+# rules are stricter — https, and a GPG key, without exception.
+REPO_SUFFIXES = (".repo",)
+
 
 def report_key(code: str) -> str:
     """The identifier form of a technology code, for a `key=value` report line.
@@ -193,6 +208,46 @@ def archive_problems(archive: dict, *, declares_services: bool) -> list[str]:
     return problems
 
 
+def repo_problems(repo: dict) -> list[str]:
+    """Every reason this vendor repository may not be added to a machine.
+
+    A repository is a standing grant of trust: every package it offers, and every
+    update to them, is installed by root on this machine's say-so. That is a
+    larger thing to hand out than one checksummed archive, so `gpgcheck` is not
+    optional and neither is the key.
+    """
+    problems: list[str] = []
+    if not isinstance(repo, dict):
+        return ["The repository is not an object."]
+
+    url = repo.get("url")
+    if not isinstance(url, str) or not URL.match(url):
+        problems.append(
+            f"The repository URL {url!r} is not an acceptable https URL. The "
+            f"package manager will trust this publisher for everything it "
+            f"offers, so it must be https and free of shell characters.")
+    elif not url.lower().endswith(REPO_SUFFIXES):
+        problems.append(
+            f"The repository URL must point at a .repo definition file (as "
+            f"https://rpm.releases.hashicorp.com/RHEL/hashicorp.repo does), not "
+            f"at {url!r}.")
+
+    key = repo.get("gpg_key")
+    if not isinstance(key, str) or not URL.match(key):
+        # NOT OPTIONAL, unlike an archive's checksum being merely strongly
+        # preferred. A checksum verifies one file once; a signing key is what
+        # verifies every package this repository will ever serve. Adding a
+        # repository without one tells dnf to install whatever arrives.
+        problems.append(
+            f"The repository declares no GPG key over https (got {key!r}). A "
+            f"checksum verifies one file once; a signing key is what verifies "
+            f"every package this repository will ever serve, including updates "
+            f"nobody has looked at. Adding a repository without one tells the "
+            f"package manager to install whatever arrives.")
+
+    return problems
+
+
 def profile_problems(profile: dict) -> list[str]:
     """Every reason this profile may not reach a machine. Empty means it may.
 
@@ -223,6 +278,10 @@ def profile_problems(profile: dict) -> list[str]:
     if archive is not None:
         problems += archive_problems(archive, declares_services=declares_services)
 
+    repo = profile.get("repo")
+    if repo is not None:
+        problems += repo_problems(repo)
+
     # IT MUST INSTALL SOMETHING RUNNABLE. Relaxing the packages rule for archives
     # briefly allowed a profile with no packages, no services and no ports: it
     # unpacked a tarball, started nothing, and reported healthy — a proof of
@@ -251,9 +310,12 @@ def profile_problems(profile: dict) -> list[str]:
                     f"is passed to systemctl as root.")
 
     # The version command runs inside the machine's report script, as root, and
-    # its output is compared with `expects`. A command with no expectation is a
-    # question nobody reads the answer to — the silence that shipped Redis 6.2
-    # under a catalogue entry called "Redis 7".
+    # its output is compared with `expects` WHEN THERE IS ONE. A command with no
+    # expectation is no longer silence: since 2026-08-23 the machine reports it
+    # as UNPROMISED and a human reading the report sees the version that
+    # actually arrived. What must never be missing is the command itself — that
+    # is the question, and not asking it is what shipped Redis 6.2 under a
+    # catalogue entry called "Redis 7".
     command = profile.get("version_command")
     if not isinstance(command, str) or not command.strip():
         problems.append(

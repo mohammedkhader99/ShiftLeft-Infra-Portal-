@@ -414,6 +414,110 @@ ARCHIVE_KNOWLEDGE: dict[str, dict] = {
 }
 
 
+# Software that lives in its OWN repository, not the operating system's.
+#
+# REQ-2026-0184 asked for HashiCorp Vault. The agent guessed `dnf install vault`,
+# booted a real machine, and was told "package vault is not installed" — correct,
+# and the wrong question: Vault is not in Oracle's repositories and never will
+# be. It is in HashiCorp's, and adding that repository is a third way to install
+# software the agent had no vocabulary for.
+#
+# EVERY ENTRY IS MEASURED. The HashiCorp repo definition, its RHEL/9/x86_64
+# repodata and its GPG key were all fetched on 2026-08-23 and returned 200; the
+# others follow the same published pattern and are proven the same way — by
+# booting a machine. A repository is a standing grant of trust, so a plausible
+# URL from memory is exactly the kind of guess that must not reach root.
+# NO `expects` FOR A ROLLING REPOSITORY. REQ-2026-0185 installed Vault 2.0.4
+# perfectly and was refuted for not being version "1" — a version this code
+# recalled rather than measured, and a promise the catalogue entry ("HashiCorp
+# Vault") never made. A vendor repository serves whatever is current, so pinning
+# a major here invents a promise and re-breaks it at every major release. The
+# machine is still asked and still reports what it got; there is simply nothing
+# to compare it against. Where a repository URL DOES pin a version, the promise
+# is real and stays — see mongodb below.
+VENDOR_REPOS: dict[str, dict] = {
+    "vault": {
+        "repo": {"url": "https://rpm.releases.hashicorp.com/RHEL/hashicorp.repo",
+                 "gpg_key": "https://rpm.releases.hashicorp.com/gpg"},
+        "packages": ["vault"], "services": ["vault"], "ports": [8200],
+        "version_command": "vault version 2>&1",
+    },
+    "consul": {
+        "repo": {"url": "https://rpm.releases.hashicorp.com/RHEL/hashicorp.repo",
+                 "gpg_key": "https://rpm.releases.hashicorp.com/gpg"},
+        "packages": ["consul"], "services": ["consul"], "ports": [8500],
+        "version_command": "consul version 2>&1",
+    },
+    "mongodb": {
+        "repo": {"url": "https://repo.mongodb.org/yum/redhat/mongodb-org-7.0.repo",
+                 "gpg_key": "https://pgp.mongodb.com/server-7.0.asc"},
+        "packages": ["mongodb-org"], "services": ["mongod"], "ports": [27017],
+        # KEPT, unlike vault and consul: this repository URL pins 7.0, so the
+        # RECIPE ITSELF promises a major version and not checking it would be
+        # the Redis 6.2 silence again. A promise the recipe makes is a promise
+        # the machine must keep.
+        "expects": "7", "version_command": "mongod --version 2>&1",
+    },
+}
+
+
+def _repo_profile(code: str, target: str) -> dict:
+    """A profile that adds the vendor's own repository, then installs from it."""
+    known = VENDOR_REPOS[code]
+    return {
+        "code": code,
+        "builds_on": "oci/service-vm" if target == "oci" else "",
+        "ports": list(known.get("ports") or []),
+        "expects": known.get("expects", ""),
+        "version_command": known.get("version_command", ""),
+        "repo": dict(known["repo"]),
+        "rhel": {"packages": list(known["packages"]),
+                 "services": list(known["services"])},
+        "_note": ("DRAFT — installs from the vendor's own repository, because "
+                  "the operating system does not carry this software. Proven by "
+                  "booting a machine; the machine's own report decides."),
+    }
+
+
+def install_methods(code: str) -> list[str]:
+    """The ways this software could be installed, cheapest first.
+
+    ORDER IS COST, NOT CONFIDENCE. An OS package is one command and no trust
+    granted; a vendor repository trusts a publisher for everything it will ever
+    serve; an archive fetches and executes a specific file. Trying them in this
+    order means the cheapest correct answer is found first, and each failure
+    narrows the next attempt instead of repeating it.
+    """
+    methods = ["package"]
+    if code in VENDOR_REPOS:
+        methods.append("repo")
+    if code in ARCHIVE_KNOWLEDGE:
+        methods.append("archive")
+    return methods
+
+
+def profile_for_method(code: str, method: str, target: str = "oci") -> dict | None:
+    """The profile for one install method, or None if that method is not known."""
+    if method == "package":
+        return _guessed_profile(code, target)
+    if method == "repo" and code in VENDOR_REPOS:
+        return _repo_profile(code, target)
+    if method == "archive" and code in ARCHIVE_KNOWLEDGE:
+        known = ARCHIVE_KNOWLEDGE[code]
+        return {
+            "code": code,
+            "builds_on": "oci/service-vm" if target == "oci" else "",
+            "ports": list(known.get("ports") or []),
+            "expects": known.get("expects", ""),
+            "version_command": known.get("version_command", ""),
+            "archive": dict(known["archive"]),
+            "rhel": dict(known.get("rhel") or {}),
+            "_note": ("DRAFT — an archive install from measured facts (pinned "
+                      "release, computed sha256), proven by booting a machine."),
+        }
+    return None
+
+
 def _guessed_profile(code: str, target: str) -> dict:
     """The obvious guess: a package named after the technology.
 
@@ -472,7 +576,8 @@ def _model_profile(code: str, target: str) -> dict:  # pragma: no cover - live p
     return profile
 
 
-def draft_profile(candidate: str, target: str = "oci") -> Draft:
+def draft_profile(candidate: str, target: str = "oci",
+                  method: str = "") -> Draft:
     """Propose a technology PROFILE — package, unit, port — not Terraform.
 
     The scaffold deliberately proposes the obvious thing: a package named after
@@ -486,6 +591,28 @@ def draft_profile(candidate: str, target: str = "oci") -> Draft:
     checks is how "Redis 7" shipped 6.2.
     """
     code = (candidate or "").strip().lower()
+
+    # An explicit method, when the loop is escalating after a machine refuted the
+    # previous one. Without this the agent redrafts the same recipe every time
+    # and buys the same refusal — which is what happened to vault.
+    if method:
+        chosen = profile_for_method(code, method, target)
+        if chosen is not None:
+            return Draft(
+                candidate=candidate, kind="vm-service",
+                files={f"generated/profiles/{code}.json": json.dumps(chosen, indent=2)},
+                reasoning=f"{candidate}: trying the {method} install method.",
+                source="deterministic")
+
+    if code in VENDOR_REPOS and code not in ARCHIVE_KNOWLEDGE:
+        repo_draft = _repo_profile(code, target)
+        return Draft(
+            candidate=candidate, kind="vm-service",
+            files={f"generated/profiles/{code}.json": json.dumps(repo_draft, indent=2)},
+            reasoning=(f"{candidate} is not carried by the operating system; it "
+                       f"installs from the vendor's own repository."),
+            source="deterministic")
+
     known = ARCHIVE_KNOWLEDGE.get(code)
     if known:
         profile = {
@@ -519,7 +646,7 @@ def draft_profile(candidate: str, target: str = "oci") -> Draft:
 
 
 def draft(candidate: str, session: Session, target: str = "oci",
-          shipped_codes: frozenset[str] = frozenset()) -> Draft:
+          shipped_codes: frozenset[str] = frozenset(), method: str = "") -> Draft:
     """Propose a recipe for one catalogue candidate. Never applies anything."""
     candidate = (candidate or "").strip()
     if not candidate:
@@ -529,7 +656,7 @@ def draft(candidate: str, session: Session, target: str = "oci",
     if kind == "version-bump" and sibling is not None:
         proposal = _bump_draft(candidate, sibling)
     elif kind == "vm-service":
-        proposal = draft_profile(candidate, target)
+        proposal = draft_profile(candidate, target, method=method)
         # A profile is judged by the profile rules, not the Terraform ones —
         # review_draft would find no Terraform and say nothing at all.
         proposal.findings = review_profile(

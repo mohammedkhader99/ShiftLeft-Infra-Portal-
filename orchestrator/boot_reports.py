@@ -108,6 +108,30 @@ def reports_for(reference: str, resource_kind: str, client=None) -> dict[str, st
     return out
 
 
+def serving_http(value: str) -> bool:
+    """Whether this status code proves something is serving HTTP on that port.
+
+    THAT IS ALL THIS CHECK CAN PROVE, and the honest boundary is between "an
+    HTTP server answered" and "nothing did". REQ-2026-0185 installed HashiCorp
+    Vault correctly — rpm present, unit active, `ss` showing LISTEN on 8200,
+    firewall open — and was failed because the report curls `/` and Vault's API
+    lives under `/v1/`, so a bare `GET /` is answered 400. A 400 is an HTTP
+    server declining a request; only a server can send one. Refusing it called a
+    healthy machine broken, which costs trust exactly as a missed failure does.
+
+    5xx STAYS A FAILURE, deliberately. It also proves a server answered, but it
+    additionally says the server could not serve — a running-but-broken app is
+    worth catching and is not what an API root returning 400 is.
+
+    Anything that is not a three-digit status — `000`, a curl error message, an
+    empty string — means no HTTP conversation happened at all.
+    """
+    code = (value or "").strip()
+    if len(code) != 3 or not code.isdigit():
+        return False
+    return code[0] in "234"
+
+
 def verdict(report: str) -> dict:
     """Read a report and say plainly whether the machine is working.
 
@@ -124,11 +148,28 @@ def verdict(report: str) -> dict:
             key, value = line.split("=", 1)
             if value == "inactive" or value == "failed":
                 problems.append(f"{key} is {value}")
-            elif key.startswith("http_") and value not in ("200", "301", "302", "403"):
+            elif key.startswith("http_") and not serving_http(value):
                 problems.append(f"{key} returned {value or 'nothing'}")
-            elif key.startswith("version_") and not value.startswith("OK"):
+            elif key.startswith("version_") and value == "UNPROMISED (none)":
+                # ASKED, AND COULD NOT ANSWER. Distinct from both a kept promise
+                # and a broken one: the version command ran and produced no
+                # number at all, which usually means the binary is not on the
+                # path under the name the recipe expects. Letting this pass
+                # because "nothing was promised" would build a check that cannot
+                # fail — the report would say the machine answered when it did
+                # not.
+                problems.append(
+                    f"{key.split('_', 1)[1]} was asked what version it is and "
+                    f"could not say — the version command produced no number, so "
+                    f"nothing on this machine confirms the software is really "
+                    f"there under the name the recipe uses")
+            elif (key.startswith("version_")
+                  and not value.startswith(("OK", "UNPROMISED"))):
                 # The machine was asked what version it actually has and compared
-                # it with what the catalogue name promised. "Installed" and "is
+                # it with what the catalogue name promised. UNPROMISED means it
+                # was asked and answered but nothing was promised to compare
+                # against — software from a rolling vendor repository — which is
+                # a fact on the record, not a broken promise. "Installed" and "is
                 # the thing we sold them" are different facts: Redis 6.2 was
                 # installed, running, and answering PONG under an entry called
                 # "Redis 7", and every check the portal had said healthy.

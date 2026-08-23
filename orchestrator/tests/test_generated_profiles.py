@@ -340,3 +340,43 @@ def test_the_shipped_manifest_declares_the_field(store):
         assert shipped not in vm["needs_internet"], (
             f"{shipped} installs from the OS repositories and must not be "
             f"refused on a subnet with no NAT")
+
+
+# --- vendor repositories: judged by the file, not by the technology name ------
+
+REPO_PROFILE = {
+    "code": "vault", "builds_on": "oci/service-vm", "ports": [8200],
+    "expects": "1", "version_command": "vault version 2>&1",
+    "repo": {"url": "https://rpm.releases.hashicorp.com/RHEL/hashicorp.repo",
+             "gpg_key": "https://rpm.releases.hashicorp.com/gpg"},
+    "rhel": {"packages": ["vault"], "services": ["vault"]},
+}
+
+
+def test_the_repository_is_added_before_the_install_that_needs_it(store, monkeypatch):
+    """`dnf install vault` finds nothing until HashiCorp's repository is there.
+    Ordering these the other way round is a machine that installs nothing and
+    says so five minutes later."""
+    write(store, REPO_PROFILE)
+    monkeypatch.setenv("CONFIG_ENABLED", "true")
+    out = configure.render([{"technology_code": "vault"}], "rhel", "https://r")
+
+    assert out.index("rpm --import") < out.index("config-manager"), (
+        "the signing key is imported after the repository that needs it")
+    assert out.index("config-manager") < out.index("dnf install"), (
+        "the repository is added after the install")
+
+
+def test_the_repo_evidence_tests_the_FILE_not_the_technology_name(store, monkeypatch):
+    """FOUND BEFORE IT COST A MACHINE. `dnf config-manager --add-repo <url>`
+    writes /etc/yum.repos.d/<basename>, and that basename is the VENDOR's —
+    hashicorp.repo, not vault.repo. Grepping `dnf repolist` for the technology
+    code would report repo_vault=failed on a machine where the repository had
+    been added perfectly, failing the proof for a reason that was not true."""
+    write(store, REPO_PROFILE)
+    monkeypatch.setenv("CONFIG_ENABLED", "true")
+    out = configure.render([{"technology_code": "vault"}], "rhel", "https://r")
+
+    check = next(l for l in out.splitlines() if "repo_vault=" in l)
+    assert "/etc/yum.repos.d/hashicorp.repo" in check, check
+    assert "repolist" not in check, "it is still matching on the technology name"

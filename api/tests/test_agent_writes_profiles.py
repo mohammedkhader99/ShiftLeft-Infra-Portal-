@@ -186,7 +186,15 @@ def test_a_failed_proof_withdraws_the_profile(db):
 
     assert result.status == "failed"
     assert store.files == {}, "an unproven profile was left in the store"
-    assert store.events == ["publish", "withdraw"]
+    # One publish/withdraw per INSTALL METHOD tried (2026-08-23). keycloak now
+    # climbs a ladder — package, then archive — so a refuted rung is withdrawn
+    # before the next is published. What must hold is not the count but that
+    # every rung cleans up after itself: the store ends empty, and no publish is
+    # ever left without its withdraw.
+    assert store.events, "nothing was attempted"
+    assert store.events.count("publish") == store.events.count("withdraw"), (
+        f"a published profile was left behind: {store.events}")
+    assert store.events[0] == "publish" and store.events[-1] == "withdraw"
     assert db.get(Blueprint, ("keycloak", "oci")) is None
     assert "no package keycloak" in result.detail, "it hid why"
 
