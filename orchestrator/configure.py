@@ -528,11 +528,27 @@ def _report_script(wanted: list[tuple[str, str]], packages: list[str],
         # podman what it has closes the gap between the recipe and the machine:
         # a pull that silently resolved elsewhere, or a stale image already on
         # the host, would otherwise be indistinguishable from the pinned one.
-        pinned = shlex.quote(spec["image"] + "@" + spec["digest"])
+        want = spec["image"] + "@" + spec["digest"]
+        pinned = shlex.quote(want)
+        # COMPARED ON THE MACHINE, not merely reported. The digest was being
+        # printed and nothing read it: verdict() judges `key=failed`, http_,
+        # version_ and firewall_ lines, and an `image_x=docker.io/...@sha256:...`
+        # line matched none of them, so a machine running an entirely different
+        # image would have passed. An honest signal the deciding code cannot
+        # see is the shape of most defects in this project.
+        #
+        # AND THIS REPLACES THE VERSION QUESTION for a container. Asking a
+        # container its version invites a wrong answer: library/rabbitmq's
+        # org.opencontainers.image.version label is "24.04", which is Ubuntu's
+        # version, not RabbitMQ's. The digest identifies what is running exactly,
+        # which is more than a version string can do.
         checks.append(
-            f"  echo \"image_{key}=$(podman image inspect {pinned} "
-            f"--format '{{{{index .RepoDigests 0}}}}' 2>/dev/null "
-            f"|| echo missing)\"")
+            f"  GOTIMG=$(podman image inspect {pinned} "
+            f"--format '{{{{index .RepoDigests 0}}}}' 2>/dev/null)")
+        checks.append(
+            f'  echo "image_{key}=$(test "$GOTIMG" = {pinned} '
+            f'&& echo "match ({spec["digest"][:19]}...)" '
+            f'|| echo "MISMATCH got ${{GOTIMG:-nothing}}")"')
         checks.append(
             f"  echo \"container_{key}=$(podman ps --filter name=^{code}$ "
             f"--filter status=running --format '{{{{.Names}}}}' 2>/dev/null "
@@ -554,11 +570,25 @@ def _report_script(wanted: list[tuple[str, str]], packages: list[str],
         # awk may not have.
         awk_listen = """awk '$4=="0A"{split($2,a,":"); print a[2]}'"""
         to_decimal = """while read H; do printf '%d\\n' "0x$H"; done"""
+        # POLLED, NOT SAMPLED ONCE. The first container pass publishes no
+        # ports by design, so the port-wait loop had nothing to wait for and
+        # this ran seconds after `systemctl start` — before RabbitMQ had bound
+        # anything. `listening_inside=none` then meant "we looked too early",
+        # and the narrowing pass had nothing to narrow to.
+        #
+        # The wait was built to depend on the very thing it was meant to
+        # discover. Bounded at three minutes, and it returns the moment
+        # something binds, so a fast container costs nothing.
+        checks.append("  LI=")
+        checks.append("  for _ in $(seq 1 36); do")
         checks.append(
-            f"  LI=$(for F in /proc/net/tcp /proc/net/tcp6; do "
+            f"    LI=$(for F in /proc/net/tcp /proc/net/tcp6; do "
             f"podman exec {code} cat $F 2>/dev/null; done "
             f"| {awk_listen} | sort -u | {to_decimal} "
             f"| sort -un | paste -sd, -)")
+        checks.append('    [ -n "$LI" ] && break')
+        checks.append("    sleep 5")
+        checks.append("  done")
         checks.append(f'  echo "listening_inside_{key}=${{LI:-none}}"')
 
         data_dir = spec.get("data_dir")

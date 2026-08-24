@@ -438,3 +438,38 @@ def test_the_profile_linter_actually_calls_the_container_rules():
                "container": container(image="evil.example.com/x/y"),
                "rhel": {"packages": [], "services": ["rabbitmq"]}}
     assert profile_rules.profile_problems(profile)
+
+
+def test_only_a_PINNED_container_is_excused_the_version_question():
+    """The exemption exists because a pinned digest identifies what is running
+    EXACTLY — more precisely than any version string. Without the pin it
+    identifies nothing, and excusing it would drop both checks at once.
+
+    Defence in depth: an unpinned container is already refused for the missing
+    digest, so this is not a live hole. It is a guard against the two rules
+    drifting apart — a plant that widened the exemption to ANY container passed
+    all 125 tests in this file.
+    """
+    unpinned = {"code": "x", "builds_on": "oci/service-vm", "ports": [],
+                "container": {"image": "docker.io/library/x", "digest": "not-a-digest"},
+                "rhel": {"packages": [], "services": ["x"]}}
+    problems = profile_rules.profile_problems(unpinned)
+    assert any("digest" in p for p in problems), problems
+    assert any("what it actually received" in p for p in problems), (
+        f"an unpinned container was excused the version question too: {problems}")
+
+
+def test_a_pinned_container_is_excused_it_and_nothing_else_is():
+    pinned = {"code": "x", "builds_on": "oci/service-vm", "ports": [],
+              "container": {"image": "docker.io/library/x",
+                            "digest": "sha256:" + "a" * 64},
+              "rhel": {"packages": [], "services": ["x"]}}
+    assert profile_rules.profile_problems(pinned) == []
+
+    # An archive, a repo and a plain package profile all still owe an answer.
+    for extra in ({"rhel": {"packages": ["x"], "services": ["x"]}},
+                  {"repo": {"release_package": "oracle-epel-release-el9"},
+                   "rhel": {"packages": ["x"], "services": ["x"]}}):
+        profile = {"code": "x", "builds_on": "oci/service-vm", "ports": [], **extra}
+        assert any("what it actually received" in p
+                   for p in profile_rules.profile_problems(profile)), profile

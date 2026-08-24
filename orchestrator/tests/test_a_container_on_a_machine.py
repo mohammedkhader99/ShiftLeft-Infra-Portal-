@@ -29,6 +29,7 @@ THREE THINGS THIS FILE HOLDS THE RENDERER TO.
 from __future__ import annotations
 
 import json
+import pathlib
 import shutil
 import subprocess
 
@@ -422,3 +423,72 @@ def test_an_ordinary_vm_still_sizes_its_boot_disk_from_the_request(
     spec = orch._compute_spec(_payload(code="nginx", storage=100), "oci-service-vm")
     assert spec["boot_volume_gb"] == 100
     assert spec["data_volume_gb"] == 0
+
+
+# --- what REQ-2026-0192 taught, on real hardware ------------------------------
+#
+# The container rung worked: podman installed, the pinned digest pulled, the
+# container running, the block volume mounted, the unit active, no PORTAL
+# FAILURE lines. It failed on two questions asked badly.
+
+PINNED = {
+    "code": "rabbitmq", "builds_on": "oci/service-vm", "ports": [],
+    "container": {"image": "docker.io/library/rabbitmq", "tag": "latest",
+                  "digest": "sha256:" + "9d392587" * 8,
+                  "data_dir": "/var/lib/rabbitmq", "data_mount": "/var/lib/rabbitmq"},
+    "rhel": {"packages": [], "services": ["rabbitmq"]},
+}
+
+
+def test_a_pinned_container_is_not_asked_its_version(tmp_path, monkeypatch):
+    """There is no general way to put the question. `podman exec rabbitmq
+    rabbitmq --version` got "no such executable" from crun, and the obvious
+    repair — the image's org.opencontainers.image.version label — reads "24.04"
+    on library/rabbitmq, which is UBUNTU's version. A confidently wrong number
+    is worse than none."""
+    text = report(tmp_path, monkeypatch, profile=PINNED)
+    assert "version_rabbitmq" not in text
+
+
+def test_the_digest_is_COMPARED_on_the_machine_not_merely_printed(
+        tmp_path, monkeypatch):
+    """It was printed and nothing read it: verdict() judges failed/inactive,
+    http_, version_ and firewall_ lines, and `image_x=docker.io/…@sha256:…`
+    matched none of them — so a machine running an entirely different image
+    would have passed."""
+    text = report(tmp_path, monkeypatch, profile=PINNED)
+    line = next(l for l in text.splitlines() if "image_rabbitmq=" in l)
+    assert "test " in line and "match" in line and "MISMATCH" in line, (
+        f"the digest is reported without being compared: {line.strip()}")
+
+
+def test_a_mismatched_image_fails_the_machine():
+    from orchestrator import boot_reports
+    assert boot_reports.verdict("image_rabbitmq=match (sha256:9d39…)")["ok"] is True
+    bad = boot_reports.verdict("image_rabbitmq=MISMATCH got nothing")
+    assert bad["ok"] is False
+    assert "not running the image that was pinned" in bad["problems"][0]
+
+
+def test_the_listening_probe_waits_for_the_container_to_bind(
+        tmp_path, monkeypatch):
+    """THE structural defect. The first container pass publishes no ports by
+    design, so the port-wait loop had nothing to wait for and this ran seconds
+    after `systemctl start` — before RabbitMQ had bound anything. The wait was
+    built to depend on the very thing it was meant to discover."""
+    text = report(tmp_path, monkeypatch, profile=PINNED)
+    probe = text[text.index("LI="):text.index("listening_inside_rabbitmq=")]
+    assert "seq 1 36" in probe, "it samples once and calls that a measurement"
+    assert "sleep 5" in probe
+    assert '[ -n "$LI" ] && break' in probe, (
+        "it waits the full three minutes even when the container binds at once")
+
+
+def test_the_wait_is_bounded():
+    """A container that never binds must still report, and report `none` — an
+    unbounded wait would hang first boot and the machine would say nothing at
+    all."""
+    import re
+    from orchestrator import configure as c
+    source = pathlib.Path(c.__file__).read_text(encoding="utf-8")
+    assert re.search(r"seq 1 36", source)

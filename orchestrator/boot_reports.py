@@ -150,6 +150,14 @@ def verdict(report: str) -> dict:
                 problems.append(f"{key} is {value}")
             elif key.startswith("http_") and not serving_http(value):
                 problems.append(f"{key} returned {value or 'nothing'}")
+            elif key.startswith("image_") and not value.startswith("match"):
+                # THE IMAGE ACTUALLY ON THE MACHINE, against the one pinned. A
+                # digest is the whole security argument for the container rung —
+                # a tag can be repointed by its publisher after a proof passed —
+                # and it was being reported and never read.
+                problems.append(
+                    f"{key.split('_', 1)[1]} is not running the image that was "
+                    f"pinned and proved: {value}")
             elif key.startswith("version_") and value.startswith("MISSING"):
                 # The version command's own binary is not on the machine. The
                 # guard below catches "asked and answered nothing"; this catches

@@ -520,8 +520,27 @@ def profile_problems(profile: dict) -> list[str]:
     # actually arrived. What must never be missing is the command itself — that
     # is the question, and not asking it is what shipped Redis 6.2 under a
     # catalogue entry called "Redis 7".
+    # A DIGEST-PINNED CONTAINER NEEDS NO VERSION COMMAND, and asking for one
+    # invites a wrong answer rather than no answer. REQ-2026-0192 ran
+    # `podman exec rabbitmq rabbitmq --version` and crun replied that no such
+    # binary exists — and the obvious repair, reading the image's
+    # org.opencontainers.image.version label, would have reported "24.04",
+    # which is UBUNTU's version, not RabbitMQ's. A confidently wrong number is
+    # worse than none: it is the `UNPROMISED (12)` line-number bug wearing a
+    # different hat.
+    #
+    # What replaces it is STRONGER, not weaker. The machine compares the digest
+    # it actually holds against the one pinned and reports match or MISMATCH, so
+    # the identity of what is running is established exactly — which is more
+    # than any version string can do. The Redis-6-sold-as-7 rule stands
+    # everywhere it can still be broken.
+    pinned_container = (isinstance(profile.get("container"), dict)
+                        and str(profile["container"].get("digest") or "")
+                        .startswith("sha256:"))
     command = profile.get("version_command")
-    if not isinstance(command, str) or not command.strip():
+    if pinned_container and not str(command or "").strip():
+        pass
+    elif not isinstance(command, str) or not command.strip():
         problems.append(
             "The profile gives no way to ask the machine what it actually "
             "received. A package called `redis` delivered Redis 6.2 while the "

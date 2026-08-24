@@ -512,9 +512,15 @@ def draft_from_image(candidate: str, image: dict, target: str = "oci"):
         "code": code,
         "builds_on": "oci/service-vm" if target == "oci" else "",
         "ports": ports,
-        # Asked of the container, because the software is inside it: `podman
-        # exec` is the only way the machine can put the question.
-        "version_command": f"podman exec {code} {code} --version",
+        # NO VERSION COMMAND. There is no general way to ask a container its
+        # version: the binary name is not derivable from the technology code
+        # (REQ-2026-0192 tried `rabbitmq` and crun replied there is no such
+        # executable), and the image's own version label is the BASE OS on many
+        # official images — library/rabbitmq reports "24.04", which is Ubuntu.
+        #
+        # The digest answers the question exactly instead, and the machine
+        # compares the one it holds against the one pinned. That is a stronger
+        # identity than a version string, not a weaker one.
         "container": {
             "image": image["image"],
             "tag": str(image.get("tag") or "latest"),
