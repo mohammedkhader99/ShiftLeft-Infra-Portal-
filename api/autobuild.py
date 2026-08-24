@@ -92,10 +92,22 @@ class AutobuildResult:
     # which claimed machines had refuted every rung whether or not any had been
     # built. Same rule, same predicate, as recipe_memory.refutes().
     machine_refuted: bool = False
+    # The proof whose machine produced the last verdict, so its report can be
+    # fetched and read. Empty when nothing was ever built.
+    proof_reference: str = ""
 
     @property
     def published(self) -> bool:
         return self.status == "published"
+
+
+def _recipe_in(proposal) -> dict | None:
+    """The profile a draft carries, or None. Same extraction the loop uses."""
+    import json as _json
+    if proposal is None:
+        return None
+    return next((_json.loads(body) for body in (proposal.files or {}).values()
+                 if body.strip().startswith("{")), None)
 
 
 def _findings_as_dicts(findings) -> list[dict]:
@@ -212,7 +224,7 @@ def summarise(result: AutobuildResult) -> dict:
 def ensure(candidate: str, session: Session, *, target, shipped, run_proof,
            publish, certify, withdraw=None,
            shipped_codes: frozenset[str] = frozenset(),
-           reachable=None) -> AutobuildResult:
+           reachable=None, discover=None) -> AutobuildResult:
     """Make `candidate` provisionable, and certify it — no human involved.
 
     The reviewer's requirement of 2026-08-21, in full: if the agent cannot find a
@@ -310,17 +322,38 @@ def ensure(candidate: str, session: Session, *, target, shipped, run_proof,
         # everything it will ever serve, an archive fetches one verified file.
         # Each attempt is a REAL machine, so the ladder is short and every rung
         # is remembered — a method already refuted is skipped without building.
-        methods = ai_blueprint.install_methods(candidate)
+        #
+        # AND ONE RUNG THAT DOES NOT EXIST UNTIL A MACHINE SPEAKS (C7). The
+        # methods above are what the agent knows in advance; `discovered` is what
+        # a machine found out while refuting one of them. RabbitMQ has no vendor
+        # repository and no archive, so its ladder was one rung long and stopped
+        # — while the machine refuting it held the answer and was never asked.
+        methods = list(ai_blueprint.install_methods(candidate))
         last = None
         refuted_by_a_machine: list[str] = []
-        for method in methods:
-            attempt = ai_blueprint.draft(candidate, session, target=target,
-                                         shipped_codes=shipped_codes, method=method)
+        discovered: dict = {}
+        # Asked once per PROOF, not once per run. A single boolean meant that
+        # re-running a rung consumed the one question, so the machine it built
+        # was never asked what it found — the exact silence this increment
+        # exists to end.
+        asked: set[str] = set()
+        rerun: set[str] = set()
+        while methods:
+            method = methods.pop(0)
+            attempt = (ai_blueprint.draft(candidate, session, target=target,
+                                          shipped_codes=shipped_codes,
+                                          method=method)
+                       if method != "discovered"
+                       else ai_blueprint.draft_from_finding(
+                           candidate, discovered, target=target))
+            if attempt is None:
+                continue
             last = _ensure_vm_service(candidate, session, attempt, target=target,
                                       shipped=shipped, run_proof=run_proof,
                                       publish=publish, certify=certify,
                                       withdraw=withdraw, reachable=reachable,
-                                      method=method)
+                                      method=method,
+                                      ignore_memory=method in rerun)
             if last.status == "published":
                 return last
             # A RUNG ALREADY REFUTED IS SKIPPED, NOT A REASON TO STOP. The
@@ -328,6 +361,34 @@ def ensure(candidate: str, session: Session, *, target, shipped, run_proof,
             # exactly what should be tried, and treating the skip as a verdict
             # would strand vault on the package guess for ever.
             if last.attempts and last.attempts[-1].stage == "remembered":
+                # A REFUTATION IS ALSO A POINTER TO EVIDENCE. The machine that
+                # refuted this rung may have reported what it found INSTEAD, in
+                # which case the answer is already bought and the next rung
+                # needs no machine at all.
+                #
+                # And if that machine was never asked — every refutation
+                # recorded before C7 has a report with no discovery section —
+                # then the memory cannot answer the question now being put, and
+                # skipping on it would strand RabbitMQ in manual fulfilment for
+                # thirty days holding a verdict about a different question.
+                # Self-limiting: the rung runs once, and the machine it builds
+                # writes a report that DOES carry an answer.
+                ref = recipe_memory.refuted_proof(
+                    session, candidate, target, _recipe_in(attempt))
+                if discover is not None and ref and ref not in asked:
+                    asked.add(ref)
+                    seen = discover(ref, candidate)
+                    if seen:
+                        discovered = seen
+                        methods.append("discovered")
+                        continue
+                    if seen is None and method not in rerun:
+                        # That machine was never asked. Run the rung once so a
+                        # current one can answer; its report will carry a
+                        # discovery section, so this can never repeat.
+                        rerun.add(method)
+                        methods.insert(0, method)
+                        continue
                 continue
             # ONLY A MACHINE'S VERDICT IS A REASON TO TRY ANOTHER RECIPE.
             #
@@ -353,6 +414,17 @@ def ensure(candidate: str, session: Session, *, target, shipped, run_proof,
                 return last
             if last.machine_refuted:
                 refuted_by_a_machine.append(method)
+                # ASK THE MACHINE WHAT IT LEARNED — once. Its report is fetched
+                # over the signed channel the API already uses, so nothing here
+                # imports the orchestrator. Asking twice would buy the same kind
+                # of answer for the price of another machine.
+                if (discover is not None and last.proof_reference
+                        and last.proof_reference not in asked):
+                    asked.add(last.proof_reference)
+                    finding = discover(last.proof_reference, candidate)
+                    if finding:
+                        discovered = finding
+                        methods.append("discovered")
         if last is not None:
             if len(refuted_by_a_machine) > 1:
                 # SAY ONLY WHAT HAPPENED. This sentence used to claim "a machine
@@ -371,7 +443,8 @@ def ensure(candidate: str, session: Session, *, target, shipped, run_proof,
 
 def _ensure_vm_service(candidate, session, proposal, *, target, shipped,
                        run_proof, publish, certify, withdraw,
-                       reachable=None, method="") -> AutobuildResult:
+                       reachable=None, method="",
+                       ignore_memory: bool = False) -> AutobuildResult:
     """Teach the proven machine blueprint one more technology, and prove it.
 
     THE ORDER IS INVERTED HERE, deliberately. Everywhere else a draft is proved
@@ -445,7 +518,7 @@ def _ensure_vm_service(candidate, session, proposal, *, target, shipped,
     #
     # Keyed on the RECIPE: keycloak was refuted as a package and then succeeded
     # as an archive, so changing the recipe must be allowed to change the answer.
-    if session is not None:
+    if session is not None and not ignore_memory:
         already = recipe_memory.previously_refuted(session, candidate, target, recipe)
         if already:
             result.status = "refused"
@@ -501,6 +574,7 @@ def _ensure_vm_service(candidate, session, proposal, *, target, shipped,
     # recipe_memory.refutes() decides: a cost-cap refusal or a failed teardown
     # is our problem, not the recipe's.
     result.machine_refuted = recipe_memory.refutes(outcome.status, outcome.detail)
+    result.proof_reference = outcome.reference or ""
     if session is not None and result.machine_refuted:
         recipe_memory.remember(session, candidate, target, recipe,
                                outcome.reference, outcome.detail)

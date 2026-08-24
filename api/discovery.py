@@ -1,0 +1,253 @@
+"""What the machine found out, read back off its own report (C7).
+
+REQ-2026-0188 asked for RabbitMQ. The agent guessed `dnf install rabbitmq`,
+booted a real machine, and the report came back:
+
+    package rabbitmq is not installed
+    rabbitmq NOT INSTALLED
+    PORTAL FAILURE: package install did not complete
+
+True, useless, and the end of the road — the ladder had no vendor repository for
+RabbitMQ and no archive, so the request went to manual fulfilment. Meanwhile that
+machine was running Oracle Linux with dnf and the complete repository metadata in
+front of it, and the answer it could not be bothered to give was `rabbitmq-server`.
+
+THE POINT OF THIS MODULE is that the fix is not "write down rabbitmq-server". It
+is that a technology should never have to be written down at all. C6e generalised
+the LADDER and left the KNOWLEDGE hand-curated, so every new component cost one
+failed request plus a dictionary row typed in by a human. The machine can answer
+for itself, once, for every candidate at the price of one.
+
+WHAT ARRIVES HERE IS UNTRUSTED. It is text a machine wrote, fetched over the
+signed channel, and every name in it is destined to be handed to a package
+manager as root. It is parsed defensively and validated against the same
+allow-lists that govern a drafted profile — `profile_rules` decides, not this
+module, and never a substring check.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+from common import profile_rules
+
+# Repository ids that mean "this came from EPEL", which is enabled by installing
+# a release package rather than by fetching a .repo file. Matched on the whole
+# value after lowercasing, never as a substring: `ol9_developer_EPEL` and
+# `epel` are both EPEL, and a repository merely CALLED something-epel-something
+# by a third party is not.
+_EPEL_REPO_IDS = frozenset({
+    "epel", "epel-next", "ol9_developer_epel", "ol8_developer_epel",
+    "ol9_developer_epel_modular",
+})
+
+
+@dataclass
+class Finding:
+    """What one machine learned about installing one technology."""
+
+    code: str
+    package: str = ""
+    repo_id: str = ""
+    ports: list[int] = field(default_factory=list)
+
+    @property
+    def needs_epel(self) -> bool:
+        return self.repo_id.strip().lower() in _EPEL_REPO_IDS
+
+    @property
+    def usable(self) -> bool:
+        """Whether this says anything the agent can actually act on.
+
+        A finding with no package names nothing to install. A finding whose
+        package is only reachable from a repository we have no sanctioned way to
+        enable is worse than useless — it would draft a recipe that installs
+        nothing and spend a machine proving it.
+        """
+        if not self.package:
+            return False
+        return not self.repo_id or self.needs_epel
+
+
+def _ports(value: str) -> list[int]:
+    """Port numbers from an `opened_ports=` line.
+
+    `none` (nothing new opened) and `unknown` (no baseline was taken) both yield
+    nothing, and deliberately so — but they are different facts on the machine's
+    report and a human reading it can tell them apart.
+    """
+    out: list[int] = []
+    for part in (value or "").replace(" ", "").split(","):
+        if part.isdigit() and 0 < int(part) < 65536 and int(part) not in out:
+            out.append(int(part))
+    return sorted(out)
+
+
+def was_searched(report: str) -> bool:
+    """Whether this report came from a machine that was ASKED what was available.
+
+    Three outcomes must stay distinguishable, and collapsing any two of them
+    causes a different bug:
+
+      * a package was found            -> act on it
+      * the machine looked, found none -> a settled fact; do not re-buy it
+      * the machine was never asked    -> we know nothing, and a refutation
+                                          recorded from such a report cannot
+                                          answer the question we now put
+
+    The third is not hypothetical: every refutation recorded before C7 shipped
+    has a report with no discovery section at all. Reading those as "looked and
+    found nothing" would permanently skip the one rung that could now succeed —
+    RabbitMQ would go to manual fulfilment for thirty days holding a refutation
+    whose machine was never asked the question.
+    """
+    return "--- available ---" in (report or "")
+
+
+def read(report: str, codes: list[str]) -> dict[str, Finding]:
+    """Findings for each technology named, from one machine's report text.
+
+    Keyed by the ORIGINAL catalogue code, not by the sanitised report key, so a
+    caller never has to reverse `report_key` (which is lossy: `oracle-db` and
+    `oracle_db` both report as `oracle_db`).
+    """
+    by_key = {profile_rules.report_key(c): c for c in codes or []}
+    found: dict[str, Finding] = {}
+    ports: list[int] = []
+
+    for line in (report or "").splitlines():
+        line = line.strip()
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+
+        if key == "opened_ports":
+            ports = _ports(value)
+            continue
+        if not key.startswith("available_"):
+            continue
+
+        code = by_key.get(key[len("available_"):])
+        if code is None:
+            continue
+        # `name|repoid`, as the report script emits it — the separator is
+        # always present on a real answer because the query format contains it.
+        #
+        # THE SENTINEL IS NOT A PACKAGE. The script emits `${FOUND:-none}`, and
+        # `none` is a perfectly well-formed package name as far as the allow-list
+        # is concerned: without this the agent would read "I found nothing" as
+        # "install a package called none", draft a profile for it, and spend a
+        # machine proving that `dnf install none` does not work. Requiring the
+        # separator distinguishes an answer from the absence of one by SHAPE
+        # rather than by trusting a magic word.
+        if "|" not in value:
+            continue
+        name, _, repo_id = value.partition("|")
+        name = name.strip()
+        # THE ALLOW-LIST DECIDES. This name goes to dnf as root on the next
+        # rung, and it arrived as text from a machine.
+        if not name or not profile_rules.CODE.match(name):
+            continue
+        found[code] = Finding(code=code, package=name, repo_id=repo_id.strip())
+
+    for finding in found.values():
+        finding.ports = list(ports)
+    return found
+
+
+def search_was_sound(report: str, code: str) -> bool:
+    """Whether the machine's search could have found the answer if it existed.
+
+    REQ-2026-0189 reported `available_rabbitmq=none` and nothing could say
+    whether RabbitMQ is genuinely absent or whether the search itself failed —
+    every command in that block ends in `|| true`. A `none` from a broken search
+    is not a fact about the world, and remembering it as one takes a working
+    component off the menu for thirty days on the strength of our own bug.
+
+    Two things make a search sound, and the machine now reports both:
+
+      * `queryable_<key>=yes` — the control probe found `bash`, which is in the
+        base repositories of every image this portal builds. If the query cannot
+        find that, it could not have found anything.
+      * EPEL was reached for and arrived (`present`/`added`) if the configured
+        repositories answered nothing. `unavailable` means only Oracle's own
+        repositories were ever searched, which is half a search.
+    """
+    key = profile_rules.report_key(code)
+    values: dict[str, str] = {}
+    for line in (report or "").splitlines():
+        line = line.strip()
+        if "=" in line:
+            k, v = line.split("=", 1)
+            values[k] = v.strip()
+    if values.get(f"queryable_{key}") != "yes":
+        return False
+    # Absent means the configured repositories answered before EPEL was needed,
+    # which is a complete search by definition.
+    return values.get(f"epel_{key}", "present") in ("present", "added")
+
+
+def finding_for(report: str, code: str) -> dict | None:
+    """What the ladder should conclude from one machine's report, in three states.
+
+    Lived in a closure in api.main until a plant test walked straight past it —
+    removing the `was_searched` guard broke nothing, because nothing could reach
+    the code to test it. Logic worth getting right is worth being able to test.
+
+      * ``None`` — the machine was never asked. Every report written before C7
+        shipped looks like this, and a refutation resting on one cannot answer
+        the question the ladder now puts.
+      * ``{}``   — it looked and there was nothing. A settled fact; do not spend
+        another machine re-buying it.
+      * a dict   — a package to try, with what it will take to reach it.
+    """
+    if not was_searched(report):
+        return None
+    finding = read(report, [code]).get(code)
+    if finding is None or not finding.usable:
+        # A NEGATIVE IS ONLY A FACT IF THE SEARCH COULD HAVE FOUND SOMETHING.
+        # An unsound search is indistinguishable, from here, from never having
+        # asked — and `None` is what says that honestly.
+        return {} if search_was_sound(report, code) else None
+    return {"package": finding.package, "repo_id": finding.repo_id,
+            "ports": list(finding.ports)}
+
+
+def profile_from(finding: Finding, target: str = "oci") -> dict | None:
+    """A technology profile drafted from what a machine reported, or None.
+
+    Every value here was measured on a machine minutes ago rather than recalled:
+    the package name came from the package manager's own metadata, the repository
+    id from the same query, and the ports from the difference between what was
+    listening before the install and after it.
+
+    NO `expects`. Nothing here promises a version — the repository serves what it
+    serves — so the machine is asked and its answer is recorded, not compared.
+    """
+    if not finding.usable:
+        return None
+    profile: dict = {
+        "code": finding.code,
+        "builds_on": "oci/service-vm" if target == "oci" else "",
+        "ports": list(finding.ports),
+        "version_command": f"{finding.package} --version 2>&1",
+        "rhel": {"packages": [finding.package], "services": [finding.package]},
+        "_note": (
+            f"DRAFT — every value measured on a machine, not recalled: a real "
+            f"machine reported that {finding.package!r} is what "
+            f"{finding.code!r} is actually packaged as"
+            + (f" (from {finding.repo_id})" if finding.repo_id else "")
+            + (f", and that it opened port(s) "
+               f"{', '.join(str(p) for p in finding.ports)}"
+               if finding.ports else "")
+            + ". Proven by booting another machine; that machine decides."),
+    }
+    if finding.needs_epel:
+        # A repository enabled by installing a release package. The NAME IS
+        # FIXED, taken from the closed set in profile_rules — never from the
+        # report — because a release package installs a repository and its
+        # signing key together, and root would then trust that publisher for
+        # everything it ever serves. The machine is allowed to tell us WHICH
+        # known repository a package lives in; it is not allowed to nominate one.
+        profile["repo"] = {"release_package": "oracle-epel-release-el9"}
+    return profile

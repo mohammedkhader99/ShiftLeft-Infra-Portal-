@@ -363,6 +363,12 @@ def test_the_repository_is_added_before_the_install_that_needs_it(store, monkeyp
 
     assert out.index("rpm --import") < out.index("config-manager"), (
         "the signing key is imported after the repository that needs it")
+    # SCOPED TO runcmd. report.sh is written out earlier in the same document
+    # and can legitimately contain a `dnf install` of its own (C7's EPEL
+    # discovery step), which is a written file rather than a command ordering.
+    # This passed again once discovery was correctly limited to package
+    # guesses, but only by luck of what vault's profile happens to be.
+    out = out[out.index("runcmd:"):]
     assert out.index("config-manager") < out.index("dnf install"), (
         "the repository is added after the install")
 

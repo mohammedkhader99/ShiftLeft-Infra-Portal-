@@ -103,6 +103,10 @@ ARCHIVE_SUFFIXES = (".tar.gz", ".tgz")
 # rules are stricter — https, and a GPG key, without exception.
 REPO_SUFFIXES = (".repo",)
 
+# The only repositories that may be enabled by installing a release package.
+# See repo_problems() for why this is a closed set and not a pattern.
+RELEASE_PACKAGES = frozenset({"oracle-epel-release-el9", "epel-release"})
+
 
 def report_key(code: str) -> str:
     """The identifier form of a technology code, for a `key=value` report line.
@@ -219,6 +223,43 @@ def repo_problems(repo: dict) -> list[str]:
     problems: list[str] = []
     if not isinstance(repo, dict):
         return ["The repository is not an object."]
+
+    # A REPOSITORY THAT ARRIVES AS A PACKAGE, not as a URL (C7).
+    #
+    # EPEL is how a large class of RHEL-family software is actually delivered,
+    # and it is enabled by installing a release package rather than by fetching
+    # a .repo file — so the URL rules above cannot express it at all.
+    #
+    # A CLOSED SET, deliberately, and this is the whole security argument. The
+    # name is handed to dnf as root, and the point of a release package is that
+    # it installs a repository definition AND its signing key in one step — so
+    # "any package whose name ends in -release" would let a drafted profile
+    # nominate an arbitrary publisher and have root trust it permanently. These
+    # two are Oracle's and Fedora's own, signed by keys the image already
+    # trusts. Adding a third is a decision a person makes, not a model.
+    release = repo.get("release_package")
+    if release is not None:
+        # `isinstance` FIRST. `release not in RELEASE_PACKAGES` raises
+        # TypeError on an unhashable value, and a model returning
+        # `"release_package": []` would take down the drafting endpoint with a
+        # 500 rather than being refused — the same shape as the malformed
+        # `unit` that once made the archive linter throw AttributeError. A
+        # linter that crashes on bad input is not a linter.
+        if not isinstance(release, str) or release not in RELEASE_PACKAGES:
+            problems.append(
+                f"{release!r} is not a repository release package this portal "
+                f"will install. A release package installs a repository AND its "
+                f"signing key, so root would trust that publisher for every "
+                f"package it ever serves. Allowed: "
+                f"{', '.join(sorted(RELEASE_PACKAGES))}.")
+        if repo.get("url") or repo.get("gpg_key"):
+            # One mechanism or the other. Both would mean two repositories added
+            # under one declaration, only one of which anything validated.
+            problems.append(
+                "The repository declares both a release package and a URL. It "
+                "must be one or the other, so that what was checked is what is "
+                "added.")
+        return problems
 
     url = repo.get("url")
     if not isinstance(url, str) or not URL.match(url):

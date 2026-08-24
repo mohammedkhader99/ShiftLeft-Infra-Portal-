@@ -330,6 +330,107 @@ def test_a_machine_that_really_did_refute_is_still_reported_as_such(db):
     assert "a machine was built for each and refuted it" in result.detail
 
 
+# --- the rung that does not exist until a machine speaks (C7) -----------------
+
+class Discovering(Machine):
+    """A machine that refutes the guess and reports what it found instead.
+
+    RabbitMQ's real shape: no vendor repository, no archive, so the ladder was
+    one rung long and stopped — while this machine held the answer.
+    """
+
+    def __init__(self, finding, accepts=("discovered",)):
+        super().__init__(accepts=set(accepts))
+        self.finding = finding
+
+    def run_proof(self, session, manifest):
+        recipe = json.loads(next(iter(self.published[-1].values())))
+        method = ("discovered" if recipe["rhel"]["packages"] == ["rabbitmq-server"]
+                  else "package")
+        self.tried.append(method)
+        if method in self.accepts:
+            return ProofOutcome("PROOF-X", "passed", "built, verified, destroyed")
+        self.published.clear()
+        return ProofOutcome("PROOF-X", "failed",
+                            "Built, but did not verify healthy: rabbitmq NOT INSTALLED")
+
+
+FOUND = {"package": "rabbitmq-server", "repo_id": "ol9_developer_EPEL",
+         "ports": [5672, 15672]}
+
+
+def test_rabbitmq_certifies_without_anyone_writing_it_down(db):
+    """THE ACCEPTANCE CHECK for C7. `install_methods("rabbitmq")` is `["package"]`
+    and nothing in this codebase knows the word `rabbitmq-server`. If this passes
+    only because a dictionary was edited, the increment failed."""
+    assert ab.install_methods("rabbitmq") == ["package"], (
+        "rabbitmq was added to a hand-written table, which is the thing C7 exists "
+        "to stop")
+
+    machine = Discovering(FOUND)
+    result = autobuild.ensure(
+        "rabbitmq", db, target="oci", shipped=machine.shipped,
+        run_proof=machine.run_proof, publish=machine.publish,
+        certify=lambda m, r: None, withdraw=machine.withdraw,
+        discover=lambda ref, code: FOUND)
+
+    assert machine.tried == ["package", "discovered"], machine.tried
+    assert result.status == "published", result.detail
+
+
+def test_the_discovered_rung_installs_what_the_machine_named(db):
+    machine = Discovering(FOUND)
+    autobuild.ensure("rabbitmq", db, target="oci", shipped=machine.shipped,
+                     run_proof=machine.run_proof, publish=machine.publish,
+                     certify=lambda m, r: None, withdraw=machine.withdraw,
+                     discover=lambda ref, code: FOUND)
+
+    profile = json.loads(next(iter(machine.published[-1].values())))
+    assert profile["rhel"]["packages"] == ["rabbitmq-server"]
+    assert profile["ports"] == [5672, 15672], "the measured ports were dropped"
+    assert profile["repo"]["release_package"] in profile_rules.RELEASE_PACKAGES
+
+
+def test_a_machine_is_asked_only_once(db):
+    """Each answer costs a machine. A second discovery would buy the same kind
+    of answer for the price of another one."""
+    asked = []
+
+    def discover(ref, code):
+        asked.append(ref)
+        return None
+
+    machine = Machine(accepts=set())
+    autobuild.ensure("vault", db, target="oci", shipped=machine.shipped,
+                     run_proof=machine.run_proof, publish=machine.publish,
+                     certify=lambda m, r: None, withdraw=machine.withdraw,
+                     discover=discover)
+    assert len(asked) == 1, f"asked {len(asked)} times"
+
+
+def test_a_machine_that_found_nothing_adds_no_rung(db):
+    """Software in no repository at all — Keycloak ships a tarball — cannot be
+    discovered. The ladder must end honestly rather than build for nothing."""
+    machine = Machine(accepts=set())
+    result = autobuild.ensure(
+        "vault", db, target="oci", shipped=machine.shipped,
+        run_proof=machine.run_proof, publish=machine.publish,
+        certify=lambda m, r: None, withdraw=machine.withdraw,
+        discover=lambda ref, code: None)
+
+    assert machine.tried == ["package", "repo"], machine.tried
+    assert result.status == "failed"
+
+
+def test_discovery_is_optional_and_nothing_regresses_without_it(db):
+    """Every existing caller passes no `discover`, and the portal must behave
+    exactly as it did before C7 when it is absent."""
+    machine = Machine(accepts={"repo"})
+    result, _ = run(db, machine)
+    assert machine.tried == ["package", "repo"]
+    assert result.status == "published"
+
+
 # --- the machine must be able to say WHICH part failed ------------------------
 
 def test_the_report_asks_whether_the_repository_arrived(db, monkeypatch, tmp_path):
@@ -346,5 +447,121 @@ def test_the_report_asks_whether_the_repository_arrived(db, monkeypatch, tmp_pat
                                 "https://example/report")
     assert "repo_vault=" in rendered, "the machine cannot say if the repo arrived"
     assert "rpm --import" in rendered, "the signing key is never imported"
-    assert rendered.index("config-manager") < rendered.index("dnf install"), (
+    # SCOPED TO runcmd. The report script is written out earlier in the same
+    # document and, since C7, contains a `dnf install` of its own for the EPEL
+    # discovery step — so searching the whole document found text inside a
+    # written file and called it a command ordering. The code was never wrong;
+    # the assertion was measuring the wrong thing.
+    run = rendered[rendered.index("runcmd:"):]
+    assert run.index("config-manager") < run.index("dnf install -y vault"), (
         "the repository is added after the install that needs it")
+
+
+# --- a refutation is also a POINTER TO EVIDENCE (C7) --------------------------
+#
+# Found in a pre-flight check minutes after deploying C7, before the user spent
+# anything. RabbitMQ's only rung is the package guess, and REQ-2026-0188 had
+# already refuted it — correctly. So the ladder would skip that rung, never
+# build a machine, never discover anything, and go to manual fulfilment for
+# thirty days holding a verdict about a QUESTION THAT WAS NEVER PUT: the report
+# behind that refutation predates the discovery step entirely.
+
+class Remembering(Discovering):
+    """A machine whose predecessor refuted the guess before C7 existed."""
+
+    def __init__(self, finding, report_was_searched):
+        super().__init__(finding)
+        self.report_was_searched = report_was_searched
+        self.asked: list[str] = []
+
+    def discover(self, reference, code):
+        """Only the OLD proof can be unsearched.
+
+        Any machine built now runs the discovery step, so its report always
+        carries an answer. An earlier version of this mock returned "never
+        asked" for every reference, including machines built seconds ago — which
+        made the re-run pointless and looked like a bug in the ladder.
+        """
+        self.asked.append(reference)
+        if reference == "PROOF-BEFORE-C7" and not self.report_was_searched:
+            return None            # nobody ever put the question to that machine
+        return self.finding or {}  # asked; found something, or found nothing
+
+
+def _remember_the_guess(db, code="rabbitmq"):
+    recipe_memory.remember(db, code, "oci",
+                           ab.profile_for_method(code, "package"),
+                           "PROOF-BEFORE-C7", "rabbitmq NOT INSTALLED")
+    db.commit()
+
+
+def test_a_refutation_whose_machine_was_never_asked_does_not_strand_the_rung(db):
+    """THE pre-flight catch. Skipping on it would fail the user's test for a
+    reason that has nothing to do with whether discovery works."""
+    _remember_the_guess(db)
+    machine = Remembering(FOUND, report_was_searched=False)
+
+    result = autobuild.ensure(
+        "rabbitmq", db, target="oci", shipped=machine.shipped,
+        run_proof=machine.run_proof, publish=machine.publish,
+        certify=lambda m, r: None, withdraw=machine.withdraw,
+        discover=machine.discover)
+
+    assert machine.tried == ["package", "discovered"], (
+        f"the remembered rung stranded the ladder: {machine.tried}")
+    assert result.status == "published", result.detail
+
+
+def test_a_machine_that_looked_and_found_nothing_is_still_believed(db):
+    """The other half, and the one that keeps the memory worth having. A settled
+    'there is no such package' must not be re-bought every request.
+
+    NOT `backup`, which this test used until a plant walked past it: backup is a
+    CAPABILITY, refused from the catalogue before the ladder is ever reached, so
+    the assertion held for a reason that had nothing to do with the memory.
+    haproxy is genuinely software on a machine with exactly one rung.
+    """
+    _remember_the_guess(db, "haproxy")
+    machine = Remembering(None, report_was_searched=True)
+
+    result = autobuild.ensure(
+        "haproxy", db, target="oci", shipped=machine.shipped,
+        run_proof=machine.run_proof, publish=machine.publish,
+        certify=lambda m, r: None, withdraw=machine.withdraw,
+        discover=machine.discover)
+
+    assert machine.tried == [], "it re-bought an answer a machine had given"
+    assert result.status == "refused"
+
+
+def test_a_remembered_rung_that_already_holds_the_answer_builds_nothing_extra(db):
+    """Best case: the machine that refuted the guess also reported what it found,
+    so the next rung needs no machine of its own to work it out."""
+    _remember_the_guess(db)
+    machine = Remembering(FOUND, report_was_searched=True)
+
+    result = autobuild.ensure(
+        "rabbitmq", db, target="oci", shipped=machine.shipped,
+        run_proof=machine.run_proof, publish=machine.publish,
+        certify=lambda m, r: None, withdraw=machine.withdraw,
+        discover=machine.discover)
+
+    assert machine.tried == ["discovered"], (
+        f"it rebuilt a rung whose answer was already on the record: {machine.tried}")
+    assert result.status == "published"
+
+
+def test_the_rerun_cannot_repeat(db):
+    """Self-limiting by construction: the machine the re-run builds writes a
+    report that DOES carry a discovery section, so the pre-C7 branch is reached
+    at most once per recipe. Asserted by counting proofs, not by trusting it."""
+    _remember_the_guess(db)
+    machine = Remembering(FOUND, report_was_searched=False)
+
+    autobuild.ensure("rabbitmq", db, target="oci", shipped=machine.shipped,
+                     run_proof=machine.run_proof, publish=machine.publish,
+                     certify=lambda m, r: None, withdraw=machine.withdraw,
+                     discover=machine.discover)
+
+    assert machine.tried.count("package") == 1, (
+        f"the same rung was rebuilt more than once: {machine.tried}")

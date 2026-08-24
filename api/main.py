@@ -30,6 +30,7 @@ from api import ai_drafter
 from api import ai_explainer
 from api import ai_recommend
 from api import ai_triage
+from api import discovery
 from api import blueprint_capabilities
 from api import network_egress
 from api import cloud_options
@@ -3816,10 +3817,38 @@ def _autobuild_component(session: Session, code: str, target: str) -> dict:
     def reachable() -> bool:
         return network_egress.reaches_internet(_orchestrator_network_egress)
 
+    # WHAT THE MACHINE THAT JUST SAID NO ALSO FOUND OUT (C7).
+    #
+    # REQ-2026-0188 was told "rabbitmq NOT INSTALLED" and stopped, while the
+    # machine saying it had dnf, the full repository metadata, and the answer
+    # (`rabbitmq-server`). Its report is fetched over the signed channel, exactly
+    # as the boot-report endpoint already does — the orchestrator holds the
+    # credential that can read it and this never imports the orchestrator.
+    def discover(proof_reference: str, candidate: str) -> dict | None:
+        if not proof_reference:
+            return None
+        reports = _orchestrator_boot_reports(proof_reference, ["oci-service-vm"])
+        if not reports:
+            return None
+        # `reports` is a LIST of {kind, available, files: {name: body}} — the
+        # shape the human-facing panel consumes. Flattened here rather than
+        # guessed at: reading it as a dict would find nothing, silently, and the
+        # rung would simply never appear.
+        text = "\n".join(
+            str(body)
+            for entry in (reports.get("reports") or [])
+            if isinstance(entry, dict)
+            for body in (entry.get("files") or {}).values())
+        # Three outcomes, and they are not interchangeable — see
+        # discovery.finding_for, which is where that judgement lives so it can
+        # be tested rather than buried in a closure.
+        return discovery.finding_for(text, candidate)
+
     result = autobuild.ensure(code, session, target=target, shipped=shipped,
                               run_proof=run_proof, publish=publish,
                               certify=certify, withdraw=withdraw,
-                              shipped_codes=shipped_codes, reachable=reachable)
+                              shipped_codes=shipped_codes, reachable=reachable,
+                              discover=discover)
     session.commit()
     return {"status": result.status, "detail": result.detail[:300]}
 

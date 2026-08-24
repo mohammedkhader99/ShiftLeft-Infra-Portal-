@@ -479,6 +479,39 @@ def _repo_profile(code: str, target: str) -> dict:
     }
 
 
+def draft_from_finding(candidate: str, finding: dict, target: str = "oci"):
+    """A draft built from what a MACHINE reported, not from what this code knows.
+
+    The C7 rung. Everything in it was measured minutes earlier on a real
+    machine — the package name from the package manager's own metadata, the
+    repository it lives in from the same query, the ports from the difference
+    between what was listening before the install and after. That is the whole
+    point: a technology should not have to be written into a dictionary here
+    before the portal can install it.
+
+    Returns None when the finding says nothing usable, which is a real outcome —
+    software in no repository at all (Keycloak ships a tarball) cannot be
+    discovered, only declared.
+    """
+    from api import discovery
+
+    profile = discovery.profile_from(
+        discovery.Finding(code=(candidate or "").strip().lower(),
+                          package=str(finding.get("package") or ""),
+                          repo_id=str(finding.get("repo_id") or ""),
+                          ports=[int(p) for p in (finding.get("ports") or [])]),
+        target)
+    if profile is None:
+        return None
+    return Draft(
+        candidate=candidate, kind="vm-service",
+        files={f"generated/profiles/{profile['code']}.json":
+               json.dumps(profile, indent=2)},
+        reasoning=(f"{candidate} is packaged as {profile['rhel']['packages'][0]}, "
+                   f"which a machine reported rather than this code guessing."),
+        source="measured")
+
+
 def install_methods(code: str) -> list[str]:
     """The ways this software could be installed, cheapest first.
 

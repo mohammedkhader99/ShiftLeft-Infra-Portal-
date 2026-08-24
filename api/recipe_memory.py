@@ -110,7 +110,13 @@ def fingerprint(recipe: dict | None) -> str:
     # attempt as already refuted and skip the rung that works.
     repo = recipe.get("repo")
     if isinstance(repo, dict):
-        material["repo"] = {f: str(repo.get(f) or "") for f in ("url", "gpg_key")}
+        # `release_package` alongside the URL fields: EPEL is enabled by
+        # installing a package rather than by fetching a .repo file, so a
+        # recipe that adds EPEL and one that adds nothing differ in this field
+        # alone — and without it the corrected recipe would hash as the refuted
+        # one and be skipped, which is the whole REQ-2026-0185 lesson again.
+        material["repo"] = {f: str(repo.get(f) or "")
+                            for f in ("url", "gpg_key", "release_package")}
 
     archive = recipe.get("archive")
     if isinstance(archive, dict):
@@ -176,6 +182,41 @@ def remember(session: Session, code: str, target: str, recipe: dict | None,
         fingerprint=digest, proof_reference=proof_reference or "",
         detail=(detail or "")[:1000])
     session.add(row)
+    return row
+
+
+def refuted_proof(session: Session, code: str, target: str,
+                  recipe: dict | None, now: datetime | None = None) -> str:
+    """The proof reference of the live refutation for this recipe, or "".
+
+    The machine that said no is still on the record, and so is its report. A
+    refutation is not only a verdict — it is a pointer to the evidence, and
+    since C7 that evidence may also contain what the machine found INSTEAD.
+    """
+    row = _live_row(session, code, target, recipe, now)
+    return (row.proof_reference or "") if row is not None else ""
+
+
+def _live_row(session: Session, code: str, target: str,
+              recipe: dict | None, now: datetime | None = None):
+    """The most recent unexpired refutation of this exact recipe, or None."""
+    digest = fingerprint(recipe)
+    if not digest:
+        return None
+    row = session.scalar(
+        select(RecipeRefutation)
+        .where(RecipeRefutation.technology_code == (code or "").strip(),
+               RecipeRefutation.deployment_target == (target or "").strip(),
+               RecipeRefutation.fingerprint == digest)
+        .order_by(RecipeRefutation.id.desc()))
+    if row is None:
+        return None
+    now = now or datetime.now(timezone.utc)
+    when = row.refuted_at
+    if when is not None and when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    if when is not None and (now - when) > timedelta(days=proof.validity_days()):
+        return None
     return row
 
 

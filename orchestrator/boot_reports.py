@@ -150,6 +150,18 @@ def verdict(report: str) -> dict:
                 problems.append(f"{key} is {value}")
             elif key.startswith("http_") and not serving_http(value):
                 problems.append(f"{key} returned {value or 'nothing'}")
+            elif key.startswith("version_") and value.startswith("MISSING"):
+                # The version command's own binary is not on the machine. The
+                # guard below catches "asked and answered nothing"; this catches
+                # "there was nothing to ask". REQ-2026-0188 reported
+                # `UNPROMISED (12)` for software that was never installed — the
+                # LINE NUMBER of a `command not found` error, read as a version
+                # and waved through.
+                problems.append(
+                    f"{key.split('_', 1)[1]} could not be asked its version: "
+                    f"{value[len('MISSING '):].strip('()')} is not on the "
+                    f"machine, so nothing here confirms the software is "
+                    f"installed under the name the recipe uses")
             elif key.startswith("version_") and value == "UNPROMISED (none)":
                 # ASKED, AND COULD NOT ANSWER. Distinct from both a kept promise
                 # and a broken one: the version command ran and produced no
@@ -164,7 +176,7 @@ def verdict(report: str) -> dict:
                     f"nothing on this machine confirms the software is really "
                     f"there under the name the recipe uses")
             elif (key.startswith("version_")
-                  and not value.startswith(("OK", "UNPROMISED"))):
+                  and not value.startswith(("OK", "UNPROMISED", "MISSING"))):
                 # The machine was asked what version it actually has and compared
                 # it with what the catalogue name promised. UNPROMISED means it
                 # was asked and answered but nothing was promised to compare

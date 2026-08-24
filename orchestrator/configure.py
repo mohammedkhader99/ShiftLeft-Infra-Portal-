@@ -335,6 +335,43 @@ _MODULE_ENABLE = {"rhel": "dnf module enable -y", "debian": "true", "suse": "tru
 # the failure marker that follows it on the same line: the step failed silently
 # and the machine reported nothing wrong. A placeholder that disables the alarm
 # it exists to trigger is worse than no placeholder.
+# The release package that enables EPEL on an Oracle Linux 9 machine. Oracle
+# ships it in its OWN repositories, so enabling EPEL needs no route to the
+# internet — which matters, because most subnets here have a service gateway and
+# nothing else. It is a fixed name from profile_rules.RELEASE_PACKAGES, never a
+# discovered one.
+_EPEL_RELEASE = "oracle-epel-release-el9"
+
+
+def candidate_packages(code: str) -> list[str]:
+    """The names this technology might actually be packaged under, best first.
+
+    THE RULE THAT REPLACES A DICTIONARY. `dnf install rabbitmq` finds nothing;
+    the package is `rabbitmq-server`. `redis7` is a catalogue name carrying a
+    version, and the package is `redis`. Each of these cost a machine to learn
+    and was then written down by hand, one technology at a time.
+
+    Cheap string shapes, all checked in ONE boot because they are metadata
+    queries rather than installs — so the machine answers every hypothesis for
+    the price of answering one. Every name is validated: it is handed to the
+    package manager as root, and a catalogue code is not a trusted string.
+    """
+    code = (code or "").strip().lower()
+    if not profile_rules.CODE.match(code):
+        return []
+    shapes = [code, f"{code}-server"]
+    # A trailing version in the catalogue name is a label, not part of the
+    # package: redis7 -> redis, nodejs20 -> nodejs, python312 -> python3.
+    bare = code.rstrip("0123456789")
+    if bare and bare != code:
+        shapes += [bare, f"{bare}-server"]
+    out: list[str] = []
+    for name in shapes:
+        if name not in out and profile_rules.CODE.match(name):
+            out.append(name)
+    return out
+
+
 _REPO_ADD = {"rhel": "dnf config-manager --add-repo",
              "debian": "false",
              "suse": "false"}
@@ -444,7 +481,9 @@ def _report_script(wanted: list[tuple[str, str]], packages: list[str],
                    services: list[str], ports: list[int], family: str,
                    report_url: str,
                    archives: list[tuple[str, dict]] | None = None,
-                   repos: list[tuple[str, dict]] | None = None) -> list[str]:
+                   repos: list[tuple[str, dict]] | None = None,
+                   candidates: dict[str, tuple[str, list[str]]] | None = None
+                   ) -> list[str]:
     """The self-check a machine runs on itself, as cloud-config write_files lines.
 
     WHY A MACHINE REPORTS ON ITSELF.
@@ -482,6 +521,87 @@ def _report_script(wanted: list[tuple[str, str]], packages: list[str],
         checks.append(
             f"  (rpm -q {package} 2>/dev/null || dpkg-query -W -f='{package} ${{Version}}\\n' "
             f"{package} 2>/dev/null || echo '{package} NOT INSTALLED')")
+    # --- what this machine could have installed instead (C7) -------------------
+    #
+    # THE MACHINE IS ALREADY HERE AND ALREADY KNOWS. REQ-2026-0188 guessed
+    # `dnf install rabbitmq`, was told "not installed", and stopped — while the
+    # machine reporting that had dnf and the complete repository metadata in
+    # front of it and could have named `rabbitmq-server` in one command. Every
+    # serious defect in this project has this shape: an honest signal the
+    # deciding code cannot see. Curating a dictionary per technology is the
+    # expensive way to learn what one query answers.
+    #
+    # ONLY FOR PACKAGES THAT ARE MISSING, so a working install stays quiet and
+    # costs nothing. Metadata queries only — the machine REPORTS candidates and
+    # never installs one it discovered, because a name found at run time has
+    # passed no allow-list. It goes back through profile_rules and is installed,
+    # if at all, on the next rung.
+    if candidates:
+        checks.append("  echo '--- available ---'")
+    for code, (declared, names) in (candidates or {}).items():
+        key = profile_rules.report_key(code)
+        listed = " ".join(shlex.quote(n) for n in names)
+        # GUARDED ON THE PACKAGE THAT WAS DECLARED, not on the technology code.
+        # `redis7` declares the package `redis`, so `rpm -q redis7` fails on a
+        # perfectly healthy machine and discovery would run on every boot,
+        # every time, for a recipe that worked — the same false-negative shape
+        # as grepping repolist for `vault` when the repository is `hashicorp`.
+        checks.append(
+            f"  if rpm -q {shlex.quote(declared)} >/dev/null 2>&1; then :; else")
+        # EPEL, pulled in only when the configured repositories answer nothing.
+        # A fixed name from profile_rules.RELEASE_PACKAGES, never a discovered
+        # one, and Oracle ships it in its own repositories so this needs no
+        # route to the internet.
+        checks.append("    FOUND=")
+        checks.append(f"    for N in {listed}; do")
+        checks.append(
+            '      FOUND=$(dnf --quiet repoquery --qf "%{name}|%{repoid}" '
+            '"$N" 2>/dev/null | head -1)')
+        checks.append('      [ -n "$FOUND" ] && break')
+        checks.append("    done")
+        checks.append('    if [ -z "$FOUND" ]; then')
+        # EPEL, AND WHETHER IT ACTUALLY ARRIVED. REQ-2026-0189 reported
+        # `available_rabbitmq=none` and nobody could tell whether RabbitMQ is
+        # genuinely absent or whether this step failed and only Oracle's base
+        # repositories were ever searched — every command here ends in
+        # `|| true`. A missing measurement that reads as a measured zero is the
+        # exact defect this whole increment exists to end, committed in the
+        # fixing of it.
+        checks.append(
+            f"      if rpm -q {_EPEL_RELEASE} >/dev/null 2>&1; then")
+        checks.append(f'        echo "epel_{key}=present"')
+        checks.append("      else")
+        checks.append(
+            f"        dnf install -y {_EPEL_RELEASE} >/dev/null 2>&1 || true")
+        checks.append(
+            f"        if rpm -q {_EPEL_RELEASE} >/dev/null 2>&1; then")
+        checks.append(f'          echo "epel_{key}=added"')
+        checks.append("        else")
+        # NOT the word `failed`: verdict() treats any `key=failed` as a broken
+        # machine, and EPEL being unavailable is a fact about the search, not
+        # about the health of the host.
+        checks.append(f'          echo "epel_{key}=unavailable"')
+        checks.append("        fi")
+        checks.append("      fi")
+        checks.append(f"      for N in {listed}; do")
+        checks.append(
+            '        FOUND=$(dnf --quiet repoquery --qf "%{name}|%{repoid}" '
+            '"$N" 2>/dev/null | head -1)')
+        checks.append('        [ -n "$FOUND" ] && break')
+        checks.append("      done")
+        checks.append("    fi")
+        # THE CONTROL PROBE, which is what makes `none` falsifiable. `bash` is
+        # in the base repositories of every image this portal builds; if the
+        # query cannot find even that, the query itself is broken and `none`
+        # says nothing whatsoever about the software being looked for.
+        checks.append(
+            '    PROBE=$(dnf --quiet repoquery --qf "%{name}" bash '
+            '2>/dev/null | head -1)')
+        checks.append(
+            f'    echo "queryable_{key}=$(test -n "$PROBE" && echo yes '
+            f'|| echo no)"')
+        checks.append(f'    echo "available_{key}=${{FOUND:-none}}"')
+        checks.append("  fi")
     # Archive installs have no package for rpm -q to find, so asking about one
     # would report NOT INSTALLED for software that installed perfectly. The
     # evidence for an archive is its destination existing — and "failed" is the
@@ -498,9 +618,18 @@ def _report_script(wanted: list[tuple[str, str]], packages: list[str],
         # would have reported repo_vault=failed on a machine where HashiCorp's
         # repository had been added perfectly, failing the proof for a reason
         # that was not true.
+        key = profile_rules.report_key(code)
+        release = spec.get("release_package")
+        if release:
+            # Asked of rpm, not of the filesystem: a release package may write
+            # its definitions under any name it likes, and the question that
+            # matters is whether the package that carries them is installed.
+            checks.append(
+                f'  echo "repo_{key}=$(rpm -q {shlex.quote(release)} '
+                f'>/dev/null 2>&1 && echo present || echo failed)"')
+            continue
         basename = (spec.get("url", "").rstrip("/").rsplit("/", 1)[-1]
                     or f"{code}.repo")
-        key = profile_rules.report_key(code)
         checks.append(
             f'  echo "repo_{key}=$(test -f /etc/yum.repos.d/{shlex.quote(basename)} '
             f'&& echo present || echo failed)"')
@@ -569,6 +698,18 @@ def _report_script(wanted: list[tuple[str, str]], packages: list[str],
         checks.append("  echo '--- versions ---'")
     for code, want, command in versioned:
         vkey = profile_rules.report_key(code)
+        # THE BINARY FIRST. REQ-2026-0188 reported `version_rabbitmq=UNPROMISED
+        # (12)` for software that was not installed at all: the command failed,
+        # the shell printed `line 12: rabbitmq: command not found`, and the
+        # number-grep below took the LINE NUMBER for a version. That walked
+        # straight past the "asked and could not answer" guard, because the
+        # guard only recognises the word `none`. A version read off an error
+        # message is not evidence of anything.
+        binary = shlex.quote(command.split()[0]) if command.split() else "''"
+        checks.append(f"  if ! command -v {binary} >/dev/null 2>&1; then")
+        checks.append(
+            f'    echo "version_{vkey}=MISSING ({command.split()[0]})"')
+        checks.append("  else")
         checks.append(f"  RAW=$({command})")
         # r"" so the backslash reaches grep rather than being a Python escape.
         checks.append(r"  GOT=$(echo " '"$RAW"' r" | grep -oE '[0-9]+(\.[0-9]+)*'"
@@ -581,16 +722,46 @@ def _report_script(wanted: list[tuple[str, str]], packages: list[str],
             # stray line here would be parsed as another key=value fact.
             checks.append(
                 f'  echo "version_{vkey}=UNPROMISED (${{GOT:-none}})"')
+            checks.append("  fi")
             continue
         checks.append("  case \"$GOT\" in")
         checks.append(f"    {want}|{want}.*) echo \"version_{vkey}=OK ($GOT)\" ;;")
         checks.append(f"    *) echo \"version_{vkey}=WRONG wanted {want} got "
                       f"${{GOT:-none}} [$RAW]\" ;;")
         checks.append("  esac")
+        checks.append("  fi")
     checks.append("  echo '--- services ---'")
     for service in services:
         checks.append(f"  echo \"{service}=$(systemctl is-active {service} 2>&1)\"")
     checks.append("  echo '--- ports ---'")
+    # WHAT THE SOFTWARE ACTUALLY OPENED (C7), as opposed to what the recipe
+    # declared. RabbitMQ's report carried an empty ports section because the
+    # drafted profile declared none — so even a successful install would have
+    # certified a broker nothing could reach.
+    #
+    # BY DIFFERENCE, not by attribution. Matching a socket to its process is
+    # unreliable exactly where it matters: RabbitMQ runs as `beam.smp`, and any
+    # rule keyed on the technology name would miss it. Comparing the listening
+    # sockets from before the install against after attributes nothing and
+    # cannot be fooled — sshd was listening before, so 22 can never appear here.
+    # POSIX only: this script runs under /bin/sh, where `<(...)` is a syntax
+    # error and not a feature. A baseline that silently never compared would
+    # report "no new ports" on every machine — a check that cannot fail.
+    checks.append("  BEFORE=/var/lib/infra-portal/ports-before")
+    checks.append("  if [ -f \"$BEFORE\" ]; then")
+    checks.append(
+        "    ss -lnt 2>/dev/null | awk 'NR>1 {n=split($4,a,\":\"); print a[n]}' "
+        "| sort -u > /tmp/ports-now")
+    checks.append(
+        "    OPENED=$(comm -13 \"$BEFORE\" /tmp/ports-now 2>/dev/null | "
+        "grep -E '^[0-9]+$' | paste -sd, -)")
+    checks.append('    echo "opened_ports=${OPENED:-none}"')
+    checks.append("  else")
+    # DISTINCT FROM `none`. "Nothing new opened" and "nobody took a baseline"
+    # are different facts, and reporting the second as the first is how a
+    # missing measurement comes to read as a measured zero.
+    checks.append('    echo "opened_ports=unknown"')
+    checks.append("  fi")
     for port in ports:
         checks.append(
             f"  echo \"http_{port}=$(curl -s -o /dev/null -m 5 -w '%{{http_code}}' "
@@ -949,7 +1120,19 @@ def render(components: list[dict], family: str = "", report_url: str = "") -> st
         for check in _report_script(
                 [(code, version) for code, version, _profile in profiles],
                 packages, services, ports, family, report_url,
-                archives=archives, repos=repos):
+                archives=archives, repos=repos,
+                # ONLY FOR A PACKAGE GUESS. A profile carrying an archive or
+                # a vendor repository is not guessing a name — keycloak IS a
+                # tarball, and searching the repositories for it finds nothing,
+                # installs EPEL for no reason, and reports a `none` that means
+                # only "this was never a package". Discovery answers the
+                # question "is this packaged under another name", and that
+                # question is only open for a guess.
+                candidates={
+                    code: (prof["packages"][0], candidate_packages(code))
+                    for code, _v, prof in profiles
+                    if not prof.get("archive") and not prof.get("repo")
+                    and prof.get("packages") and candidate_packages(code)}):
             lines.append(f"      {check}")
     lines.append("runcmd:")
     # Module streams are enabled BEFORE the install, or the default stream is
@@ -964,7 +1147,25 @@ def render(components: list[dict], family: str = "", report_url: str = "") -> st
     # non-interactive boot would otherwise either hang or silently install
     # unverified packages, and the second is worse. gpgcheck is enforced in the
     # rules, so a repo reaching here has a key.
+    # The listening-socket baseline, taken BEFORE anything is installed so the
+    # report can attribute new ports to the software by difference (C7).
+    lines.append(cmd("mkdir -p /var/lib/infra-portal"))
+    lines.append(cmd(
+        "ss -lnt 2>/dev/null | awk 'NR>1 {n=split($4,a,\":\"); print a[n]}' "
+        "| sort -u > /var/lib/infra-portal/ports-before || true"))
     for code, spec in repos:
+        # A repository that arrives as a PACKAGE rather than a URL (C7). EPEL is
+        # enabled this way, and the release package carries the repository
+        # definition and its signing key together — so there is no separate
+        # rpm --import step and nothing to quote but a name that
+        # profile_rules.RELEASE_PACKAGES has already closed to two values.
+        release = spec.get("release_package")
+        if release:
+            lines.append(cmd(
+                f"{install} {shlex.quote(release)} || echo 'PORTAL FAILURE: "
+                f"could not enable the {code} repository' "
+                f">> /var/log/infra-portal.log"))
+            continue
         url = shlex.quote(spec.get("url", ""))
         key = shlex.quote(spec.get("gpg_key", ""))
         lines.append(cmd(
