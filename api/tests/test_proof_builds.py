@@ -368,7 +368,7 @@ def test_a_passing_proof_brings_a_suspended_blueprint_back(db, monkeypatch):
     db.commit()
     _passing_proof(db)
 
-    back = certification.restore(db)
+    back = certification.restore(db, builds={"oci-oke"})
     db.commit()
     assert len(back) == 1 and back[0]["was"] == certification.SUSPENDED
     assert bp(db).status == "certified"
@@ -385,6 +385,11 @@ def test_a_passing_proof_certifies_even_without_a_human_fingerprint(db, monkeypa
     question instead (§8).
 
     A proof is still required. Nothing is certified without one.
+
+    `builds` is supplied because since 2026-08-24 a restoration also needs the
+    RECIPE to still exist — see the test below. That is a machine-checkable
+    fact, not a human in the path, so the requirement this test exists for is
+    untouched.
     """
     from api import certification
 
@@ -395,10 +400,49 @@ def test_a_passing_proof_certifies_even_without_a_human_fingerprint(db, monkeypa
     db.commit()
     _passing_proof(db)
 
-    restored = certification.restore(db)
+    restored = certification.restore(db, builds={"oci-oke"})
     db.commit()
     assert len(restored) == 1, restored
     assert bp(db).status == "certified"
+
+
+def test_a_passing_proof_does_not_restore_a_recipe_that_is_GONE(db, monkeypatch):
+    """A PASSING PROOF IS NOT A RECIPE, and this cost a real machine.
+
+    REQ-2026-0193's container proof passed and certified; the narrowing proof
+    that followed failed and the profile was withdrawn from the generated store.
+    `take_it_back` suspended the certification — and this poller, looking only
+    at proofs, re-certified it within one cycle. The catalogue went back to
+    claiming RabbitMQ with nothing to build it, and the next request would have
+    got another bare machine reported as provisioned.
+    """
+    from api import certification
+
+    allow(monkeypatch)
+    row = bp(db)
+    row.status = certification.SUSPENDED
+    db.commit()
+    _passing_proof(db)
+
+    # The orchestrator no longer builds it: the recipe was withdrawn.
+    assert certification.restore(db, builds=frozenset()) == []
+    assert bp(db).status == certification.SUSPENDED
+
+
+def test_a_restoration_that_cannot_ASK_does_not_guess(db, monkeypatch):
+    """Absent means we could not reach the orchestrator, and the safe direction
+    is not to restore: a delayed restoration costs a request its automatic path,
+    while a wrong one costs a machine and tells nobody."""
+    from api import certification
+
+    allow(monkeypatch)
+    row = bp(db)
+    row.status = certification.SUSPENDED
+    db.commit()
+    _passing_proof(db)
+
+    assert certification.restore(db, builds=None) == []
+    assert bp(db).status == certification.SUSPENDED
 
 
 def test_a_failed_proof_does_not_bring_anything_back(db, monkeypatch):

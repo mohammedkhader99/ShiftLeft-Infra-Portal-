@@ -292,7 +292,8 @@ def certify_from_proof(session: Session, technology_code: str, target: str,
     return row
 
 
-def restore(session: Session, now: datetime | None = None) -> list[dict]:
+def restore(session: Session, now: datetime | None = None,
+            builds: set[str] | None = None) -> list[dict]:
     """Re-certify a blueprint whose proof build passed (ARCHITECTURE.md P8).
 
     THE WAY BACK that C1 promised. A blueprint the portal suspended or expired
@@ -322,6 +323,20 @@ def restore(session: Session, now: datetime | None = None) -> list[dict]:
         # now sufficient in both directions.
         last = last_passing_proof(session, row.technology_code, row.deployment_target)
         if last is None or proof.is_stale(last, now):
+            continue
+        # A PASSING PROOF IS NOT A RECIPE. This looked only at proofs, so it
+        # re-certified a technology whose recipe had been withdrawn from the
+        # generated store minutes earlier — undoing, within one poll, the
+        # suspension that take_it_back had just applied. The catalogue went back
+        # to claiming RabbitMQ with nothing to build it, which is how
+        # REQ-2026-0193 got a bare machine reported as provisioned.
+        #
+        # `builds` is what the ORCHESTRATOR says it can build, asked over the
+        # signed channel — never by importing it. Absent means we could not ask,
+        # and the safe direction is not to restore: a delayed restoration costs
+        # a request its automatic path, while a wrong one costs a machine and
+        # tells nobody.
+        if builds is None or row.technology_code not in builds:
             continue
         was = row.status
         row.status = "certified"

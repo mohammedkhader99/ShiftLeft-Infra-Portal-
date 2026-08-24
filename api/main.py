@@ -7080,7 +7080,12 @@ def _poll_once() -> None:
                              detail=aged)
             # Restoration runs LAST, so within a single sweep any evidence
             # against a blueprint is applied before evidence for it.
-            for back in certification.restore(session):
+            # WHAT THE ORCHESTRATOR ACTUALLY BUILDS, so a certification is
+            # never restored for a recipe that no longer exists.
+            buildable = frozenset(
+                str(b) for m in (_orchestrator_blueprints() or [])
+                for b in (m.get("builds") or []))
+            for back in certification.restore(session, builds=buildable):
                 append_audit(session, "blueprint.recertified", actor="certification",
                              detail=back)
             session.commit()
