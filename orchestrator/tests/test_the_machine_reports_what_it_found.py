@@ -345,3 +345,36 @@ def test_the_working_lines_are_not_words_the_verdict_calls_broken(
         line = line.strip()
         if line.startswith(("echo \"epel_", "echo \"queryable_")):
             assert "=failed" not in line and "=inactive" not in line, line
+
+
+# --- installed is not enabled (REQ-2026-0190) ---------------------------------
+#
+# That request reported `epel=present, queryable=yes, available=none` and STILL
+# could not settle the question: `rpm -q oracle-epel-release-el9` proves the
+# release package is installed, not that the repository it carries is ENABLED. A
+# repo can sit in /etc/yum.repos.d with enabled=0 and be searched by nothing.
+# dnf's own enabled list is the only thing that closes it.
+
+def test_the_machine_names_the_repositories_it_actually_searched(
+        tmp_path, monkeypatch):
+    text = script(GUESS, "rabbitmq", tmp_path, monkeypatch)
+    assert "searched_rabbitmq=" in text, (
+        "a `none` that cannot name where it looked settles nothing")
+    assert "repolist --enabled" in text, (
+        "it asks something other than dnf what dnf had enabled")
+
+
+def test_the_repository_list_is_one_parseable_line(tmp_path, monkeypatch):
+    """`dnf repolist` prints a table. verdict() reads key=value per line, so a
+    raw table would scatter half a dozen unparseable lines through the report."""
+    text = script(GUESS, "rabbitmq", tmp_path, monkeypatch)
+    line = next(l for l in text.splitlines() if "searched_rabbitmq=" in l)
+    assert "paste -sd," in text, "the list is never flattened to one line"
+    assert "${REPOS:-unknown}" in line, (
+        "an unreadable repo list would report as an empty search rather than "
+        "as an unknown one")
+
+
+def test_it_is_reported_before_the_answer_it_qualifies(tmp_path, monkeypatch):
+    text = script(GUESS, "rabbitmq", tmp_path, monkeypatch)
+    assert text.index("searched_rabbitmq=") < text.index('echo "available_rabbitmq=')

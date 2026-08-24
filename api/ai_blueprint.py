@@ -479,6 +479,74 @@ def _repo_profile(code: str, target: str) -> dict:
     }
 
 
+def draft_from_image(candidate: str, image: dict, target: str = "oci"):
+    """A draft that runs the vendor's own image on the machine (C8).
+
+    THE LAST RUNG, and the one that reaches furthest. RabbitMQ is not packaged
+    for Oracle Linux 9 or EPEL 9 — three real machines and an independent check
+    against repology established that — and its official image has been pulled
+    nearly four billion times. What the requester receives is still a Linux VM
+    they can log in to; the container is how the software arrived.
+
+    Every value was measured against the registry minutes ago: the image path by
+    trying the conventional shapes and seeing which exists, the digest by asking
+    the registry what the tag currently resolves to. Returns None when nothing is
+    published, which is the honest end of the road for internal or licensed
+    software.
+    """
+    code = (candidate or "").strip().lower()
+    if not image or not image.get("image") or not image.get("digest"):
+        return None
+    # NOTHING IS PUBLISHED UNTIL A MACHINE HAS SEEN IT LISTENING.
+    #
+    # The image's own declaration is the vendor's statement of its interface, and
+    # for `library/rabbitmq` that is six ports — AMQP, AMQPS, epmd, clustering
+    # and two Prometheus endpoints — while a default container listens on far
+    # fewer. Publishing all six would open all six in a real machine's firewall,
+    # so the first attempt publishes NONE, asks the container what it actually
+    # bound, and the narrowed profile is proved again. A changed recipe is never
+    # certified on the old recipe's proof.
+    ports = [int(p) for p in (image.get("listening") or [])]
+    declared = [int(p) for p in (image.get("ports") or [])]
+    profile = {
+        "code": code,
+        "builds_on": "oci/service-vm" if target == "oci" else "",
+        "ports": ports,
+        # Asked of the container, because the software is inside it: `podman
+        # exec` is the only way the machine can put the question.
+        "version_command": f"podman exec {code} {code} --version",
+        "container": {
+            "image": image["image"],
+            "tag": str(image.get("tag") or "latest"),
+            "digest": image["digest"],
+            # ITS OWN BLOCK VOLUME. A container's data outlives the container and
+            # often the machine; on the boot volume it is entangled with the
+            # operating system and a rebuild takes it along.
+            "data_dir": f"/var/lib/{code}",
+            "data_mount": f"/var/lib/{code}",
+        },
+        # No packages: podman is supplied by the renderer, because what runs a
+        # container is its choice of runtime and not a property of RabbitMQ.
+        "rhel": {"packages": [], "services": [code]},
+        "_note": (
+            f"DRAFT — the vendor's own image, measured not recalled: "
+            f"{image['image']} pinned at {image['digest'][:19]}..., "
+            f"ports {ports or 'none published yet'}"
+            + (f" of {declared} the image declares" if declared else "")
+            + f". Data on a separate block volume at /var/lib/{code}. Proven by "
+              f"booting a machine; that machine decides."),
+    }
+    findings = review_profile(profile)
+    if [f for f in findings if f.severity == "blocker"]:
+        return None
+    return Draft(
+        candidate=candidate, kind="vm-service",
+        files={f"generated/profiles/{code}.json": json.dumps(profile, indent=2)},
+        reasoning=(f"{candidate} is not packaged for this operating system, and "
+                   f"its publisher ships an image."),
+        source="measured")
+
+
 def draft_from_finding(candidate: str, finding: dict, target: str = "oci"):
     """A draft built from what a MACHINE reported, not from what this code knows.
 

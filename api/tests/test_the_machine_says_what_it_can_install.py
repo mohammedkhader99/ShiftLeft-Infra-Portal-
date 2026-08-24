@@ -180,7 +180,9 @@ SEARCHED_AND_FOUND = ("--- available ---\n"
 # without it came from a machine that did not report its own working, and is
 # treated as not having answered rather than as having answered "no".
 SEARCHED_AND_EMPTY = ("--- available ---\nqueryable_rabbitmq=yes\n"
-                      "epel_rabbitmq=added\navailable_rabbitmq=none\n")
+                      "epel_rabbitmq=added\n"
+                      "searched_rabbitmq=ol9_baseos_latest,ol9_developer_EPEL\n"
+                      "available_rabbitmq=none\n")
 NEVER_ASKED = "rabbitmq NOT INSTALLED\nrabbitmq=inactive\n"
 
 
@@ -235,10 +237,12 @@ def test_an_empty_report_is_never_read_as_a_settled_fact():
 # The machine now reports its own working, so `none` can be believed or not on
 # evidence rather than on hope.
 
-def _report(queryable="yes", epel="added", available="none", extra=""):
+def _report(queryable="yes", epel="added", available="none", extra="",
+            searched="ol9_baseos_latest,ol9_developer_EPEL"):
     return ("--- available ---\n"
             f"queryable_rabbitmq={queryable}\n"
             f"epel_rabbitmq={epel}\n"
+            f"searched_rabbitmq={searched}\n"
             f"available_rabbitmq={available}\n" + extra)
 
 
@@ -266,6 +270,7 @@ def test_a_search_answered_before_epel_was_needed_is_still_sound():
     """No `epel_` line at all means the configured repositories answered first,
     which is a complete search by definition — not a missing step."""
     report = ("--- available ---\nqueryable_rabbitmq=yes\n"
+              "searched_rabbitmq=ol9_baseos_latest,ol9_appstream\n"
               "available_rabbitmq=none\n")
     assert discovery.search_was_sound(report, "rabbitmq")
     assert discovery.finding_for(report, "rabbitmq") == {}
@@ -289,3 +294,44 @@ def test_the_working_report_uses_words_the_verdict_does_not_read_as_broken():
         assert boot_reports.verdict(f"epel_rabbitmq={value}\n")["ok"] is True
     for value in ("yes", "no"):
         assert boot_reports.verdict(f"queryable_rabbitmq={value}\n")["ok"] is True
+
+
+# --- installed is not enabled (REQ-2026-0190) ---------------------------------
+
+def _r(**kw):
+    parts = ["--- available ---", "queryable_rabbitmq=yes"]
+    for k, v in kw.items():
+        if v is not None:
+            parts.append(f"{k}_rabbitmq={v}")
+    parts.append("available_rabbitmq=none")
+    return "\n".join(parts) + "\n"
+
+
+def test_epel_installed_but_not_in_the_searched_list_is_not_an_answer():
+    """EXACTLY what REQ-2026-0190 could not distinguish. The release package was
+    present, the query worked, nothing was found — and EPEL may never have been
+    consulted at all."""
+    report = _r(epel="present", searched="ol9_baseos_latest,ol9_appstream")
+    assert not discovery.search_was_sound(report, "rabbitmq")
+    assert discovery.finding_for(report, "rabbitmq") is None
+
+
+def test_epel_present_and_searched_is_a_complete_search():
+    report = _r(epel="present", searched="ol9_baseos_latest,ol9_developer_EPEL")
+    assert discovery.search_was_sound(report, "rabbitmq")
+    assert discovery.finding_for(report, "rabbitmq") == {}
+
+
+def test_a_report_that_cannot_name_where_it_looked_settles_nothing():
+    """The very report REQ-2026-0190 produced: no `searched_` line at all."""
+    assert discovery.finding_for(_r(epel="present"), "rabbitmq") is None
+    assert discovery.finding_for(_r(epel="present", searched="unknown"),
+                                 "rabbitmq") is None
+
+
+def test_a_search_that_never_needed_epel_needs_no_epel_in_the_list():
+    """The configured repositories answered first, so there is nothing to
+    corroborate — requiring EPEL there would refuse every sound base-repo
+    answer."""
+    report = _r(searched="ol9_appstream")
+    assert discovery.search_was_sound(report, "rabbitmq")

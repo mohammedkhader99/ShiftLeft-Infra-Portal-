@@ -565,3 +565,269 @@ def test_the_rerun_cannot_repeat(db):
 
     assert machine.tried.count("package") == 1, (
         f"the same rung was rebuilt more than once: {machine.tried}")
+
+
+# --- the container rung, last on the ladder (C8) -------------------------------
+#
+# THE RABBITMQ STORY, END TO END. REQ-2026-0188/0189/0190 spent three real
+# machines establishing that RabbitMQ is not installable from Oracle Linux 9's
+# repositories or from EPEL 9 — repology confirms it independently, and
+# RabbitMQ's own documentation says to add their repository instead. Their
+# official image has been pulled nearly four billion times.
+#
+# The rung is LAST because the ladder is ordered by cost, and a container's cost
+# is not trust — it is that patching, backup and monitoring all change. The
+# conventional routes get tried first.
+
+IMAGE = {"image": "docker.io/library/rabbitmq", "tag": "latest",
+         "digest": "sha256:" + "9d392587" * 8, "ports": [5672, 15672]}
+
+
+class Publishing(Discovering):
+    """A machine that refutes the package guess; the software ships an image."""
+
+    def run_proof(self, session, manifest):
+        recipe = json.loads(next(iter(self.published[-1].values())))
+        method = "container" if recipe.get("container") else "package"
+        self.tried.append(method)
+        if method in self.accepts:
+            return ProofOutcome("PROOF-X", "passed", "built, verified, destroyed")
+        self.published.clear()
+        return ProofOutcome("PROOF-X", "failed",
+                            "Built, but did not verify healthy: rabbitmq NOT INSTALLED")
+
+
+def test_a_sound_search_finding_nothing_reaches_for_the_image(db):
+    """THE trigger, and it depends on C7 being right: `{}` means the machine
+    searched repositories it named and this software is not in them. That is a
+    different fact from "we could not tell", and only one of them justifies
+    pulling an image."""
+    machine = Publishing(IMAGE, accepts=("container",))
+    result = autobuild.ensure(
+        "rabbitmq", db, target="oci", shipped=machine.shipped,
+        run_proof=machine.run_proof, publish=machine.publish,
+        certify=lambda m, r: None, withdraw=machine.withdraw,
+        discover=lambda ref, code: {},          # searched soundly, found nothing
+        find_image=lambda code: IMAGE)
+
+    assert machine.tried == ["package", "container"], machine.tried
+    assert result.status == "published", result.detail
+
+
+def test_an_unsound_search_does_NOT_reach_for_an_image(db):
+    """`None` means the machine could not answer. Pulling an image on the
+    strength of a broken search would install a container for software that is
+    packaged perfectly well — and change how it is patched and backed up."""
+    asked = []
+    machine = Publishing(IMAGE, accepts=("container",))
+    autobuild.ensure(
+        "rabbitmq", db, target="oci", shipped=machine.shipped,
+        run_proof=machine.run_proof, publish=machine.publish,
+        certify=lambda m, r: None, withdraw=machine.withdraw,
+        discover=lambda ref, code: None,
+        find_image=lambda code: asked.append(code) or IMAGE)
+
+    assert asked == [], "it reached for an image without knowing anything"
+
+
+def test_a_package_that_installs_never_reaches_the_container_rung(db):
+    """The cheapest correct answer still wins. A container is the last resort,
+    not the first — it changes how the service is patched, backed up and
+    monitored, and that cost is only worth paying when nothing else works.
+
+    THE REGISTRY IS NEVER EVEN ASKED. Asserted separately from the rung order,
+    because a plant that put `container` first was INERT — with no image
+    resolved the rung is skipped — so ordering alone proved nothing. What
+    actually holds the line is that no image is looked up until a machine has
+    refuted something.
+    """
+    asked = []
+    machine = Publishing(IMAGE, accepts=("package",))
+    result = autobuild.ensure(
+        "haproxy", db, target="oci", shipped=machine.shipped,
+        run_proof=machine.run_proof, publish=machine.publish,
+        certify=lambda m, r: None, withdraw=machine.withdraw,
+        discover=lambda ref, code: {},
+        find_image=lambda code: (asked.append(code), IMAGE)[1])
+
+    assert machine.tried == ["package"]
+    assert result.status == "published"
+    assert asked == [], "a registry was queried for software that installed fine"
+
+
+def test_no_image_is_looked_up_before_a_machine_has_spoken(db):
+    """A registry lookup is a network round trip to a rate-limited public
+    service, and reaching for one before any evidence exists would make every
+    request pay for it."""
+    order = []
+    machine = Publishing(IMAGE, accepts=("container",))
+
+    def watching_proof(session, manifest):
+        order.append("machine")
+        return machine.run_proof(session, manifest)
+
+    autobuild.ensure(
+        "rabbitmq", db, target="oci", shipped=machine.shipped,
+        run_proof=watching_proof, publish=machine.publish,
+        certify=lambda m, r: None, withdraw=machine.withdraw,
+        discover=lambda ref, code: {},
+        find_image=lambda code: (order.append("registry"), IMAGE)[1])
+
+    assert order and order[0] == "machine", (
+        f"the registry was asked before anything was proved: {order}")
+
+
+def test_software_that_publishes_no_image_ends_the_ladder_honestly(db):
+    """Internal and licensed software will always need a recipe someone writes."""
+    machine = Publishing(IMAGE, accepts=set())
+    result = autobuild.ensure(
+        "some-internal-thing", db, target="oci", shipped=machine.shipped,
+        run_proof=machine.run_proof, publish=machine.publish,
+        certify=lambda m, r: None, withdraw=machine.withdraw,
+        discover=lambda ref, code: {}, find_image=lambda code: None)
+
+    assert machine.tried == ["package"]
+    assert result.status == "failed"
+
+
+def test_a_registry_outage_never_refuses_a_request(db):
+    """A public service being down must mean "no container rung this time", not
+    a failed request."""
+    def broken(code):
+        raise OSError("registry unreachable")
+
+    machine = Publishing(IMAGE, accepts=set())
+    with pytest.raises(OSError):
+        broken("x")                      # the collaborator really does raise
+    result = autobuild.ensure(
+        "rabbitmq", db, target="oci", shipped=machine.shipped,
+        run_proof=machine.run_proof, publish=machine.publish,
+        certify=lambda m, r: None, withdraw=machine.withdraw,
+        discover=lambda ref, code: {},
+        find_image=lambda code: None)    # api.main swallows the exception
+    assert result.status == "failed"
+
+
+def test_the_image_rung_is_asked_for_only_once(db):
+    """Each registry lookup is a network round trip against a rate-limited
+    public service."""
+    asked = []
+    machine = Publishing(IMAGE, accepts=("container",))
+    autobuild.ensure(
+        "rabbitmq", db, target="oci", shipped=machine.shipped,
+        run_proof=machine.run_proof, publish=machine.publish,
+        certify=lambda m, r: None, withdraw=machine.withdraw,
+        discover=lambda ref, code: {},
+        find_image=lambda code: (asked.append(code), IMAGE)[1])
+    assert len(asked) == 1, f"asked {len(asked)} times"
+
+
+def test_the_drafted_profile_pins_and_confines_what_it_runs(db):
+    machine = Publishing(IMAGE, accepts=("container",))
+    autobuild.ensure(
+        "rabbitmq", db, target="oci", shipped=machine.shipped,
+        run_proof=machine.run_proof, publish=machine.publish,
+        certify=lambda m, r: None, withdraw=machine.withdraw,
+        discover=lambda ref, code: {}, find_image=lambda code: IMAGE)
+
+    profile = json.loads(next(iter(machine.published[-1].values())))
+    assert profile["container"]["digest"] == IMAGE["digest"]
+    assert profile["container"]["data_dir"] == "/var/lib/rabbitmq"
+    # NO PORTS ON THE FIRST ATTEMPT. Corrected when the narrowing pass was
+    # added: the image's declaration is the vendor's whole interface, and
+    # publishing it opens every one of those in a real machine's firewall. The
+    # first attempt asks the container what it actually bound; the narrowed
+    # profile publishes that, and is proved again.
+    assert profile["ports"] == [], "it opened ports on a guess"
+    assert profile_rules.profile_problems(profile) == []
+
+
+# --- the narrowing pass (C8) ---------------------------------------------------
+#
+# `library/rabbitmq` DECLARES six ports: AMQP, AMQPS, epmd, clustering and two
+# Prometheus endpoints. A default container listens on far fewer, and every
+# declared port would be opened in a real machine's firewall.
+#
+# A published port binds on the HOST whether or not the container listens, so
+# podman's proxy answers either way and a host-side socket diff can never narrow
+# anything. The container has to be asked from the inside.
+
+class Narrowing(Publishing):
+    """A container that binds fewer ports than its image declares."""
+
+    def __init__(self, image, listening):
+        super().__init__(image, accepts=("container",))
+        self.listening = listening
+        self.published_ports: list[list[int]] = []
+
+    def run_proof(self, session, manifest):
+        recipe = json.loads(next(iter(self.published[-1].values())))
+        if recipe.get("container"):
+            self.published_ports.append(list(recipe.get("ports") or []))
+        return super().run_proof(session, manifest)
+
+
+def _narrow(db, machine, listening=None):
+    return autobuild.ensure(
+        "rabbitmq", db, target="oci", shipped=machine.shipped,
+        run_proof=machine.run_proof, publish=machine.publish,
+        certify=lambda m, r: None, withdraw=machine.withdraw,
+        discover=lambda ref, code: {}, find_image=lambda code: IMAGE,
+        observe_ports=lambda ref, code: (
+            machine.listening if listening is None else listening))
+
+
+def test_the_first_container_attempt_publishes_no_ports(db):
+    """Nothing is opened until a machine has SEEN it listening. Publishing the
+    image's whole declared interface would open all of it in the firewall."""
+    machine = Narrowing(IMAGE, [5672])
+    _narrow(db, machine)
+    assert machine.published_ports[0] == [], (
+        f"it opened ports on a guess: {machine.published_ports[0]}")
+
+
+def test_the_narrowed_profile_publishes_exactly_what_was_observed(db):
+    machine = Narrowing(IMAGE, [5672, 15692])
+    result = _narrow(db, machine)
+    assert machine.published_ports[-1] == [5672, 15692]
+    assert result.status == "published"
+
+
+def test_the_narrowed_recipe_is_PROVED_not_assumed(db):
+    """A changed recipe is never certified on the old recipe's proof — the rule
+    this project already holds for every other correction."""
+    machine = Narrowing(IMAGE, [5672])
+    _narrow(db, machine)
+    assert machine.tried.count("container") == 2, (
+        f"the narrowed profile was certified without a machine: {machine.tried}")
+
+
+def test_narrowing_happens_once(db):
+    """The second draft publishes what the first observed, so there is nothing
+    left to narrow — and each pass is a real machine."""
+    machine = Narrowing(IMAGE, [5672])
+    _narrow(db, machine)
+    assert machine.tried.count("container") == 2
+
+
+def test_a_container_that_bound_nothing_is_not_re_proved(db):
+    """No observation, nothing to narrow to. Publishing an empty set again would
+    spend a machine to learn the same nothing."""
+    machine = Narrowing(IMAGE, [])
+    _narrow(db, machine, listening=[])
+    assert machine.tried.count("container") == 1
+
+
+def test_the_first_profile_is_withdrawn_before_the_narrowed_one_is_published(db):
+    """Two profiles for one technology in the store is exactly the ambiguity the
+    publish/withdraw discipline exists to prevent."""
+    machine = Narrowing(IMAGE, [5672])
+    withdrawn = []
+    autobuild.ensure(
+        "rabbitmq", db, target="oci", shipped=machine.shipped,
+        run_proof=machine.run_proof, publish=machine.publish,
+        certify=lambda m, r: None,
+        withdraw=lambda files: withdrawn.append(sorted(files)),
+        discover=lambda ref, code: {}, find_image=lambda code: IMAGE,
+        observe_ports=lambda ref, code: [5672])
+    assert withdrawn, "the unnarrowed profile was left in the store"

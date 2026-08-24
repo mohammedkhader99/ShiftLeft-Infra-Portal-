@@ -650,6 +650,45 @@ def _instance_sizing(payload: dict) -> dict:
 _DEFAULT_BOOT_VOLUME_GB = 50
 
 
+def _wants_a_data_volume(payload: dict) -> bool:
+    """Whether any technology on this request keeps its data on its own volume.
+
+    Asked of the RECIPE, not of the request: a container profile declaring a
+    `data_dir` is the only thing that knows a separate volume is needed, and it
+    is the same profile the first-boot script will mount.
+    """
+    try:
+        from orchestrator import configure
+    except Exception:  # noqa: BLE001 - a missing recipe table means no data volume
+        return False
+    family = (payload.get("os_family") or "rhel")
+    for component in payload.get("policy_input", {}).get("components", []):
+        profile = configure.profile_for(component.get("technology_code") or "", family)
+        # `or {}` AROUND THE VALUE, not a default on the lookup. `profile_for`
+        # returns the key present and set to None for every technology without a
+        # container, and a default only applies when a key is MISSING — so this
+        # raised AttributeError on nginx, which would have turned a provision
+        # into a 500 rather than a request for no data volume.
+        if ((profile or {}).get("container") or {}).get("data_dir"):
+            return True
+    return False
+
+
+def _data_volume_gb(payload: dict) -> int:
+    """Size of the separate data volume, or 0 when nothing asked for one.
+
+    THE REQUESTER'S `storage_gb` SIZES THIS, NOT THE BOOT DISK. When someone
+    asks for RabbitMQ with 100 GB they mean 100 GB for their messages, not a
+    larger operating system disk — so for a technology whose data lives on its
+    own volume the requested figure follows the data, and the boot volume stays
+    at the standard size. For everything else nothing changes: `storage_gb`
+    continues to size the boot disk exactly as it has since that was fixed.
+    """
+    if not _wants_a_data_volume(payload):
+        return 0
+    return _boot_volume_gb(payload)
+
+
 def _boot_volume_gb(payload: dict) -> int:
     """Boot volume for the instance: the largest disk any component asks for.
 
@@ -884,7 +923,12 @@ def _compute_spec(payload: dict, resource_kind: str = "") -> dict:
         **sizing,
         # The disk the request was priced for. Previously never sent, so every
         # machine got the image default however much storage was paid for.
-        "boot_volume_gb": _boot_volume_gb(payload),
+        # The boot disk keeps the standard size when the requested figure has
+        # gone to a data volume instead; sizing both from one number would bill
+        # for the storage twice.
+        "boot_volume_gb": (_DEFAULT_BOOT_VOLUME_GB if _wants_a_data_volume(payload)
+                           else _boot_volume_gb(payload)),
+        "data_volume_gb": _data_volume_gb(payload),
         "image_ocid": _image_for(payload, resource_kind),
         # Carried separately so a blueprint with its own image lookup can honour
         # a deliberate choice while ignoring the shared default. The requester's

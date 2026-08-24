@@ -39,11 +39,28 @@ import re
 URL = re.compile(r"^https://[A-Za-z0-9][A-Za-z0-9.\-]{0,252}(:\d{1,5})?"
                  r"(/[A-Za-z0-9._~\-/%+]*)?$")
 
-# Add-on software lives under /opt, one or more plain path segments deep. `..` is
-# impossible by construction rather than by a separate check: a segment may only
-# be alphanumerics, dot, dash or underscore, and a bare ".." segment is excluded
-# by requiring at least one non-dot character.
-DEST = re.compile(r"^/opt/(?!\.\.?$)[A-Za-z0-9._\-]+(?:/(?!\.\.?$)[A-Za-z0-9._\-]+)*$")
+# One path segment that CANNOT be `.` or `..`, because it must contain at least
+# one character that is not a dot. Stated once and reused, so the two confined
+# paths in this file cannot drift apart.
+#
+# CORRECTED 2026-08-24, and it was a live traversal, not a tidy-up. The previous
+# construction was `(?!\.\.?$)[A-Za-z0-9._-]+` per segment, whose lookahead is
+# anchored to END OF STRING — so it rejected a TRAILING `..` and nothing else:
+#
+#     /opt/../..                  refused    <- the only case ever tested
+#     /opt/../../etc              ACCEPTED
+#     /opt/a/../../../root/.ssh   ACCEPTED   <- root unpacks a tarball here,
+#                                               then chown -R's it
+#
+# The adversarial review of 2026-08-22 tested the trailing form, it was refused,
+# and the comment above this line then claimed `..` was "impossible by
+# construction". It was not. Found on 2026-08-24 while writing the equivalent
+# rule for container data directories, by testing the middle position rather
+# than the end.
+_SEGMENT = r"[A-Za-z0-9._\-]*[A-Za-z0-9_\-][A-Za-z0-9._\-]*"
+
+# Add-on software lives under /opt, one or more plain path segments deep.
+DEST = re.compile(rf"^/opt/{_SEGMENT}(?:/{_SEGMENT})*$")
 
 # A system account name, as useradd will accept it.
 USER = re.compile(r"^[a-z_][a-z0-9_\-]{0,31}$")
@@ -106,6 +123,51 @@ REPO_SUFFIXES = (".repo",)
 # The only repositories that may be enabled by installing a release package.
 # See repo_problems() for why this is a closed set and not a pattern.
 RELEASE_PACKAGES = frozenset({"oracle-epel-release-el9", "epel-release"})
+
+# --- containers (C8) ---------------------------------------------------------
+#
+# The registries an image may be pulled from. A CLOSED SET, for the same reason
+# RELEASE_PACKAGES is one: pulling an image is executing whatever that publisher
+# put in it, as whatever user the image declares. A pattern like "any host ending
+# in .io" would let a drafted profile — or a name read off a machine's report —
+# point root at anything.
+#
+# ocir is Oracle's own registry, reachable over the service gateway, and is here
+# so images can be mirrored under your control rather than pulled anonymously
+# from a public host on every boot.
+REGISTRIES = frozenset({
+    "docker.io", "quay.io", "ghcr.io",
+    "me-dubai-1.ocir.io", "ocir.me-dubai-1.oci.oraclecloud.com",
+})
+
+# The repository path inside a registry: `library/rabbitmq`, `keycloak/keycloak`.
+# Lowercase by OCI distribution rules; no `..`, by the same construction DEST
+# uses — a segment must contain at least one non-dot character.
+IMAGE_PATH = re.compile(
+    rf"^{_SEGMENT}(?:/{_SEGMENT}){{0,4}}$")
+
+# An image tag. Informational only — the DIGEST is what is pulled — but it still
+# reaches a command line, so it is bounded.
+IMAGE_TAG = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._\-]{0,127}$")
+
+# Service data lives under /var/lib, on its own block volume. Confined exactly
+# as add-on software is confined to /opt.
+DATA_DIR = re.compile(rf"^/var/lib/{_SEGMENT}(?:/{_SEGMENT})*$")
+
+# Fields a container profile may declare. ANYTHING ELSE IS REFUSED, and that is
+# the whole security argument for this rung: the renderer builds the podman
+# command from validated fields, and a profile can never supply a flag. If it
+# could, `--privileged` or `-v /:/host` would end the discussion, and no
+# allow-list on the image name would save you.
+# A path INSIDE the container, which is where the data volume is mounted. Less
+# confined than DATA_DIR because the location is the image's business — Postgres
+# wants /var/lib/postgresql/data, RabbitMQ /var/lib/rabbitmq — but it is half of
+# a `-v host:container` argument, so a colon or a shell character in it would
+# change what is mounted rather than where.
+MOUNT_PATH = re.compile(rf"^/{_SEGMENT}(?:/{_SEGMENT})*$")
+
+CONTAINER_FIELDS = frozenset({"image", "tag", "digest", "data_dir",
+                              "data_mount", "environment"})
 
 
 def report_key(code: str) -> str:
@@ -289,6 +351,102 @@ def repo_problems(repo: dict) -> list[str]:
     return problems
 
 
+def container_problems(container: dict) -> list[str]:
+    """Every reason this image may not be pulled and run on a machine.
+
+    PULLING AN IMAGE IS EXECUTING WHAT A PUBLISHER PUT IN IT. That makes this
+    closer to an archive than to a package — one specific artifact, fetched and
+    run — so it gets an archive's discipline: a pinned digest, without exception,
+    from a source in a closed set.
+
+    THE FIELD ALLOW-LIST IS THE WHOLE ARGUMENT. A profile declares data, never
+    flags, and the renderer builds the podman command from what is validated
+    here. If a profile could contribute to that command line, `--privileged` or
+    `-v /:/host` would end the discussion and no amount of care over the image
+    name would matter. An unrecognised key is therefore REFUSED rather than
+    ignored — ignoring it is how a field nobody validated comes to be rendered
+    later by someone who assumed it had been.
+    """
+    problems: list[str] = []
+    if not isinstance(container, dict):
+        return ["The container declaration is not an object."]
+
+    unknown = sorted(set(container) - CONTAINER_FIELDS)
+    if unknown:
+        problems.append(
+            f"The container declares {', '.join(repr(u) for u in unknown)}, which "
+            f"this portal does not render. A container profile carries DATA, not "
+            f"command-line flags. Allowed: {', '.join(sorted(CONTAINER_FIELDS))}.")
+
+    image = container.get("image")
+    if not isinstance(image, str) or "/" not in image:
+        problems.append(
+            f"The image {image!r} must be fully qualified as <registry>/<path>, "
+            f"e.g. docker.io/library/rabbitmq. An unqualified name lets the "
+            f"machine's own registry search decide where root fetches from.")
+    else:
+        registry, _, path = image.partition("/")
+        if registry not in REGISTRIES:
+            problems.append(
+                f"{registry!r} is not a registry this portal pulls from. Running "
+                f"an image is running whatever its publisher put in it, so the "
+                f"list is closed rather than a pattern. Allowed: "
+                f"{', '.join(sorted(REGISTRIES))}.")
+        if not IMAGE_PATH.match(path):
+            problems.append(
+                f"The image path {path!r} is not acceptable; it is part of what "
+                f"root pulls.")
+
+    # MANDATORY, exactly as an archive checksum is mandatory and for the same
+    # reason: TLS proves the registry is the one the profile NAMED, and with the
+    # agent choosing that name the digest is the entire question. A tag is a
+    # moving target — its publisher can repoint it after this was proved.
+    digest = container.get("digest")
+    if (not isinstance(digest, str) or not digest.startswith("sha256:")
+            or not SHA256.match(digest[len("sha256:"):])):
+        problems.append(
+            f"The image declares no pinned sha256 digest (got {digest!r}). A tag "
+            f"can be repointed after this recipe was proved, so what a proof "
+            f"certified and what a request later installs would be different "
+            f"things wearing the same name.")
+
+    tag = container.get("tag")
+    if tag is not None and (not isinstance(tag, str) or not IMAGE_TAG.match(tag)):
+        problems.append(f"The image tag {tag!r} is not acceptable.")
+
+    data_dir, data_mount = container.get("data_dir"), container.get("data_mount")
+    if (data_dir is None) != (data_mount is None):
+        problems.append(
+            "A data directory needs both a host path and the path it is mounted "
+            "at inside the container. One without the other mounts nothing, or "
+            "mounts it nowhere.")
+    if data_dir is not None and (not isinstance(data_dir, str)
+                                 or not DATA_DIR.match(data_dir)):
+        problems.append(
+            f"The host data directory {data_dir!r} is not acceptable. Service "
+            f"data lives under /var/lib, on its own block volume, the same way "
+            f"add-on software is confined to /opt.")
+    if data_mount is not None and (not isinstance(data_mount, str)
+                                   or not MOUNT_PATH.match(data_mount)):
+        problems.append(
+            f"The in-container mount path {data_mount!r} is not acceptable; it "
+            f"is half of a `-v host:container` argument.")
+
+    env = container.get("environment")
+    if env is not None:
+        if not isinstance(env, dict):
+            problems.append("The container environment is not an object.")
+        else:
+            for key, value in env.items():
+                if not isinstance(key, str) or not ENV_KEY.match(key):
+                    problems.append(f"Environment name {key!r} is not acceptable.")
+                if not isinstance(value, str) or not ENV_VALUE.match(str(value)):
+                    problems.append(
+                        f"The value of {key!r} is not acceptable; it is written "
+                        f"into a unit file read by systemd.")
+    return problems
+
+
 def profile_problems(profile: dict) -> list[str]:
     """Every reason this profile may not reach a machine. Empty means it may.
 
@@ -323,12 +481,17 @@ def profile_problems(profile: dict) -> list[str]:
     if repo is not None:
         problems += repo_problems(repo)
 
+    container = profile.get("container")
+    if container is not None:
+        problems += container_problems(container)
+
     # IT MUST INSTALL SOMETHING RUNNABLE. Relaxing the packages rule for archives
     # briefly allowed a profile with no packages, no services and no ports: it
     # unpacked a tarball, started nothing, and reported healthy — a proof of
     # nothing, which is the failure this whole certification design exists to
     # prevent and which it had already reproduced twice that day.
-    installs = any(profile[f].get("packages") for f in families) or archive is not None
+    installs = (any(profile[f].get("packages") for f in families)
+                or archive is not None or profile.get("container") is not None)
     if not installs:
         problems.append("The profile installs nothing: no packages and no archive.")
     if archive is not None and not declares_services:

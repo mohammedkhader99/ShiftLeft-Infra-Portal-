@@ -31,6 +31,7 @@ from api import ai_explainer
 from api import ai_recommend
 from api import ai_triage
 from api import discovery
+from api import registry
 from api import blueprint_capabilities
 from api import network_egress
 from api import cloud_options
@@ -3844,11 +3845,43 @@ def _autobuild_component(session: Session, code: str, target: str) -> dict:
         # be tested rather than buried in a closure.
         return discovery.finding_for(text, candidate)
 
+    # WHEN NOTHING IS PACKAGED, ASK WHETHER ANYTHING IS PUBLISHED (C8).
+    #
+    # Three real machines established that RabbitMQ is not in Oracle Linux 9's
+    # repositories or in EPEL 9. Its official image has been pulled nearly four
+    # billion times. This is the question that follows a SOUND search finding
+    # nothing — and it is answered for any technology without a row being typed.
+    #
+    # Fail-soft, deliberately: a public registry being unreachable must never
+    # refuse a request, only mean there is no container rung this time.
+    def find_image(candidate: str) -> dict | None:
+        try:
+            return registry.find(candidate)
+        except Exception:  # noqa: BLE001 - a registry outage is not our failure
+            return None
+
+    # WHAT THE CONTAINER ACTUALLY BOUND, asked of the machine that just ran it.
+    # The image declares its whole interface; a default container listens on a
+    # fraction of it, and the difference is firewall surface on a real machine.
+    def observe_ports(proof_reference: str, candidate: str) -> list[int]:
+        if not proof_reference:
+            return []
+        reports = _orchestrator_boot_reports(proof_reference, ["oci-service-vm"])
+        if not reports:
+            return []
+        text = "\n".join(
+            str(body)
+            for entry in (reports.get("reports") or [])
+            if isinstance(entry, dict)
+            for body in (entry.get("files") or {}).values())
+        return discovery.listening_inside(text, candidate)
+
     result = autobuild.ensure(code, session, target=target, shipped=shipped,
                               run_proof=run_proof, publish=publish,
                               certify=certify, withdraw=withdraw,
                               shipped_codes=shipped_codes, reachable=reachable,
-                              discover=discover)
+                              discover=discover, find_image=find_image,
+                              observe_ports=observe_ports)
     session.commit()
     return {"status": result.status, "detail": result.detail[:300]}
 

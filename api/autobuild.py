@@ -224,7 +224,8 @@ def summarise(result: AutobuildResult) -> dict:
 def ensure(candidate: str, session: Session, *, target, shipped, run_proof,
            publish, certify, withdraw=None,
            shipped_codes: frozenset[str] = frozenset(),
-           reachable=None, discover=None) -> AutobuildResult:
+           reachable=None, discover=None, find_image=None,
+           observe_ports=None) -> AutobuildResult:
     """Make `candidate` provisionable, and certify it — no human involved.
 
     The reviewer's requirement of 2026-08-21, in full: if the agent cannot find a
@@ -332,6 +333,9 @@ def ensure(candidate: str, session: Session, *, target, shipped, run_proof,
         last = None
         refuted_by_a_machine: list[str] = []
         discovered: dict = {}
+        published_image: dict = {}
+        looked_for_an_image = False
+        narrowed = False
         # Asked once per PROOF, not once per run. A single boolean meant that
         # re-running a rung consumed the one question, so the machine it built
         # was never asked what it found — the exact silence this increment
@@ -343,9 +347,12 @@ def ensure(candidate: str, session: Session, *, target, shipped, run_proof,
             attempt = (ai_blueprint.draft(candidate, session, target=target,
                                           shipped_codes=shipped_codes,
                                           method=method)
-                       if method != "discovered"
+                       if method not in ("discovered", "container")
                        else ai_blueprint.draft_from_finding(
-                           candidate, discovered, target=target))
+                           candidate, discovered, target=target)
+                       if method == "discovered"
+                       else ai_blueprint.draft_from_image(
+                           candidate, published_image, target=target))
             if attempt is None:
                 continue
             last = _ensure_vm_service(candidate, session, attempt, target=target,
@@ -355,6 +362,26 @@ def ensure(candidate: str, session: Session, *, target, shipped, run_proof,
                                       method=method,
                                       ignore_memory=method in rerun)
             if last.status == "published":
+                # THE NARROWING PASS (C8). A container's first attempt publishes
+                # no ports and asks the container what it actually bound. Now
+                # that a machine has answered, the profile is redrafted with
+                # exactly those ports and PROVED AGAIN — because a changed
+                # recipe is never certified on the old recipe's proof, and until
+                # the ports are published nothing outside the machine can reach
+                # the service at all.
+                #
+                # Once. The second draft publishes what the first observed, so
+                # there is nothing left to narrow.
+                if (method == "container" and not narrowed
+                        and observe_ports is not None and last.proof_reference):
+                    narrowed = True
+                    seen = observe_ports(last.proof_reference, candidate)
+                    if seen and seen != list(published_image.get("listening") or []):
+                        published_image = {**published_image, "listening": seen}
+                        if withdraw:
+                            withdraw(last.files)
+                        methods.append("container")
+                        continue
                 return last
             # A RUNG ALREADY REFUTED IS SKIPPED, NOT A REASON TO STOP. The
             # memory says a machine disproved THIS method; the next one is
@@ -382,6 +409,18 @@ def ensure(candidate: str, session: Session, *, target, shipped, run_proof,
                         discovered = seen
                         methods.append("discovered")
                         continue
+                    if seen == {} and not looked_for_an_image:
+                        # SOUND, AND NOTHING THERE. Not "we could not tell" —
+                        # the machine searched repositories it named and this
+                        # software is not in them. That is precisely the
+                        # question a registry can answer next.
+                        looked_for_an_image = True
+                        if find_image is not None:
+                            found = find_image(candidate)
+                            if found:
+                                published_image = found
+                                methods.append("container")
+                                continue
                     if seen is None and method not in rerun:
                         # That machine was never asked. Run the rung once so a
                         # current one can answer; its report will carry a
@@ -425,6 +464,13 @@ def ensure(candidate: str, session: Session, *, target, shipped, run_proof,
                     if finding:
                         discovered = finding
                         methods.append("discovered")
+                    elif finding == {} and not looked_for_an_image:
+                        looked_for_an_image = True
+                        if find_image is not None:
+                            found = find_image(candidate)
+                            if found:
+                                published_image = found
+                                methods.append("container")
         if last is not None:
             if len(refuted_by_a_machine) > 1:
                 # SAY ONLY WHAT HAPPENED. This sentence used to claim "a machine
@@ -554,6 +600,10 @@ def _ensure_vm_service(candidate, session, proposal, *, target, shipped,
             f"withdrawn rather than left behind. Nothing was built.")
 
     outcome = run_proof(session, manifest)
+    # RECORDED FOR BOTH OUTCOMES. It was set only on the failure path, so a
+    # PASSING proof reported no reference — and the narrowing pass, which reads
+    # the report of a proof that succeeded, silently never ran.
+    result.proof_reference = outcome.reference or ""
     if outcome.status == "passed":
         certify(manifest, outcome.reference)
         result.attempts.append(Attempt(1, "proved", "passed", outcome.detail))
@@ -574,7 +624,6 @@ def _ensure_vm_service(candidate, session, proposal, *, target, shipped,
     # recipe_memory.refutes() decides: a cost-cap refusal or a failed teardown
     # is our problem, not the recipe's.
     result.machine_refuted = recipe_memory.refutes(outcome.status, outcome.detail)
-    result.proof_reference = outcome.reference or ""
     if session is not None and result.machine_refuted:
         recipe_memory.remember(session, candidate, target, recipe,
                                outcome.reference, outcome.detail)

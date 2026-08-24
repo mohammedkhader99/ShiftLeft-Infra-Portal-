@@ -191,3 +191,31 @@ resource "oci_core_instance" "service" {
     ]
   }
 }
+
+# --- service data, on its own volume (C8) ------------------------------------
+#
+# PARAVIRTUALIZED, not iSCSI. An iSCSI attachment needs the machine to run
+# `iscsiadm` with the target's own IQN and portal address before the disk
+# appears at all — several commands, each able to fail silently at first boot,
+# on a machine nobody can log in to. A paravirtualized attachment appears as a
+# device without the machine doing anything, which is one less thing that can
+# half-work.
+resource "oci_core_volume" "data" {
+  count               = var.data_volume_gb > 0 ? var.instance_count : 0
+  compartment_id      = var.compartment_ocid
+  availability_domain = local.availability_domain
+  display_name        = format("%s-%02d-data", var.instance_name, count.index + 1)
+  size_in_gbs         = var.data_volume_gb
+
+  freeform_tags = var.tags
+  defined_tags  = var.defined_tags
+}
+
+resource "oci_core_volume_attachment" "data" {
+  count = var.data_volume_gb > 0 ? var.instance_count : 0
+  # `paravirtualized` is what makes the device show up on its own; see above.
+  attachment_type = "paravirtualized"
+  instance_id     = oci_core_instance.service[count.index].id
+  volume_id       = oci_core_volume.data[count.index].id
+  display_name    = format("%s-%02d-data-attach", var.instance_name, count.index + 1)
+}

@@ -213,3 +213,23 @@ variable "extra_nsg_ocids" {
   type        = list(string)
   default     = []
 }
+
+# A SEPARATE BLOCK VOLUME FOR SERVICE DATA (C8).
+#
+# Zero means none, and zero is the default, so every technology certified on
+# this module before container support existed renders exactly the Terraform it
+# rendered yesterday. That is not a courtesy — nginx, redis7, java21, python312,
+# nodejs20, keycloak and vault are all certified against this module, and a
+# change that quietly altered their plan would invalidate evidence bought with
+# real machines.
+#
+# WHY SEPARATE, and not simply a larger boot volume: a container's data outlives
+# the container, and often the machine. On its own volume it can be backed up on
+# its own schedule, resized without touching the OS, and detached and reattached
+# to a rebuilt host. On the boot volume it is entangled with the operating
+# system, and a rebuild takes the data with it.
+variable "data_volume_gb" {
+  description = "Size of a separate block volume for service data. 0 creates none."
+  type        = number
+  default     = 0
+}

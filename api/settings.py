@@ -148,6 +148,12 @@ READ_ONLY_ENV: dict[str, str] = {
     # 2700s, so REQ-2026-0149 was declared apply-failed 15 minutes into a build
     # that was still running, and the cluster it created went unrecorded.
     "ORCHESTRATOR_TIMEOUT_SECONDS": "Orchestrator call timeout (seconds)",
+    # How long the portal waits for a container registry when asking whether a
+    # technology publishes an image (C8). Read-only rather than editable: it is
+    # a fail-soft lookup — a slow registry means "no container rung this time",
+    # never a refused request — so raising it cannot rescue anything, and
+    # lowering it only makes the answer arrive less often.
+    "REGISTRY_TIMEOUT_SECONDS": "Container registry lookup timeout (seconds)",
     "AUTH_MODE": "Sign-in mode",
     "USE_MOCK": "Master mock switch",
     "PROVISION_MODE": "Provisioning mode",

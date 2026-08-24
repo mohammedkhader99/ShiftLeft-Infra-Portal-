@@ -482,7 +482,8 @@ def _report_script(wanted: list[tuple[str, str]], packages: list[str],
                    report_url: str,
                    archives: list[tuple[str, dict]] | None = None,
                    repos: list[tuple[str, dict]] | None = None,
-                   candidates: dict[str, tuple[str, list[str]]] | None = None
+                   candidates: dict[str, tuple[str, list[str]]] | None = None,
+                   containers: list[tuple[str, dict]] | None = None
                    ) -> list[str]:
     """The self-check a machine runs on itself, as cloud-config write_files lines.
 
@@ -521,6 +522,54 @@ def _report_script(wanted: list[tuple[str, str]], packages: list[str],
         checks.append(
             f"  (rpm -q {package} 2>/dev/null || dpkg-query -W -f='{package} ${{Version}}\\n' "
             f"{package} 2>/dev/null || echo '{package} NOT INSTALLED')")
+    for code, spec in (containers or []):
+        key = profile_rules.report_key(code)
+        # THE DIGEST THAT ACTUALLY ARRIVED, not the one we asked for. Asking
+        # podman what it has closes the gap between the recipe and the machine:
+        # a pull that silently resolved elsewhere, or a stale image already on
+        # the host, would otherwise be indistinguishable from the pinned one.
+        pinned = shlex.quote(spec["image"] + "@" + spec["digest"])
+        checks.append(
+            f"  echo \"image_{key}=$(podman image inspect {pinned} "
+            f"--format '{{{{index .RepoDigests 0}}}}' 2>/dev/null "
+            f"|| echo missing)\"")
+        checks.append(
+            f"  echo \"container_{key}=$(podman ps --filter name=^{code}$ "
+            f"--filter status=running --format '{{{{.Names}}}}' 2>/dev/null "
+            f"| head -1 | grep -q . && echo running || echo failed)\"")
+        # WHAT IS LISTENING INSIDE THE CONTAINER, which is a different question
+        # from what is published on the host. A published port binds on the host
+        # whether or not anything inside is listening, so the host-side socket
+        # diff cannot narrow anything: podman's proxy answers either way.
+        #
+        # `library/rabbitmq` DECLARES six ports — AMQP, AMQPS, epmd, clustering
+        # and two Prometheus endpoints — and a default container listens on far
+        # fewer. Opening all six in the firewall of a real machine is more
+        # surface than the service needs.
+        #
+        # READ FROM /proc, not from `ss`: /proc/net/tcp exists in every Linux
+        # container without anything being installed, and a great many images
+        # carry no networking tools at all. State 0A is LISTEN; the address is
+        # hex, converted by printf rather than by a gawk extension the image's
+        # awk may not have.
+        awk_listen = """awk '$4=="0A"{split($2,a,":"); print a[2]}'"""
+        to_decimal = """while read H; do printf '%d\\n' "0x$H"; done"""
+        checks.append(
+            f"  LI=$(for F in /proc/net/tcp /proc/net/tcp6; do "
+            f"podman exec {code} cat $F 2>/dev/null; done "
+            f"| {awk_listen} | sort -u | {to_decimal} "
+            f"| sort -un | paste -sd, -)")
+        checks.append(f'  echo "listening_inside_{key}=${{LI:-none}}"')
+
+        data_dir = spec.get("data_dir")
+        if data_dir:
+            # A CONTAINER WRITING TO THE BOOT VOLUME LOOKS EXACTLY LIKE ONE
+            # WRITING TO ITS OWN. The difference only surfaces when the volume
+            # is detached and the data is not on it.
+            checks.append(
+                f'  echo "data_volume_{key}=$(mountpoint -q '
+                f'{shlex.quote(data_dir)} && echo mounted || echo not-mounted)"')
+
     # --- what this machine could have installed instead (C7) -------------------
     #
     # THE MACHINE IS ALREADY HERE AND ALREADY KNOWS. REQ-2026-0188 guessed
@@ -594,6 +643,24 @@ def _report_script(wanted: list[tuple[str, str]], packages: list[str],
         # in the base repositories of every image this portal builds; if the
         # query cannot find even that, the query itself is broken and `none`
         # says nothing whatsoever about the software being looked for.
+        # WHICH REPOSITORIES WERE ACTUALLY LOOKED IN.
+        #
+        # REQ-2026-0190 reported `epel_rabbitmq=present, queryable=yes,
+        # available=none` — and that still could not settle the question, because
+        # `rpm -q <release package>` proves the package is INSTALLED, not that the
+        # repository it carries is ENABLED. A repo can sit in
+        # /etc/yum.repos.d with enabled=0 and be searched by nothing. So
+        # "RabbitMQ is not in EL9 or EPEL" and "EPEL was never searched" stayed
+        # indistinguishable, which is the whole failure this reporting exists to
+        # end, one level deeper.
+        #
+        # dnf's own enabled list is the only thing that answers it. Sanitised to
+        # a comma-joined single line because verdict() parses key=value per line
+        # and repolist prints a table.
+        checks.append(
+            "    REPOS=$(dnf --quiet repolist --enabled 2>/dev/null "
+            "| awk 'NR>1 {print $1}' | paste -sd, -)")
+        checks.append(f'    echo "searched_{key}=${{REPOS:-unknown}}"')
         checks.append(
             '    PROBE=$(dnf --quiet repoquery --qf "%{name}" bash '
             '2>/dev/null | head -1)')
@@ -891,11 +958,19 @@ def profile_for(code: str, family: str = "") -> dict | None:
     # curl are universal, yet what this family was PROVEN to run is not, and
     # coverage is a per-family claim the proof makes one family at a time.
     archive = prof.get("archive") if isinstance(prof.get("archive"), dict) else None
-    if not isinstance(block, dict) or not (block.get("packages") or archive):
+    container = (prof.get("container")
+                 if isinstance(prof.get("container"), dict) else None)
+    # A CONTAINER IS AN INSTALL. Without it named here a container profile
+    # declaring no packages is dropped as installing nothing, and the technology
+    # silently disappears from the machine's configuration — the software is
+    # never installed and nothing says why.
+    if not isinstance(block, dict) or not (block.get("packages")
+                                           or archive or container):
         return None
 
     return {"family": family,
             "archive": archive,
+            "container": container,
             # A vendor repository to add BEFORE installing. `dnf install vault`
             # finds nothing on Oracle Linux because HashiCorp ships Vault from
             # its own repository — REQ-2026-0184 spent a machine learning that.
@@ -1030,11 +1105,21 @@ def render(components: list[dict], family: str = "", report_url: str = "") -> st
     # a real RPM — but the software itself is fetched, checked, and unpacked.
     archives: list[tuple[str, dict]] = []
     repos: list[tuple[str, dict]] = []
+    containers: list[tuple[str, dict]] = []
     for code, version, prof in profiles:
         if prof.get("archive"):
             archives.append((code, prof["archive"]))
         if prof.get("repo"):
             repos.append((code, prof["repo"]))
+        if prof.get("container"):
+            containers.append((code, prof["container"]))
+            # SUPPLIED HERE, not declared in the profile. What runs a container
+            # is a property of this renderer's choice of runtime, not of the
+            # technology — and a profile that had to remember it would produce a
+            # machine that pulls nothing, starts nothing, and says only that the
+            # service is inactive.
+            if "podman" not in packages:
+                packages.append("podman")
         stream = module_stream(code, version, family)
         if stream and stream not in modules:
             modules.append(stream)
@@ -1110,6 +1195,48 @@ def render(components: list[dict], family: str = "", report_url: str = "") -> st
         lines.append("      Restart=on-failure")
         lines.append("      [Install]")
         lines.append("      WantedBy=multi-user.target")
+    # --- Quadlet units, one per container (C8) -------------------------------
+    #
+    # WRITTEN AS A FILE, for the same reason the report script is: an ini file
+    # full of colons and slashes does not have to survive YAML quoting, and
+    # systemd reads it directly. Quadlet converts it into a real unit at
+    # daemon-reload, so `systemctl is-active <code>` — the check every other
+    # technology already faces — works unchanged.
+    #
+    # EVERY VALUE HERE CAME THROUGH profile_rules.container_problems(). The
+    # profile contributes data, never flags: there is no field it can set that
+    # becomes a podman argument this renderer did not choose.
+    for code, spec in containers:
+        lines.append(f"  - path: /etc/containers/systemd/{code}.container")
+        lines.append("    permissions: '0644'")
+        lines.append("    content: |")
+        lines.append("      [Unit]")
+        lines.append(f"      Description={code}, run by the provisioning portal")
+        lines.append("      [Container]")
+        # PINNED BY DIGEST. The tag, if any, is a comment for a human reading
+        # the machine — what is actually pulled is the digest, so a publisher
+        # repointing the tag cannot change what a proved recipe installs.
+        lines.append(f"      Image={spec['image']}@{spec['digest']}")
+        if spec.get("tag"):
+            lines.append(f"      # tag at the time of drafting: {spec['tag']}")
+        lines.append(f"      ContainerName={code}")
+        for port in (profile_for(code, family) or {}).get("ports", []):
+            lines.append(f"      PublishPort={int(port)}:{int(port)}")
+        if spec.get("data_dir") and spec.get("data_mount"):
+            # :Z relabels for SELinux, which is enforcing on Oracle Linux. Without
+            # it the container is denied access to its own data directory and the
+            # service fails for a reason that looks nothing like a mount problem.
+            lines.append(
+                f"      Volume={spec['data_dir']}:{spec['data_mount']}:Z")
+        for env_key, env_value in sorted((spec.get("environment") or {}).items()):
+            lines.append(f"      Environment={env_key}={env_value}")
+        lines.append("      [Service]")
+        lines.append("      Restart=always")
+        lines.append("      [Install]")
+        # What makes it come back after a reboot. A generated unit cannot be
+        # `systemctl enable`d, so this section is the only thing that installs it.
+        lines.append("      WantedBy=multi-user.target")
+
     # The machine's own self-check, written as a FILE so its quotes and loops
     # never have to survive YAML quoting — the failure that has already cost this
     # project two machines.
@@ -1120,7 +1247,7 @@ def render(components: list[dict], family: str = "", report_url: str = "") -> st
         for check in _report_script(
                 [(code, version) for code, version, _profile in profiles],
                 packages, services, ports, family, report_url,
-                archives=archives, repos=repos,
+                archives=archives, repos=repos, containers=containers,
                 # ONLY FOR A PACKAGE GUESS. A profile carrying an archive or
                 # a vendor repository is not guessing a name — keycloak IS a
                 # tarball, and searching the repositories for it finds nothing,
@@ -1232,9 +1359,75 @@ def render(components: list[dict], family: str = "", report_url: str = "") -> st
                 f"chown -R {user}:{user} {dest} || echo 'PORTAL "
                 f"FAILURE: could not chown {dest_raw}' >> /var/log/infra-portal.log"))
         lines.append(cmd(f"rm -f {tmp}"))
+    # --- service data, on its own block volume (C8) --------------------------
+    #
+    # MOUNTED BEFORE THE CONTAINER STARTS, or the container creates its data
+    # directory on the boot volume, writes there happily, and the machine looks
+    # perfectly healthy right up until somebody detaches the volume that was
+    # supposed to hold it and finds it empty.
+    for code, spec in containers:
+        data_dir = spec.get("data_dir")
+        if not data_dir:
+            continue
+        quoted = shlex.quote(data_dir)
+        key = profile_rules.report_key(code)
+        # THE DEVICE IS FOUND, NOT ASSUMED. A paravirtualized attachment appears
+        # under /dev/oracleoci when oci-utils is present and as a plain /dev/sdX
+        # when it is not, and the kernel is free to order those differently
+        # between boots. Each candidate is tested for existence rather than
+        # hoped for.
+        lines.append(cmd(
+            "for C in /dev/oracleoci/oraclevdb /dev/sdb /dev/nvme1n1; do "
+            "[ -b \"$C\" ] && DATADEV=\"$C\" && break; done; "
+            "echo \"${DATADEV:-none}\" > /var/lib/infra-portal-datadev"))
+        # NEVER mkfs A DEVICE THAT ALREADY HAS A FILESYSTEM. This script runs at
+        # every first boot, and a rebuilt machine reattached to an existing
+        # volume must find its data, not lose it.
+        lines.append(cmd(
+            "DATADEV=$(cat /var/lib/infra-portal-datadev); "
+            "if [ \"$DATADEV\" != none ]; then "
+            "blkid \"$DATADEV\" >/dev/null 2>&1 || "
+            "mkfs.xfs -q -L portaldata \"$DATADEV\"; fi"))
+        lines.append(cmd(f"mkdir -p {quoted}"))
+        # BY UUID, not by device name: /dev/sdb is not a stable identity across
+        # reboots, and an fstab entry pointing at the wrong disk is worse than
+        # none. `nofail` so a volume that is slow to attach cannot leave the
+        # machine unbootable and unreachable.
+        lines.append(cmd(
+            "DATADEV=$(cat /var/lib/infra-portal-datadev); "
+            "if [ \"$DATADEV\" != none ]; then "
+            "DUUID=$(blkid -s UUID -o value \"$DATADEV\"); "
+            f"grep -q \"$DUUID\" /etc/fstab || "
+            f"echo \"UUID=$DUUID {data_dir} xfs defaults,_netdev,nofail 0 2\" "
+            ">> /etc/fstab; fi"))
+        lines.append(cmd(
+            f"mountpoint -q {quoted} || mount {quoted} || echo 'PORTAL FAILURE: "
+            f"the data volume did not mount at {data_dir}' "
+            f">> /var/log/infra-portal.log"))
+        _ = key
+
+    # --- containers ----------------------------------------------------------
+    for code, spec in containers:
+        image = spec["image"] + "@" + spec["digest"]
+        lines.append(cmd(
+            f"podman pull {shlex.quote(image)} || echo 'PORTAL FAILURE: could "
+            f"not pull the {code} image' >> /var/log/infra-portal.log"))
+
     if archives:
         lines.append(cmd("systemctl daemon-reload || true"))
+    if containers:
+        # Quadlet turns /etc/containers/systemd/<code>.container into a real
+        # systemd unit at daemon-reload. The unit is GENERATED, so it is started
+        # rather than enabled — `systemctl enable` on a generated unit fails, and
+        # the [Install] section written into the .container file is what makes it
+        # come back after a reboot.
+        lines.append(cmd("systemctl daemon-reload || true"))
     for svc in services:
+        if any(svc == code for code, _spec in containers):
+            lines.append(cmd(
+                f"systemctl start {svc} || echo 'PORTAL FAILURE: {svc} did not "
+                f"start' >> /var/log/infra-portal.log"))
+            continue
         lines.append(cmd(f"systemctl enable --now {svc} || echo 'PORTAL FAILURE: {svc} did not start' >> /var/log/infra-portal.log"))
     # The OS firewall, from the same declaration that drives the network rules.
     # Without this a service starts correctly and is still unreachable — which
@@ -1264,7 +1457,11 @@ def render(components: list[dict], family: str = "", report_url: str = "") -> st
         # vendor repository is just as capable of taking a minute to bind — and
         # reporting the instant `systemctl enable` returns would call it broken
         # on the port check, which is this whole file's recurring failure.
-        if archives or repos:
+        # `containers` too: an image has to be pulled, unpacked and started
+        # before anything listens, which is the slowest of the three. Reporting
+        # the instant `systemctl start` returns would call a healthy machine
+        # broken on the port check — this file's recurring failure.
+        if archives or repos or containers:
             for port in ports:
                 lines.append(cmd(
                     f"for i in $(seq 1 60); do curl -s -o /dev/null -m 5 "

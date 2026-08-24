@@ -229,6 +229,11 @@ def _oci_vars(name: str, tags: dict, resource_kind: str = "oci-bucket",
         # defaulted it; nothing ever supplied a value, so storage was priced and
         # approved and then quietly ignored at build time.
         "boot_volume_size_in_gbs": int(sizing.get("boot_volume_gb", 50)),
+        # A SEPARATE BLOCK VOLUME FOR SERVICE DATA (C8). Zero creates none, and
+        # zero is what every technology certified before containers existed
+        # passes — so their plan is byte-for-byte what it was, and evidence
+        # bought with real machines stays valid.
+        "data_volume_gb": int(sizing.get("data_volume_gb", 0)),
         # OS family of the chosen image. A blueprint that renders its own
         # first-boot script needs it to pick package names, the systemd unit, the
         # firewall tool and the certificate paths. Blueprints that delegate to
