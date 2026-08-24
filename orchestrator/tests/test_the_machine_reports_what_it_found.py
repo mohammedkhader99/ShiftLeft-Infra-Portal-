@@ -378,3 +378,63 @@ def test_the_repository_list_is_one_parseable_line(tmp_path, monkeypatch):
 def test_it_is_reported_before_the_answer_it_qualifies(tmp_path, monkeypatch):
     text = script(GUESS, "rabbitmq", tmp_path, monkeypatch)
     assert text.index("searched_rabbitmq=") < text.index('echo "available_rabbitmq=')
+
+
+# --- installed is not ENABLED, proved on a machine (REQ-2026-0191) ------------
+#
+# The `searched_` line was added to distinguish "this software is genuinely
+# absent" from "EPEL was never searched". On its first real run it distinguished
+# them, and the answer was the second:
+#
+#     epel_rabbitmq=present
+#     searched_rabbitmq=ol9_UEKR8,ol9_addons,ol9_appstream,
+#                       ol9_baseos_latest,ol9_ksplice,ol9_oci_included
+#     available_rabbitmq=none
+#
+# Oracle ships `oracle-epel-release-el9` ON the OL9 image — hence `present`
+# rather than `added` — and the repository it carries is defined with enabled=0.
+# The release package being installed said nothing about whether anything
+# searched it, which is exactly what that line exists to reveal.
+
+def test_a_repository_that_is_defined_but_disabled_is_enabled(
+        tmp_path, monkeypatch):
+    text = script(GUESS, "rabbitmq", tmp_path, monkeypatch)
+    assert "config-manager --enable" in text, (
+        "the release package is installed and its repository left disabled, so "
+        "nothing ever searches it")
+
+
+def test_the_repository_to_enable_is_discovered_not_named(tmp_path, monkeypatch):
+    """The id differs between Oracle Linux releases. Hard-coding
+    `ol9_developer_EPEL` would be the same recalled-rather-than-measured mistake
+    as Vault's `expects: "1"` — right until the day it is not."""
+    text = script(GUESS, "rabbitmq", tmp_path, monkeypatch)
+    assert "repolist --disabled" in text
+    assert "ol9_developer_EPEL" not in text, "a repository id was recalled"
+
+
+def test_only_repositories_already_on_the_machine_are_enabled(
+        tmp_path, monkeypatch):
+    """Enabling is not adding. Every candidate comes from `dnf repolist`, so
+    each was already defined by Oracle's own release package — nothing new is
+    trusted, and no URL is introduced."""
+    text = script(GUESS, "rabbitmq", tmp_path, monkeypatch)
+    enable = next(l for l in text.splitlines() if "config-manager --enable" in l)
+    assert "repolist --disabled" in enable, (
+        "the repository to enable does not come from what the machine has")
+    assert "http" not in enable, "a URL reached the enable step"
+
+
+def test_enabling_happens_before_the_search_that_needs_it(tmp_path, monkeypatch):
+    text = script(GUESS, "rabbitmq", tmp_path, monkeypatch)
+    enable = text.index("config-manager --enable")
+    # The SECOND search — the one after EPEL is dealt with — must follow it.
+    second = text.index("repoquery", text.index("epel_rabbitmq=unavailable"))
+    assert enable < second, "it searches again before enabling anything"
+
+
+def test_the_searched_list_is_reported_after_enabling(tmp_path, monkeypatch):
+    """Otherwise it names the repositories from before the change and the
+    soundness rule judges the wrong search."""
+    text = script(GUESS, "rabbitmq", tmp_path, monkeypatch)
+    assert text.index("config-manager --enable") < text.index("searched_rabbitmq=")

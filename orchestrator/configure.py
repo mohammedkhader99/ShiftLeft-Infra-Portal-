@@ -632,6 +632,24 @@ def _report_script(wanted: list[tuple[str, str]], packages: list[str],
         checks.append(f'          echo "epel_{key}=unavailable"')
         checks.append("        fi")
         checks.append("      fi")
+        # INSTALLED IS NOT ENABLED, and REQ-2026-0191 proved it on a machine.
+        # Oracle ships `oracle-epel-release-el9` ON the OL9 image, so the check
+        # above reported `present` — and the repository it carries is defined
+        # with enabled=0, so it was never searched:
+        #
+        #   epel_rabbitmq=present
+        #   searched_rabbitmq=ol9_UEKR8,ol9_addons,ol9_appstream,
+        #                     ol9_baseos_latest,ol9_ksplice,ol9_oci_included
+        #
+        # DISCOVERED, NOT NAMED. The repository id differs between Oracle Linux
+        # releases, and hard-coding `ol9_developer_EPEL` would be the same
+        # recalled-rather-than-measured mistake as Vault's `expects: "1"`. Only
+        # repositories ALREADY DEFINED on this machine are enabled — every one
+        # of them from Oracle's own release package — so nothing new is trusted.
+        checks.append(
+            "      for R in $(dnf repolist --disabled 2>/dev/null "
+            "| awk 'NR>1 {print $1}' | grep -i epel); do "
+            'dnf config-manager --enable "$R" >/dev/null 2>&1 || true; done')
         checks.append(f"      for N in {listed}; do")
         checks.append(
             '        FOUND=$(dnf --quiet repoquery --qf "%{name}|%{repoid}" '
