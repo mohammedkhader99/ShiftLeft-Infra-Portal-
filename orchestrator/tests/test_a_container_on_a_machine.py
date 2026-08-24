@@ -492,3 +492,23 @@ def test_the_wait_is_bounded():
     from orchestrator import configure as c
     source = pathlib.Path(c.__file__).read_text(encoding="utf-8")
     assert re.search(r"seq 1 36", source)
+
+
+def test_the_port_wait_does_not_assume_http(tmp_path, monkeypatch):
+    """REQ-2026-0193's narrowing proof timed out at 2202s — "still waiting for
+    oci-service-vm to report" — because the wait curled each port and broke on
+    success. AMQP on 5672, epmd on 4369 and clustering on 25672 do not speak
+    HTTP, so curl never succeeded and it waited the full five minutes on each:
+    twenty minutes before the report was even written.
+
+    A LISTENING SOCKET is what "the service is up" means, and `ss` answers it
+    for any protocol. A plant reverting this to curl passed all 730 orchestrator
+    tests, because nothing asserted how the wait asks."""
+    ported = {**PINNED, "ports": [4369, 5672, 25672]}
+    run = runcmd(tmp_path, monkeypatch, profile=ported)
+    waits = [l for l in run.splitlines() if "seq 1 60" in l]
+    assert waits, "nothing waits for the service to come up"
+    for line in waits:
+        assert "ss -lnt" in line, f"the wait assumes HTTP: {line.strip()}"
+        assert "curl" not in line
+    assert "grep -q ':5672 '" in run

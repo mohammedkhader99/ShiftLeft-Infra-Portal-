@@ -230,6 +230,39 @@ def expire(session: Session, now: datetime | None = None) -> list[dict]:
 CERTIFIED_BY_RUNNER = "certification-runner"
 
 
+def withdraw_for_missing_recipe(session: Session, technology_code: str,
+                                target: str, why: str) -> bool:
+    """Suspend a certification whose recipe has just been withdrawn.
+
+    A CERTIFICATION MUST NOT OUTLIVE THE RECIPE IT CERTIFIED, and on 2026-08-24
+    one did. REQ-2026-0193's container proof passed and certified; the narrowing
+    proof that followed failed, so the profile was withdrawn from the generated
+    store — and the certification stayed. The catalogue went on claiming the
+    portal could build RabbitMQ, the request passed the certification gate, and
+    the orchestrator built the only thing it could with no recipe to render:
+
+        technologies=
+        --- packages ---
+        --- services ---
+        PORTAL: first-boot configuration finished
+
+    A bare machine, billing, recorded as provisioned and resolved in Jira. That
+    is the record and the reality disagreeing with the record believed — the
+    exact failure this whole certification design exists to prevent.
+
+    SUSPENDED, not deleted: the proof that earned it really happened and the
+    history is worth keeping. What changes is that the catalogue stops offering
+    it until a recipe exists and a machine proves it again.
+    """
+    row = session.get(Blueprint, (technology_code, target))
+    if row is None or row.status in (SUSPENDED, STALE):
+        return False
+    row.status = SUSPENDED
+    row.notes = (f"Suspended: the recipe this certification rested on was "
+                 f"withdrawn. {why}")[:500]
+    return True
+
+
 def certify_from_proof(session: Session, technology_code: str, target: str,
                        blueprint_ref: str, resource_kind: str,
                        proof_reference: str, version: str = "") -> Blueprint:

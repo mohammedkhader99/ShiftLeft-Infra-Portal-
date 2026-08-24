@@ -1511,9 +1511,21 @@ def render(components: list[dict], family: str = "", report_url: str = "") -> st
         # broken on the port check — this file's recurring failure.
         if archives or repos or containers:
             for port in ports:
+                # WAITS FOR THE SOCKET, NOT FOR HTTP. This used to curl the port
+                # and break on success — which never succeeds for a service that
+                # does not speak HTTP, so it waited the full five minutes on
+                # each. RabbitMQ publishes AMQP on 5672, epmd on 4369 and
+                # clustering on 25672, none of them HTTP: four ports meant
+                # twenty minutes of waiting before the report was even written,
+                # and REQ-2026-0193's narrowing proof timed out at 2202s with
+                # "still waiting for oci-service-vm to report".
+                #
+                # A listening socket is what "the service is up" actually means,
+                # and `ss` answers it for any protocol.
                 lines.append(cmd(
-                    f"for i in $(seq 1 60); do curl -s -o /dev/null -m 5 "
-                    f"http://localhost:{port}/ && break; sleep 5; done"))
+                    f"for i in $(seq 1 60); do "
+                    f"ss -lnt 2>/dev/null | grep -q ':{port} ' && break; "
+                    f"sleep 5; done"))
         lines.append(cmd("/usr/local/bin/infra-portal-report.sh || true"))
     return "\n".join(lines) + "\n"
 

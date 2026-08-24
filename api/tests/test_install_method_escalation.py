@@ -831,3 +831,187 @@ def test_the_first_profile_is_withdrawn_before_the_narrowed_one_is_published(db)
         discover=lambda ref, code: {}, find_image=lambda code: IMAGE,
         observe_ports=lambda ref, code: [5672])
     assert withdrawn, "the unnarrowed profile was left in the store"
+
+
+# --- what REQ-2026-0193 cost, and must never cost again -----------------------
+#
+# The container rung proved, certified, then narrowed — and the narrowing proof
+# failed. `take_it_back` withdrew the profile from the store and the
+# CERTIFICATION STAYED. The catalogue went on claiming the portal could build
+# RabbitMQ, the request passed the certification gate, and the orchestrator built
+# the only thing it could with no recipe to render:
+#
+#     technologies=
+#     --- packages ---
+#     --- services ---
+#     PORTAL: first-boot configuration finished
+#
+# A bare machine, billing, recorded as provisioned and resolved in Jira. The
+# record and the reality disagreeing, with the record believed — the failure
+# this entire certification design exists to prevent.
+
+class Narrowing2(Narrowing):
+    """A container whose narrowing proof fails after the first one passed."""
+
+    def __init__(self, image, listening, narrow_fails=True):
+        super().__init__(image, listening)
+        self.narrow_fails = narrow_fails
+        self.passes = 0
+
+    def run_proof(self, session, manifest):
+        recipe = json.loads(next(iter(self.published[-1].values())))
+        if recipe.get("container"):
+            self.published_ports.append(list(recipe.get("ports") or []))
+            self.tried.append("container")
+            if recipe.get("ports") and self.narrow_fails:
+                self.published.clear()
+                return ProofOutcome("PROOF-N", "failed",
+                                    "still waiting for oci-service-vm to report")
+            self.passes += 1
+            return ProofOutcome("PROOF-C", "passed", "built, verified, destroyed")
+        self.tried.append("package")
+        self.published.clear()
+        return ProofOutcome("PROOF-P", "failed", "rabbitmq NOT INSTALLED")
+
+
+def _real_certify(db):
+    """Certification as production does it, so the row really lands in the
+    blueprint table and a later withdrawal has something to suspend."""
+    from api import certification
+
+    def certify(manifest, reference):
+        return certification.certify_from_proof(
+            db, "rabbitmq", "oci", manifest.get("ref", "oci/service-vm"),
+            manifest.get("resource_kind", "oci-service-vm"), reference,
+            version=manifest.get("version", ""))
+    return certify
+
+
+def test_a_containers_first_pass_proves_without_certifying(db):
+    """THE root cause. It publishes no ports on purpose, so certifying it puts a
+    recipe on the catalogue that reaches nothing — and that claim then survives
+    the narrowing proof failing."""
+    certified = []
+    machine = Narrowing2(IMAGE, [5672], narrow_fails=True)
+    autobuild.ensure(
+        "rabbitmq", db, target="oci", shipped=machine.shipped,
+        run_proof=machine.run_proof, publish=machine.publish,
+        certify=lambda m, r: certified.append(r), withdraw=machine.withdraw,
+        discover=lambda ref, code: {}, find_image=lambda code: IMAGE,
+        observe_ports=lambda ref, code: [5672])
+
+    assert certified == [], (
+        f"a recipe publishing no ports was certified: {certified}")
+
+
+def test_a_failed_narrowing_leaves_nothing_certified(db):
+    """What made REQ-2026-0193 provision a bare VM."""
+    from db.models import Blueprint
+    machine = Narrowing2(IMAGE, [5672], narrow_fails=True)
+    result = autobuild.ensure(
+        "rabbitmq", db, target="oci", shipped=machine.shipped,
+        run_proof=machine.run_proof, publish=machine.publish,
+        certify=_real_certify(db), withdraw=machine.withdraw,
+        discover=lambda ref, code: {}, find_image=lambda code: IMAGE,
+        observe_ports=lambda ref, code: [5672])
+    db.commit()
+
+    assert result.status == "failed"
+    row = db.get(Blueprint, ("rabbitmq", "oci"))
+    assert row is None or row.status != "certified", (
+        "the catalogue still claims a technology whose recipe was withdrawn — "
+        "the next request builds a machine and configures nothing")
+
+
+def test_a_withdrawn_recipe_suspends_an_EARLIER_certification(db):
+    """The certification can predate the withdrawal by a whole proof. Nothing
+    connected the two, so it simply stood."""
+    from db.models import Blueprint
+    from api import certification as cert
+    db.add(Blueprint(technology_code="rabbitmq", deployment_target="oci",
+                     blueprint_ref="oci/service-vm",
+                     resource_kind="oci-service-vm", status="certified"))
+    db.commit()
+
+    assert cert.withdraw_for_missing_recipe(db, "rabbitmq", "oci", "narrowing failed")
+    db.commit()
+    assert db.get(Blueprint, ("rabbitmq", "oci")).status == cert.SUSPENDED
+
+
+def test_the_narrowed_recipe_IS_certified_when_it_proves(db):
+    """The deferral must not overshoot into never claiming anything."""
+    certified = []
+    machine = Narrowing2(IMAGE, [5672], narrow_fails=False)
+    result = autobuild.ensure(
+        "rabbitmq", db, target="oci", shipped=machine.shipped,
+        run_proof=machine.run_proof, publish=machine.publish,
+        certify=lambda m, r: certified.append(r), withdraw=machine.withdraw,
+        discover=lambda ref, code: {}, find_image=lambda code: IMAGE,
+        observe_ports=lambda ref, code: [5672])
+
+    assert result.status == "published"
+    assert certified, "a proved, narrowed recipe was never claimed"
+    assert machine.published_ports[-1] == [5672]
+
+
+def test_a_container_that_binds_nothing_is_still_certified(db):
+    """No ports to narrow to means publishing none was right all along, and it
+    has already been proved. The deferral exists to avoid claiming a recipe we
+    are about to replace, not to leave a proved one unclaimed."""
+    certified = []
+    machine = Narrowing2(IMAGE, [], narrow_fails=False)
+    result = autobuild.ensure(
+        "rabbitmq", db, target="oci", shipped=machine.shipped,
+        run_proof=machine.run_proof, publish=machine.publish,
+        certify=lambda m, r: certified.append(r), withdraw=machine.withdraw,
+        discover=lambda ref, code: {}, find_image=lambda code: IMAGE,
+        observe_ports=lambda ref, code: [])
+
+    assert result.status == "published"
+    assert certified, "a proved recipe was left unclaimed"
+    assert machine.tried.count("container") == 1
+
+
+def test_take_it_back_ACTUALLY_calls_the_withdrawal(db):
+    """Not a duplicate of the unit test above, and not covered by the narrowing
+    test either: with the first pass no longer certifying, that scenario has
+    nothing to suspend and passes whether or not the call exists — a plant
+    removing it from `take_it_back` broke nothing.
+
+    A certification can predate the withdrawal by an entire proof. This seeds
+    one the way an earlier run would have left it, then fails a later rung.
+    """
+    from db.models import Blueprint
+    from api import certification as cert
+    db.add(Blueprint(technology_code="vault", deployment_target="oci",
+                     blueprint_ref="oci/service-vm",
+                     resource_kind="oci-service-vm", status="certified"))
+    db.commit()
+
+    machine = Machine(accepts=set())          # every rung refuted
+    autobuild.ensure("vault", db, target="oci", shipped=machine.shipped,
+                     run_proof=machine.run_proof, publish=machine.publish,
+                     certify=lambda m, r: None, withdraw=machine.withdraw)
+    db.commit()
+
+    assert db.get(Blueprint, ("vault", "oci")).status == cert.SUSPENDED, (
+        "the recipe was withdrawn and the catalogue still claims the "
+        "technology — the next request builds a machine and configures nothing")
+
+
+def test_a_certification_that_still_has_its_recipe_is_left_alone(db):
+    """The withdrawal must not overshoot: a technology whose profile is intact
+    keeps its certification even when some OTHER rung is withdrawn."""
+    from db.models import Blueprint
+    db.add(Blueprint(technology_code="nginx", deployment_target="oci",
+                     blueprint_ref="oci/service-vm",
+                     resource_kind="oci-service-vm", status="certified"))
+    db.commit()
+
+    machine = Machine(accepts=set())
+    autobuild.ensure("vault", db, target="oci", shipped=machine.shipped,
+                     run_proof=machine.run_proof, publish=machine.publish,
+                     certify=lambda m, r: None, withdraw=machine.withdraw)
+    db.commit()
+
+    assert db.get(Blueprint, ("nginx", "oci")).status == "certified"

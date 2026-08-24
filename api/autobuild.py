@@ -42,7 +42,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
-from api import ai_blueprint, proof, recipe_memory
+from api import ai_blueprint, certification, proof, recipe_memory
 
 
 def max_attempts() -> int:
@@ -99,6 +99,13 @@ class AutobuildResult:
     @property
     def published(self) -> bool:
         return self.status == "published"
+
+
+def _manifest_of(result, shipped, candidate):
+    """The manifest the orchestrator says builds this technology, for a late
+    certification. Asked rather than remembered: the wire-up check already
+    proved it answers, and carrying a copy would be a second source of truth."""
+    return shipped(candidate) or {}
 
 
 def _recipe_in(proposal) -> dict | None:
@@ -267,7 +274,7 @@ def ensure(candidate: str, session: Session, *, target, shipped, run_proof,
         # it and certify it: writing a second recipe for the same thing would be
         # worse than useless, because two blueprints claiming one resource kind
         # is the collision the registry refuses.
-        outcome = run_proof(session, manifest)
+        outcome = run_proof(session, manifest)  # noqa: F841 - result used below
         if outcome.status == "passed":
             certify(manifest, outcome.reference)
             result.attempts.append(Attempt(1, "proved", "passed", outcome.detail))
@@ -360,7 +367,12 @@ def ensure(candidate: str, session: Session, *, target, shipped, run_proof,
                                       publish=publish, certify=certify,
                                       withdraw=withdraw, reachable=reachable,
                                       method=method,
-                                      ignore_memory=method in rerun)
+                                      ignore_memory=method in rerun,
+                                      # A container's first pass is a QUESTION
+                                      # (what do you bind?), not a candidate for
+                                      # the catalogue.
+                                      may_certify=not (method == "container"
+                                                       and not narrowed))
             if last.status == "published":
                 # THE NARROWING PASS (C8). A container's first attempt publishes
                 # no ports and asks the container what it actually bound. Now
@@ -382,6 +394,13 @@ def ensure(candidate: str, session: Session, *, target, shipped, run_proof,
                             withdraw(last.files)
                         methods.append("container")
                         continue
+                    # NOTHING TO NARROW TO — the container bound nothing, so
+                    # publishing no ports is the right recipe after all and it
+                    # has already been proved. Certify it now: the deferral
+                    # above exists to avoid claiming a recipe we are about to
+                    # replace, not to leave a proved one unclaimed.
+                    certify(_manifest_of(last, shipped, candidate),
+                            last.proof_reference)
                 return last
             # A RUNG ALREADY REFUTED IS SKIPPED, NOT A REASON TO STOP. The
             # memory says a machine disproved THIS method; the next one is
@@ -490,7 +509,8 @@ def ensure(candidate: str, session: Session, *, target, shipped, run_proof,
 def _ensure_vm_service(candidate, session, proposal, *, target, shipped,
                        run_proof, publish, certify, withdraw,
                        reachable=None, method="",
-                       ignore_memory: bool = False) -> AutobuildResult:
+                       ignore_memory: bool = False,
+                       may_certify: bool = True) -> AutobuildResult:
     """Teach the proven machine blueprint one more technology, and prove it.
 
     THE ORDER IS INVERTED HERE, deliberately. Everywhere else a draft is proved
@@ -581,6 +601,15 @@ def _ensure_vm_service(candidate, session, proposal, *, target, shipped,
     def take_it_back(why: str) -> AutobuildResult:
         if withdraw:
             withdraw(proposal.files)
+        # AND THE CLAIM THAT RESTED ON IT. A profile can be withdrawn AFTER an
+        # earlier proof of the same technology certified it — the container
+        # rung's narrowing pass does exactly that — and a certification with no
+        # recipe behind it makes the portal build a machine and configure
+        # nothing. REQ-2026-0193 is what that looks like from the outside: a
+        # bare VM, billing, recorded as provisioned.
+        if session is not None:
+            certification.withdraw_for_missing_recipe(
+                session, candidate, target, why[:300])
         result.status = "failed"
         result.detail = why
         return result
@@ -605,7 +634,14 @@ def _ensure_vm_service(candidate, session, proposal, *, target, shipped,
     # the report of a proof that succeeded, silently never ran.
     result.proof_reference = outcome.reference or ""
     if outcome.status == "passed":
-        certify(manifest, outcome.reference)
+        # PROVED IS NOT ALWAYS CERTIFIED. A container's first pass publishes no
+        # ports on purpose and asks the machine what it bound; certifying it
+        # would put a recipe on the catalogue that reaches nothing, and — as
+        # REQ-2026-0193 showed — that claim then survives the narrowing proof
+        # failing and the profile being withdrawn. The caller certifies once it
+        # knows this is the recipe it means to keep.
+        if may_certify:
+            certify(manifest, outcome.reference)
         result.attempts.append(Attempt(1, "proved", "passed", outcome.detail))
         result.status = "published"
         result.detail = (
