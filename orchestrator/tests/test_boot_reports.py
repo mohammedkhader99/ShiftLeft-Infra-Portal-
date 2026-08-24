@@ -158,9 +158,35 @@ def test_installed_but_not_running_is_a_failure_not_a_warning():
     assert any("nginx is inactive" in p for p in v["problems"])
 
 
-def test_a_service_answering_nothing_on_its_port_is_a_failure():
+def test_a_service_answering_nothing_on_its_port_is_NOT_condemned_for_it():
+    """CHANGED by REQ-2026-0195, and the change is a narrowing of what one check
+    is allowed to claim.
+
+    `000` means curl had no HTTP conversation. For nginx that would be alarming;
+    for AMQP on 5672, epmd on 4369 or clustering on 25672 it is simply what
+    happens when you speak HTTP at something that does not. A RabbitMQ with all
+    four ports bound on the host and open in the firewall was failed for it.
+
+    PRESENCE IS STILL CHECKED, by the line that is actually authoritative for
+    it — see the test below. What `http_` can still condemn is a server that
+    answered and said it could not serve.
+    """
     bad = HEALTHY.replace("http_80=200", "http_80=000")
+    assert boot_reports.verdict(bad)["ok"] is True
+
+
+def test_a_port_with_nothing_listening_is_still_a_failure():
+    """The check that is authoritative for presence. Relaxing `http_` must not
+    quietly relax this: a service that never started has to be caught."""
+    bad = HEALTHY.replace("http_80=200", "http_80=000") + "nothing listening on 80\n"
     assert boot_reports.verdict(bad)["ok"] is False
+
+
+def test_a_server_that_answered_5xx_is_still_a_failure():
+    """Running and unable to serve — which no socket check would notice."""
+    for code in ("500", "502", "503"):
+        bad = HEALTHY.replace("http_80=200", f"http_80={code}")
+        assert boot_reports.verdict(bad)["ok"] is False, code
 
 
 def test_a_redirect_or_forbidden_still_counts_as_answering():
@@ -184,5 +210,5 @@ def test_a_portal_failure_line_in_the_log_is_a_failure():
 
 def test_the_verdict_lists_every_problem_not_just_the_first():
     bad = (HEALTHY.replace("nginx=active", "nginx=inactive")
-                  .replace("http_80=200", "http_80=000"))
+                  .replace("http_80=200", "http_80=500"))
     assert len(boot_reports.verdict(bad)["problems"]) >= 2

@@ -108,6 +108,38 @@ def reports_for(reference: str, resource_kind: str, client=None) -> dict[str, st
     return out
 
 
+def answered_but_broken(value: str) -> bool:
+    """Whether this status is a server saying it could not serve.
+
+    THE ONLY THING AN HTTP PROBE CAN CONDEMN A PORT FOR. Three checks are made
+    of every declared port and each is authoritative for a different question:
+
+        ss -lnt          is anything listening?      <- presence
+        firewall_<port>  can anyone else reach it?   <- reachability
+        http_<port>      what did it say?            <- only for HTTP services
+
+    `000` used to be a failure, and REQ-2026-0195 shows what that costs: a
+    RabbitMQ with all four ports bound on the host, all four open in the
+    firewall, the pinned image running and the data volume mounted, failed
+    because AMQP on 5672, epmd on 4369 and clustering on 25672 do not speak
+    HTTP. curl gets no HTTP conversation, reports 000, and a working broker is
+    called broken.
+
+    Absence is already caught — `nothing listening on <port>` is a failure in
+    its own right — so 000 adds nothing there and lies everywhere else. What it
+    can still prove is the nginx case: a server that answered 5xx is running and
+    unable to serve, which no socket check would notice.
+
+    This is the SECOND HALF of the fix made an hour earlier. The port WAIT was
+    changed from curl to `ss` and the port CHECK was left curling — the same
+    defect, in the pair of the thing that was fixed.
+    """
+    code = (value or "").strip()
+    if len(code) != 3 or not code.isdigit():
+        return False
+    return code[0] == "5"
+
+
 def serving_http(value: str) -> bool:
     """Whether this status code proves something is serving HTTP on that port.
 
@@ -148,8 +180,10 @@ def verdict(report: str) -> dict:
             key, value = line.split("=", 1)
             if value == "inactive" or value == "failed":
                 problems.append(f"{key} is {value}")
-            elif key.startswith("http_") and not serving_http(value):
-                problems.append(f"{key} returned {value or 'nothing'}")
+            elif key.startswith("http_") and answered_but_broken(value):
+                problems.append(
+                    f"{key} returned {value} — the service answered and said it "
+                    f"could not serve")
             elif key.startswith("image_") and not value.startswith("match"):
                 # THE IMAGE ACTUALLY ON THE MACHINE, against the one pinned. A
                 # digest is the whole security argument for the container rung —

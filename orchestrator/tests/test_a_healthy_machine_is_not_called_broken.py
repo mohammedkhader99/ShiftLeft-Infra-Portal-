@@ -94,10 +94,17 @@ def test_nothing_answering_is_still_a_failure(code):
 
 
 def test_a_dead_port_is_still_reported():
-    report = "vault=active\nhttp_8200=000\nfirewall_8200=open\n"
+    """NARROWED by REQ-2026-0195. `000` alone no longer condemns a port — AMQP,
+    epmd and clustering all produce it while working perfectly, and a RabbitMQ
+    with all four ports bound and open in the firewall was failed for it.
+
+    What still catches a genuinely dead port is the socket line, which is the
+    check that actually knows whether anything is there."""
+    report = ("vault=active\nhttp_8200=000\nnothing listening on 8200\n"
+              "firewall_8200=open\n")
     result = boot_reports.verdict(report)
     assert result["ok"] is False
-    assert "http_8200 returned 000" in result["problems"][0]
+    assert "nothing listening on 8200" in result["problems"][0]
 
 
 def test_an_application_erroring_on_every_request_is_still_reported():
