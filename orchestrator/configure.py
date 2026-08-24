@@ -620,6 +620,12 @@ def _report_script(wanted: list[tuple[str, str]], packages: list[str],
     for code, (declared, names) in (candidates or {}).items():
         key = profile_rules.report_key(code)
         listed = " ".join(shlex.quote(n) for n in names)
+        # The bare stem, so `dotnet8` searches for *dotnet*. Validated by the
+        # same allow-list as every other name here: it reaches a command line
+        # that root runs.
+        stem = code.rstrip("0123456789") or code
+        if not profile_rules.CODE.match(stem):
+            stem = code
         # GUARDED ON THE PACKAGE THAT WAS DECLARED, not on the technology code.
         # `redis7` declares the package `redis`, so `rpm -q redis7` fails on a
         # perfectly healthy machine and discovery would run on every boot,
@@ -687,6 +693,30 @@ def _report_script(wanted: list[tuple[str, str]], packages: list[str],
         checks.append('        [ -n "$FOUND" ] && break')
         checks.append("      done")
         checks.append("    fi")
+        # AND IF NAMING IT DID NOT WORK, SEARCH FOR IT.
+        #
+        # REQ-2026-0197 asked for .NET 8. The candidate names — dotnet8,
+        # dotnet8-server, dotnet, dotnet-server — do not exist on Oracle Linux 9,
+        # and the machine said so honestly. But .NET IS there: the packages carry
+        # the version as a dotted suffix (dotnet-sdk-8.0), a shape the name rule
+        # does not generate and never will, because every ecosystem names its
+        # packages differently.
+        #
+        # GUESSING NAMES IS THE WRONG INSTRUMENT. dnf can search, and a search
+        # finds what no amount of shape-guessing would. The machine reports what
+        # it found and the portal chooses — the same division as everywhere else
+        # here, because a name picked on the machine has passed no allow-list.
+        #
+        # Bounded at 20: a wildcard on a common stem can match a long tail of
+        # -devel, -debuginfo and -doc packages, and a report nobody can read is
+        # a report nobody reads.
+        checks.append(f"    if [ -z \"$FOUND\" ]; then")
+        checks.append(
+            f'      MATCHES=$(dnf --quiet repoquery --qf "%{{name}}|%{{repoid}}" '
+            f'"*{stem}*" 2>/dev/null | sort -u | head -20 | paste -sd, -)')
+        checks.append(f'      echo "matches_{key}=${{MATCHES:-none}}"')
+        checks.append("    fi")
+
         # THE CONTROL PROBE, which is what makes `none` falsifiable. `bash` is
         # in the base repositories of every image this portal builds; if the
         # query cannot find even that, the query itself is broken and `none`

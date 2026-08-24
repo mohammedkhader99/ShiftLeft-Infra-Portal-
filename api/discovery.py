@@ -27,6 +27,7 @@ module, and never a substring check.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 from common import profile_rules
@@ -69,6 +70,51 @@ class Finding:
         return not self.repo_id or self.needs_epel
 
 
+def _reachable(repo_id: str, enabled: set[str]) -> bool:
+    """Whether a package in this repository can actually be installed.
+
+    ONE RULE, USED BY BOTH PATHS. It existed twice — once for a package named
+    exactly and once for a package found by searching — and the two diverged the
+    moment one was corrected: `Finding.usable` pattern-matches repository names
+    against a list of EPEL ids, which is the right question for a repo the agent
+    must reach for and the wrong one for `ol9_appstream`, a base repository that
+    needs nothing done to it. So an exact hit in appstream was refused while a
+    searched hit in the same repository was accepted.
+
+    The honest test is measured, not matched: the machine reported which
+    repositories it had ENABLED when it searched, so a package found in one of
+    them is installable by definition. EPEL is allowed even when the machine did
+    not list it, because enabling EPEL is a step this portal knows how to take.
+    """
+    if not repo_id:
+        # No repository named: already reachable, or the machine did not say.
+        return True
+    if repo_id.strip().lower() in _EPEL_REPO_IDS:
+        return True
+    return bool(enabled) and repo_id in enabled
+
+
+def _searched_repos(report: str, code: str) -> set[str]:
+    """The repositories the machine actually had enabled when it searched."""
+    key = profile_rules.report_key(code)
+    for line in (report or "").splitlines():
+        line = line.strip()
+        if line.startswith(f"searched_{key}="):
+            value = line.split("=", 1)[1].strip()
+            if value and value != "unknown":
+                return {r.strip() for r in value.split(",") if r.strip()}
+    return set()
+
+
+def _ports_from(report: str) -> list[int]:
+    """The opened_ports line, for a finding assembled outside read()."""
+    for line in (report or "").splitlines():
+        line = line.strip()
+        if line.startswith("opened_ports="):
+            return _ports(line.split("=", 1)[1])
+    return []
+
+
 def _ports(value: str) -> list[int]:
     """Port numbers from an `opened_ports=` line.
 
@@ -81,6 +127,79 @@ def _ports(value: str) -> list[int]:
         if part.isdigit() and 0 < int(part) < 65536 and int(part) not in out:
             out.append(int(part))
     return sorted(out)
+
+
+# Packages that match a search but are not the software. Every ecosystem ships
+# these alongside the thing itself, and a wildcard finds them all: installing
+# `dotnet-apphost-pack-8.0` succeeds, installs nothing runnable, and reports
+# healthy — which is the silent-success shape this project keeps paying for.
+_NOT_THE_SOFTWARE = (
+    "-devel", "-debuginfo", "-debugsource", "-doc", "-docs", "-javadoc",
+    "-test", "-tests", "-example", "-examples", "-source", "-src",
+    "-targeting-pack", "-apphost-pack", "-templates", "-symbols", "-headers",
+)
+
+
+def rank_matches(matches: list[tuple[str, str]], code: str) -> list[tuple[str, str]]:
+    """What a wildcard search found, best candidate first.
+
+    REQ-2026-0197 asked for .NET 8. `dotnet8`, `dotnet8-server`, `dotnet` and
+    `dotnet-server` do not exist on Oracle Linux 9 — but `dotnet-sdk-8.0` does,
+    and no name-shape rule was ever going to generate it. Searching finds it;
+    the problem then becomes choosing among what a search returns, because
+    `*dotnet*` also matches a dozen packs, templates and debug symbols.
+
+    THREE PREFERENCES, IN ORDER, AND EACH ONE IS A GUESS THE MACHINE WILL TEST.
+    Nothing here is certain — what makes it safe is that the choice is proved on
+    a real machine before anything is certified, and a wrong pick costs one
+    sandbox VM and says so.
+
+      * a package carrying the version the catalogue asked for, because
+        `dotnet8` means 8 and `dotnet-sdk-9.0` is a different thing;
+      * a package whose name STARTS with the stem, so `dotnet-sdk-8.0` beats
+        `aspnetcore-runtime-8.0` for a request that said dotnet;
+      * the shortest remaining name, because qualifiers are how a distribution
+        says "this is an accessory, not the thing".
+    """
+    stem = (code or "").rstrip("0123456789").lower()
+    version = (code or "")[len(stem):]
+
+    def usable(name: str) -> bool:
+        # STRIP THE VERSION FIRST. `dotnet-templates-8.0` ends in `-8.0`, not in
+        # `-templates`, so an endswith check on the raw name never fires and a
+        # templates package ranked third for a request that wanted a runtime.
+        bare = re.sub(r"-\d+(?:\.\d+)*$", "", (name or "").lower())
+        return bool(name) and not bare.endswith(_NOT_THE_SOFTWARE)
+
+    def key(entry: tuple[str, str]):
+        name = entry[0].lower()
+        return (
+            0 if (version and version in name) else 1,
+            0 if name.startswith(stem) else 1,
+            len(name),
+            name,
+        )
+
+    return sorted([m for m in matches if usable(m[0])], key=key)
+
+
+def searched_matches(report: str, code: str) -> list[tuple[str, str]]:
+    """(package, repository) pairs a wildcard search reported, unranked."""
+    key = profile_rules.report_key(code)
+    out: list[tuple[str, str]] = []
+    for line in (report or "").splitlines():
+        line = line.strip()
+        if not line.startswith(f"matches_{key}="):
+            continue
+        for pair in line.split("=", 1)[1].split(","):
+            name, _, repo = pair.partition("|")
+            name = name.strip()
+            # THE ALLOW-LIST DECIDES, as everywhere else: this name is destined
+            # for a package manager running as root and it arrived as text a
+            # machine wrote.
+            if name and profile_rules.CODE.match(name):
+                out.append((name, repo.strip()))
+    return out
 
 
 def was_searched(report: str) -> bool:
@@ -244,8 +363,28 @@ def finding_for(report: str, code: str) -> dict | None:
     """
     if not was_searched(report):
         return None
+    enabled = _searched_repos(report, code)
     finding = read(report, [code]).get(code)
+    if finding is not None and finding.package and _reachable(finding.repo_id, enabled):
+        return {"package": finding.package, "repo_id": finding.repo_id,
+                "ports": list(finding.ports)}
     if finding is None or not finding.usable:
+        # NAMING IT FAILED; SEARCHING MAY NOT HAVE. `dotnet-sdk-8.0` exists and
+        # no shape rule generates it, so the wildcard result is consulted before
+        # concluding the software is absent.
+        for name, repo in rank_matches(searched_matches(report, code), code):
+            # REACHABLE IS MEASURED, NOT GUESSED. `Finding.usable` asks whether
+            # the repository is EPEL, which is the right question for a package
+            # the agent must reach for — and the wrong one here: the machine
+            # already told us which repositories it had enabled when it searched,
+            # so a package found in one of them is reachable by definition.
+            # Pattern-matching repository names would have refused
+            # `dotnet-sdk-8.0` from ol9_appstream, a base repository that needs
+            # nothing done to it at all.
+            if not _reachable(repo, enabled):
+                continue
+            return {"package": name, "repo_id": repo,
+                    "ports": _ports_from(report)}
         # A NEGATIVE IS ONLY A FACT IF THE SEARCH COULD HAVE FOUND SOMETHING.
         # An unsound search is indistinguishable, from here, from never having
         # asked — and `None` is what says that honestly.

@@ -185,6 +185,50 @@ def resource_kind_for(component: dict, session: Session, target: str) -> str | N
     return (component.get("resource_kind") or "").strip() or None
 
 
+def marketplace_licence(technology_code: str, target: str, ocpus: float,
+                        session: Session) -> dict | None:
+    """The publisher's hourly fee for a Marketplace image, or None (C9).
+
+    A COST THE PRICE LIST CANNOT SEE. Every Marketplace listing matching this
+    catalogue is PAYGO: the publisher charges by the hour on top of compute, in
+    their own currency, and none of it appears in Oracle's public rates. nginx
+    from Cognosys is USD 0.15 PER_OCPU_LINEAR — about USD 219 a month on two
+    OCPUs, and entirely invisible to a gate reading only the price list.
+
+    RETURNED IN ITS OWN CURRENCY, NEVER FOLDED INTO THE TOTAL. This portal
+    prices in AED and the rate is USD; adding them would need an exchange rate
+    nothing here measures, and inventing one is the recalled-rather-than-measured
+    mistake that has already cost this project machines. An approver is better
+    served by "AED X, plus USD Y not included" than by one confident wrong
+    number.
+    """
+    from db.models import MarketplaceListing
+
+    row = session.get(MarketplaceListing, (technology_code, target))
+    if row is None or row.licence_rate is None or not row.licence_currency:
+        return None
+    rate = float(row.licence_rate)
+    # PER_OCPU_LINEAR is the only strategy measured on this tenancy. An
+    # unrecognised one is reported WITHOUT a monthly figure rather than guessed:
+    # a wrong number here is worse than an absent one, because a number gets
+    # approved.
+    if (row.licence_strategy or "").upper() == "PER_OCPU_LINEAR":
+        monthly = rate * max(1.0, float(ocpus or 1)) * HOURS_PER_MONTH
+    else:
+        monthly = None
+    return {
+        "monthly": round(monthly, 2) if monthly is not None else None,
+        "currency": row.licence_currency,
+        "rate": rate,
+        "strategy": row.licence_strategy or "unknown",
+        "publisher": row.publisher,
+        "note": (f"{row.publisher} charges {row.licence_currency} {rate} "
+                 f"{(row.licence_strategy or 'per hour').lower().replace('_', ' ')} "
+                 f"for this image. It is NOT included in the total below, which "
+                 f"is in {CURRENCY}."),
+    }
+
+
 def projected_model(component: dict, session: Session) -> str | None:
     """The billing model a component with NO blueprint would be built under.
 
@@ -409,6 +453,12 @@ def estimate_cost(
                 "storage_monthly": round(storage_monthly, 2),
                 "resource_monthly": round(resource_monthly, 2),
                 "licence_monthly": round(licence_monthly, 2),
+                # A publisher's fee for a Marketplace image, in the publisher's
+                # own currency and deliberately NOT added to the totals below.
+                "external_licence": marketplace_licence(
+                    raw.get("technology_code") or "", target or "",
+                    comp.get("ocpus") or comp.get("vcpu") or 1, session)
+                if target else None,
                 "one_time": round(one_time, 2),
                 "monthly": round(component_monthly, 2),
             }
@@ -435,11 +485,20 @@ def estimate_cost(
     # to be able to see its status, and only the total reaches most callers.
     provisional_names = [li["technology_name"] for li in lines
                          if li.get("provisional")]
+    # NAMED AT THE TOP LEVEL, for the reason `unpriced` is. A cost that only the
+    # line carries is a cost the gate cannot see, and this project has already
+    # approved a AED 300 cap against a total of 0.00 once. Here the money is
+    # KNOWN — it is simply in another currency and cannot honestly be added, so
+    # whatever acts on the total has to be told it is incomplete.
+    external_licences = [
+        {"technology_name": li["technology_name"], **li["external_licence"]}
+        for li in lines if li.get("external_licence")]
 
     return {
         "currency": CURRENCY,
         "unpriced": unpriced,
         "provisional": provisional_names,
+        "external_licences": external_licences,
         "deployment_target": target or None,
         "known_target": known_target,
         "pricing_source": pricing_source,

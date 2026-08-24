@@ -11,6 +11,7 @@ against an in-memory database in the tests.
 """
 
 from datetime import date, datetime, timezone
+from decimal import Decimal
 
 from sqlalchemy import JSON, Boolean, Date, DateTime, ForeignKey, Integer, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -876,6 +877,72 @@ class TechnologyDelivery(Base):
     # Why, in a sentence — shown to a requester who picked something the portal
     # cannot build, so a refusal explains rather than merely declines.
     note: Mapped[str] = mapped_column(String(300), default="")
+
+
+class MarketplaceListing(Base):
+    """A Marketplace image a PERSON chose, and the authority they chose it under.
+
+    The agent never picks one of these, and that is the whole design. Launching a
+    Marketplace image requires accepting three agreements — Oracle's terms, the
+    publisher's terms, and a PII disclosure that shares information with the
+    publisher — which is a legal act. An agent must not enter into a contract on
+    anyone's behalf, so what unlocks a listing here is `accepted_agreement_ocid`:
+    evidence that a named person accepted it.
+
+    IT ALSO REPLACES THE INSTALL STEP ENTIRELY. The publisher already put the
+    software on the image, so there is no package to guess, no repository to
+    trust and no archive to checksum — the whole ladder C6e through C8 exists to
+    solve is skipped. What remains is proving the machine became what was
+    claimed, which is why `service_name` and `ports` are recorded: one line of
+    curation from somebody who knows what they bought.
+
+    A NEW TABLE rather than columns on Technology, for the reason
+    TechnologyDelivery gives: create_all adds missing tables and not missing
+    columns.
+    """
+
+    __tablename__ = "marketplace_listing"
+
+    technology_code: Mapped[str] = mapped_column(String(48), primary_key=True)
+    deployment_target: Mapped[str] = mapped_column(String(16), primary_key=True)
+
+    listing_ocid: Mapped[str] = mapped_column(String(255))
+    package_version: Mapped[str] = mapped_column(String(64))
+    publisher: Mapped[str] = mapped_column(String(120), default="")
+    listing_name: Mapped[str] = mapped_column(String(200), default="")
+
+    # PINNED. Resolved once when the listing is added, not looked up at launch:
+    # a publisher can move `default_package_version` and then what was proved and
+    # what is provisioned are different images wearing the same listing name —
+    # the same reasoning that makes a container digest mandatory.
+    image_ocid: Mapped[str] = mapped_column(String(255))
+    app_catalog_listing_ocid: Mapped[str] = mapped_column(String(255), default="")
+    app_catalog_resource_version: Mapped[str] = mapped_column(String(64), default="")
+
+    # THE LICENCE FEE, WHICH THE PRICE LIST CANNOT SEE. Every listing matching
+    # this catalogue is PAYGO — an hourly charge by the publisher on top of
+    # compute, in the publisher's currency. Measured 2026-08-24: nginx from
+    # Cognosys is USD 0.15 PER_OCPU_LINEAR, about USD 219 a month on two OCPUs,
+    # and entirely invisible to a cost gate reading Oracle's public rates.
+    pricing_type: Mapped[str] = mapped_column(String(16), default="")
+    # Numeric, not Float: this is money, and the rest of this file already
+    # prices in Numeric for the reason every financial system does.
+    licence_rate: Mapped[Decimal | None] = mapped_column(
+        Numeric(12, 6), nullable=True)
+    licence_currency: Mapped[str] = mapped_column(String(8), default="")
+    licence_strategy: Mapped[str] = mapped_column(String(32), default="")
+
+    # What the machine is asked to show for itself, since nothing installs it
+    # here. Without these a Marketplace machine reports `technologies=` and an
+    # empty package list — indistinguishable from the bare VM of REQ-2026-0193.
+    service_name: Mapped[str] = mapped_column(String(64), default="")
+    ports: Mapped[dict] = mapped_column(JSON, default=list)
+
+    # THE AUTHORITY. Empty means unusable: no acceptance, no launch.
+    accepted_agreement_ocid: Mapped[str] = mapped_column(String(255), default="")
+    added_by: Mapped[str] = mapped_column(String(120), default="")
+    added_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class RecipeRefutation(Base):

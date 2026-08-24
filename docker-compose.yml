@@ -353,6 +353,10 @@ services:
       # CONFIG_PACKAGE_MAP (JSON) corrects package names for your image;
       # CONFIG_OS_FAMILY switches package manager (rhel|debian|suse).
       CONFIG_ENABLED: ${CONFIG_ENABLED:-false}
+      # Reading the OCI Marketplace so a PERSON can choose a listing (C9).
+      # Off by default: it adds a network call, and nothing in the portal
+      # chooses a listing on its own.
+      MARKETPLACE_ENABLED: ${MARKETPLACE_ENABLED:-false}
       CONFIG_OS_FAMILY: ${CONFIG_OS_FAMILY:-rhel}
       CONFIG_PACKAGE_MAP: ${CONFIG_PACKAGE_MAP:-}
       # Live capacity reduction (GAP-ANALYSIS step 3): scales a provisioned VM or

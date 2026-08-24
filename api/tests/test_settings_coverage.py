@@ -34,6 +34,13 @@ _GATE_ENV = {
     "PROVISION_MODE", "CLOUD_STATE_MODE", "OCI_ACTUATE_ENABLED", "OCI_PSQL_ENABLED",
     "DNS_MODE", "OCI_DNS_ENABLED", "CONFIG_ENABLED", "BACKUP_MODE", "RESTORE_MODE",
     "REDUCE_MODE", "REFRESH_MODE",
+    # Whether the portal may READ the OCI Marketplace so a person can choose a
+    # listing (C9). Reported as marketplace_enabled. A gate rather than an
+    # editable setting: it is the orchestrator that holds the credentials and
+    # makes the call, and nothing in the portal chooses or accepts a listing on
+    # its own — the three agreements a listing carries, one of which shares the
+    # requester's details with the publisher, are a person's to accept.
+    "MARKETPLACE_ENABLED",
     # OKE: reported as oke_bastion_cidr_set (set-or-not, not the range itself),
     # oke_mapped_tiers (tier NAMES, not the OCIDs behind them — an admin needs to
     # know which tiers are buildable, not to read the topology off a status

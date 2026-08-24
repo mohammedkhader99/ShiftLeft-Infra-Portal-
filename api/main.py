@@ -752,6 +752,7 @@ _EXECUTION_GATE_LABELS = {
     "dns_enabled": "DNS record creation allowed",
     "dns_zone_set": "DNS zone configured",
     "config_enabled": "First-boot configuration",
+    "marketplace_enabled": "OCI Marketplace listings readable",
     "backup_mode": "Backup mode",
     "restore_mode": "Restore mode",
     "reduce_mode": "Capacity reduction mode",

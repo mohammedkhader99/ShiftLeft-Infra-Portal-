@@ -438,3 +438,60 @@ def test_the_searched_list_is_reported_after_enabling(tmp_path, monkeypatch):
     soundness rule judges the wrong search."""
     text = script(GUESS, "rabbitmq", tmp_path, monkeypatch)
     assert text.index("config-manager --enable") < text.index("searched_rabbitmq=")
+
+
+# --- when naming it fails, SEARCH for it (REQ-2026-0197) ----------------------
+#
+# .NET 8 asked for `dotnet8`. None of dotnet8, dotnet8-server, dotnet or
+# dotnet-server exists on Oracle Linux 9 — the machine searched properly, with
+# EPEL enabled and the control probe passing, and said so honestly. But .NET IS
+# there: `dotnet-sdk-8.0`, carrying its version as a dotted suffix, a shape no
+# name rule generates and none ever will.
+#
+# Guessing names was the wrong instrument. dnf can search.
+
+DOTNET_GUESS = {"code": "dotnet8", "builds_on": "oci/service-vm", "ports": [],
+                "version_command": "dotnet8 --version 2>&1",
+                "rhel": {"packages": ["dotnet8"], "services": ["dotnet8"]}}
+
+
+def test_the_machine_searches_when_every_candidate_name_fails(
+        tmp_path, monkeypatch):
+    text = script(DOTNET_GUESS, "dotnet8", tmp_path, monkeypatch)
+    assert "matches_dotnet8=" in text, (
+        "naming it failed and nothing searched — the REQ-2026-0197 defect")
+    assert '"*dotnet*"' in text, "the search is not a wildcard on the stem"
+
+
+def test_the_search_runs_only_after_the_exact_names_and_EPEL(
+        tmp_path, monkeypatch):
+    """A wildcard is broader and slower, and an exact hit is what the
+    distribution intends. It is a fallback, not a first resort."""
+    text = script(DOTNET_GUESS, "dotnet8", tmp_path, monkeypatch)
+    assert text.index("for N in dotnet8") < text.index("matches_dotnet8=")
+    assert text.index(configure._EPEL_RELEASE) < text.index("matches_dotnet8=")
+
+
+def test_the_search_is_bounded(tmp_path, monkeypatch):
+    """A wildcard on a common stem matches a long tail of -devel, -debuginfo and
+    -doc packages, and a report nobody can read is a report nobody reads."""
+    text = script(DOTNET_GUESS, "dotnet8", tmp_path, monkeypatch)
+    line = next(l for l in text.splitlines() if "matches_dotnet8=" in l
+                or "MATCHES=" in l)
+    assert "head -20" in text
+
+
+def test_the_stem_searched_is_the_code_without_its_version_label(
+        tmp_path, monkeypatch):
+    """`dotnet8` is a catalogue label; the packages are named for `dotnet`."""
+    text = script(DOTNET_GUESS, "dotnet8", tmp_path, monkeypatch)
+    assert '"*dotnet*"' in text and '"*dotnet8*"' not in text
+
+
+def test_nothing_is_searched_for_when_the_package_is_already_installed(
+        tmp_path, monkeypatch):
+    """The whole block sits behind `rpm -q <declared>`, so a working install
+    costs nothing."""
+    text = script(DOTNET_GUESS, "dotnet8", tmp_path, monkeypatch)
+    guard = text.index("if rpm -q dotnet8 >/dev/null 2>&1; then :; else")
+    assert guard < text.index("matches_dotnet8=")

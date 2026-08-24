@@ -335,3 +335,114 @@ def test_a_search_that_never_needed_epel_needs_no_epel_in_the_list():
     answer."""
     report = _r(searched="ol9_appstream")
     assert discovery.search_was_sound(report, "rabbitmq")
+
+
+# --- when naming it fails, search for it (REQ-2026-0197) ----------------------
+#
+# .NET 8 asked for `dotnet8`. The candidate names — dotnet8, dotnet8-server,
+# dotnet, dotnet-server — do not exist on Oracle Linux 9, and the machine said
+# so honestly with EPEL searched and the control probe passing. But .NET IS
+# there: `dotnet-sdk-8.0`, carrying its version as a dotted suffix, a shape no
+# name rule generates and none ever will, because every ecosystem names its
+# packages differently.
+#
+# Guessing names was the wrong instrument. dnf can search.
+
+DOTNET = """--- available ---
+epel_dotnet8=present
+searched_dotnet8=ol9_appstream,ol9_baseos_latest,ol9_developer_EPEL
+queryable_dotnet8=yes
+matches_dotnet8=dotnet-apphost-pack-8.0|ol9_appstream,dotnet-host|ol9_appstream,\
+dotnet-runtime-8.0|ol9_appstream,dotnet-sdk-8.0|ol9_appstream,\
+dotnet-sdk-9.0|ol9_appstream,dotnet-targeting-pack-8.0|ol9_appstream,\
+dotnet-templates-8.0|ol9_appstream,aspnetcore-runtime-8.0|ol9_appstream
+available_dotnet8=none
+opened_ports=none
+"""
+
+
+def test_a_search_finds_what_no_name_rule_would_generate():
+    assert discovery.finding_for(DOTNET, "dotnet8") == {
+        "package": "dotnet-sdk-8.0", "repo_id": "ol9_appstream", "ports": []}
+
+
+def test_the_version_the_catalogue_asked_for_wins():
+    """`dotnet8` means 8. `dotnet-sdk-9.0` is a different product."""
+    ranked = discovery.rank_matches(
+        discovery.searched_matches(DOTNET, "dotnet8"), "dotnet8")
+    assert ranked[0][0] == "dotnet-sdk-8.0"
+    assert "dotnet-sdk-9.0" not in [n for n, _ in ranked[:3]]
+
+
+def test_accessories_are_not_mistaken_for_the_software():
+    """Installing `dotnet-apphost-pack-8.0` succeeds, installs nothing runnable,
+    and reports healthy — the silent-success shape this project keeps paying
+    for."""
+    ranked = [n for n, _ in discovery.rank_matches(
+        discovery.searched_matches(DOTNET, "dotnet8"), "dotnet8")]
+    for accessory in ("dotnet-apphost-pack-8.0", "dotnet-targeting-pack-8.0",
+                      "dotnet-templates-8.0"):
+        assert accessory not in ranked, accessory
+
+
+def test_an_accessory_keeps_its_version_suffix():
+    """A REGRESSION TEST FOR A REAL BUG. `dotnet-templates-8.0` ends in `-8.0`,
+    not in `-templates`, so an endswith check on the raw name never fired and a
+    templates package ranked third for a request that wanted a runtime."""
+    ranked = [n for n, _ in discovery.rank_matches(
+        [("dotnet-templates-8.0", "r"), ("dotnet-sdk-8.0", "r")], "dotnet8")]
+    assert ranked == ["dotnet-sdk-8.0"]
+
+
+def test_a_name_that_starts_with_the_stem_beats_one_that_merely_contains_it():
+    ranked = [n for n, _ in discovery.rank_matches(
+        [("aspnetcore-runtime-8.0", "r"), ("dotnet-runtime-8.0", "r")], "dotnet8")]
+    assert ranked[0] == "dotnet-runtime-8.0"
+
+
+def test_reachability_is_MEASURED_from_what_the_machine_searched():
+    """`Finding.usable` asks whether the repository is EPEL — the right question
+    for a repo the agent must reach for, and the wrong one here. The machine
+    already reported which repositories it had enabled, so a package found in
+    one of them is reachable by definition. Pattern-matching names would have
+    refused dotnet-sdk-8.0 from ol9_appstream, a base repository that needs
+    nothing done to it."""
+    elsewhere = DOTNET.replace("matches_dotnet8=", "matches_dotnet8=x-thing|some_other_repo,")
+    picked = discovery.finding_for(elsewhere, "dotnet8")
+    assert picked["repo_id"] in {"ol9_appstream", "ol9_baseos_latest",
+                                 "ol9_developer_EPEL"}
+
+
+def test_a_package_only_in_an_unsearched_repository_is_not_offered():
+    report = ("--- available ---\nqueryable_x=yes\n"
+              "searched_x=ol9_appstream\n"
+              "matches_x=thing|a_repo_nobody_enabled\n"
+              "available_x=none\n")
+    assert discovery.finding_for(report, "x") == {}
+
+
+def test_an_exact_name_still_wins_over_a_search():
+    """The search is a fallback. When the obvious name exists it is cheaper,
+    more predictable, and what the distribution intends."""
+    report = DOTNET.replace("available_dotnet8=none",
+                            "available_dotnet8=dotnet8|ol9_appstream")
+    assert discovery.finding_for(report, "dotnet8")["package"] == "dotnet8"
+
+
+@pytest.mark.parametrize("evil", [
+    "a; rm -rf /|ol9_appstream", "../../etc|ol9_appstream", "$(x)|ol9_appstream",
+])
+def test_a_searched_name_faces_the_same_allow_list(evil):
+    report = f"--- available ---\nqueryable_x=yes\nsearched_x=ol9_appstream\nmatches_x={evil}\navailable_x=none\n"
+    assert discovery.searched_matches(report, "x") == []
+
+
+def test_a_search_that_found_only_accessories_is_still_a_negative():
+    """Nothing usable is the same answer as nothing at all, and must stay a
+    settled fact rather than becoming a package."""
+    report = ("--- available ---\nqueryable_x=yes\n"
+              "searched_x=ol9_appstream,ol9_developer_EPEL\n"
+              "epel_x=present\n"
+              "matches_x=x-devel|ol9_appstream,x-debuginfo|ol9_appstream\n"
+              "available_x=none\n")
+    assert discovery.finding_for(report, "x") == {}

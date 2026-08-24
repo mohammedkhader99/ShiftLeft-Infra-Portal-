@@ -19,6 +19,7 @@ from fastapi import FastAPI, HTTPException, Request
 
 from common import proof_rules
 from common.signing import verify
+from orchestrator import marketplace
 from orchestrator import (
     backups,
     blueprint_registry,
@@ -194,6 +195,10 @@ async def posture(request: Request) -> dict:
         "dns_enabled": provisioner.dns_enabled(),
         "dns_zone_set": bool(os.getenv("OCI_DNS_ZONE")),
         "config_enabled": configure.enabled(),
+        # Whether the portal may READ the Marketplace. It never accepts a
+        # listing's agreements or chooses one — that is a person's act,
+        # and the PII agreement shares their details with the publisher.
+        "marketplace_enabled": marketplace.enabled(),
         # OKE. Reported as set/not-set or by NAME, never by value: an admin
         # needs to know whether a cluster can be built, not to read the network
         # topology off a status page.
