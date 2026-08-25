@@ -53,6 +53,30 @@ def make_post(post_to_orchestrator, sign, secret: str):
     return post
 
 
+def make_image_states(post):
+    """Ask the orchestrator what OCI says about images we captured.
+
+    `{ocid: lifecycle_state}`, and an EMPTY MAPPING when the question could not
+    be asked at all. That distinction is the point: "I could not reach the
+    orchestrator" and "the image failed" must not look the same, or a network
+    hiccup would condemn perfectly good images. `golden.promote` leaves an
+    unanswered row alone and asks again next cycle.
+    """
+    def ask(image_ocids: list[str]) -> dict[str, str]:
+        if not image_ocids:
+            return {}
+        ok, detail = post("/image-state", {"image_ocids": list(image_ocids)})
+        if not ok:
+            return {}
+        try:
+            body = json.loads(detail)
+        except (ValueError, TypeError):
+            return {}
+        states = body.get("states") if isinstance(body, dict) else None
+        return states if isinstance(states, dict) else {}
+    return ask
+
+
 def make_capture(post):
     """Keep the proven machine, in the shape run_proof expects: always a dict.
 

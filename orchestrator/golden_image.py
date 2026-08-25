@@ -120,6 +120,41 @@ def capture(reference: str, *, technology_code: str, instance_name: str) -> Capt
         return Capture(False, detail=f"{type(exc).__name__}: {exc}"[:400])
 
 
+def state_of(image_ocids: list[str]) -> dict[str, str]:
+    """`{ocid: lifecycle_state}` — what OCI says about images we captured.
+
+    Only the cloud knows when a ten-to-twenty-minute image build has finished,
+    and until it has, the image cannot boot anything.
+
+    An OCID we cannot get an answer for is simply ABSENT from the result rather
+    than reported as broken. "I could not ask" and "it failed" are different
+    facts, and collapsing them would fail perfectly good images every time the
+    network hiccuped.
+    """
+    wanted = [o for o in (image_ocids or []) if o]
+    if not wanted:
+        return {}
+
+    if mode() != "live":
+        # The mock capture hands back `ocid1.image.mock.<name>`, and it is ready
+        # the moment it exists — there is no build to wait for.
+        return {o: "AVAILABLE" for o in wanted if o.startswith("ocid1.image.mock.")}
+
+    try:
+        cloud_state._require_oci_creds()
+        client = cloud_state._compute_client()
+    except Exception:  # noqa: BLE001 - cannot ask is not the same as failed
+        return {}
+
+    found: dict[str, str] = {}
+    for ocid in wanted:
+        try:
+            found[ocid] = client.get_image(ocid).data.lifecycle_state
+        except Exception:  # noqa: BLE001 - per image, so one bad OCID is not all of them
+            continue
+    return found
+
+
 def _create(client, compartment: str, instance, name: str) -> Capture:  # pragma: no cover - SDK seam
     """The one call that makes a real, billable thing.
 

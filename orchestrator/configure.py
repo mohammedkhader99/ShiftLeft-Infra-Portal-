@@ -1155,7 +1155,8 @@ def enabled() -> bool:
             in ("1", "true", "yes", "on"))
 
 
-def render(components: list[dict], family: str = "", report_url: str = "") -> str:
+def render(components: list[dict], family: str = "", report_url: str = "",
+           preinstalled: "set[str] | frozenset[str] | tuple[str, ...]" = ()) -> str:
     """Cloud-init user-data configuring the request's technologies, or "" when
     there is nothing to configure (or the feature is off).
 
@@ -1167,6 +1168,16 @@ def render(components: list[dict], family: str = "", report_url: str = "") -> st
     Rendering `dnf install httpd` onto an Ubuntu machine produces a boot that
     completes, writes a success marker, and installs nothing: the exact silent
     success this module was rewritten to stop.
+
+    `preinstalled` names technologies whose software is ALREADY ON THE IMAGE,
+    because a golden image captured from a proven machine is booting (G2). Their
+    install steps are skipped — and nothing else is. The report still runs the
+    same version command against the same ports, and `packages` still carries
+    them so the machine is still asked whether they are present.
+
+    That distinction is the whole safety of the feature: skipping the INSTALL is
+    a speed-up, skipping the VERIFICATION would mean a badly captured image
+    shipped a broken runtime to everyone who asked for it, silently.
 
     Returns plain text; the Terraform module base64-encodes it.
     """
@@ -1210,10 +1221,21 @@ def render(components: list[dict], family: str = "", report_url: str = "") -> st
     archives: list[tuple[str, dict]] = []
     repos: list[tuple[str, dict]] = []
     containers: list[tuple[str, dict]] = []
+    # Packages that arrived ON THE IMAGE. Held separately rather than filtered
+    # out of `packages`, because that list answers TWO questions — what to
+    # install, and what the report asks the machine about. Removing them would
+    # have silently stopped verifying the very software the image exists to
+    # provide.
+    skip_packages: set[str] = set()
+    already: set[str] = {str(c) for c in (preinstalled or ())}
+
     for code, version, prof in profiles:
-        if prof.get("archive"):
+        on_image = code in already
+        if on_image:
+            skip_packages.update(prof["packages"])
+        if prof.get("archive") and not on_image:
             archives.append((code, prof["archive"]))
-        if prof.get("repo"):
+        if prof.get("repo") and not on_image:
             repos.append((code, prof["repo"]))
         if prof.get("container"):
             containers.append((code, prof["container"]))
@@ -1224,7 +1246,7 @@ def render(components: list[dict], family: str = "", report_url: str = "") -> st
             # service is inactive.
             if "podman" not in packages:
                 packages.append("podman")
-        stream = module_stream(code, version, family)
+        stream = "" if on_image else module_stream(code, version, family)
         if stream and stream not in modules:
             modules.append(stream)
         for pkg in prof["packages"]:
@@ -1408,7 +1430,15 @@ def render(components: list[dict], family: str = "", report_url: str = "") -> st
     if repos:
         lines.append(cmd("dnf clean all >/dev/null 2>&1 || true"))
 
-    if packages:
+    # WHAT STILL HAS TO BE INSTALLED. `packages` keeps every name for the report;
+    # this is the subset the machine must actually fetch.
+    to_install = [p for p in packages if p not in skip_packages]
+    if skip_packages:
+        lines.append(cmd(
+            f"echo 'preinstalled: {' '.join(sorted(skip_packages))}' "
+            f">> /var/log/infra-portal.log"))
+
+    if to_install:
         # `|| true` keeps a failed install from aborting the rest of cloud-init, so
         # the marker + log survive for diagnosis instead of a silent dead VM.
         # WHAT THE PACKAGE MANAGER ACTUALLY SAID, when it fails.
@@ -1423,7 +1453,7 @@ def render(components: list[dict], family: str = "", report_url: str = "") -> st
         # Bounded to the last eight lines and prefixed, so a package manager's
         # prose cannot be mistaken for the report's own key=value facts.
         lines.append(cmd(
-            f"{install} {' '.join(packages)} > /tmp/portal-install.log 2>&1 || "
+            f"{install} {' '.join(to_install)} > /tmp/portal-install.log 2>&1 || "
             f"{{ echo 'PORTAL FAILURE: package install did not complete' "
             f">> /var/log/infra-portal.log; "
             f"tail -8 /tmp/portal-install.log | sed 's/^/  install: /' "

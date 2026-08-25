@@ -790,8 +790,37 @@ def _image_for(payload: dict, resource_kind: str = "") -> str:
     make the approval describe something other than what was built.
     """
     return (_chosen_image(payload, resource_kind)
+            or _golden_pick(payload, resource_kind)[1]
             or _mapped_image(payload)
             or os.getenv("OCI_COMPUTE_IMAGE_OCID", ""))
+
+
+def _golden_pick(payload: dict, resource_kind: str = "") -> tuple[str, str]:
+    """A previously proven image for one of THIS machine's technologies, or "".
+
+    Deliberately AFTER the requester's own choice. Someone who picked an image
+    was shown it, it was priced, and it was approved with the request; swapping
+    in a different one would make the approval describe something other than
+    what was built — the same reasoning `_image_for` already gives.
+
+    Before the map and the default, though, because those are just "some Oracle
+    Linux", and this is that same OS with the software already on it, proven.
+
+    ONE DECISION, RETURNED WHOLE. The image the machine boots and the technology
+    it therefore need not install are the same fact. Working them out in two
+    places is how they come to disagree — and disagreeing here means either
+    installing software that is already present, or skipping an install for
+    software that is not.
+    """
+    golden = payload.get("golden_images") or {}
+    if not isinstance(golden, dict):
+        return "", ""
+    for c in _components_for(payload, resource_kind):
+        code = str(c.get("technology_code") or "")
+        ocid = golden.get(code)
+        if ocid:
+            return code, str(ocid)
+    return "", ""
 
 
 def _psql_shape(sizing: dict) -> str:
@@ -956,6 +985,21 @@ def _compute_spec(payload: dict, resource_kind: str = "") -> dict:
             # Where this machine PUTs its own evidence. Empty when no PAR is
             # configured, in which case nothing about the boot changes.
             configure.boot_report_url(payload.get("reference", ""), resource_kind),
+            # WHAT IS ALREADY ON THE IMAGE. Read from the same pick that chose
+            # the image above, so the boot script cannot skip an install for
+            # software the machine did not actually boot with.
+            #
+            # Guarded on the image ACTUALLY BEING USED: a requester's own image
+            # choice outranks a golden one, and in that case the software is
+            # emphatically not preinstalled. Taking the pick without checking
+            # which image won would produce a machine that installs nothing and
+            # reports everything missing.
+            preinstalled=(
+                {_golden_pick(payload, resource_kind)[0]}
+                if _golden_pick(payload, resource_kind)[1]
+                and _image_for(payload, resource_kind)
+                    == _golden_pick(payload, resource_kind)[1]
+                else set()),
         ),
         # The ports the installed service listens on, from the same profiles that
         # produced user_data — so the network rules and the OS firewall agree.
@@ -1242,6 +1286,27 @@ async def state(request: Request) -> dict:
         raise HTTPException(status_code=501, detail=str(exc))
     return {"reference": reference, "resources": actual, "mode": cloud_state.mode()}
 
+
+
+
+@app.post("/image-state")
+async def image_state(request: Request) -> dict:
+    """What OCI says about images we captured. Read-only; changes nothing.
+
+    The API holds the golden-image rows and the orchestrator holds the cloud
+    credentials, so neither can answer this alone. Signature-verified like every
+    other cloud-touching endpoint, and like /state it needs no execution gate:
+    it observes.
+    """
+    body = await request.body()
+    if not verify(WEBHOOK_SECRET, body, request.headers.get("X-Signature", "")):
+        raise HTTPException(status_code=401, detail="Invalid webhook signature.")
+    payload = json.loads(body)
+    ocids = payload.get("image_ocids") or []
+    if not isinstance(ocids, list):
+        raise HTTPException(status_code=400, detail="image_ocids must be a list.")
+    return {"states": golden_image.state_of([str(o) for o in ocids[:200]]),
+            "mode": golden_image.mode()}
 
 
 @app.post("/capture-image")

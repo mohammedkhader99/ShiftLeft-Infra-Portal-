@@ -30,6 +30,7 @@ from api import ai_drafter
 from api import ai_explainer
 from api import ai_recommend
 from api import ai_triage
+from api import golden
 from api import discovery
 from api import registry
 from api import blueprint_capabilities
@@ -4589,6 +4590,33 @@ def _mark_component_lifecycle(session: Session, req: Request, out) -> None:
         component.active = (kind in live_kinds) if kind else bool(live_kinds)
 
 
+def _golden_images_for(req: Request) -> dict[str, str]:
+    """Proven images this request's machine may boot instead of installing (G2).
+
+    FAIL-SOFT BY CONSTRUCTION. Every path out of here that is not a confident
+    yes returns `{}`, and `{}` means the request provisions exactly as it did
+    before golden images existed: install from repositories at first boot. No
+    caller checks for an error, because there is no error to check for.
+
+    That is not defensive coding for its own sake. A golden image is a speed-up
+    on a path that already works, so the only way this feature can hurt is by
+    being load-bearing — and the way to stop it being load-bearing is to make
+    every failure indistinguishable from "no image today".
+    """
+    session = Session.object_session(req)
+    if session is None:
+        return {}
+    try:
+        components = [{"technology_code": c.technology_code}
+                      for c in (req.components or [])]
+        ready = golden.usable_for(
+            session, [c["technology_code"] for c in components],
+            req.deployment_target or "")
+        return golden.one_image_per_machine(ready, components)
+    except Exception:  # noqa: BLE001 - see the contract above
+        return {}
+
+
 def _handoff_payload(req: Request, *, ttl_expiry: str | None = None,
                      action: str | None = None,
                      resource_kinds: list[str] | None = None,
@@ -4625,6 +4653,12 @@ def _handoff_payload(req: Request, *, ttl_expiry: str | None = None,
         # component of a stack. Only the portal knows which this is.
         "partial_destroy": bool(partial_destroy),
     }
+    # A PROVEN IMAGE, when this machine's technology has one. Omitted entirely
+    # when it does not, so an orchestrator that has never heard of golden images
+    # sees the payload it has always seen.
+    proven = _golden_images_for(req)
+    if proven:
+        payload["golden_images"] = proven
     if ttl_expiry:
         payload["ttl_expiry"] = ttl_expiry
     if action:  # operational actuation (stop/start), cloud-sync increment 2
@@ -7097,6 +7131,32 @@ def _poll_once() -> None:
         try:
             with SessionLocal() as session:
                 append_audit(session, "certification.sweep.error", detail={"error": str(exc)})
+                session.commit()
+        except Exception:  # noqa: BLE001
+            pass
+
+    # GOLDEN IMAGES BECOME USABLE (G2). A capture is recorded the moment OCI
+    # accepts it, which is ten to twenty minutes before the image can boot
+    # anything — and only the cloud knows when that changes. Swept here rather
+    # than on the request path, so a provisioning never waits on it.
+    #
+    # ITS OWN try, AFTER certification has committed. This was first written
+    # INSIDE the certification sweep, and an unreachable orchestrator then took
+    # the whole review down with it: blueprints that should have been suspended
+    # stayed certified, silently. A speed-up that can break the thing it sits
+    # beside is not a speed-up — the same rule the capture itself follows.
+    try:
+        with SessionLocal() as session:
+            ask = proof_wiring.make_image_states(
+                proof_wiring.make_post(_post_to_orchestrator, sign, WEBHOOK_SECRET))
+            for moved in golden.promote(session, ask):
+                append_audit(session, f"golden.image.{moved['state']}",
+                             actor="certification", detail=moved)
+            session.commit()
+    except Exception as exc:  # noqa: BLE001
+        try:
+            with SessionLocal() as session:
+                append_audit(session, "golden.sweep.error", detail={"error": str(exc)})
                 session.commit()
         except Exception:  # noqa: BLE001
             pass
