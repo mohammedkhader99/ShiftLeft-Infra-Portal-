@@ -59,11 +59,21 @@ def test_renders_cloud_config_installing_and_enabling_services(monkeypatch):
 
 
 def test_install_failure_does_not_abort_the_rest_of_boot(monkeypatch):
-    """A failed install must leave a diagnosable machine, not a silent dead VM."""
+    """A failed install must leave a diagnosable machine, not a silent dead VM.
+
+    Asserted as a PROPERTY, not as one exact line of shell. This test used to
+    pin the literal `|| echo '...'` and so broke the day the failure branch got
+    RICHER (it now also copies the package manager's own explanation into the
+    report) — a test that fails when the thing it guards improves is a test
+    nobody trusts."""
     _on(monkeypatch)
     out = configure.render(_COMPONENTS)
-    assert "|| echo 'PORTAL FAILURE: package install did not complete'" in out
-    assert "/var/log/infra-portal.log" in out
+    install = next(l for l in out.splitlines() if "install -y" in l)
+    assert "PORTAL FAILURE: package install did not complete" in install, (
+        "a failed install says nothing")
+    assert "/var/log/infra-portal.log" in install, "it says it somewhere unread"
+    assert install.index("||") < install.index("PORTAL FAILURE"), (
+        "the failure is announced whether or not the install failed")
 
 
 def test_marker_file_does_not_overclaim(monkeypatch):

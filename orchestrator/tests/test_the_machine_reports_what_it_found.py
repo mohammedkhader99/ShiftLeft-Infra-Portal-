@@ -495,3 +495,56 @@ def test_nothing_is_searched_for_when_the_package_is_already_installed(
     text = script(DOTNET_GUESS, "dotnet8", tmp_path, monkeypatch)
     guard = text.index("if rpm -q dotnet8 >/dev/null 2>&1; then :; else")
     assert guard < text.index("matches_dotnet8=")
+
+
+# --- what the package manager actually said (REQ-2026-0203) -------------------
+#
+# The search found `dotnet8.0`, repoquery listed it in ol9_appstream, and
+# `dnf install dotnet8.0` refused it. The machine could only say:
+#
+#     PORTAL FAILURE: package install did not complete
+#
+# dnf had said WHY, in a sentence, and it went to cloud-init's log and never
+# reached the report. Every other failure in this work was diagnosable because
+# the machine reported enough; this one was not, and the answer was one line of
+# redirection away.
+
+def test_the_package_managers_own_words_reach_the_report(tmp_path, monkeypatch):
+    run = _runcmd(render(GUESS, "rabbitmq", tmp_path, monkeypatch))
+    install = next(l for l in run.splitlines() if "dnf install -y rabbitmq" in l)
+    # ASSERTED BY STRUCTURE, NOT BY PRESENCE. A plant that deleted only the
+    # REDIRECTION left both `portal-install.log` and `tail -8` in the line — so
+    # a version that tails a file nothing ever writes passed every check. The
+    # output has to be captured BEFORE anything reads it.
+    assert "> /tmp/portal-install.log 2>&1" in install, (
+        "dnf's explanation is discarded, so a refused install says only that it "
+        "was refused")
+    assert install.index("> /tmp/portal-install.log") < install.index("||"), (
+        "the log is read but never written")
+    assert "tail -8" in install, "unbounded output would swamp the report"
+
+
+def test_that_output_cannot_be_mistaken_for_a_reported_FACT(tmp_path, monkeypatch):
+    """The report is parsed as key=value lines. A package manager writes prose,
+    and prose containing an `=` would otherwise be read as a fact about the
+    machine."""
+    run = _runcmd(render(GUESS, "rabbitmq", tmp_path, monkeypatch))
+    install = next(l for l in run.splitlines() if "dnf install -y rabbitmq" in l)
+    assert "install: " in install, "the lines are not prefixed"
+
+    from orchestrator import boot_reports
+    verdict = boot_reports.verdict(
+        "PORTAL FAILURE: package install did not complete\n"
+        "  install: Error: Unable to find a match: dotnet8.0\n"
+        "  install: nothing=provides this\n")
+    assert not any("install:" in p for p in verdict["problems"]), (
+        f"dnf prose was parsed as a fact: {verdict['problems']}")
+
+
+def test_a_successful_install_writes_no_diagnosis(tmp_path, monkeypatch):
+    """The capture is on the failure branch only. A working machine's report
+    stays readable."""
+    run = _runcmd(render(GUESS, "rabbitmq", tmp_path, monkeypatch))
+    install = next(l for l in run.splitlines() if "dnf install -y rabbitmq" in l)
+    assert install.index("||") < install.index("tail -8"), (
+        "the diagnosis is written whether or not the install failed")

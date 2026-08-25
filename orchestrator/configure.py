@@ -1411,7 +1411,23 @@ def render(components: list[dict], family: str = "", report_url: str = "") -> st
     if packages:
         # `|| true` keeps a failed install from aborting the rest of cloud-init, so
         # the marker + log survive for diagnosis instead of a silent dead VM.
-        lines.append(cmd(f"{install} {' '.join(packages)} || echo 'PORTAL FAILURE: package install did not complete' >> /var/log/infra-portal.log"))
+        # WHAT THE PACKAGE MANAGER ACTUALLY SAID, when it fails.
+        #
+        # This was `dnf install ... || echo 'PORTAL FAILURE'`, so dnf's own
+        # explanation went to cloud-init's log and never reached the report.
+        # REQ-2026-0203 is what that costs: the search found `dotnet8.0`,
+        # repoquery listed it in ol9_appstream, `dnf install dotnet8.0` refused
+        # it — and the machine could only say "did not complete". dnf had said
+        # why, in a sentence, and we threw it away.
+        #
+        # Bounded to the last eight lines and prefixed, so a package manager's
+        # prose cannot be mistaken for the report's own key=value facts.
+        lines.append(cmd(
+            f"{install} {' '.join(packages)} > /tmp/portal-install.log 2>&1 || "
+            f"{{ echo 'PORTAL FAILURE: package install did not complete' "
+            f">> /var/log/infra-portal.log; "
+            f"tail -8 /tmp/portal-install.log | sed 's/^/  install: /' "
+            f">> /var/log/infra-portal.log; }}"))
     # ARCHIVE INSTALLS, after the dependency packages and before the services
     # that depend on them. Every step leaves a PORTAL FAILURE marker on the
     # machine when it fails, because the marker is what the boot report carries
