@@ -62,18 +62,21 @@ class Finding:
     def needs_epel(self) -> bool:
         return self.repo_id.strip().lower() in _EPEL_REPO_IDS
 
-    @property
-    def usable(self) -> bool:
-        """Whether this says anything the agent can actually act on.
-
-        A finding with no package names nothing to install. A finding whose
-        package is only reachable from a repository we have no sanctioned way to
-        enable is worse than useless — it would draft a recipe that installs
-        nothing and spend a machine proving it.
-        """
-        if not self.package:
-            return False
-        return not self.repo_id or self.needs_epel
+    # THERE IS NO `usable` PROPERTY, AND THAT IS DELIBERATE.
+    #
+    # It answered "can this be installed" by asking whether the repository was
+    # EPEL — the right question for a repo the agent must REACH FOR, and the
+    # wrong one for ol9_appstream, a base repository already enabled and needing
+    # nothing done to it. `_reachable` answers the same question by measurement
+    # instead, against the repositories the machine reported it actually
+    # searched.
+    #
+    # The two coexisted for a day and diverged three times: an exact hit in
+    # appstream was refused while a searched hit in the SAME repository was
+    # accepted, and then REQ-2026-0202 found `dotnet8.0`, ranked it correctly,
+    # and dropped it one function later because `profile_from` still asked the
+    # old question. TWO FUNCTIONS ANSWERING ONE QUESTION IS THE DEFECT; aligning
+    # them is not the fix, deleting one is.
 
 
 def _reachable(repo_id: str, enabled: set[str]) -> bool:
@@ -381,29 +384,28 @@ def finding_for(report: str, code: str) -> dict | None:
     if finding is not None and finding.package and _reachable(finding.repo_id, enabled):
         return {"package": finding.package, "repo_id": finding.repo_id,
                 "ports": list(finding.ports)}
-    if finding is None or not finding.usable:
-        # NAMING IT FAILED; SEARCHING MAY NOT HAVE. `dotnet-sdk-8.0` exists and
-        # no shape rule generates it, so the wildcard result is consulted before
-        # concluding the software is absent.
-        for name, repo in rank_matches(searched_matches(report, code), code):
-            # REACHABLE IS MEASURED, NOT GUESSED. `Finding.usable` asks whether
-            # the repository is EPEL, which is the right question for a package
-            # the agent must reach for — and the wrong one here: the machine
-            # already told us which repositories it had enabled when it searched,
-            # so a package found in one of them is reachable by definition.
-            # Pattern-matching repository names would have refused
-            # `dotnet-sdk-8.0` from ol9_appstream, a base repository that needs
-            # nothing done to it at all.
-            if not _reachable(repo, enabled):
-                continue
-            return {"package": name, "repo_id": repo,
-                    "ports": _ports_from(report)}
-        # A NEGATIVE IS ONLY A FACT IF THE SEARCH COULD HAVE FOUND SOMETHING.
-        # An unsound search is indistinguishable, from here, from never having
-        # asked — and `None` is what says that honestly.
-        return {} if search_was_sound(report, code) else None
-    return {"package": finding.package, "repo_id": finding.repo_id,
-            "ports": list(finding.ports)}
+    # NAMING IT FAILED, OR NAMED SOMETHING UNREACHABLE; SEARCHING MAY DO BETTER.
+    # `dotnet8.0` exists and no shape rule generates it, so the wildcard result
+    # is consulted before concluding the software is absent.
+    #
+    # UNCONDITIONAL, and that matters: this was guarded by
+    # `if finding is None or not finding.package`, so an exact name that existed
+    # but was UNREACHABLE matched neither branch and fell through to a trailing
+    # `return finding` that handed back the unreachable package anyway. Three
+    # exits, one of them reached only by falling off the end.
+    for name, repo in rank_matches(searched_matches(report, code), code):
+        # REACHABLE IS MEASURED, NOT GUESSED — the machine reported which
+        # repositories it had enabled, so a package found in one of them is
+        # installable by definition. `_reachable` is the ONLY rule that decides
+        # this, here and above; there is no second copy to diverge from.
+        if not _reachable(repo, enabled):
+            continue
+        return {"package": name, "repo_id": repo, "ports": _ports_from(report)}
+
+    # A NEGATIVE IS ONLY A FACT IF THE SEARCH COULD HAVE FOUND SOMETHING. An
+    # unsound search is indistinguishable, from here, from never having asked —
+    # and `None` is what says that honestly.
+    return {} if search_was_sound(report, code) else None
 
 
 def profile_from(finding: Finding, target: str = "oci") -> dict | None:
@@ -417,7 +419,7 @@ def profile_from(finding: Finding, target: str = "oci") -> dict | None:
     NO `expects`. Nothing here promises a version — the repository serves what it
     serves — so the machine is asked and its answer is recorded, not compared.
     """
-    if not finding.usable:
+    if not finding.package:
         return None
     profile: dict = {
         "code": finding.code,

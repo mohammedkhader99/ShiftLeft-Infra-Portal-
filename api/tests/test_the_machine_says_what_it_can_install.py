@@ -47,13 +47,25 @@ opened_ports=5672,15672,25672
 """
 
 
+# The report REQ-2026-0202's machine actually wrote, kept verbatim. A paraphrase
+# would let the test drift away from the thing it exists to describe.
+DOTNET_REAL = """--- available ---
+epel_dotnet8=present
+matches_dotnet8=dotnet10.0|ol9_appstream,dotnet6.0|ol9_appstream,dotnet7.0|ol9_appstream,dotnet8.0|ol9_appstream,dotnet9.0|ol9_appstream,dotnet-apphost-pack-8.0|ol9_appstream,dotnet-hostfxr-8.0|ol9_appstream,dotnet-host|ol9_appstream,dotnet-runtime-8.0|ol9_appstream
+search_generation_dotnet8=2
+searched_dotnet8=ol9_UEKR8,ol9_addons,ol9_appstream,ol9_baseos_latest,ol9_developer_EPEL,ol9_ksplice,ol9_oci_included
+queryable_dotnet8=yes
+available_dotnet8=none
+opened_ports=none
+"""
+
+
 # --- reading what the machine said --------------------------------------------
 
 def test_the_machine_names_the_package_the_guess_missed():
     """THE point of the increment. Nobody wrote `rabbitmq-server` down."""
     finding = discovery.read(RABBITMQ, ["rabbitmq"])["rabbitmq"]
     assert finding.package == "rabbitmq-server"
-    assert finding.usable
 
 
 def test_it_reports_which_repository_the_package_lives_in():
@@ -72,7 +84,7 @@ def test_the_ports_the_software_actually_opened_come_back_too():
 
 def test_a_machine_that_found_nothing_says_so_without_inventing():
     finding = discovery.read("available_rabbitmq=none", ["rabbitmq"]).get("rabbitmq")
-    assert finding is None or not finding.usable
+    assert finding is None or not finding.package
 
 
 def test_no_baseline_is_not_the_same_fact_as_no_new_ports():
@@ -109,11 +121,32 @@ def test_a_package_name_from_a_machine_is_not_trusted(value):
 def test_a_machine_cannot_nominate_a_publisher_to_trust():
     """A release package installs a repository AND its signing key, so root
     would trust that publisher for everything it ever serves. The machine may
-    say WHICH KNOWN repository a package came from; it may not name a new one."""
+    say WHICH KNOWN repository a package came from; it may not name a new one.
+
+    RESTATED as what actually protects that, now `Finding.usable` is gone. It
+    was doing two jobs — refusing an unreachable package, and refusing an
+    unsanctioned publisher — and only the second is a security property. What
+    enforces it is that a `repo` block is added ONLY for EPEL, with a fixed name
+    from the closed set: an unrecognised repository id produces no repo block at
+    all, so nothing new is ever trusted. Whether the package is reachable is a
+    separate question, answered by `_reachable` against what the machine
+    measured, and answered in the one place that has the report.
+    """
     finding = discovery.read(
         "available_rabbitmq=rabbitmq-server|attacker-repo", ["rabbitmq"])["rabbitmq"]
-    assert not finding.usable, "an unknown repository was accepted"
-    assert discovery.profile_from(finding) is None
+    profile = discovery.profile_from(finding)
+    assert "repo" not in profile, (
+        f"a repository nobody sanctioned reached a machine: {profile.get('repo')}")
+
+
+def test_an_unreachable_package_is_refused_where_the_evidence_lives():
+    """The other half of what `usable` used to do. It belongs at `finding_for`,
+    which has the machine's report and can measure rather than pattern-match."""
+    report = ("--- available ---\nqueryable_rabbitmq=yes\n"
+              f"search_generation_rabbitmq={discovery.SEARCH_GENERATION}\n"
+              "searched_rabbitmq=ol9_appstream\n"
+              "available_rabbitmq=rabbitmq-server|attacker-repo\n")
+    assert discovery.finding_for(report, "rabbitmq") == {}
 
 
 def test_the_release_package_is_a_fixed_name_never_a_reported_one():
@@ -132,11 +165,19 @@ def test_a_profile_built_from_a_finding_faces_the_same_rules_as_any_other():
 
 def test_a_base_repository_package_needs_no_repository_added():
     """Not everything discovered is in EPEL. A package already reachable needs
-    no standing grant of trust, and adding one would be a cost with no benefit."""
+    no standing grant of trust, and adding one would be a cost with no benefit.
+
+    CORRECTED by REQ-2026-0202. This asserted that a package in `ol9_appstream`
+    was NOT usable — which was the bug, stated as a requirement. appstream is a
+    base repository, already enabled, needing nothing done to it; `dotnet8.0`
+    lives there and was found, ranked correctly, and then dropped.
+    """
     finding = discovery.read(
         "available_httpd=httpd|ol9_appstream", ["httpd"])["httpd"]
-    assert not finding.usable, (
-        "a repository we have no sanctioned way to enable was treated as usable")
+    profile = discovery.profile_from(finding)
+    assert profile is not None and "repo" not in profile, (
+        "a base-repository package was refused, or given a repository it does "
+        "not need")
 
 
 def test_a_package_with_no_repository_named_is_taken_as_already_reachable():
@@ -511,3 +552,51 @@ def test_the_two_copies_of_the_generation_agree():
     and forget the other, and every negative silently stops binding for ever."""
     from orchestrator import configure
     assert discovery.SEARCH_GENERATION == configure.SEARCH_GENERATION
+
+
+# --- one rule, and a guard that it stays one (REQ-2026-0202) ------------------
+
+def test_there_is_exactly_ONE_reachability_rule():
+    """A STRUCTURAL GUARD, because being careful has now failed six times.
+
+    `Finding.usable` and `_reachable` both answered "can this package be
+    installed", by different means, and they diverged three times in two days:
+    an exact hit in ol9_appstream refused while a searched hit in the SAME
+    repository was accepted; then REQ-2026-0202 found `dotnet8.0`, ranked it
+    correctly, and dropped it one function later because `profile_from` still
+    asked the old question. One machine, seven minutes, and the search that had
+    just been built worked perfectly and was thrown away.
+
+    Two functions answering one question IS the defect. Aligning them is not the
+    fix — deleting one is, and this fails if the other ever comes back.
+    """
+    import inspect
+
+    source = inspect.getsource(discovery)
+    # `usable` survives only as the accessory filter inside rank_matches, which
+    # answers a different question entirely: is this package the SOFTWARE, or a
+    # -devel/-doc/-templates companion of it.
+    definitions = {line.strip() for line in source.splitlines()
+                   if line.strip().startswith("def usable(")
+                   or line.strip().startswith("def _reachable(")}
+    assert definitions == {"def usable(name: str) -> bool:",
+                           "def _reachable(repo_id: str, enabled: set[str]) -> bool:"}, (
+        f"a second reachability rule has appeared: {sorted(definitions)}")
+    assert "self.needs_epel" not in source.replace(
+        "return self.repo_id.strip().lower() in _EPEL_REPO_IDS", ""), (
+        "reachability is being decided from a repository NAME again; the honest "
+        "test is what the machine reported it actually searched")
+
+
+def test_the_dotnet_report_that_was_thrown_away_now_survives_to_a_profile():
+    """The whole of REQ-2026-0202, end to end: the machine's real report in, a
+    profile that installs `dotnet8.0` out."""
+    picked = discovery.finding_for(DOTNET_REAL, "dotnet8")
+    assert picked == {"package": "dotnet8.0", "repo_id": "ol9_appstream",
+                      "ports": []}
+    profile = discovery.profile_from(discovery.Finding(
+        code="dotnet8", package=picked["package"], repo_id=picked["repo_id"]))
+    assert profile is not None, "the finding died between the reader and the draft"
+    assert profile["rhel"]["packages"] == ["dotnet8.0"]
+    assert profile_rules.profile_problems(profile) == [], (
+        profile_rules.profile_problems(profile))
