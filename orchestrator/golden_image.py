@@ -155,6 +155,38 @@ def state_of(image_ocids: list[str]) -> dict[str, str]:
     return found
 
 
+def delete(image_ocid: str) -> tuple[bool, str]:
+    """Remove a custom image we captured. `(ok, detail)`, never raises.
+
+    THE CALLER NAMES THE OCID, and the caller only ever names one its own table
+    recorded. This function deliberately has no "find images that look like
+    ours and remove them" mode: a rule that selected by tag or name prefix would,
+    one typo later, be a rule that deleted somebody else's image.
+
+    An image already gone counts as SUCCESS. The goal is that it does not exist
+    and is not billed for; a 404 is that goal, reached by someone else.
+    """
+    if not image_ocid or not image_ocid.startswith("ocid1.image"):
+        return False, f"Refusing to delete {image_ocid!r}: not an image OCID."
+
+    if mode() != "live":
+        return True, f"Mock delete of {image_ocid}."
+
+    try:
+        cloud_state._require_oci_creds()
+        client = cloud_state._compute_client()
+    except Exception as exc:  # noqa: BLE001
+        return False, f"{type(exc).__name__}: {exc}"[:300]
+
+    try:
+        client.delete_image(image_ocid)
+        return True, f"Deleted {image_ocid}."
+    except Exception as exc:  # noqa: BLE001
+        if getattr(exc, "status", None) == 404 or "NotAuthorizedOrNotFound" in str(exc):
+            return True, f"{image_ocid} is already gone."
+        return False, f"{type(exc).__name__}: {exc}"[:300]
+
+
 def _create(client, compartment: str, instance, name: str) -> Capture:  # pragma: no cover - SDK seam
     """The one call that makes a real, billable thing.
 

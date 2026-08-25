@@ -53,6 +53,27 @@ def make_post(post_to_orchestrator, sign, secret: str):
     return post
 
 
+def make_image_delete(post):
+    """Delete one retired image, in the shape `golden.reap` expects.
+
+    Unreachable or refused is `(False, why)`, which leaves the row alone to be
+    retried. Never `(True, ...)` on doubt: a row marked deleted for an image
+    still in the tenancy is a cost nobody can find again.
+    """
+    def delete(image_ocid: str) -> tuple[bool, str]:
+        ok, detail = post("/delete-image", {"image_ocid": image_ocid})
+        if not ok:
+            return False, detail
+        try:
+            body = json.loads(detail)
+        except (ValueError, TypeError):
+            return False, f"Unreadable delete response: {(detail or '')[:200]}"
+        if not isinstance(body, dict):
+            return False, "The delete response was not an object."
+        return bool(body.get("deleted")), str(body.get("detail") or "")
+    return delete
+
+
 def make_image_states(post):
     """Ask the orchestrator what OCI says about images we captured.
 

@@ -1309,6 +1309,29 @@ async def image_state(request: Request) -> dict:
             "mode": golden_image.mode()}
 
 
+
+@app.post("/delete-image")
+async def delete_image(request: Request) -> dict:
+    """Delete one custom image, named by the caller. Signature-verified.
+
+    The API holds the golden-image rows and decides WHICH image has stopped
+    being usable; the orchestrator holds the credentials and does it. Neither
+    can do this alone, which is the separation working as intended rather than
+    an inconvenience.
+
+    Exactly one OCID per call. A bulk endpoint would make a bug here delete a
+    fleet instead of an image.
+    """
+    body = await request.body()
+    if not verify(WEBHOOK_SECRET, body, request.headers.get("X-Signature", "")):
+        raise HTTPException(status_code=401, detail="Invalid webhook signature.")
+    payload = json.loads(body)
+    ocid = str(payload.get("image_ocid") or "")
+    ok, detail = golden_image.delete(ocid)
+    return {"image_ocid": ocid, "deleted": ok, "detail": detail,
+            "mode": golden_image.mode()}
+
+
 @app.post("/capture-image")
 async def capture_image(request: Request) -> dict:
     """Keep the machine that passed, as a reusable image.

@@ -46,6 +46,16 @@ ALLOWLIST: dict[str, dict] = {
                                  "type": "int", "default": "30", "min": 0, "max": 365,
                                  "group": "Governance",
                                  "help": "Warn this many days before a project expires."},
+    "GOLDEN_IMAGE_RETAIN_DAYS": {"label": "Keep retired golden images (days)",
+                                 "type": "int", "default": "7", "min": 1,
+                                 "max": 365, "group": "Governance",
+                                 "help": ("How long an image that has been "
+                                          "superseded or has expired survives "
+                                          "before it is deleted from the cloud. "
+                                          "The delay exists because a request "
+                                          "approved moments ago may still be "
+                                          "building with that image. It cannot "
+                                          "be set to zero.")},
     "GOLDEN_IMAGES": {"label": "Capture golden images", "type": "bool",
                       "default": "true", "group": "Governance",
                       "help": ("When on, a proof build that verifies healthy is "

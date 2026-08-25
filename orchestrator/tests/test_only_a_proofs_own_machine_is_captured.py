@@ -158,3 +158,46 @@ def test_capture_mode_follows_cloud_state(monkeypatch):
     assert golden_image.mode() == "live"
     monkeypatch.setenv("CLOUD_STATE_MODE", "mock")
     assert golden_image.mode() == "mock"
+
+
+# --- G3: deleting one, and only one, named image ------------------------------
+
+def test_only_an_image_OCID_can_be_deleted():
+    """The delete path takes an identifier from a database row and hands it to
+    the cloud. An instance OCID reaching it would terminate a machine."""
+    for junk in ("", "ocid1.instance.oc1..abc", "ocid1.volume.oc1..abc",
+                 "all", "*", "ocid1.bucket.oc1..abc"):
+        ok, detail = golden_image.delete(junk)
+        assert ok is False, f"{junk!r} was accepted as an image to delete"
+        assert "Refusing" in detail
+
+
+def test_an_image_already_gone_counts_as_success():
+    """The goal is that it does not exist and is not billed for. A 404 is that
+    goal, reached by somebody else — retrying it forever would be the bug."""
+    ok, _ = golden_image.delete("ocid1.image.oc1..vanished")
+    assert ok is True
+
+
+def test_a_delete_reports_rather_than_raising(monkeypatch):
+    monkeypatch.setenv("CLOUD_STATE_MODE", "live")
+    monkeypatch.setattr(golden_image.cloud_state, "_require_oci_creds",
+                        lambda: (_ for _ in ()).throw(RuntimeError("no creds")))
+    ok, detail = golden_image.delete("ocid1.image.oc1..x")
+    assert ok is False and "no creds" in detail
+
+
+def test_the_delete_endpoint_takes_exactly_one_image():
+    """No bulk form. A bug in a bulk endpoint deletes a fleet; a bug here
+    deletes an image."""
+    b = json.dumps({"image_ocid": "ocid1.image.oc1..one"}, sort_keys=True).encode()
+    r = client.post("/delete-image", content=b, headers=signed(b))
+
+    assert r.status_code == 200
+    assert r.json()["deleted"] is True
+    assert "image_ocids" not in r.json()
+
+
+def test_an_unsigned_delete_is_refused():
+    b = json.dumps({"image_ocid": "ocid1.image.oc1..one"}, sort_keys=True).encode()
+    assert client.post("/delete-image", content=b).status_code == 401

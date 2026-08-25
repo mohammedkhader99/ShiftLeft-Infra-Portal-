@@ -7147,11 +7147,28 @@ def _poll_once() -> None:
     # beside is not a speed-up — the same rule the capture itself follows.
     try:
         with SessionLocal() as session:
-            ask = proof_wiring.make_image_states(
-                proof_wiring.make_post(_post_to_orchestrator, sign, WEBHOOK_SECRET))
-            for moved in golden.promote(session, ask):
+            post = proof_wiring.make_post(_post_to_orchestrator, sign,
+                                          WEBHOOK_SECRET)
+            # ORDER MATTERS, and it is the same shape as the certification sweep
+            # above: everything that STOPS an image being offered runs before
+            # anything that deletes one, so a single cycle never deletes an
+            # image it has not first taken out of service.
+            for moved in golden.promote(
+                    session, proof_wiring.make_image_states(post)):
                 append_audit(session, f"golden.image.{moved['state']}",
                              actor="certification", detail=moved)
+            for old_one in golden.supersede(session):
+                append_audit(session, "golden.image.superseded",
+                             actor="certification", detail=old_one)
+            for aged in golden.expire(session):
+                append_audit(session, "golden.image.expired",
+                             actor="certification", detail=aged)
+            # LAST, and only for images retired long enough ago that no request
+            # can still be mid-apply holding the OCID.
+            for gone in golden.reap(
+                    session, proof_wiring.make_image_delete(post)):
+                append_audit(session, "golden.image.deleted",
+                             actor="certification", detail=gone)
             session.commit()
     except Exception as exc:  # noqa: BLE001
         try:
