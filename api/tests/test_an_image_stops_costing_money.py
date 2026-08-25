@@ -72,29 +72,29 @@ def deleter(fail=False):
 # --- supersede ----------------------------------------------------------------
 
 def test_only_the_newest_proven_image_stays_available(session):
-    add(session, ocid="old", created=NOW - timedelta(days=5))
-    add(session, ocid="new", created=NOW)
+    add(session, ocid="ocid1.image.oc1..old", created=NOW - timedelta(days=5))
+    add(session, ocid="ocid1.image.oc1..new", created=NOW)
 
     changed = golden.supersede(session, now=NOW)
 
-    assert [c["image_ocid"] for c in changed] == ["old"]
-    assert golden.usable_for(session, ["dotnet8"], "oci") == {"dotnet8": "new"}
+    assert [c["image_ocid"] for c in changed] == ["ocid1.image.oc1..old"]
+    assert golden.usable_for(session, ["dotnet8"], "oci") == {"dotnet8": "ocid1.image.oc1..new"}
 
 
 def test_a_lone_image_is_never_superseded(session):
-    add(session, ocid="only")
+    add(session, ocid="ocid1.image.oc1..only")
     assert golden.supersede(session, now=NOW) == []
 
 
 def test_images_for_different_technologies_do_not_supersede_each_other(session):
-    add(session, "dotnet8", ocid="a")
-    add(session, "nginx", ocid="b")
+    add(session, "dotnet8", ocid="ocid1.image.oc1..a")
+    add(session, "nginx", ocid="ocid1.image.oc1..b")
     assert golden.supersede(session, now=NOW) == []
 
 
 def test_images_for_different_clouds_do_not_supersede_each_other(session):
-    add(session, ocid="a", target="oci")
-    add(session, ocid="b", target="aws")
+    add(session, ocid="ocid1.image.oc1..a", target="oci")
+    add(session, ocid="ocid1.image.oc1..b", target="aws")
     assert golden.supersede(session, now=NOW) == []
 
 
@@ -102,11 +102,11 @@ def test_superseding_starts_the_deletion_clock(session):
     """Not `created_at`. An image created sixty days ago and superseded today
     would otherwise be deleted instantly — the precise case the grace period
     exists for."""
-    add(session, ocid="old", created=NOW - timedelta(days=60))
-    add(session, ocid="new", created=NOW)
+    add(session, ocid="ocid1.image.oc1..old", created=NOW - timedelta(days=60))
+    add(session, ocid="ocid1.image.oc1..new", created=NOW)
 
     golden.supersede(session, now=NOW)
-    old = session.query(GoldenImage).filter_by(image_ocid="old").one()
+    old = session.query(GoldenImage).filter_by(image_ocid="ocid1.image.oc1..old").one()
     assert when(old.retired_at) == NOW
 
 
@@ -114,7 +114,7 @@ def test_superseding_starts_the_deletion_clock(session):
 
 def test_an_image_older_than_the_certification_it_stands_on_expires(session, monkeypatch):
     monkeypatch.setenv("CERTIFICATION_VALIDITY_DAYS", "30")
-    add(session, ocid="stale", created=NOW - timedelta(days=31))
+    add(session, ocid="ocid1.image.oc1..stale", created=NOW - timedelta(days=31))
 
     changed = golden.expire(session, now=NOW)
 
@@ -124,7 +124,7 @@ def test_an_image_older_than_the_certification_it_stands_on_expires(session, mon
 
 def test_a_fresh_image_does_not_expire(session, monkeypatch):
     monkeypatch.setenv("CERTIFICATION_VALIDITY_DAYS", "30")
-    add(session, ocid="fresh", created=NOW - timedelta(days=29))
+    add(session, ocid="ocid1.image.oc1..fresh", created=NOW - timedelta(days=29))
     assert golden.expire(session, now=NOW) == []
 
 
@@ -133,7 +133,7 @@ def test_expiry_follows_the_SAME_rule_as_certification(session, monkeypatch):
     only because a proof vouched for it, so it cannot outlive the vouching — and
     two copies of "30" would drift the first time either was tuned."""
     monkeypatch.setenv("CERTIFICATION_VALIDITY_DAYS", "5")
-    add(session, ocid="stale", created=NOW - timedelta(days=6))
+    add(session, ocid="ocid1.image.oc1..stale", created=NOW - timedelta(days=6))
 
     assert len(golden.expire(session, now=NOW)) == 1, (
         "expiry ignored the configured certification validity")
@@ -234,17 +234,17 @@ def test_the_grace_period_can_never_be_zero(session, monkeypatch):
 def test_a_replaced_image_is_retired_then_later_deleted(session):
     """End to end, in the order the sweep runs it: a new proof arrives, the old
     image stops being offered immediately, and is deleted a week later."""
-    add(session, ocid="v1", created=NOW - timedelta(days=1))
-    add(session, ocid="v2", created=NOW)
+    add(session, ocid="ocid1.image.oc1..v1", created=NOW - timedelta(days=1))
+    add(session, ocid="ocid1.image.oc1..v2", created=NOW)
     d = deleter()
 
     golden.supersede(session, now=NOW)
-    assert golden.usable_for(session, ["dotnet8"], "oci") == {"dotnet8": "v2"}
+    assert golden.usable_for(session, ["dotnet8"], "oci") == {"dotnet8": "ocid1.image.oc1..v2"}
     assert golden.reap(session, d, now=NOW) == []          # still in grace
 
     later = NOW + timedelta(days=8)
     golden.reap(session, d, now=later)
 
-    assert d.seen == ["v1"]
-    assert golden.usable_for(session, ["dotnet8"], "oci") == {"dotnet8": "v2"}, (
+    assert d.seen == ["ocid1.image.oc1..v1"]
+    assert golden.usable_for(session, ["dotnet8"], "oci") == {"dotnet8": "ocid1.image.oc1..v2"}, (
         "the surviving image stopped being usable")

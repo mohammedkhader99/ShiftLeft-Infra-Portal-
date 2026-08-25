@@ -60,6 +60,16 @@ def mode() -> str:
     return cloud_state.mode()
 
 
+def provisioning_is_real() -> bool:
+    """Does this orchestrator build real infrastructure?
+
+    Read separately from `mode()` because on 2026-08-25 this deployment had
+    PROVISION_MODE=apply and CLOUD_STATE_MODE=mock at the same time, and every
+    assumption in this module had quietly taken them for one setting.
+    """
+    return os.getenv("PROVISION_MODE", "mock").strip().lower() == "apply"
+
+
 def enabled() -> bool:
     """The master switch, read fresh so the Admin console takes effect at once."""
     return os.getenv("GOLDEN_IMAGES", "true").strip().lower() in ("1", "true", "yes", "on")
@@ -94,6 +104,25 @@ def capture(reference: str, *, technology_code: str, instance_name: str) -> Capt
         return Capture(False, detail=f"Refusing to name an image {name!r}.")
 
     if mode() != "live":
+        # A MOCK CAPTURE OF A REAL MACHINE IS A TRAP.
+        #
+        # Found on deploy, 2026-08-25. This deployment runs PROVISION_MODE=apply
+        # with CLOUD_STATE_MODE=mock, a combination this module had assumed away.
+        # The proof build makes a REAL VM; the capture would hand back a fake
+        # OCID; the promotion sweep calls a mock OCID available; and the next
+        # REAL request boots `ocid1.image.mock....` and fails an apply that had
+        # already been approved.
+        #
+        # Golden images are a fast path and never a dependency. A rehearsal that
+        # can break a real provisioning is not a rehearsal.
+        if provisioning_is_real():
+            return Capture(False, detail=(
+                "Refusing a mock capture: this orchestrator provisions for real "
+                "(PROVISION_MODE=apply) but cannot take real images "
+                "(CLOUD_STATE_MODE=mock), and a fake image OCID recorded now "
+                "would be handed to Terraform on the next request. Set "
+                "CLOUD_STATE_MODE=live to capture real images."))
+
         # A deterministic stand-in. It must be obviously fake: an OCID-shaped
         # string that reached a real API call would be a much worse bug than one
         # that fails loudly.

@@ -118,9 +118,9 @@ def test_a_failed_image_is_never_offered(session):
 
 
 def test_the_newest_proven_image_wins(session):
-    add(session, state="available", ocid="old", created=NOW - timedelta(days=9))
-    add(session, state="available", ocid="new", created=NOW)
-    assert golden.usable_for(session, ["dotnet8"], "oci") == {"dotnet8": "new"}
+    add(session, state="available", ocid="ocid1.image.oc1..old", created=NOW - timedelta(days=9))
+    add(session, state="available", ocid="ocid1.image.oc1..new", created=NOW)
+    assert golden.usable_for(session, ["dotnet8"], "oci") == {"dotnet8": "ocid1.image.oc1..new"}
 
 
 # --- one machine boots one image ----------------------------------------------
@@ -175,3 +175,31 @@ def test_the_promotion_sweep_cannot_break_the_certification_sweep():
         "the golden-image sweep is inside the certification sweep's try block, "
         "so a failure promoting an image withdraws no certification")
     assert "golden.promote" in src, "the sweep is not wired in at all"
+
+
+# --- the deployment shape this was NOT designed for ---------------------------
+
+def test_a_stand_in_OCID_is_never_handed_to_terraform(session):
+    """Found on deploy, 2026-08-25, and it would have broken real requests.
+
+    This deployment runs PROVISION_MODE=apply with CLOUD_STATE_MODE=mock — real
+    provisioning, mock cloud reads — a combination the capture path had taken
+    for one setting. The proof built a REAL machine, the capture returned a fake
+    OCID, the promotion sweep called that fake available, and the next real
+    request would have booted `ocid1.image.mock....` and failed an apply that
+    had already been approved.
+
+    This is the last check before Terraform, so it does not care how the value
+    got here."""
+    add(session, state="available", ocid="ocid1.image.mock.golden-dotnet8-proof")
+
+    assert golden.usable_for(session, ["dotnet8"], "oci") == {}, (
+        "a stand-in image OCID would be handed to a real apply")
+
+
+@pytest.mark.parametrize("ocid", [
+    "", "new", "img-a", "ocid1.instance.oc1..abc", "ocid1.image.mock.x", "latest",
+])
+def test_only_something_that_could_boot_is_offered(session, ocid):
+    add(session, state="available", ocid=ocid)
+    assert golden.usable_for(session, ["dotnet8"], "oci") == {}

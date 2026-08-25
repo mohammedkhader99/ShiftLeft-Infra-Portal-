@@ -201,3 +201,36 @@ def test_the_delete_endpoint_takes_exactly_one_image():
 def test_an_unsigned_delete_is_refused():
     b = json.dumps({"image_ocid": "ocid1.image.oc1..one"}, sort_keys=True).encode()
     assert client.post("/delete-image", content=b).status_code == 401
+
+
+# --- real provisioning, mock cloud reads: the split this missed ---------------
+
+def test_a_mock_capture_of_a_REAL_machine_is_refused(monkeypatch):
+    """Found on deploy, 2026-08-25.
+
+    PROVISION_MODE=apply with CLOUD_STATE_MODE=mock is a real deployment shape —
+    this one. The proof builds an actual VM, so a stand-in OCID recorded for it
+    is not a harmless rehearsal: it is a value that reaches Terraform on the next
+    approved request and fails the apply.
+
+    Refusing loudly is the whole point. Golden images are a fast path and never
+    a dependency, and a rehearsal that can break real provisioning is neither."""
+    monkeypatch.setenv("PROVISION_MODE", "apply")
+    monkeypatch.setenv("CLOUD_STATE_MODE", "mock")
+
+    result = golden_image.capture("PROOF-X-1", technology_code="dotnet8",
+                                  instance_name="proof-x")
+
+    assert result.ok is False, "a fake image was recorded for a real machine"
+    assert "CLOUD_STATE_MODE" in result.detail, "the refusal does not say how to fix it"
+    assert not result.image_ocid
+
+
+def test_a_mock_capture_in_a_fully_mock_world_is_still_fine(monkeypatch):
+    """Demos and tests build nothing real, so nothing can be broken by a
+    stand-in. Refusing here would make the feature untestable offline."""
+    monkeypatch.setenv("PROVISION_MODE", "mock")
+    monkeypatch.setenv("CLOUD_STATE_MODE", "mock")
+
+    assert golden_image.capture("PROOF-X-1", technology_code="dotnet8",
+                                instance_name="proof-x").ok is True

@@ -96,6 +96,21 @@ def _stuck(row, now: datetime) -> bool:
     return (now - started).total_seconds() > STUCK_AFTER_HOURS * 3600
 
 
+def is_a_real_image(ocid: str) -> bool:
+    """Could this OCID name an actual image in an actual tenancy?
+
+    THE LAST CHECK BEFORE TERRAFORM. Whatever put a row in this table — a mock
+    adapter, a half-configured deployment, a test fixture that escaped — the
+    value handed to a real apply has to be capable of booting. A stand-in that
+    reaches Terraform fails a provisioning that was already approved.
+
+    Cheap, structural, and deliberately not clever: real OCI image OCIDs name a
+    realm (`ocid1.image.oc1...`), and this project's stand-ins say `mock`.
+    """
+    return (bool(ocid) and ocid.startswith("ocid1.image.oc")
+            and ".mock." not in ocid)
+
+
 def usable_for(session, technology_codes, target: str) -> dict[str, str]:
     """`{technology_code: image_ocid}` for the codes that have a ready image.
 
@@ -119,7 +134,7 @@ def usable_for(session, technology_codes, target: str) -> dict[str, str]:
 
     chosen: dict[str, str] = {}
     for row in rows:
-        if row.image_ocid and row.technology_code not in chosen:
+        if is_a_real_image(row.image_ocid) and row.technology_code not in chosen:
             chosen[row.technology_code] = row.image_ocid
     return chosen
 
