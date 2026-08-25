@@ -180,6 +180,7 @@ SEARCHED_AND_FOUND = ("--- available ---\n"
 # without it came from a machine that did not report its own working, and is
 # treated as not having answered rather than as having answered "no".
 SEARCHED_AND_EMPTY = ("--- available ---\nqueryable_rabbitmq=yes\n"
+                      f"search_generation_rabbitmq={discovery.SEARCH_GENERATION}\n"
                       "epel_rabbitmq=added\n"
                       "searched_rabbitmq=ol9_baseos_latest,ol9_developer_EPEL\n"
                       "available_rabbitmq=none\n")
@@ -240,6 +241,7 @@ def test_an_empty_report_is_never_read_as_a_settled_fact():
 def _report(queryable="yes", epel="added", available="none", extra="",
             searched="ol9_baseos_latest,ol9_developer_EPEL"):
     return ("--- available ---\n"
+            f"search_generation_rabbitmq={discovery.SEARCH_GENERATION}\n"
             f"queryable_rabbitmq={queryable}\n"
             f"epel_rabbitmq={epel}\n"
             f"searched_rabbitmq={searched}\n"
@@ -270,6 +272,7 @@ def test_a_search_answered_before_epel_was_needed_is_still_sound():
     """No `epel_` line at all means the configured repositories answered first,
     which is a complete search by definition — not a missing step."""
     report = ("--- available ---\nqueryable_rabbitmq=yes\n"
+              f"search_generation_rabbitmq={discovery.SEARCH_GENERATION}\n"
               "searched_rabbitmq=ol9_baseos_latest,ol9_appstream\n"
               "available_rabbitmq=none\n")
     assert discovery.search_was_sound(report, "rabbitmq")
@@ -299,7 +302,9 @@ def test_the_working_report_uses_words_the_verdict_does_not_read_as_broken():
 # --- installed is not enabled (REQ-2026-0190) ---------------------------------
 
 def _r(**kw):
-    parts = ["--- available ---", "queryable_rabbitmq=yes"]
+    parts = ["--- available ---",
+             f"search_generation_rabbitmq={discovery.SEARCH_GENERATION}",
+             "queryable_rabbitmq=yes"]
     for k, v in kw.items():
         if v is not None:
             parts.append(f"{k}_rabbitmq={v}")
@@ -348,7 +353,8 @@ def test_a_search_that_never_needed_epel_needs_no_epel_in_the_list():
 #
 # Guessing names was the wrong instrument. dnf can search.
 
-DOTNET = """--- available ---
+DOTNET = f"""--- available ---
+search_generation_dotnet8={discovery.SEARCH_GENERATION}
 epel_dotnet8=present
 searched_dotnet8=ol9_appstream,ol9_baseos_latest,ol9_developer_EPEL
 queryable_dotnet8=yes
@@ -415,6 +421,7 @@ def test_reachability_is_MEASURED_from_what_the_machine_searched():
 
 def test_a_package_only_in_an_unsearched_repository_is_not_offered():
     report = ("--- available ---\nqueryable_x=yes\n"
+              f"search_generation_x={discovery.SEARCH_GENERATION}\n"
               "searched_x=ol9_appstream\n"
               "matches_x=thing|a_repo_nobody_enabled\n"
               "available_x=none\n")
@@ -441,8 +448,66 @@ def test_a_search_that_found_only_accessories_is_still_a_negative():
     """Nothing usable is the same answer as nothing at all, and must stay a
     settled fact rather than becoming a package."""
     report = ("--- available ---\nqueryable_x=yes\n"
+              f"search_generation_x={discovery.SEARCH_GENERATION}\n"
               "searched_x=ol9_appstream,ol9_developer_EPEL\n"
               "epel_x=present\n"
               "matches_x=x-devel|ol9_appstream,x-debuginfo|ol9_appstream\n"
               "available_x=none\n")
     assert discovery.finding_for(report, "x") == {}
+
+
+# --- a negative expires when the question changes (REQ-2026-0199) -------------
+#
+# .NET was raised again an hour after the wildcard search shipped, and the ladder
+# refused it in TEN SECONDS without building anything: REQ-2026-0197 had already
+# refuted `dnf install dotnet8`, so the rung was skipped and the new search never
+# ran.
+#
+# That refutation was true, and the machine behind it had been asked properly BY
+# THE STANDARD OF ITS OWN DAY — EPEL enabled, control probe passing, four names
+# tried. It simply was never asked the wildcard question, because that did not
+# exist yet. The memory was right and stale, and nothing could see the difference.
+#
+# The fix is the same trick as recipe_memory._SCHEME: version what is asked, and
+# an answer to the older question stops counting on its own. Nobody has to
+# remember to add another condition the next time the search improves.
+
+def _gen(generation, **kw):
+    parts = ["--- available ---",
+             f"search_generation_x={generation}",
+             "queryable_x=yes",
+             "searched_x=ol9_appstream,ol9_developer_EPEL",
+             "epel_x=present"]
+    for k, v in kw.items():
+        parts.append(f"{k}_x={v}")
+    parts.append("available_x=none")
+    return "\n".join(parts) + "\n"
+
+
+def test_a_negative_from_an_older_search_does_not_bind():
+    """THE REQ-2026-0199 defect. Ten seconds, no machine, and the improvement
+    that would have found .NET never got the chance to run."""
+    assert discovery.finding_for(_gen(1), "x") is None
+
+
+def test_a_report_that_names_no_generation_does_not_bind_either():
+    """Every report written before the stamp existed. Treating them as settled
+    would freeze every technology refuted before today."""
+    report = ("--- available ---\nqueryable_x=yes\n"
+              "searched_x=ol9_appstream\nepel_x=present\navailable_x=none\n")
+    assert discovery.finding_for(report, "x") is None
+
+
+def test_a_negative_from_the_CURRENT_search_still_binds():
+    """The versioning must not become a licence to re-buy every answer: a
+    machine that ran today's search and found nothing has settled it."""
+    assert discovery.finding_for(_gen(discovery.SEARCH_GENERATION), "x") == {}
+
+
+def test_the_two_copies_of_the_generation_agree():
+    """`api/` may not import `orchestrator/` — the structural guard that exists
+    because such an import passes every test and raises in the container — so
+    the constant is duplicated. This is what stops the copies drifting: bump one
+    and forget the other, and every negative silently stops binding for ever."""
+    from orchestrator import configure
+    assert discovery.SEARCH_GENERATION == configure.SEARCH_GENERATION

@@ -342,6 +342,15 @@ _MODULE_ENABLE = {"rhel": "dnf module enable -y", "debian": "true", "suse": "tru
 # discovered one.
 _EPEL_RELEASE = "oracle-epel-release-el9"
 
+# What the machine's package search currently does. BUMP THIS whenever it is
+# taught to look somewhere new — a negative from an older generation stops
+# binding automatically, and the rung runs again rather than resting on an
+# answer to a question nobody asked.
+#
+#   1  exact candidate names, EPEL enabled, control probe        (C7)
+#   2  + a wildcard search on the stem when the names fail       (C7b)
+SEARCH_GENERATION = 2
+
 
 def candidate_packages(code: str) -> list[str]:
     """The names this technology might actually be packaged under, best first.
@@ -716,6 +725,23 @@ def _report_script(wanted: list[tuple[str, str]], packages: list[str],
             f'"*{stem}*" 2>/dev/null | sort -u | head -20 | paste -sd, -)')
         checks.append(f'      echo "matches_{key}=${{MATCHES:-none}}"')
         checks.append("    fi")
+
+        # WHICH SEARCH THIS WAS. Bumped whenever the machine is taught to look
+        # somewhere new, and a negative only binds when it came from a machine
+        # running the CURRENT one.
+        #
+        # REQ-2026-0199 is why. REQ-2026-0197 had refuted `dnf install dotnet8`
+        # honestly — EPEL enabled, control probe passing, four candidate names
+        # tried — so the ladder skipped the rung in ten seconds without building
+        # anything, and the wildcard search deployed an hour earlier never ran.
+        # The memory was right and stale, and the soundness rule could not see
+        # the difference because it only asked whether the search was sound BY
+        # THE STANDARD OF ITS OWN DAY.
+        #
+        # This is the same trick as recipe_memory._SCHEME, for the same reason:
+        # when what we ASK changes, answers to the older question stop counting,
+        # and nobody has to remember to add another condition next time.
+        checks.append(f'    echo "search_generation_{key}={SEARCH_GENERATION}"')
 
         # THE CONTROL PROBE, which is what makes `none` falsifiable. `bash` is
         # in the base repositories of every image this portal builds; if the

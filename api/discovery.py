@@ -32,6 +32,12 @@ from dataclasses import dataclass, field
 
 from common import profile_rules
 
+# Mirrors orchestrator.configure.SEARCH_GENERATION. Duplicated rather than
+# imported because api/ may not import orchestrator/ — the structural guard that
+# exists because such an import passes every test and raises in the container.
+# A test asserts the two agree, so they cannot drift.
+SEARCH_GENERATION = 2
+
 # Repository ids that mean "this came from EPEL", which is enabled by installing
 # a release package rather than by fetching a .repo file. Matched on the whole
 # value after lowercasing, never as a substring: `ol9_developer_EPEL` and
@@ -302,6 +308,13 @@ def search_was_sound(report: str, code: str) -> bool:
         if "=" in line:
             k, v = line.split("=", 1)
             values[k] = v.strip()
+    # THE SEARCH MUST BE THE ONE WE ASK NOW. A machine that ran an older search
+    # answered an older question, and its negative says nothing about what the
+    # current one would find. REQ-2026-0199 skipped the .NET rung in ten seconds
+    # on a refutation from a machine that never ran the wildcard — correct by
+    # yesterday's standard, and stale in a way nothing could see.
+    if values.get(f"search_generation_{key}", "0") != str(SEARCH_GENERATION):
+        return False
     if values.get(f"queryable_{key}") != "yes":
         return False
     if values.get(f"epel_{key}", "present") not in ("present", "added"):
