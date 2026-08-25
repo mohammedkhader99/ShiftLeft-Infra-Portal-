@@ -46,6 +46,16 @@ ALLOWLIST: dict[str, dict] = {
                                  "type": "int", "default": "30", "min": 0, "max": 365,
                                  "group": "Governance",
                                  "help": "Warn this many days before a project expires."},
+    "GOLDEN_IMAGES": {"label": "Capture golden images", "type": "bool",
+                      "default": "true", "group": "Governance",
+                      "help": ("When on, a proof build that verifies healthy is "
+                               "captured as a reusable custom image instead of "
+                               "being thrown away, so the technology never has "
+                               "to be re-installed from repositories again. "
+                               "Each image is a REAL, PERSISTENT, BILLABLE "
+                               "resource in your tenancy (~50 GB of storage per "
+                               "certified technology). Switching this off stops "
+                               "new captures; it deletes nothing.")},
     "PROVISION_MAX_ATTEMPTS": {"label": "Max provisioning attempts", "type": "int",
                                "default": "3", "min": 1, "max": 20, "group": "Governance",
                                "help": ("Stop retrying a request after this many failed "

@@ -3788,7 +3788,8 @@ def _autobuild_component(session: Session, code: str, target: str) -> dict:
                         resource_kind=(manifest or {}).get(
                             "resource_kind", f"{target}-{code}"),
                         status="draft")
-        return proof.run_proof(sess, row, post=post, price=price, verify=verify)
+        return proof.run_proof(sess, row, post=post, price=price, verify=verify,
+                               capture=proof_wiring.make_capture(post))
 
     def certify(manifest, proof_reference):
         return certification.certify_from_proof(
@@ -3976,7 +3977,8 @@ def autobuild_candidate(body: DraftBlueprintIn, session: Session = Depends(get_s
 
     def run_proof(sess, bp):
         from api import proof
-        return proof.run_proof(sess, bp, post=post, price=price, verify=verify)
+        return proof.run_proof(sess, bp, post=post, price=price, verify=verify,
+                               capture=proof_wiring.make_capture(post))
 
     result = autobuild.build(body.candidate, session, blueprint=blueprint,
                              run_proof=run_proof, publish=publish,

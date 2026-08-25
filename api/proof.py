@@ -131,7 +131,45 @@ class ProofOutcome:
     monthly: float | None = None
 
 
-def run_proof(session, blueprint, *, post, price, verify, now=None) -> ProofOutcome:
+def _keep(session, blueprint, reference: str, payload: dict, capture) -> None:
+    """Record whatever the capture did, and never let it matter to the proof.
+
+    Writes a row either way. A failed capture that leaves no trace is a failure
+    nobody can find: the proof passed, the request provisioned, and the only
+    symptom is that the next hundred requests are still slow for a reason that
+    was never written down.
+    """
+    from db.models import GoldenImage
+
+    row = GoldenImage(
+        technology_code=blueprint.technology_code,
+        deployment_target=blueprint.deployment_target,
+        proof_reference=reference,
+        os_family=getattr(blueprint, "os_family", "") or "",
+    )
+    try:
+        if capture is None:
+            row.state, row.detail = "failed", "No capture path is wired in."
+        else:
+            result = capture(reference, payload) or {}
+            if result.get("captured"):
+                row.state = "capturing"
+                row.image_ocid = (result.get("image_ocid") or "")[:255]
+                row.source_instance_ocid = (result.get("source_instance_ocid") or "")[:255]
+                row.size_gb = result.get("size_gb")
+                row.detail = (result.get("detail") or "")[:500]
+            else:
+                row.state = "failed"
+                row.detail = (result.get("detail") or "The capture reported no reason.")[:500]
+    except Exception as exc:  # noqa: BLE001 - see the contract above
+        row.state, row.detail = "failed", f"{type(exc).__name__}: {exc}"[:500]
+
+    session.add(row)
+    session.commit()
+
+
+def run_proof(session, blueprint, *, post, price, verify, now=None,
+              capture=None) -> ProofOutcome:
     """Build a blueprint, check it, tear it down, and record what happened.
 
     The four collaborators are injected rather than imported so a test can drive
@@ -143,6 +181,8 @@ def run_proof(session, blueprint, *, post, price, verify, now=None) -> ProofOutc
         price(components)     -> monthly cost or None      the plan's price
         verify(reference, payload)
                               -> (healthy: bool, detail)   resource_state / boot
+        capture(reference, payload)
+                              -> dict                      keep the proven machine
 
     ORDER MATTERS. The cost cap is checked before anything is built, and the
     record is written before the build starts — a proof that dies mid-flight must
@@ -268,6 +308,21 @@ def run_proof(session, blueprint, *, post, price, verify, now=None) -> ProofOutc
     # should be one message is how they came to disagree; there is now one
     # payload and every call uses it.
     healthy, vdetail = verify(reference, payload)
+
+    # KEEP THE MACHINE THAT PASSED.
+    #
+    # This is the only moment it exists AND is known to work. A line below will
+    # destroy it, and until 2026-08-25 that was the end of it: every certified
+    # technology was re-installed from repositories at every first boot, so a
+    # request could fail on a mirror that was down or a package that had moved,
+    # long after the recipe itself was proven.
+    #
+    # DELIBERATELY AFTER THE VERDICT IS DECIDED. `healthy` is already computed
+    # and nothing below reads the capture's result, so a capture that refuses,
+    # times out or explodes cannot turn a passing proof into a failing one. That
+    # is the whole contract: an optimisation on a path that already works.
+    if healthy:
+        _keep(session, blueprint, reference, payload, capture)
 
     # ALWAYS tear down, pass or fail. A proof that leaves a resource behind is a
     # failed proof however healthy the resource was (ARCHITECTURE.md §4).

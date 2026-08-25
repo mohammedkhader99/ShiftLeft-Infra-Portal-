@@ -137,6 +137,10 @@ services:
       # background reconciliation sweep. CLOUD_STATE_MODE=live queries the real
       # OCI/Azure APIs (needs cloud creds via a vault — extension point). Read-only.
       CLOUD_STATE_MODE: ${CLOUD_STATE_MODE:-mock}
+      # Keep the machine a proof build proved, as a reusable custom image.
+      # ON by default at the reviewer's instruction (2026-08-25): each image
+      # is a REAL, PERSISTENT, BILLABLE resource. The Admin console toggles it.
+      GOLDEN_IMAGES: ${GOLDEN_IMAGES:-true}
       CLOUD_STATE_SYNC_ENABLED: ${CLOUD_STATE_SYNC_ENABLED:-false}
       # Automatic Jira-status poller (2.7). When AUTO_PROVISION=true a background
       # thread pulls the live Jira status every POLL_INTERVAL_SECONDS and advances
@@ -320,6 +324,10 @@ services:
       # stop/start (default off) — so live reconciliation (read) never by itself
       # enables live actuation (write).
       CLOUD_STATE_MODE: ${CLOUD_STATE_MODE:-mock}
+      # Keep the machine a proof build proved, as a reusable custom image.
+      # ON by default at the reviewer's instruction (2026-08-25): each image
+      # is a REAL, PERSISTENT, BILLABLE resource. The Admin console toggles it.
+      GOLDEN_IMAGES: ${GOLDEN_IMAGES:-true}
       CLOUD_STATE_SIMULATE_MISSING: ${CLOUD_STATE_SIMULATE_MISSING:-}
       OCI_ACTUATE_ENABLED: ${OCI_ACTUATE_ENABLED:-false}
       # Managed PostgreSQL (GAP-ANALYSIS step 2). OCI_PSQL_ENABLED is a SECOND

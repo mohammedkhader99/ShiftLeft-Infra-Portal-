@@ -1027,3 +1027,65 @@ class CertificationProof(Base):
     cost_cap: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class GoldenImage(Base):
+    """A machine that PASSED, kept instead of thrown away.
+
+    Every proof build already boots a real VM, installs the software, proves it
+    healthy and then destroys it. That last step throws away the only artefact in
+    the whole process that is worth keeping: a machine known to work.
+
+    So a golden image is captured from the proven instance in the moment between
+    "healthy" and "destroy". It costs no extra machine, because the machine
+    already exists and has already earned its certification.
+
+    WHAT IT FIXES, precisely. Today a certified technology is re-installed from
+    repositories at every first boot, so a request can fail on a mirror that is
+    down, a package that moved, or a version that resolved differently this
+    morning. An image makes a proven install immutable: derived once, reused
+    forever.
+
+    WHAT IT DOES NOT FIX. A recipe that never reaches healthy is never captured,
+    because there is nothing to capture. Golden images make success cheap to
+    repeat; they do not make a broken install work.
+
+    NEVER A DEPENDENCY. A missing, stale or failed image must fall back to
+    install-at-boot. Capture is an optimisation on a path that already works, and
+    the day a capture failure blocks a provisioning that would otherwise have
+    succeeded is the day this table became a liability.
+
+    A NEW TABLE rather than columns elsewhere, for the reason MarketplaceListing
+    gives: create_all adds missing tables and not missing columns.
+    """
+
+    __tablename__ = "golden_image"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+
+    technology_code: Mapped[str] = mapped_column(String(48), index=True)
+    deployment_target: Mapped[str] = mapped_column(String(16), index=True)
+
+    # The image itself, and the machine it was taken from. The source is kept so
+    # a human can ask "what was this actually built from?" of an image that is
+    # otherwise just an opaque OCID.
+    image_ocid: Mapped[str] = mapped_column(String(255), default="")
+    source_instance_ocid: Mapped[str] = mapped_column(String(255), default="")
+
+    # WHICH PROOF EARNED IT. Not decoration: an image with no passing proof
+    # behind it is exactly the thing this project keeps having to withdraw, and
+    # the reference is how a withdrawal finds the image it must invalidate.
+    proof_reference: Mapped[str] = mapped_column(String(64), index=True, default="")
+
+    # available | capturing | failed | superseded | deleted
+    state: Mapped[str] = mapped_column(String(16), default="capturing", index=True)
+
+    # Why it is not available, when it is not. A failed capture must say so in
+    # words, because it is deliberately invisible everywhere else — the proof
+    # still passes and the request still provisions.
+    detail: Mapped[str] = mapped_column(String(500), default="")
+
+    os_family: Mapped[str] = mapped_column(String(16), default="")
+    size_gb: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)

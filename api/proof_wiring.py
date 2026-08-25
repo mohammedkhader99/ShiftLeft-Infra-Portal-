@@ -53,6 +53,30 @@ def make_post(post_to_orchestrator, sign, secret: str):
     return post
 
 
+def make_capture(post):
+    """Keep the proven machine, in the shape run_proof expects: always a dict.
+
+    `make_post` hands back the orchestrator's body as TEXT, so this is the seam
+    that turns it into the mapping the caller reads. Every failure — a refused
+    call, an unreachable orchestrator, a body that is not JSON — becomes
+    `{"captured": False, "detail": ...}` rather than an exception, because the
+    proof's verdict is already decided by the time this runs and must not be
+    reachable from here.
+    """
+    def capture(reference: str, payload: dict) -> dict:
+        ok, detail = post("/capture-image", payload)
+        if not ok:
+            return {"captured": False, "detail": detail}
+        try:
+            body = json.loads(detail)
+        except (ValueError, TypeError):
+            return {"captured": False,
+                    "detail": f"Unreadable capture response: {(detail or '')[:200]}"}
+        return body if isinstance(body, dict) else {
+            "captured": False, "detail": "The capture response was not an object."}
+    return capture
+
+
 def make_price(session: Session, target: str):
     """The plan's monthly cost, from the portal's own rate cards.
 

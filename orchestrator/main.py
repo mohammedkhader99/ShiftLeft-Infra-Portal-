@@ -19,6 +19,7 @@ from fastapi import FastAPI, HTTPException, Request
 
 from common import proof_rules
 from common.signing import verify
+from orchestrator import golden_image
 from orchestrator import marketplace
 from orchestrator import (
     backups,
@@ -1240,6 +1241,51 @@ async def state(request: Request) -> dict:
     except cloud_state.CloudStateUnavailable as exc:
         raise HTTPException(status_code=501, detail=str(exc))
     return {"reference": reference, "resources": actual, "mode": cloud_state.mode()}
+
+
+
+@app.post("/capture-image")
+async def capture_image(request: Request) -> dict:
+    """Keep the machine that passed, as a reusable image.
+
+    Called between `verify` and `destroy` on a proof build, so the instance it
+    photographs has already been proven healthy. Signature-verified like every
+    other endpoint that touches the cloud.
+
+    IT NEVER FAILS THE CALLER. A capture is an optimisation on a path that
+    already works: the proof's verdict is decided before this is called, and a
+    refusal here must not be able to change it. So every outcome is a 200 with
+    `captured: false` and a reason, and there is no error status to raise.
+    """
+    body = await request.body()
+    if not verify(WEBHOOK_SECRET, body, request.headers.get("X-Signature", "")):
+        raise HTTPException(status_code=401, detail="Invalid webhook signature.")
+    payload = json.loads(body)
+    reference = payload["reference"]
+
+    # ONLY EVER A PROOF. A capture reaches into a running machine and creates a
+    # persistent billable artefact from it; the only machine we have grounds to
+    # do that to is one this platform built to prove a recipe. A production
+    # environment's instance is not ours to photograph.
+    if not payload.get("proof") or not proof_rules.is_proof_reference(reference):
+        return {"reference": reference, "captured": False,
+                "detail": "Only a proof build's own instance may be captured."}
+
+    name, _ = _bucket_and_tags(payload)
+    code = (payload.get("technology_code")
+            or (payload.get("policy_input", {}).get("components") or [{}])[0]
+                    .get("technology_code", ""))
+
+    result = golden_image.capture(reference, technology_code=code, instance_name=name)
+    return {
+        "reference": reference,
+        "captured": result.ok,
+        "image_ocid": result.image_ocid,
+        "source_instance_ocid": result.source_instance_ocid,
+        "size_gb": result.size_gb,
+        "mode": golden_image.mode(),
+        "detail": result.detail,
+    }
 
 
 @app.post("/actuate")
