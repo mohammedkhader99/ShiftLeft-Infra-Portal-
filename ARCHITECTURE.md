@@ -141,6 +141,10 @@ Requester opens the portal → agent optionally assists in plain language (F-RPT
 
   Why the split: on 2026-08-17, deciding whether OKE worked was one deterministic check, while working out *why* it had failed took hours of reading 840KB of console output. The first must be reproducible. The second is what an agent is good at.
 
+- **The operating doctrine (added 2026-08-25).** Everything above says what the agent may *do*. `AGENT-DOCTRINE.md` says how it must *reason* — the resolution hierarchy **reuse → discover → compose → build**, and the standing prohibition on translating a request straight into Terraform. It is loaded by `common/doctrine.py` and is the literal system prompt of every AI call that shapes a provisioning decision. This document outranks it.
+
+  It also settles a question that looked like a contradiction and was not. The doctrine requires a blueprint to be **approved** before a workload is provisioned from it, and the human certification gate was removed on 2026-08-21. Both hold, because *approval* names two different things: a **human approves the request**, in Jira (P1); **evidence approves the blueprint** — linter, strict scanner, priced plan, and a real build that provisions, verifies healthy and destroys itself (P8). The source document is explicit: *"Policy Engine must APPROVE, Pipeline must VALIDATE, Terraform Executor must DEPLOY."* Nothing in the doctrine puts a person back in the certification path.
+
 ---
 
 ## 8. Security architecture

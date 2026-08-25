@@ -17,6 +17,11 @@ COPY api ./api
 COPY db ./db
 COPY common ./common
 
+# The agent's doctrine. `common/doctrine.py` reads it from the image root, so
+# an image carrying `common` and NOT this file starts fine and raises on the
+# first AI call. A test asserts this line exists beside every COPY of common.
+COPY AGENT-DOCTRINE.md ./
+
 # The API listens on 8081 (8080 is taken by Docker Desktop on the reviewer's machine).
 EXPOSE 8081
 

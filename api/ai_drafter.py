@@ -38,6 +38,7 @@ from api.validation import (
     SIZES,
 )
 from db.models import CostCentre, Project, Technology
+from common.doctrine import with_doctrine
 
 
 class AiUnavailable(RuntimeError):
@@ -371,7 +372,7 @@ def _draft_live(description: str, catalog: dict) -> tuple[dict, list[str]]:
         resp = client.messages.create(
             model=ai_model(),
             max_tokens=4000,
-            system=_SYSTEM,
+            system=with_doctrine(_SYSTEM),
             output_config={
                 "effort": "low",  # structured extraction — keep it fast and cheap
                 "format": {"type": "json_schema", "schema": _live_schema(catalog)},

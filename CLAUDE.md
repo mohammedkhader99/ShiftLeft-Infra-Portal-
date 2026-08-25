@@ -1,17 +1,18 @@
 # CLAUDE.md
 ## Shift-Left Infrastructure Provisioning Portal — working rules
 
-Read this file, then `ARCHITECTURE.md`, then `PLAN.md` at the start of every session before doing anything else.
+Read this file, then `ARCHITECTURE.md`, then `AGENT-DOCTRINE.md`, then `PLAN.md` at the start of every session before doing anything else.
 
 ## About me
 I lead infrastructure but I am new to writing software and to git. Explain every step in plain language, avoid unexplained jargon, and **always tell me how to run what you built and exactly what a working result looks like** so I can verify it myself.
 
-## The three documents that govern this project
+## The four documents that govern this project
 - **CLAUDE.md** (this file) — how we work together. The standing rules.
 - **ARCHITECTURE.md** — the design authority: what we're building, the principles, the feature catalogue (feature IDs), the technology decisions. You must conform to it.
+- **AGENT-DOCTRINE.md** — how the agent reasons when it meets a request: the resolution hierarchy (reuse → discover → compose → build), and what it may never do on its own. Adopted 2026-08-25. Its marked section is the literal system prompt the AI features run with.
 - **PLAN.md** — the build sequence: the increments, in order, each with an acceptance check.
 
-If any two of these conflict, stop and tell me before coding.
+If any two of these conflict, stop and tell me before coding. `ARCHITECTURE.md` outranks `AGENT-DOCTRINE.md`.
 
 ## How we work
 Build **one increment at a time, in the order PLAN.md gives.** For each:

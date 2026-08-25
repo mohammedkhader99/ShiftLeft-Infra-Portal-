@@ -24,6 +24,11 @@ RUN pip install --no-cache-dir -r requirements.txt -r orchestrator-requirements.
 COPY orchestrator ./orchestrator
 COPY common ./common
 
+# The agent's doctrine. `common/doctrine.py` reads it from the image root, so
+# an image carrying `common` and NOT this file starts fine and raises on the
+# first AI call. A test asserts this line exists beside every COPY of common.
+COPY AGENT-DOCTRINE.md ./
+
 # Pre-download the Terraform providers (OCI + AWS) into a shared plugin cache at
 # build time, so per-request `init`s reuse them instead of re-downloading (fast).
 # /tfstate is the persistent per-request state volume (2.6c).

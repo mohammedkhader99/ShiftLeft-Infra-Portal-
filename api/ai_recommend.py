@@ -43,6 +43,7 @@ from api.validation import DEPLOYMENT_TARGETS, SIZES
 from db.models import Technology
 
 import json
+from common.doctrine import with_doctrine
 
 # On-prem is a valid, priced target, but this feature is about choosing a *cloud*,
 # so the comparison ranks the cloud targets. On-prem still appears so the user can
@@ -167,7 +168,7 @@ def _recommend_live(description: str, catalog: dict) -> dict:
         resp = client.messages.create(
             model=ai_model(),
             max_tokens=2000,
-            system=_SYSTEM,
+            system=with_doctrine(_SYSTEM),
             output_config={
                 "effort": "low",
                 "format": {"type": "json_schema", "schema": _live_schema(catalog)},

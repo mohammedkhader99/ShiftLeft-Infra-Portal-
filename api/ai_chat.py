@@ -27,6 +27,7 @@ import re
 
 # Reuse the drafter's shared AI plumbing so every AI feature behaves identically.
 from api.ai_drafter import AiUnavailable, ai_mode, ai_model, anthropic_client
+from common.doctrine import with_doctrine
 
 # The commands the bot understands. 'explain' = a question about what a portal
 # page/feature does (answered from the help knowledge base); 'unknown' = no match.
@@ -130,7 +131,7 @@ def _interpret_live(message: str) -> dict:
         resp = client.messages.create(
             model=ai_model(),
             max_tokens=500,
-            system=_SYSTEM,
+            system=with_doctrine(_SYSTEM),
             output_config={
                 "effort": "low",
                 "format": {"type": "json_schema", "schema": _live_schema()},

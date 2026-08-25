@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 
 from api.ai_drafter import AiUnavailable, ai_mode, ai_model, anthropic_client
 from db.models import AuditLog, Request
+from common.doctrine import with_doctrine
 
 # Request statuses that mean the request failed outright.
 FAILURE_STATUSES = {"apply-failed", "teardown-failed", "rejected",
@@ -183,7 +184,7 @@ def _triage_live(req: Request, signals: list[dict]) -> tuple[str, list[str], lis
         resp = client.messages.create(
             model=ai_model(),
             max_tokens=1500,
-            system=_SYSTEM,
+            system=with_doctrine(_SYSTEM),
             output_config={"effort": "low", "format": {"type": "json_schema", "schema": _SCHEMA}},
             messages=[{
                 "role": "user",

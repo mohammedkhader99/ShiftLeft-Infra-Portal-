@@ -36,6 +36,7 @@ from sqlalchemy.orm import Session
 from api.ai_drafter import AiUnavailable, ai_mode, ai_model, anthropic_client
 from common import profile_rules
 from db.models import Technology
+from common.doctrine import with_doctrine
 
 VERSIONED_CODE = re.compile(r"^([a-z][a-z-]*?)(\d+)$")
 
@@ -644,6 +645,16 @@ def _guessed_profile(code: str, target: str) -> dict:
     }
 
 
+
+_SYSTEM = (
+    "You draft infrastructure recipes for an internal provisioning portal — a "
+    "Terraform module, a blueprint manifest, or a JSON technology profile. What "
+    "you return is a PROPOSAL. It is linted, scanned in strict mode, priced, and "
+    "then built on a real machine that must report itself healthy before "
+    "anything you wrote is certified. You do not run it, you do not certify it, "
+    "and you never judge whether your own draft worked."
+)
+
 def _model_profile(code: str, target: str) -> dict:  # pragma: no cover - live path
     """Ask the model for a technology profile. Checked, never trusted.
 
@@ -666,6 +677,7 @@ def _model_profile(code: str, target: str) -> dict:  # pragma: no cover - live p
     )
     message = client.messages.create(
         model=ai_model(), max_tokens=1500,
+        system=with_doctrine(_SYSTEM),
         messages=[{"role": "user", "content": prompt}])
     text = "".join(getattr(b, "text", "") for b in message.content).strip()
     if text.startswith("```"):
@@ -800,6 +812,7 @@ def _model_draft(candidate: str, target: str) -> Draft:  # pragma: no cover - li
     )
     message = client.messages.create(
         model=ai_model(), max_tokens=4000,
+        system=with_doctrine(_SYSTEM),
         messages=[{"role": "user", "content": prompt}])
     text = "".join(getattr(b, "text", "") for b in message.content)
     files: dict[str, str] = {}
