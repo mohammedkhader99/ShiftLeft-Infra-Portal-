@@ -220,8 +220,16 @@ def run_proof(session, blueprint, *, post, price, verify, now=None,
     # certified yet — that is the entire point of it — so no blueprint row exists
     # to say whether this is a machine, a bucket or a cluster, and without it the
     # estimate would be an unpriceable 0.00 that slid under every ceiling.
+    # `delivers` travels here too. This dict is hand-built because a proof has a
+    # blueprint and not a RequestComponent, which is precisely why it drifted
+    # from `component_options.as_dict` and why a bare VM's PROOF was the thing
+    # that could not pass (REQ-2026-0208).
+    from api import component_options as _co
+
     components = [{"technology_code": blueprint.technology_code, "size": "small",
-                   "resource_kind": blueprint.resource_kind or ""}]
+                   "resource_kind": blueprint.resource_kind or "",
+                   "delivers": _co._delivery_model(
+                       session, blueprint.technology_code)}]
     kind = (blueprint.resource_kind or "").strip()
     payload = {
         "proof": True,

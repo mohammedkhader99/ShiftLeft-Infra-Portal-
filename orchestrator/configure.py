@@ -1190,6 +1190,18 @@ def render(components: list[dict], family: str = "", report_url: str = "",
     # and is "" for anything raised before it existed.
     chosen = [(c.get("technology_code"), (c.get("version") or "").strip())
               for c in (components or []) if c.get("technology_code")]
+
+    # TECHNOLOGIES THAT *ARE* THE MACHINE. compute-vm and rhel9 install nothing
+    # by design, and until 2026-08-26 that was reported as a PORTAL FAILURE —
+    # so a bare VM booted, ran cloud-init, filed a report, and was failed for
+    # containing exactly what it should. Every bare VM request since the
+    # certification gate went on has ended in manual fulfilment for this reason.
+    #
+    # The catalogue says which; this never guesses. A recipe missing BY MISTAKE
+    # must keep looking like a failure, because it is one.
+    is_the_machine = {str(c.get("technology_code"))
+                      for c in (components or [])
+                      if (c.get("delivers") or "").strip().lower() == "machine"}
     profiles = [(c, v, profile_for(c, family)) for c, v in chosen]
     # Technologies with no recipe for this family. They are named in the marker
     # file below rather than dropped in silence, so a machine missing software
@@ -1604,6 +1616,15 @@ def render(components: list[dict], family: str = "", report_url: str = "",
     # Say on the machine what was skipped and why, so a missing service is
     # diagnosable from the VM without going back to the portal.
     for code in unsupported:
+        if code in is_the_machine:
+            # NOT A FAILURE. The request asked for a machine and got a machine.
+            # Deliberately worded to avoid "failed", "could not" and "no install
+            # recipe": boot_reports.verdict condemns a PORTAL line carrying any
+            # of those, so a success phrased carelessly would still fail.
+            lines.append(cmd(
+                f"echo 'PORTAL: {code} is a machine; there is nothing to "
+                f"install on it' >> /var/log/infra-portal.log"))
+            continue
         lines.append(cmd(f"echo 'PORTAL FAILURE: {code} has no install recipe for {family}; "
                          f"nothing was installed for it' >> /var/log/infra-portal.log"))
     lines.append(cmd("echo 'PORTAL: first-boot configuration finished' >> /var/log/infra-portal.log"))

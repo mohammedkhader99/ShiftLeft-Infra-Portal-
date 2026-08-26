@@ -87,7 +87,40 @@ def as_dict(component) -> dict:
         family = os_family_for_image(session, component.image)
         if family:
             out["os_family"] = family
+
+    # HOW THE CATALOGUE SAYS THIS IS DELIVERED, carried to the machine.
+    #
+    # `machine` means the technology IS the machine — compute-vm, rhel9 — and
+    # has nothing to install by design. Without this the boot script cannot tell
+    # "a bare VM, as asked for" from "software we failed to install", writes
+    # PORTAL FAILURE for both, and the verdict fails a perfectly healthy VM.
+    # REQ-2026-0208, and every bare VM request since the gate went on.
+    #
+    # Read from the catalogue, never inferred from the absence of a recipe: a
+    # recipe missing BY MISTAKE would otherwise look exactly like a bare machine
+    # and pass silently, which is the failure this whole gate exists to prevent.
+    if session is not None:
+        delivers = _delivery_model(session, component.technology_code)
+        if delivers:
+            out["delivers"] = delivers
     return out
+
+
+def _delivery_model(session: Session, code: str) -> str:
+    """The catalogue's delivery model for a technology, or "" if unclassified.
+
+    "" is deliberately not a default of "software": unclassified and software
+    are different facts, and the caller must not treat one as the other.
+    """
+    from db.models import TechnologyDelivery
+
+    # NO AUTOFLUSH. This is a read, called from a serialiser, and SQLAlchemy
+    # would otherwise flush whatever is pending in the session first — turning
+    # "describe this component" into "write half-built state to the database"
+    # at a moment the caller never chose.
+    with session.no_autoflush:
+        row = session.get(TechnologyDelivery, (code or "").strip().lower())
+    return (row.delivery_model or "") if row is not None else ""
 
 
 def os_family_for_image(session: Session, image_ocid: str) -> str:

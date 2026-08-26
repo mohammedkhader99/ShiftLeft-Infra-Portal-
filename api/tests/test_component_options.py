@@ -205,3 +205,49 @@ def test_the_price_follows_the_chosen_shape_not_the_size(client):
     medium = {"technology_code": "nginx", "size": "medium"}
     bigger = {**medium, "vcpu": 16, "memory_gb": 128, "storage_gb": 1000}
     assert monthly(bigger) > monthly(medium)
+
+
+# --- what the machine is told about itself ------------------------------------
+
+def test_as_dict_carries_the_delivery_model_to_the_machine(db):
+    """The one serialiser must tell the boot script what kind of thing this is.
+
+    Without it the machine cannot distinguish "a bare VM, as asked for" from
+    "software we failed to install": it writes PORTAL FAILURE for both, and the
+    verdict fails a VM that booted perfectly. That is REQ-2026-0208 and every
+    bare VM request for the twelve days before it.
+
+    This test exists because removing the field passed the entire suite. The
+    PROOF path was covered by the blueprint survey; the REAL REQUEST path,
+    which goes through here, was covered by nothing.
+    """
+    from db.models import RequestComponent
+
+    component = RequestComponent(technology_code="compute-vm", size="small")
+    db.add(component)
+
+    out = component_options.as_dict(component)
+
+    assert out.get("delivers") == "machine", (
+        "a bare VM's component does not say it is a machine, so the boot script "
+        "will report having nothing to install as a failure")
+
+
+def test_as_dict_says_software_is_software(db):
+    from db.models import RequestComponent
+
+    component = RequestComponent(technology_code="nginx", size="small")
+    db.add(component)
+
+    assert component_options.as_dict(component).get("delivers") != "machine"
+
+
+def test_an_unclassified_technology_claims_nothing(db):
+    """"Unclassified" and "software" are different facts. Defaulting either way
+    would put a guess where the catalogue should speak."""
+    from db.models import RequestComponent
+
+    component = RequestComponent(technology_code="not-in-the-catalogue", size="small")
+    db.add(component)
+
+    assert "delivers" not in component_options.as_dict(component)
