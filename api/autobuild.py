@@ -231,7 +231,7 @@ def summarise(result: AutobuildResult) -> dict:
 def ensure(candidate: str, session: Session, *, target, shipped, run_proof,
            publish, certify, withdraw=None,
            shipped_codes: frozenset[str] = frozenset(),
-           reachable=None, discover=None, find_image=None,
+           reachable=None, ask_repository=None, discover=None, find_image=None,
            observe_ports=None) -> AutobuildResult:
     """Make `candidate` provisionable, and certify it — no human involved.
 
@@ -366,6 +366,7 @@ def ensure(candidate: str, session: Session, *, target, shipped, run_proof,
                                       shipped=shipped, run_proof=run_proof,
                                       publish=publish, certify=certify,
                                       withdraw=withdraw, reachable=reachable,
+                                      ask_repository=ask_repository,
                                       method=method,
                                       ignore_memory=method in rerun,
                                       # A container's first pass is a QUESTION
@@ -509,6 +510,7 @@ def ensure(candidate: str, session: Session, *, target, shipped, run_proof,
 def _ensure_vm_service(candidate, session, proposal, *, target, shipped,
                        run_proof, publish, certify, withdraw,
                        reachable=None, method="",
+                       ask_repository=None,
                        ignore_memory: bool = False,
                        may_certify: bool = True) -> AutobuildResult:
     """Teach the proven machine blueprint one more technology, and prove it.
@@ -572,6 +574,28 @@ def _ensure_vm_service(candidate, session, proposal, *, target, shipped,
                 f"fulfil this one by hand.")
             result.attempts.append(Attempt(
                 1, "preflight", "refused", "no internet egress from the build subnet"))
+            return result
+
+    # DOES THE REPOSITORY EVEN OFFER THIS? (C10)
+    #
+    # Asked of the repository, before a machine. Two failures on 2026-08-25 cost
+    # five machines between them and were both knowable from here in under a
+    # second: `dotnet8.0` is a SOURCE package, which repoquery lists and dnf
+    # cannot install; and mongodb's vendor repository URL was a 404.
+    #
+    # REFUSES, NEVER APPROVES. Anything it cannot settle — a slow repository, a
+    # proxy, a listing it could not read — comes back as no objection, and the
+    # ladder proceeds exactly as it did before this existed.
+    if recipe is not None and ask_repository is not None:
+        try:
+            objection = ask_repository(recipe)
+        except Exception:  # noqa: BLE001 - a check is never load-bearing
+            objection = None
+        if objection is not None:
+            result.status = "refused"
+            result.detail = f"{candidate} was not built. {objection}"
+            result.attempts.append(
+                Attempt(1, "repository", "refused", str(objection)[:300]))
             return result
 
     # HAS A MACHINE ALREADY DISPROVED THIS EXACT RECIPE?

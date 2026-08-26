@@ -125,8 +125,17 @@ def test_a_repository_that_pins_a_version_still_checks_it():
     mongodb's repo URL names 7.0, so the RECIPE itself makes the promise and the
     machine is held to it."""
     profile = ab.profile_for_method("mongodb", "repo")
-    assert "7.0" in profile["repo"]["url"]
-    assert profile["expects"] == "7"
+    # ASSERTED AS A RELATIONSHIP, not as the number 7. This pinned "7.0" and so
+    # broke the day the recipe was corrected — the old URL was a 404 and cost
+    # REQ-2026-0205 a machine. What matters is that the version the URL pins and
+    # the version the recipe promises are the SAME version; which version that
+    # is, is MongoDB's business and will change again.
+    import re as _re
+    pinned = _re.search(r"/(\d+)\.\d+/", profile["repo"]["url"])
+    assert pinned, f"the repository URL pins no version: {profile['repo']['url']}"
+    assert profile["expects"] == pinned.group(1), (
+        f"the recipe promises {profile['expects']} but its repository serves "
+        f"{pinned.group(1)}")
 
 
 # --- what the loop does with it -----------------------------------------------

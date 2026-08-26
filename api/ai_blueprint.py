@@ -450,14 +450,20 @@ VENDOR_REPOS: dict[str, dict] = {
         "version_command": "consul version 2>&1",
     },
     "mongodb": {
-        "repo": {"url": "https://repo.mongodb.org/yum/redhat/mongodb-org-7.0.repo",
-                 "gpg_key": "https://pgp.mongodb.com/server-7.0.asc"},
+        # THE BASEURL, not a `.repo` file. The URL here was
+        # `.../yum/redhat/mongodb-org-7.0.repo`, which MongoDB does not publish
+        # — a 404 — so REQ-2026-0205 booted a machine, failed to add the
+        # repository, and could not find `mongodb-org`. Their repository is
+        # perfectly healthy; our URL had rotted unnoticed, which is what P7 was
+        # written about. C10 now measures this before a machine is spent.
+        "repo": {"url": "https://repo.mongodb.org/yum/redhat/9/mongodb-org/8.0/x86_64/",
+                 "gpg_key": "https://pgp.mongodb.com/server-8.0.asc"},
         "packages": ["mongodb-org"], "services": ["mongod"], "ports": [27017],
         # KEPT, unlike vault and consul: this repository URL pins 7.0, so the
         # RECIPE ITSELF promises a major version and not checking it would be
         # the Redis 6.2 silence again. A promise the recipe makes is a promise
         # the machine must keep.
-        "expects": "7", "version_command": "mongod --version 2>&1",
+        "expects": "8", "version_command": "mongod --version 2>&1",
     },
 }
 

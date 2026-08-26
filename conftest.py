@@ -11,8 +11,13 @@ load_dotenv() does not override already-set variables, so these win.
 
 import os
 
+# CLOUD_STATE_MODE joined this list on 2026-08-25, the day it was first set to
+# "live" in a real .env. Four cloud-state and actuation tests failed at once,
+# asserting on a mock adapter while the live one raised for want of credentials
+# — the exact leak the block above exists to prevent, missing one name because
+# nobody had ever set it.
 for _var in ("AUTH_MODE", "AZURE_PRICING_MODE", "OCI_PRICING_MODE", "JIRA_MODE",
-             "PROVISION_MODE"):
+             "PROVISION_MODE", "CLOUD_STATE_MODE"):
     os.environ[_var] = "mock"
 os.environ["USE_MOCK"] = "true"
 

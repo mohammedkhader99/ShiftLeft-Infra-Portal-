@@ -31,6 +31,7 @@ from api import ai_explainer
 from api import ai_recommend
 from api import ai_triage
 from api import golden
+from api import repo_facts
 from api import discovery
 from api import registry
 from api import blueprint_capabilities
@@ -3879,10 +3880,23 @@ def _autobuild_component(session: Session, code: str, target: str) -> dict:
             for body in (entry.get("files") or {}).values())
         return discovery.listening_inside(text, candidate)
 
+    def ask_repository(recipe):
+        """What the repositories say about this recipe, before a machine (C10).
+
+        Returns an objection or None, and None is NOT approval — it is the
+        answer this gate gave before it existed. See api/repo_facts.py.
+        """
+        # The family the build machine boots. Read from the setting rather
+        # than imported: `api/` must not import `orchestrator/`, and the
+        # guarded import would pass under pytest and raise in the container.
+        return repo_facts.check_recipe(
+            recipe, family=(os.getenv("CONFIG_OS_FAMILY") or "rhel").strip().lower())
+
     result = autobuild.ensure(code, session, target=target, shipped=shipped,
                               run_proof=run_proof, publish=publish,
                               certify=certify, withdraw=withdraw,
                               shipped_codes=shipped_codes, reachable=reachable,
+                              ask_repository=ask_repository,
                               discover=discover, find_image=find_image,
                               observe_ports=observe_ports)
     session.commit()
@@ -7134,6 +7148,15 @@ def _poll_once() -> None:
                 session.commit()
         except Exception:  # noqa: BLE001
             pass
+
+    # WHAT THE REPOSITORIES OFFER (C10), read here so a request never waits for
+    # it. A cold read of OL9's AppStream and BaseOS is about two minutes; an
+    # hour later it is instant. Its own try, and never load-bearing: a warm that
+    # fails leaves the pre-machine check exactly as slow as it would have been.
+    try:
+        repo_facts.warm((os.getenv("CONFIG_OS_FAMILY") or "rhel").strip().lower())
+    except Exception:  # noqa: BLE001
+        pass
 
     # GOLDEN IMAGES BECOME USABLE (G2). A capture is recorded the moment OCI
     # accepts it, which is ten to twenty minutes before the image can boot

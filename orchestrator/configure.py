@@ -1421,12 +1421,26 @@ def render(components: list[dict], family: str = "", report_url: str = "",
             continue
         url = shlex.quote(spec.get("url", ""))
         key = shlex.quote(spec.get("gpg_key", ""))
+        # WHAT THESE TOOLS ACTUALLY SAID, when they fail.
+        #
+        # The same defect the package install had until this morning, sitting
+        # six lines above it. REQ-2026-0205 is what it costs: the machine could
+        # only report "could not add the mongodb repository", and finding out it
+        # was a 404 took a person and an afternoon. Both commands now copy their
+        # own last lines into the report, prefixed so their prose can never be
+        # mistaken for one of the report's key=value facts.
         lines.append(cmd(
-            f"rpm --import {key} || echo 'PORTAL FAILURE: could not import the "
-            f"signing key for {code}' >> /var/log/infra-portal.log"))
+            f"rpm --import {key} > /tmp/portal-repo.log 2>&1 || "
+            f"{{ echo 'PORTAL FAILURE: could not import the signing key for "
+            f"{code}' >> /var/log/infra-portal.log; "
+            f"tail -4 /tmp/portal-repo.log | sed 's/^/  repo: /' "
+            f">> /var/log/infra-portal.log; }}"))
         lines.append(cmd(
-            f"{_REPO_ADD[family]} {url} || echo 'PORTAL FAILURE: could not add "
-            f"the {code} repository' >> /var/log/infra-portal.log"))
+            f"{_REPO_ADD[family]} {url} > /tmp/portal-repo.log 2>&1 || "
+            f"{{ echo 'PORTAL FAILURE: could not add the {code} repository' "
+            f">> /var/log/infra-portal.log; "
+            f"tail -4 /tmp/portal-repo.log | sed 's/^/  repo: /' "
+            f">> /var/log/infra-portal.log; }}"))
     if repos:
         lines.append(cmd("dnf clean all >/dev/null 2>&1 || true"))
 
