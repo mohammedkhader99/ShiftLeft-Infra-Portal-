@@ -213,18 +213,28 @@ def _from_index(base: str, *, fetch=None) -> frozenset[str] | None:
     return frozenset(found) or None
 
 
-def _near(name: str, offered) -> tuple[str, ...]:
-    """Names a person would recognise as what they probably meant.
+def _near(name: str, offered, code: str = "") -> tuple[str, ...]:
+    """Names a person — or the ladder — would recognise as what was meant.
 
-    `dotnet8.0` should surface `dotnet-sdk-8.0`, so the match is on the letters
-    that survive stripping punctuation and digits — not an edit distance, which
-    ranks `dotnet-doc` alongside it.
+    BEST FIRST, ranked by `discovery.rank_matches`, which exists for exactly
+    this question and whose docstring names this exact case: REQ-2026-0197 asked
+    for .NET 8, and `dotnet-sdk-8.0` is the answer no name-shape rule would ever
+    generate. Writing a second ranker here would be the two-functions-one-
+    question mistake this project has paid for repeatedly.
+
+    Ranked on the CATALOGUE CODE (`dotnet8`), not the failing package name:
+    rank_matches splits a trailing version off the code, and `dotnet8.0` splits
+    to a stem of `dotnet8.` and a version of `0`, which ranks nothing usefully.
     """
+    from api import discovery
+
     stem = re.sub(r"[^a-z]", "", name.lower())[:12]
     if len(stem) < 3:
         return ()
-    hits = [o for o in offered if stem and re.sub(r"[^a-z]", "", o.lower()).startswith(stem)]
-    return tuple(sorted(hits, key=lambda s: (len(s), s))[:4])
+    hits = [o for o in offered
+            if re.sub(r"[^a-z]", "", o.lower()).startswith(stem[:6])]
+    ranked = discovery.rank_matches([(h, "") for h in hits], code or name)
+    return tuple(h for h, _repo in ranked[:4])
 
 
 #: How long the whole check may take on the path of a request somebody is
@@ -252,7 +262,7 @@ def warm(family: str = "rhel", *, fetch=None) -> list[str]:
     return done
 
 
-def offers(baseurls, names, *, fetch=None, budget=None) -> Offering:
+def offers(baseurls, names, *, fetch=None, budget=None, code="") -> Offering:
     """Which of `names` the given repositories actually publish."""
     wanted = [n for n in dict.fromkeys(names) if n]
     checked, unchecked, offered = [], [], set()
@@ -275,15 +285,21 @@ def offers(baseurls, names, *, fetch=None, budget=None) -> Offering:
     return Offering(
         checked=tuple(checked), unchecked=tuple(unchecked),
         present=present, missing=missing,
-        near={n: _near(n, offered) for n in missing} if checked else {})
+        near={n: _near(n, offered, code) for n in missing} if checked else {})
 
 
 @dataclass
 class Refusal:
-    """Why a recipe cannot work, in words a requester can act on."""
+    """Why a recipe cannot work, in words a requester can act on.
+
+    `suggestions` carries the same answer STRUCTURALLY. Prose is for people; the
+    ladder needs the names in a form it can act on, and a refusal that only
+    explains itself to a human is a refusal that ends in manual fulfilment.
+    """
 
     reason: str
     detail: str = ""
+    suggestions: dict = field(default_factory=dict)   # missing name -> better names
 
     def __str__(self) -> str:
         return f"{self.reason} {self.detail}".strip()
@@ -334,7 +350,8 @@ def check_recipe(recipe: dict, *, family: str = "rhel", fetch=None,
     if not wanted:
         return None
 
-    found = offers(repos_for(recipe, family), wanted, fetch=fetch, budget=budget)
+    found = offers(repos_for(recipe, family), wanted, fetch=fetch,
+                   budget=budget, code=str(recipe.get("code") or ""))
     if not found.missing or not found.conclusive:
         return None
 
@@ -345,4 +362,6 @@ def check_recipe(recipe: dict, *, family: str = "rhel", fetch=None,
                      f"would have"
                      + (f" — did you mean {', '.join(near)}?" if near else "."))
     return Refusal(
-        "This recipe names a package that does not exist.", " ".join(lines))
+        "This recipe names a package that does not exist.", " ".join(lines),
+        suggestions={n: found.near.get(n, ()) for n in found.missing
+                     if found.near.get(n)})

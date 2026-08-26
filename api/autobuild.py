@@ -117,6 +117,46 @@ def _recipe_in(proposal) -> dict | None:
                  if body.strip().startswith("{")), None)
 
 
+def _swap_packages(proposal, replacements: dict[str, str]):
+    """A copy of `proposal` with package names replaced, or None if nothing changed.
+
+    Mechanical on purpose. The judgement — WHICH name to use — was already made
+    by the ranker that has always made it (`discovery.rank_matches`); this only
+    carries the answer into the recipe.
+    """
+    import copy
+    import json as _json
+
+    changed = False
+    files: dict[str, str] = {}
+    for path, body in (proposal.files or {}).items():
+        if not (body or "").strip().startswith("{"):
+            files[path] = body
+            continue
+        doc = _json.loads(body)
+        for block in doc.values():
+            if isinstance(block, dict) and isinstance(block.get("packages"), list):
+                swapped = [replacements.get(pkg, pkg) for pkg in block["packages"]]
+                if swapped != block["packages"]:
+                    block["packages"] = swapped
+                    changed = True
+        files[path] = _json.dumps(doc, indent=2)
+
+    if not changed:
+        return None
+    revised = copy.copy(proposal)
+    revised.files = files
+    return revised
+
+
+#: How many times a rung may revise its own recipe from what the repository
+#: said. Two is enough to correct one or two package names and short enough that
+#: a recipe the agent cannot get right stops costing anything — the same
+#: reasoning MAX_ATTEMPTS uses for the Terraform loop, at a tenth of the cost
+#: because none of this touches a machine.
+MAX_RECIPE_REVISIONS = 2
+
+
 def _findings_as_dicts(findings) -> list[dict]:
     return [{"severity": f.severity, "rule": f.rule, "detail": f.detail}
             for f in findings]
@@ -604,16 +644,42 @@ def _ensure_vm_service(candidate, session, proposal, *, target, shipped,
     # proxy, a listing it could not read — comes back as no objection, and the
     # ladder proceeds exactly as it did before this existed.
     if recipe is not None and ask_repository is not None:
-        try:
-            objection = ask_repository(recipe)
-        except Exception:  # noqa: BLE001 - a check is never load-bearing
-            objection = None
-        if objection is not None:
-            result.status = "refused"
-            result.detail = f"{candidate} was not built. {objection}"
-            result.attempts.append(
-                Attempt(1, "repository", "refused", str(objection)[:300]))
-            return result
+        for revision in range(MAX_RECIPE_REVISIONS + 1):
+            try:
+                objection = ask_repository(recipe)
+            except Exception:  # noqa: BLE001 - a check is never load-bearing
+                objection = None
+            if objection is None:
+                break
+
+            # THE ANSWER WAS ALREADY IN OUR HANDS. This used to report the
+            # objection and stop, so a refusal that NAMED the right package
+            # ("dotnet8.0 is not published — did you mean dotnet-sdk-8.0?") was
+            # read by a person and acted on by a person. That is the manual
+            # fulfilment this platform exists to remove, wearing a different
+            # face. The ladder now takes the suggestion itself.
+            #
+            # Costs nothing: no machine, no cloud call beyond the repository
+            # metadata already cached, and the revised recipe is re-checked
+            # before anything is built.
+            best = {bad: names[0]
+                    for bad, names in (getattr(objection, "suggestions", {}) or {}).items()
+                    if names}
+            revised = (_swap_packages(proposal, best)
+                       if best and revision < MAX_RECIPE_REVISIONS else None)
+            if revised is None:
+                result.status = "refused"
+                result.detail = f"{candidate} was not built. {objection}"
+                result.attempts.append(
+                    Attempt(revision + 1, "repository", "refused",
+                            str(objection)[:300]))
+                return result
+
+            result.attempts.append(Attempt(
+                revision + 1, "repository", "revised",
+                "the repository named a better package: "
+                + ", ".join(f"{bad} -> {good}" for bad, good in sorted(best.items()))))
+            proposal, recipe = revised, _recipe_in(revised)
 
     # HAS A MACHINE ALREADY DISPROVED THIS EXACT RECIPE?
     #
