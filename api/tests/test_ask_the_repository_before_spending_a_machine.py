@@ -224,3 +224,32 @@ def test_the_answer_is_cached_so_a_request_never_pays_twice():
     rf.package_names(APPSTREAM, fetch=fetch)
     rf.package_names(APPSTREAM, fetch=fetch)
     assert len(calls) == 2, f"the repository was read twice: {calls}"
+
+
+# --- the objection is about a RUNG, not about a request -----------------------
+
+def test_a_repository_objection_skips_the_rung_and_does_not_end_the_ladder():
+    """REQ-2026-0206, 2026-08-26, four hours after C10 shipped.
+
+    The guess rung asks for `mongodb`; the repositories say no such package,
+    and they are right. C10 refused it in seconds with no machine spent — an
+    improvement on the three machines it cost the day before — and then ENDED
+    THE LADDER, so the vendor-repo rung asking for `mongodb-org` from MongoDB's
+    own repository was never tried. A different question, never put.
+
+    `autobuild.py` already carried the warning, written for the `remembered`
+    stage: "treating the skip as a verdict would strand vault on the package
+    guess for ever." The new stage simply was not in the list.
+
+    Asserted structurally: the loop must treat a `repository` attempt the same
+    way it treats a `remembered` one.
+    """
+    from pathlib import Path
+    src = (Path(__file__).resolve().parent.parent / "autobuild.py").read_text(
+        encoding="utf-8")
+
+    assert 'stage == "repository"' in src, (
+        "a repository objection ends the whole ladder, so a technology is "
+        "stranded on whichever rung the gate happened to refuse first")
+    assert src.index('stage == "repository"') < src.index('stage == "remembered"'), (
+        "the repository skip must be reachable before the remembered branch")

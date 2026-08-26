@@ -403,6 +403,23 @@ def ensure(candidate: str, session: Session, *, target, shipped, run_proof,
                     certify(_manifest_of(last, shipped, candidate),
                             last.proof_reference)
                 return last
+            # A REPOSITORY OBJECTION IS ABOUT THIS RUNG, NOT THIS REQUEST.
+            #
+            # The guess rung asks for `mongodb`; the repositories say there is
+            # no such package, and they are right. But the vendor-repo rung
+            # below asks for `mongodb-org` from MongoDB's own repository, which
+            # is a different question entirely — and the discovered rung asks a
+            # third. Ending the ladder on the first rung's answer strands the
+            # technology on the guess for ever.
+            #
+            # Which is precisely what the comment immediately below warns about,
+            # written for `remembered` and walked into by C10 on 2026-08-26:
+            # REQ-2026-0206 was refused in seconds with no machine spent — an
+            # improvement — but never reached the corrected repository URL that
+            # might have worked.
+            if last.attempts and last.attempts[-1].stage == "repository":
+                continue
+
             # A RUNG ALREADY REFUTED IS SKIPPED, NOT A REASON TO STOP. The
             # memory says a machine disproved THIS method; the next one is
             # exactly what should be tried, and treating the skip as a verdict
