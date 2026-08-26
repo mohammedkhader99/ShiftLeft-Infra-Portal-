@@ -1359,12 +1359,50 @@ async def capture_image(request: Request) -> dict:
         return {"reference": reference, "captured": False,
                 "detail": "Only a proof build's own instance may be captured."}
 
-    name, _ = _bucket_and_tags(payload)
+    components = (payload.get("policy_input", {}).get("components") or [{}])
     code = (payload.get("technology_code")
-            or (payload.get("policy_input", {}).get("components") or [{}])[0]
-                    .get("technology_code", ""))
+            or components[0].get("technology_code", ""))
 
-    result = golden_image.capture(reference, technology_code=code, instance_name=name)
+    # A MACHINE HAS NOTHING TO MAKE PERMANENT.
+    #
+    # compute-vm and rhel9 install nothing by design, so an image of one is a
+    # copy of the platform image OCI already gives us free — ~50 GB of storage
+    # to skip an install that does not exist. REQ-2026-0210 would have created
+    # exactly that.
+    if any((c.get("delivers") or "").strip().lower() == "machine"
+           for c in components):
+        return {"reference": reference, "captured": False,
+                "detail": ("This is a bare machine: there is no install to skip, "
+                           "so an image of it would duplicate the platform image "
+                           "at full storage cost.")}
+
+    # THE NAME PROVISIONING ACTUALLY USED, from the one function that knows it.
+    #
+    # This asked `_bucket_and_tags` for a BUCKET name and looked for an instance
+    # under it. For a proof, whose environment_name IS its reference, that name
+    # is the reference doubled — and it is missing the `-instance` suffix and
+    # the truncation `_resource_name` applies. So it searched for something that
+    # had never existed and reported "nothing to capture" about a live machine.
+    #
+    # `_resource_list` exists because this happened once already: REQ-2026-0095
+    # reported a healthy running environment as deleted out-of-band, for exactly
+    # this reason. Its docstring says so. Deriving a name a second way is how
+    # both were caused.
+    # THE KIND UNDER TEST, not "whatever looks like compute". `_is_compute`
+    # matches on substrings and does not recognise `oci-service-vm`, which is
+    # the blueprint behind every software-on-a-VM — the exact case golden images
+    # exist for. Depending on it here would have made this fix work for nothing.
+    # (That gap is wider than this endpoint; it is reported separately.)
+    name, _ = _bucket_and_tags(payload)
+    primary = _resource_kind(payload)
+    target = next((r["name"] for r in _resource_list(payload, name)
+                   if r["kind"] == primary), "")
+    if not target:
+        return {"reference": reference, "captured": False,
+                "detail": "This request builds nothing to capture."}
+
+    result = golden_image.capture(reference, technology_code=code,
+                                  instance_name=target)
     return {
         "reference": reference,
         "captured": result.ok,

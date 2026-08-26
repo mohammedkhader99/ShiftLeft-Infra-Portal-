@@ -234,3 +234,79 @@ def test_a_mock_capture_in_a_fully_mock_world_is_still_fine(monkeypatch):
 
     assert golden_image.capture("PROOF-X-1", technology_code="dotnet8",
                                 instance_name="proof-x").ok is True
+
+
+# --- the name the machine was actually built under ----------------------------
+
+def test_the_capture_looks_for_the_name_PROVISIONING_used(monkeypatch):
+    """REQ-2026-0210. The proof passed, the VM provisioned, and the capture
+    reported "No live instance matching
+    'proof-compute-vm-...-proof-compute-vm-...' — nothing to capture."
+
+    The doubled reference in that name is a red herring, and my first reading of
+    it was wrong: `_bucket_and_tags` legitimately returns
+    `<environment_name>-<reference>`, a proof's environment name IS its
+    reference, and Terraform was handed that same doubled base. Harmless.
+
+    The bug is the DIVERGENCE. Provisioning passes the base through
+    `_resource_name`, which appends the kind suffix and truncates it to fit;
+    capture used the raw base. Two derivations of one name, and they disagreed —
+    so it searched for something that had never existed, about a machine that
+    was running.
+
+    `_resource_list` exists because this happened once before: REQ-2026-0095
+    reported a healthy environment as deleted out-of-band for exactly this
+    reason. Deriving a name a second way caused both.
+    """
+    seen = {}
+
+    def spy(reference, *, technology_code, instance_name):
+        seen["name"] = instance_name
+        return golden_image.Capture(True, image_ocid="ocid1.image.oc1..x")
+
+    monkeypatch.setattr(orch.golden_image, "capture", spy)
+
+    b = body(resource_kind="oci-instance",
+             policy_input={**PROOF["policy_input"],
+                           "components": [{"technology_code": "nginx",
+                                           "size": "small",
+                                           "resource_kind": "oci-instance"}]})
+    client.post("/capture-image", content=b, headers=signed(b))
+
+    payload = json.loads(b)
+    base, _ = orch._bucket_and_tags(payload)
+    expected = [r["name"] for r in orch._resource_list(payload, base)
+                if orch.cloud_state._is_compute(r["kind"])]
+
+    assert seen.get("name") in expected, (
+        f"capture looked for {seen.get('name')!r}; provisioning built "
+        f"{expected!r}")
+
+
+def test_a_bare_MACHINE_is_not_captured():
+    """A golden image of compute-vm is a copy of the platform image OCI gives us
+    free: ~50 GB of storage to skip an install that does not exist."""
+    b = body(policy_input={**PROOF["policy_input"],
+                           "components": [{"technology_code": "compute-vm",
+                                           "size": "small",
+                                           "delivers": "machine"}]})
+    r = client.post("/capture-image", content=b, headers=signed(b))
+
+    assert r.json()["captured"] is False
+    assert "bare machine" in r.json()["detail"]
+
+
+def test_software_on_a_machine_IS_still_captured(monkeypatch):
+    """The skip must be narrow. nginx on a VM has a real install to make
+    permanent, and that is the entire point of the feature."""
+    monkeypatch.setattr(
+        orch.golden_image, "capture",
+        lambda reference, *, technology_code, instance_name:
+            golden_image.Capture(True, image_ocid="ocid1.image.oc1..y"))
+
+    b = body(resource_kind="oci-instance",
+             policy_input={**PROOF["policy_input"],
+                           "components": [{"technology_code": "nginx",
+                                           "size": "small",
+                                           "delivers": "software"}]})
+    assert client.post("/capture-image", content=b, headers=signed(b)).json()["captured"]
