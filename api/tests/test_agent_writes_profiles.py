@@ -127,10 +127,26 @@ def test_the_profile_names_a_package_a_unit_and_a_way_to_check_it(db):
     profile = json.loads(next(iter(store.files.values())))
 
     assert profile["rhel"]["packages"], "the machine is told to install nothing"
-    assert profile["rhel"]["services"], "installed but never started"
     assert profile["version_command"], (
         "no way to ask the machine what it actually received — the defect that "
         "shipped Redis 6.2 under a catalogue entry promising Redis 7")
+
+    # A SERVICE IS NO LONGER REQUIRED, and the reason matters.
+    #
+    # This asserted `services` non-empty, guarding "installed but never
+    # started". The guess met it by declaring `services: [code]` for every
+    # technology — asserting that anything unknown is a daemon named after
+    # itself. True for nginx; false for .NET, Java, Python and every runtime,
+    # and REQ-2026-0212 failed on `dotnet8 did not start` after the machine had
+    # installed .NET correctly.
+    #
+    # An invented name is not a weaker guard than none, it is a false one. What
+    # remains asserted is that the profile carries AT LEAST ONE way to prove the
+    # machine became something — which a runtime satisfies with its version
+    # command, and a daemon with its service or its ports.
+    assert (profile["version_command"] or profile["rhel"]["services"]
+            or profile.get("ports")), (
+        "nothing in this profile could ever show the software works")
     assert profile["builds_on"] == "oci/service-vm"
 
 

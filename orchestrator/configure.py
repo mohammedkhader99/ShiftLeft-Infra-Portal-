@@ -877,33 +877,77 @@ def _report_script(wanted: list[tuple[str, str]], packages: list[str],
         # guard only recognises the word `none`. A version read off an error
         # message is not evidence of anything.
         binary = shlex.quote(command.split()[0]) if command.split() else "''"
-        checks.append(f"  if ! command -v {binary} >/dev/null 2>&1; then")
-        checks.append(
-            f'    echo "version_{vkey}=MISSING ({command.split()[0]})"')
+        args = " ".join(command.split()[1:])
+        # ASK THE PACKAGES WHAT THEY INSTALLED, when the recipe's binary is not
+        # there (C13b).
+        #
+        # REQ-2026-0212: the agent corrected the package by itself, the machine
+        # installed dotnet-sdk-8.0, and the proof was failed anyway because the
+        # recipe still ran `dotnet8 --version` — a name we had already learned
+        # was wrong. The binary is `dotnet`, and no naming rule was going to
+        # produce that from `dotnet-sdk-8.0` reliably.
+        #
+        # MEASURED, not guessed, on the boot we already have. Which binary was
+        # used is reported, so the ladder can redraft with the real command.
+        #
+        # BOTH PATHS SHARE THE COMPARISON BELOW. The first version of this put
+        # the fallback in the MISSING branch and left `GOT` in the other one, so
+        # a rescued binary was run and its version never read.
+        stem = shlex.quote((code or "").rstrip("0123456789").rstrip("-.") or code)
+        installed = " ".join(shlex.quote(pkg) for pkg in packages) or "''"
+        checks.append("  RAW=''")
+        checks.append(f"  if command -v {binary} >/dev/null 2>&1; then")
+        checks.append(f"    RAW=$({command})")
         checks.append("  else")
-        checks.append(f"  RAW=$({command})")
+        if packages:
+            checks.append(
+                f"    BINS=$(rpm -ql {installed} 2>/dev/null "
+                r"| grep -E '^/usr/(local/)?s?bin/[^/]+$')")
+            checks.append(
+                f'    ALT=$(echo "$BINS" | grep -E "/{stem}[^/]*$" | head -1)')
+            checks.append('    [ -n "$ALT" ] || ALT=$(echo "$BINS" | head -1)')
+        else:
+            checks.append("    ALT=''")
+        checks.append('    if [ -n "$ALT" ]; then')
+        checks.append(f'      echo "version_binary_{vkey}=$ALT"')
+        checks.append(f'      RAW=$("$ALT" {args})' if args
+                      else '      RAW=$("$ALT")')
+        checks.append("    else")
+        checks.append(
+            f'      echo "version_{vkey}=MISSING ({command.split()[0]})"')
+        checks.append("    fi")
+        checks.append("  fi")
+        checks.append('  if [ -n "$RAW" ]; then')
         # r"" so the backslash reaches grep rather than being a Python escape.
-        checks.append(r"  GOT=$(echo " '"$RAW"' r" | grep -oE '[0-9]+(\.[0-9]+)*'"
+        checks.append(r'    GOT=$(echo ' '"$RAW"' r" | grep -oE '[0-9]+(\.[0-9]+)*'"
                       " | head -1)")
         if not want:
-            # Reported, never compared. UNPROMISED is a distinct word rather than
-            # a missing line so a human reading the report can tell "nobody
-            # promised a version" from "nobody checked" — and $RAW is left out
-            # deliberately: it is multi-line for several of these tools, and a
-            # stray line here would be parsed as another key=value fact.
             checks.append(
-                f'  echo "version_{vkey}=UNPROMISED (${{GOT:-none}})"')
+                f'    echo "version_{vkey}=UNPROMISED (${{GOT:-none}})"')
             checks.append("  fi")
             continue
-        checks.append("  case \"$GOT\" in")
-        checks.append(f"    {want}|{want}.*) echo \"version_{vkey}=OK ($GOT)\" ;;")
-        checks.append(f"    *) echo \"version_{vkey}=WRONG wanted {want} got "
-                      f"${{GOT:-none}} [$RAW]\" ;;")
-        checks.append("  esac")
+        checks.append('    case "$GOT" in')
+        checks.append(f'      {want}|{want}.*) echo "version_{vkey}=OK ($GOT)" ;;')
+        checks.append(f'      *) echo "version_{vkey}=WRONG wanted {want} got '
+                      f'${{GOT:-none}} [$RAW]" ;;')
+        checks.append("    esac")
         checks.append("  fi")
     checks.append("  echo '--- services ---'")
     for service in services:
         checks.append(f"  echo \"{service}=$(systemctl is-active {service} 2>&1)\"")
+    # WHICH UNITS THE INSTALLED PACKAGES ACTUALLY PROVIDE.
+    #
+    # The recipe used to GUESS that a technology is a daemon named after itself,
+    # and REQ-2026-0212 failed on `dotnet8 did not start` for a service that
+    # cannot exist. The guess is gone; this is what replaces it. A package that
+    # ships no unit is a runtime, and saying so is an answer rather than an
+    # absence — the next rung can redraft with the real name instead of a guess.
+    for package in packages:
+        checks.append(
+            f"  echo \"units_{profile_rules.report_key(package)}="
+            f"$(rpm -ql {shlex.quote(package)} 2>/dev/null "
+            f"| grep '/systemd/system/.*[.]service$' "
+            f"| xargs -r -n1 basename | tr '\\n' ',' | sed 's/,$//')\"")
     checks.append("  echo '--- ports ---'")
     # WHAT THE SOFTWARE ACTUALLY OPENED (C7), as opposed to what the recipe
     # declared. RabbitMQ's report carried an empty ports section because the

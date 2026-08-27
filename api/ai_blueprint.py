@@ -638,13 +638,26 @@ def _guessed_profile(code: str, target: str) -> dict:
     Right surprisingly often (nginx, redis) and wrong in a way that costs
     nothing to discover — the proof boots a machine and the machine says whether
     the package exists. What it can never do is install software that ships as
-    an archive; that needs ARCHIVE_KNOWLEDGE or the live model."""
+    an archive; that needs ARCHIVE_KNOWLEDGE or the live model.
+
+    IT NO LONGER INVENTS A SERVICE. It used to declare `services: [code]`, which
+    asserts that the software is a daemon named after itself. For nginx that is
+    true; for .NET, Java, Python and every other runtime there is no daemon at
+    all, and REQ-2026-0212 failed on exactly that: the agent had corrected the
+    package by itself, the machine installed dotnet-sdk-8.0 successfully, and
+    the proof was then failed because `dotnet8 did not start` — a service that
+    does not exist and never could.
+
+    A guess we have no basis for is not a cheap guess, it is a false claim about
+    the software. The machine reports which units the installed packages
+    actually provide (`units_<key>` in its report), so the answer is measured
+    instead."""
     return {
         "code": code,
         "builds_on": "oci/service-vm" if target == "oci" else "",
         "ports": [],
         "version_command": f"{code} --version 2>&1",
-        "rhel": {"packages": [code], "services": [code]},
+        "rhel": {"packages": [code], "services": []},
         "_note": ("DRAFT — proposed by the agent, proven by booting a machine. "
                   "The package name is the obvious guess and may not exist in the "
                   "image's repositories; the machine's own report decides."),
