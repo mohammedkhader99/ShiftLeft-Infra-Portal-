@@ -50,22 +50,40 @@ def _on(monkeypatch):
 
 # --- order is confidence, not cost --------------------------------------------
 
-def test_a_container_is_preferred_to_guessing_a_package():
-    """THE inversion. The publisher declares the image, its digest and its
-    ports; a package name is something we work out."""
+def test_software_that_IS_packaged_never_reaches_for_a_container():
+    """THE correction. D1 first inverted the ladder to put containers first, on
+    the argument that a container requires no guessing. That was an
+    over-correction: a container changes how the service is patched, backed up
+    and monitored, and no failure was ever caused by the ORDER — every one was
+    caused by GUESSING the package name, which is now looked up.
+
+    So the operational order stands, and a container is not reached for when the
+    repositories offer the software."""
     methods = resolve.methods_for("anything", **sources(
         image={"image": "docker.io/library/anything"}, packages=["anything"]))
 
-    assert methods.index("container") < methods.index("package")
+    assert methods == ["package"], (
+        f"{methods} — a container was offered for software that is packaged")
 
 
-def test_a_curated_recipe_beats_everything():
-    """A person verified it, and C10 re-checks its URL before a machine. That is
-    more evidence than any source can offer."""
+def test_software_that_is_NOT_packaged_reaches_for_a_container_with_no_machine():
+    """The whole point of the increment. The container rung has always waited
+    for one fact — "the repositories do not carry this" — and has always bought
+    it by building a VM and reading its report. The same fact now costs nothing.
+    """
+    methods = resolve.methods_for("mongodb", **sources(
+        image={"image": "docker.io/mongodb/x"}, packages=[]))
+
+    assert methods == ["container"], methods
+
+
+def test_a_vendor_repository_comes_before_a_container():
+    """Both install onto the machine the normal way; a container does not. The
+    repository is also the curated path, re-checked by C10 before a machine."""
     methods = resolve.methods_for("mongodb", curated_repo=True, **sources(
-        image={"image": "docker.io/mongodb/x"}, packages=["mongodb-org"]))
+        image={"image": "docker.io/mongodb/x"}, packages=[]))
 
-    assert methods[0] == "repo"
+    assert methods == ["repo", "container"], methods
 
 
 def test_an_archive_stays_last_however_curated():

@@ -3897,6 +3897,7 @@ def _autobuild_component(session: Session, code: str, target: str) -> dict:
                               certify=certify, withdraw=withdraw,
                               shipped_codes=shipped_codes, reachable=reachable,
                               ask_repository=ask_repository,
+                              search=repo_facts.search_packages,
                               discover=discover, find_image=find_image,
                               observe_ports=observe_ports)
     session.commit()

@@ -40,9 +40,23 @@ from __future__ import annotations
 
 import os
 
-#: The order, best first. Named here rather than inline so the reasoning above
-#: and the behaviour below cannot drift apart.
-CONFIDENCE = ("repo", "container", "package", "archive")
+#: THE OPERATIONAL ORDER, AND IT IS THE ONE THAT WAS ALREADY THERE.
+#:
+#: D1 first inverted this to put containers first, on the argument that a
+#: container requires no guessing. That was an over-correction, and the reason
+#: is recorded in the tests it would have broken:
+#:
+#:     "A container is the last resort, not the first — it changes how the
+#:      service is patched, backed up and monitored, and that cost is only
+#:      worth paying when nothing else works."
+#:     "An OS package is one command and no trust granted; a vendor repository
+#:      trusts a publisher for everything it will ever serve."
+#:
+#: Both are operational judgements about how the estate is RUN, and neither was
+#: the cause of any failure. Every failure came from GUESSING the package name,
+#: which `package_name` now looks up instead. The guessing was the defect; the
+#: order was not.
+ORDER = ("package", "repo", "archive")
 
 
 def enabled() -> bool:
@@ -52,11 +66,16 @@ def enabled() -> bool:
     an increment that cannot be reverted from the Admin console is an increment
     that has to be reverted by a release.
     """
-    # OFF BY DEFAULT, and the default lives HERE rather than only in compose and
-    # the Admin console. Those describe a deployment; this describes the code,
-    # and a test process picks up neither — which is how a switch that reads
-    # "shipped off" everywhere else was on for the whole suite.
-    return (os.getenv("RESOLVE_BY_CONFIDENCE", "false").strip().lower()
+    # ON by default, because reconciling D1 made it a much smaller thing than it
+    # started as. It no longer reorders anything: the operational order stands,
+    # and what this adds is a package name LOOKED UP instead of guessed, and a
+    # container rung reachable once the repositories have said they do not carry
+    # the software. All 48 escalation tests pass with it on, unchanged.
+    #
+    # The default lives HERE as well as in compose and the console, because a
+    # test process reads neither — which is how a switch that said "shipped off"
+    # everywhere else was on for the whole suite.
+    return (os.getenv("RESOLVE_BY_CONFIDENCE", "true").strip().lower()
             in ("1", "true", "yes", "on"))
 
 
@@ -85,13 +104,13 @@ def package_name(code: str, family: str = "rhel", *, search=None) -> str:
 def image_for(code: str, *, find_image=None) -> dict | None:
     """The container image this technology publishes, or None.
 
-    `find_image` is injected for the same reason every other cloud call in this
-    codebase is: the interesting branches are the ones a real registry will not
-    produce on demand.
+    `find_image` is injected and has NO default. A default that imported
+    `registry.find` made every caller — including the whole test suite — query
+    Docker Hub without saying so, and made the ladder's order depend on what a
+    third party answered that minute.
     """
     if find_image is None:
-        from api import registry
-        find_image = registry.find
+        return None
     try:
         return find_image(code)
     except Exception:  # noqa: BLE001
@@ -117,10 +136,34 @@ def methods_for(code: str, *, family: str = "rhel", curated_repo: bool = False,
             methods.append("archive")
         return methods
 
-    available = {
-        "repo": curated_repo,
-        "container": image_for(code, find_image=find_image) is not None,
-        "package": bool(package_name(code, family, search=search)),
-        "archive": curated_archive,
-    }
-    return [m for m in CONFIDENCE if available[m]]
+    # WHAT "UNKNOWN" MEANS, and it differs by source on purpose.
+    #
+    #   None  we could not search. NOT evidence that nothing is packaged, so the
+    #         package rung stays — dropping it on a bad afternoon would remove
+    #         the only path a technology has. This is also the hermetic default:
+    #         a caller that injects no source gets exactly the previous ladder.
+    #   ""    we searched and the repositories offer nothing. That is a FACT,
+    #         and it is the fact the container rung has always waited for.
+    searched = None if search is None else package_name(code, family, search=search)
+
+    methods = []
+    if searched is None or searched:
+        methods.append("package")
+    if curated_repo:
+        methods.append("repo")
+    if curated_archive:
+        methods.append("archive")
+
+    # NOTHING IS PACKAGED, AND WE KNOW IT WITHOUT A MACHINE.
+    #
+    # The container rung has always required this fact — "the machine searched
+    # repositories it named and this software is not in them" — and has always
+    # bought it by building a VM and reading its report. The same fact is now
+    # available from the repository metadata for nothing.
+    #
+    # STILL LAST. A container changes how the service is patched, backed up and
+    # monitored, so it remains what we reach for when the normal paths cannot
+    # work — not what we reach for first.
+    if searched == "" and image_for(code, find_image=find_image) is not None:
+        methods.append("container")
+    return methods

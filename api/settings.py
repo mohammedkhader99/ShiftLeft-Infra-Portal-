@@ -57,17 +57,19 @@ ALLOWLIST: dict[str, dict] = {
                                           "building with that image. It cannot "
                                           "be set to zero.")},
     "RESOLVE_BY_CONFIDENCE": {"label": "Resolve install methods by confidence",
-                              "type": "bool", "default": "false",
+                              "type": "bool", "default": "true",
                               "group": "Governance",
-                              "help": ("When on, the agent tries the artefact "
-                                       "requiring the fewest guesses first: a "
-                                       "curated recipe, then a container image "
-                                       "the registry itself offered, then an OS "
-                                       "package searched in repository metadata. "
-                                       "Off restores the previous order — OS "
-                                       "package first — exactly. Shipped OFF on "
-                                       "2026-08-26 pending the escalation tests "
-                                       "being rewritten for the new order.")},
+                              "help": ("When on, the agent LOOKS UP the package "
+                                       "name in the repositories instead of "
+                                       "guessing it from the catalogue code, and "
+                                       "may use a container once the "
+                                       "repositories have said they do not carry "
+                                       "the software. The order software is "
+                                       "installed in does not change: a package "
+                                       "on the machine first, then a vendor "
+                                       "repository, then an archive, and a "
+                                       "container only when none of those can "
+                                       "work.")},
     "CONTAINER_REGISTRIES": {"label": "Additional container registries",
                              "type": "text", "default": "",
                              "group": "Governance",

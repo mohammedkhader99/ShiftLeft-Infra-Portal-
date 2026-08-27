@@ -593,7 +593,8 @@ def draft_from_finding(candidate: str, finding: dict, target: str = "oci"):
         source="measured")
 
 
-def install_methods(code: str, *, family: str = "rhel") -> list[str]:
+def install_methods(code: str, *, family: str = "rhel", find_image=None,
+                    search=None) -> list[str]:
     """The ways this software could be installed, MOST CONFIDENT FIRST (D1).
 
     This used to read, in its own words, "ORDER IS COST, NOT CONFIDENCE" — and
@@ -609,7 +610,7 @@ def install_methods(code: str, *, family: str = "rhel") -> list[str]:
     from api import resolve
 
     return resolve.methods_for(
-        code, family=family,
+        code, family=family, find_image=find_image, search=search,
         curated_repo=code in VENDOR_REPOS,
         curated_archive=code in ARCHIVE_KNOWLEDGE)
 

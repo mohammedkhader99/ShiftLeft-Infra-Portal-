@@ -141,7 +141,7 @@ services:
       # ON by default at the reviewer's instruction (2026-08-25): each image
       # is a REAL, PERSISTENT, BILLABLE resource. The Admin console toggles it.
       GOLDEN_IMAGES: ${GOLDEN_IMAGES:-true}
-      RESOLVE_BY_CONFIDENCE: ${RESOLVE_BY_CONFIDENCE:-false}
+      RESOLVE_BY_CONFIDENCE: ${RESOLVE_BY_CONFIDENCE:-true}
       CONTAINER_REGISTRIES: ${CONTAINER_REGISTRIES:-}
       GOLDEN_IMAGE_RETAIN_DAYS: ${GOLDEN_IMAGE_RETAIN_DAYS:-7}
       CLOUD_STATE_SYNC_ENABLED: ${CLOUD_STATE_SYNC_ENABLED:-false}
@@ -331,7 +331,7 @@ services:
       # ON by default at the reviewer's instruction (2026-08-25): each image
       # is a REAL, PERSISTENT, BILLABLE resource. The Admin console toggles it.
       GOLDEN_IMAGES: ${GOLDEN_IMAGES:-true}
-      RESOLVE_BY_CONFIDENCE: ${RESOLVE_BY_CONFIDENCE:-false}
+      RESOLVE_BY_CONFIDENCE: ${RESOLVE_BY_CONFIDENCE:-true}
       CONTAINER_REGISTRIES: ${CONTAINER_REGISTRIES:-}
       GOLDEN_IMAGE_RETAIN_DAYS: ${GOLDEN_IMAGE_RETAIN_DAYS:-7}
       CLOUD_STATE_SIMULATE_MISSING: ${CLOUD_STATE_SIMULATE_MISSING:-}

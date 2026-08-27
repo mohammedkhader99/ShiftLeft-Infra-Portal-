@@ -119,24 +119,33 @@ licensing, cost, security approval, architecture and Marketplace terms. A
 Marketplace image requires its subscription/agreement to be accepted **before**
 an instance can launch. Never deploy an arbitrary Marketplace product.
 
-**Level 4 — compose from what the vendor publishes.** Resolve the artefact from
-live sources and prefer the form requiring the fewest guesses:
+**Level 4 — compose from what the vendor publishes.** Install onto the machine
+in this order:
 
-    curated recipe  →  container image  →  OS package (SEARCHED in repository
-    metadata, never guessed)  →  vendor repository  →  vendor archive
+    OS package (LOOKED UP in repository metadata, never guessed)
+      →  vendor repository  →  vendor archive  →  container
 
-**Order is confidence, not cost.** The previous order was cost-first and said so
-in its own code, and gated every rung but the first on a hand-written dictionary
-— so a technology in neither dictionary had a one-rung ladder: guess the package
-name. Five machines went on that in two days: a guessed package that turned out
-to be a source RPM, a repository URL that had rotted, an invented daemon and an
-invented binary. None of those exist on the container path, because the
-publisher declares the image, its digest and its ports.
+**The order is operational and it is deliberate.** A package is one command and
+grants no standing trust. A vendor repository trusts a publisher for everything
+it will ever serve. An archive fetches a file from the internet and runs it as
+root. A container changes how the service is patched, backed up and monitored —
+so it is what we reach for when nothing else can work, not what we reach for
+first.
 
-An archive stays last however well curated: it fetches a file from the internet
-and executes it as root, and curation does not change what it does.
+**Nothing here was ever caused by that order.** Five machines went in two days
+on a package name that was GUESSED from the catalogue code: `dotnet8` is a
+label, not a package, and neither is `redis7`. The name is now looked up in the
+metadata the repositories publish. The guessing was the defect.
 
-A dictionary entry is an OVERRIDE, never a prerequisite.
+**A container needs one fact, and it no longer costs a machine.** The rung has
+always waited for "the repositories do not carry this software", and has always
+bought that by building a VM and reading its report. The same fact is now
+available from repository metadata for nothing — so software that genuinely is
+not packaged reaches a container without a machine being spent to prove the
+obvious.
+
+A dictionary entry is an OVERRIDE, never a prerequisite: a technology nobody has
+written anything about still gets a real ladder.
 
 Terraform for infrastructure; image build or configuration management for
 software; bootstrap for controlled first-boot work only.
@@ -276,15 +285,11 @@ Do not assume a capability described above is implemented. As of 2026-08-25:
 - **Level 2 never resolves.** There is no internal golden-image catalogue. Skip it.
 - **Level 3 partially resolves.** A read-only Marketplace client and listing model
   exist; the subscription and provisioning path does not.
-- **Level 4 resolution by confidence is BUILT BUT NOT ON** as of 2026-08-26
-  (`RESOLVE_BY_CONFIDENCE=false`). Until it is switched on, the order is the
-  previous one — OS package first — with one part of D1 already live: the
-  package name is SEARCHED in repository metadata rather than guessed from the
-  catalogue code. Do not describe the container-first order as current.
-- **When on**, Level 4 resolves by confidence (D1, 2026-08-26): a
-  curated recipe, then a container image the registry itself offered, then a
-  package name SEARCHED in repository metadata, then a vendor repository, then
-  an archive. There is no Ansible and no image build in this platform;
+- **Level 4 is the workhorse** (D1, 2026-08-27). The package name is looked up
+  in repository metadata rather than guessed, and a container is reachable once
+  the repositories have said they do not carry the software. The install order
+  itself is unchanged and operational — package, vendor repository, archive,
+  then container. There is no Ansible and no image build in this platform;
   recommending them is correct, assuming them is not.
 - **A container image is only pulled from an allowed registry, by digest**, and
   only when the registry calls it official or it is published under the

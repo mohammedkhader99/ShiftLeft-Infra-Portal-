@@ -272,6 +272,7 @@ def ensure(candidate: str, session: Session, *, target, shipped, run_proof,
            publish, certify, withdraw=None,
            shipped_codes: frozenset[str] = frozenset(),
            reachable=None, ask_repository=None, discover=None, find_image=None,
+           search=None,
            observe_ports=None) -> AutobuildResult:
     """Make `candidate` provisionable, and certify it — no human involved.
 
@@ -376,7 +377,15 @@ def ensure(candidate: str, session: Session, *, target, shipped, run_proof,
         # a machine found out while refuting one of them. RabbitMQ has no vendor
         # repository and no archive, so its ladder was one rung long and stopped
         # — while the machine refuting it held the answer and was never asked.
-        methods = list(ai_blueprint.install_methods(candidate))
+        # THE LADDER'S OWN COLLABORATORS, handed to the resolver.
+        #
+        # INJECTED, like post, price, verify, reachable, discover, find_image
+        # and observe_ports before it. The first version reached for
+        # `repo_facts.search_packages` here, so every caller — the entire test
+        # suite included — did a live repository search, and the ladder's shape
+        # depended on what a public service answered that minute.
+        methods = list(ai_blueprint.install_methods(
+            candidate, find_image=find_image, search=search))
         last = None
         refuted_by_a_machine: list[str] = []
         discovered: dict = {}

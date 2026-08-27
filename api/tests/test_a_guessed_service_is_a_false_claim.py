@@ -199,3 +199,25 @@ def test_a_recipe_with_no_packages_has_nothing_to_ask(tmp_path, monkeypatch):
         "with no package to ask, the machine claimed a version anyway")
     assert "rpm -ql" not in text.split("--- versions ---")[-1], (
         "it interrogated packages that do not exist")
+
+
+def test_a_package_that_owns_no_binary_still_finds_the_command(tmp_path, monkeypatch):
+    """REQ-2026-0215, and the second time .NET failed on a machine that had it
+    installed and working.
+
+    `rpm -ql dotnet-sdk-8.0` lists no /usr/bin entry at all: `/usr/bin/dotnet`
+    belongs to `dotnet-host`, which dnf installed as a DEPENDENCY. The rescue
+    asked what the named package OWNS when the question that matters is whether
+    the command is on the machine.
+
+    The stem is tried last and only if it is executable, so it is a verified
+    answer rather than a second guess — and `version_binary_` reports which."""
+    text = _profile(tmp_path, monkeypatch)
+    versions = text.split("--- versions ---")[-1].split("--- services ---")[0]
+
+    assert "command -v dotnet 2>/dev/null" in versions, (
+        "when the package owns no binary the machine gives up, even though the "
+        "command is right there")
+    assert versions.index("rpm -ql") < versions.index("command -v dotnet 2>"), (
+        "the stem is tried before the package's own file list, so a measured "
+        "answer loses to a guessed one")

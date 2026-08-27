@@ -906,6 +906,18 @@ def _report_script(wanted: list[tuple[str, str]], packages: list[str],
             checks.append(
                 f'    ALT=$(echo "$BINS" | grep -E "/{stem}[^/]*$" | head -1)')
             checks.append('    [ -n "$ALT" ] || ALT=$(echo "$BINS" | head -1)')
+            # AND IF THE PACKAGE OWNS NO BINARY, ASK THE MACHINE (REQ-2026-0215).
+            #
+            # `rpm -ql dotnet-sdk-8.0` lists no /usr/bin entry: `/usr/bin/dotnet`
+            # belongs to `dotnet-host`, which dnf installed as a DEPENDENCY. So
+            # the rescue asked what THIS package owns when the question that
+            # matters is whether the command is on the machine at all — and .NET
+            # failed a second time on a machine that had it installed and working.
+            #
+            # Checked before use and reported, so it is a verified answer rather
+            # than a second guess: the technology's stem, if it is executable.
+            checks.append(
+                f'    [ -n "$ALT" ] || ALT=$(command -v {stem} 2>/dev/null)')
         else:
             checks.append("    ALT=''")
         checks.append('    if [ -n "$ALT" ]; then')
