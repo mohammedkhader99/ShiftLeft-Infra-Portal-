@@ -365,3 +365,41 @@ def check_recipe(recipe: dict, *, family: str = "rhel", fetch=None,
         "This recipe names a package that does not exist.", " ".join(lines),
         suggestions={n: found.near.get(n, ()) for n in found.missing
                      if found.near.get(n)})
+
+
+def search_packages(code: str, family: str = "rhel", *, fetch=None,
+                    budget: float | None = BUDGET_SECONDS) -> list[str]:
+    """Installable package names matching a technology, best first (D1).
+
+    THE GUESS BECOMES A LOOKUP. `_guessed_profile` used the catalogue code
+    verbatim as a package name — `dotnet8`, which does not exist — and a machine
+    was spent to be told so. The metadata that answers this properly is already
+    downloaded and cached for `check_recipe`, so the search costs nothing beyond
+    what C10 already pays.
+
+    Ranked by `discovery.rank_matches`, the same function the machine-side
+    discovery has always used, so a name chosen here and a name chosen from a
+    machine's report are chosen the same way.
+
+    An empty list is an ordinary answer — plenty of software is not packaged for
+    Oracle Linux at all — and is precisely what lets the container rung take over.
+    """
+    from api import discovery
+
+    stem = re.sub(r"[^a-z0-9]", "", (code or "").lower())
+    stem = stem.rstrip("0123456789") or stem
+    if len(stem) < 3:
+        return []
+
+    deadline = None if budget is None else time.monotonic() + budget
+    offered: set[str] = set()
+    for base in BASE_REPOS.get(family, ()):
+        if deadline is not None and time.monotonic() > deadline:
+            break
+        names = package_names(base, fetch=fetch)
+        if names:
+            offered |= names
+
+    hits = [n for n in offered
+            if re.sub(r"[^a-z0-9]", "", n.lower()).startswith(stem)]
+    return [n for n, _repo in discovery.rank_matches([(h, "") for h in hits], code)]

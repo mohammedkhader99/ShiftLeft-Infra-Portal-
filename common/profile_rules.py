@@ -135,10 +135,71 @@ RELEASE_PACKAGES = frozenset({"oracle-epel-release-el9", "epel-release"})
 # ocir is Oracle's own registry, reachable over the service gateway, and is here
 # so images can be mirrored under your control rather than pulled anonymously
 # from a public host on every boot.
-REGISTRIES = frozenset({
+#: Registries a container image may be pulled from.
+#:
+#: BROADENED 2026-08-26 at the reviewer's instruction ("add registry allow-list
+#: for all vendors"), because D1 makes the container the PREFERRED artefact and
+#: a container-first ladder is only as broad as this set. Microsoft publishes
+#: .NET at mcr.microsoft.com, which the original five did not include.
+#:
+#: STILL A LIST, and deliberately. An unbounded allow-list is the same as no
+#: allow-list, and this is the boundary of what may execute as root in the
+#: tenancy. What keeps it usable without code changes is CONTAINER_REGISTRIES in
+#: the Admin console, which extends this set at run time — so a vendor nobody
+#: anticipated is one setting away, not one release away.
+#:
+#: What this does NOT relax: the image is pulled by DIGEST, the path must match
+#: IMAGE_PATH, and every profile rule still applies.
+_SHIPPED_REGISTRIES = frozenset({
+    # the public commons
     "docker.io", "quay.io", "ghcr.io",
+    # this tenancy's own
     "me-dubai-1.ocir.io", "ocir.me-dubai-1.oci.oraclecloud.com",
+    # the major first-party publishers
+    "mcr.microsoft.com",                 # .NET, SQL Server, PowerShell
+    "registry.access.redhat.com", "registry.redhat.io",
+    "registry.k8s.io",                   # Kubernetes itself
+    "gcr.io", "us-docker.pkg.dev", "europe-docker.pkg.dev",
+    "public.ecr.aws",                    # AWS public gallery
+    "docker.elastic.co",                 # Elastic
+    "registry.gitlab.com",
+    "container-registry.oracle.com",     # Oracle
+    "registry.suse.com", "registry.opensuse.org",
+    "cr.hashicorp.com",                  # HashiCorp
+    "nvcr.io",                           # NVIDIA
 })
+
+
+def _extra_registries() -> frozenset[str]:
+    """Vendors an operator added in the Admin console, comma separated.
+
+    Bounded to hostnames: a value reaches an image reference and then a pull
+    command, so it is validated the same way every other operator-supplied
+    string in this file is.
+    """
+    import os
+
+    raw = (os.getenv("CONTAINER_REGISTRIES") or "").strip()
+    return frozenset(
+        h for h in (part.strip().lower() for part in raw.split(","))
+        if h and re.fullmatch(r"[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?(:\d{1,5})?", h))
+
+
+class _Registries(frozenset):
+    """The shipped set, plus whatever the Admin console added, read fresh.
+
+    A frozenset subclass rather than a function so every existing
+    `x in profile_rules.REGISTRIES` keeps working unchanged — there are three
+    call sites and a test, and changing them all to call something was a wider
+    edit than the behaviour warranted.
+    """
+
+    def __contains__(self, item) -> bool:      # noqa: D105
+        return (super().__contains__(item)
+                or str(item).lower() in _extra_registries())
+
+
+REGISTRIES = _Registries(_SHIPPED_REGISTRIES)
 
 # The repository path inside a registry: `library/rabbitmq`, `keycloak/keycloak`.
 # Lowercase by OCI distribution rules; no `..`, by the same construction DEST

@@ -141,6 +141,8 @@ services:
       # ON by default at the reviewer's instruction (2026-08-25): each image
       # is a REAL, PERSISTENT, BILLABLE resource. The Admin console toggles it.
       GOLDEN_IMAGES: ${GOLDEN_IMAGES:-true}
+      RESOLVE_BY_CONFIDENCE: ${RESOLVE_BY_CONFIDENCE:-false}
+      CONTAINER_REGISTRIES: ${CONTAINER_REGISTRIES:-}
       GOLDEN_IMAGE_RETAIN_DAYS: ${GOLDEN_IMAGE_RETAIN_DAYS:-7}
       CLOUD_STATE_SYNC_ENABLED: ${CLOUD_STATE_SYNC_ENABLED:-false}
       # Automatic Jira-status poller (2.7). When AUTO_PROVISION=true a background
@@ -329,6 +331,8 @@ services:
       # ON by default at the reviewer's instruction (2026-08-25): each image
       # is a REAL, PERSISTENT, BILLABLE resource. The Admin console toggles it.
       GOLDEN_IMAGES: ${GOLDEN_IMAGES:-true}
+      RESOLVE_BY_CONFIDENCE: ${RESOLVE_BY_CONFIDENCE:-false}
+      CONTAINER_REGISTRIES: ${CONTAINER_REGISTRIES:-}
       GOLDEN_IMAGE_RETAIN_DAYS: ${GOLDEN_IMAGE_RETAIN_DAYS:-7}
       CLOUD_STATE_SIMULATE_MISSING: ${CLOUD_STATE_SIMULATE_MISSING:-}
       OCI_ACTUATE_ENABLED: ${OCI_ACTUATE_ENABLED:-false}

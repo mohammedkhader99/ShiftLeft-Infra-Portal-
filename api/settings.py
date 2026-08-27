@@ -56,6 +56,29 @@ ALLOWLIST: dict[str, dict] = {
                                           "approved moments ago may still be "
                                           "building with that image. It cannot "
                                           "be set to zero.")},
+    "RESOLVE_BY_CONFIDENCE": {"label": "Resolve install methods by confidence",
+                              "type": "bool", "default": "false",
+                              "group": "Governance",
+                              "help": ("When on, the agent tries the artefact "
+                                       "requiring the fewest guesses first: a "
+                                       "curated recipe, then a container image "
+                                       "the registry itself offered, then an OS "
+                                       "package searched in repository metadata. "
+                                       "Off restores the previous order — OS "
+                                       "package first — exactly. Shipped OFF on "
+                                       "2026-08-26 pending the escalation tests "
+                                       "being rewritten for the new order.")},
+    "CONTAINER_REGISTRIES": {"label": "Additional container registries",
+                             "type": "text", "default": "",
+                             "group": "Governance",
+                             "help": ("Comma-separated hostnames to allow "
+                                      "alongside the shipped list of major "
+                                      "publishers. This is the boundary of what "
+                                      "may be pulled and run as root, so add a "
+                                      "vendor only when you know why. Images are "
+                                      "still pinned by digest and must be "
+                                      "official or in the vendor's own "
+                                      "namespace.")},
     "GOLDEN_IMAGES": {"label": "Capture golden images", "type": "bool",
                       "default": "true", "group": "Governance",
                       "help": ("When on, a proof build that verifies healthy is "

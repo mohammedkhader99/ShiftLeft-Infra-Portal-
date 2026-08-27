@@ -119,8 +119,26 @@ licensing, cost, security approval, architecture and Marketplace terms. A
 Marketplace image requires its subscription/agreement to be accepted **before**
 an instance can launch. Never deploy an arbitrary Marketplace product.
 
-**Level 4 — compose approved components.** Approved base OS + approved software
-recipe. Terraform for infrastructure; image build or configuration management for
+**Level 4 — compose from what the vendor publishes.** Resolve the artefact from
+live sources and prefer the form requiring the fewest guesses:
+
+    curated recipe  →  container image  →  OS package (SEARCHED in repository
+    metadata, never guessed)  →  vendor repository  →  vendor archive
+
+**Order is confidence, not cost.** The previous order was cost-first and said so
+in its own code, and gated every rung but the first on a hand-written dictionary
+— so a technology in neither dictionary had a one-rung ladder: guess the package
+name. Five machines went on that in two days: a guessed package that turned out
+to be a source RPM, a repository URL that had rotted, an invented daemon and an
+invented binary. None of those exist on the container path, because the
+publisher declares the image, its digest and its ports.
+
+An archive stays last however well curated: it fetches a file from the internet
+and executes it as root, and curation does not change what it does.
+
+A dictionary entry is an OVERRIDE, never a prerequisite.
+
+Terraform for infrastructure; image build or configuration management for
 software; bootstrap for controlled first-boot work only.
 
 **Level 5 — Blueprint Factory.** Only when levels 1-4 all fail. Do **not**
@@ -258,9 +276,21 @@ Do not assume a capability described above is implemented. As of 2026-08-25:
 - **Level 2 never resolves.** There is no internal golden-image catalogue. Skip it.
 - **Level 3 partially resolves.** A read-only Marketplace client and listing model
   exist; the subscription and provisioning path does not.
-- **Level 4 is the workhorse.** Approved base image plus a recipe, installed at
-  first boot by cloud-init. There is no Ansible and no image build in this
-  platform; recommending them is correct, assuming them is not.
+- **Level 4 resolution by confidence is BUILT BUT NOT ON** as of 2026-08-26
+  (`RESOLVE_BY_CONFIDENCE=false`). Until it is switched on, the order is the
+  previous one — OS package first — with one part of D1 already live: the
+  package name is SEARCHED in repository metadata rather than guessed from the
+  catalogue code. Do not describe the container-first order as current.
+- **When on**, Level 4 resolves by confidence (D1, 2026-08-26): a
+  curated recipe, then a container image the registry itself offered, then a
+  package name SEARCHED in repository metadata, then a vendor repository, then
+  an archive. There is no Ansible and no image build in this platform;
+  recommending them is correct, assuming them is not.
+- **A container image is only pulled from an allowed registry, by digest**, and
+  only when the registry calls it official or it is published under the
+  technology's own vendor namespace. Popularity is not provenance: a search for
+  `dotnet` returns a zero-star image from an unknown account, and that must
+  never run as root in this tenancy.
 - **Level 5 runs autonomously.** The Blueprint Factory drafts a recipe, builds a
   real machine, reads its self-report and certifies from that evidence. It does
   not do hardening, EDR, SBOM, vulnerability scanning of the running host, or

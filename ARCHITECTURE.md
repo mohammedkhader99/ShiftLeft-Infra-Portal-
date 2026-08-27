@@ -145,6 +145,12 @@ Requester opens the portal → agent optionally assists in plain language (F-RPT
 
   It also settles a question that looked like a contradiction and was not. The doctrine requires a blueprint to be **approved** before a workload is provisioned from it, and the human certification gate was removed on 2026-08-21. Both hold, because *approval* names two different things: a **human approves the request**, in Jira (P1); **evidence approves the blueprint** — linter, strict scanner, priced plan, and a real build that provisions, verifies healthy and destroys itself (P8). The source document is explicit: *"Policy Engine must APPROVE, Pipeline must VALIDATE, Terraform Executor must DEPLOY."* Nothing in the doctrine puts a person back in the certification path.
 
+- **Resolution is by confidence (D1, added 2026-08-26).** `install_methods` ordered the ladder by how cheap each attempt was — it said so: *"ORDER IS COST, NOT CONFIDENCE"* — and gated every rung but the first on a hand-written dictionary. A technology in neither dictionary therefore had a one-rung ladder: guess the package name. RabbitMQ sat uncertified behind that sentence for days and .NET spent five machines on it.
+
+  Sources are now asked live and ranked by how much the platform must guess: a curated recipe, then a container image, then an OS package **searched** in repository metadata, then a vendor repository, then an archive. A dictionary entry is an **override**, never a prerequisite — the reviewer's standing rule that a fix must catch the next contender, applied to the ladder itself.
+
+  **The container is preferred because the publisher declares what we were guessing** — the image, its digest, its ports — which removes the whole class of failures of 25–26 August at once. The trust boundary that makes this safe is narrow and deliberate: an allowed registry, pinned by digest, and only an image the registry calls official or one published under the technology's own vendor namespace. Popularity is not provenance. The allow-list was broadened to the major first-party publishers on the reviewer's instruction and is extensible from the Admin console (`CONTAINER_REGISTRIES`), because a vendor nobody anticipated should be one setting away rather than one release away.
+
 ---
 
 ## 8. Security architecture

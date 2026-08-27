@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import urllib.error
 import urllib.request
 
@@ -215,8 +216,89 @@ def find(code: str, tag: str = "latest") -> dict | None:
     licensed software will always need a recipe someone writes — and the ladder
     treats it as the end of the road rather than as a failure.
     """
-    for image in candidates(code):
+    # GUESSED NAMES FIRST, then what the registry itself offers (D1). The
+    # guesses are free — no network call until `describe` — and they find the
+    # common case (`rabbitmq`, `nginx`). The search is what finds `mongodb`,
+    # whose image is published under the vendor's own namespace and which no
+    # name-shape rule was ever going to produce.
+    for image in list(candidates(code)) + [
+            ref for ref in search(code) if ref not in candidates(code)]:
         described = describe(image, tag)
         if described:
             return {"image": image, "tag": tag, **described}
     return None
+
+
+# --- D1: ask the registry, do not guess the image name -----------------------
+#
+# `candidates` builds image references from the catalogue code, which finds
+# `rabbitmq` and misses `mongo` (the code is `mongodb`) and `hashicorp/vault`.
+# Guessing an image name is the same defect as guessing a package name, one
+# level up, and it is the reason container-first barely fired when D1 first ran.
+#
+# THE TRUST RULE IS THE WHOLE FEATURE. A registry search for "dotnet" returns
+# `slacksec/dotnet` — zero stars, an unknown user — and pulling that as root is
+# far worse than a failed guess. So a search result is a candidate ONLY if:
+#
+#   * the registry calls it OFFICIAL, or
+#   * it is published under a namespace that IS the technology's own name
+#     (`mongodb/mongodb-community-server` for mongodb), which is how a vendor
+#     publishes under its own account.
+#
+# Everything else is discarded, however popular. Popularity is not provenance.
+
+SEARCH_URL = "https://hub.docker.com/v2/search/repositories/"
+
+#: How many results to consider. The trust rule discards nearly all of them;
+#: this only bounds the response we parse.
+SEARCH_LIMIT = 10
+
+
+def _trusted(repo_name: str, official: bool, code: str) -> bool:
+    """Would we let this image run as root in the tenancy?"""
+    if official:
+        return True
+    namespace, _, _rest = (repo_name or "").partition("/")
+    if not namespace or "/" not in (repo_name or ""):
+        return False
+    stem = re.sub(r"[^a-z0-9]", "", (code or "").lower()).rstrip("0123456789")
+    ns = re.sub(r"[^a-z0-9]", "", namespace.lower())
+    return bool(stem) and ns == stem
+
+
+def search(code: str, *, fetch=None) -> list[str]:
+    """Image references the registry itself offers for this technology.
+
+    Injected `fetch` for testability; returns [] on any problem, because a
+    registry that cannot be searched is not a failure — it is one source of
+    several, and the ladder has others.
+    """
+    code = (code or "").strip().lower()
+    if not profile_rules.CODE.match(code):
+        return []
+
+    try:
+        if fetch is None:
+            import json
+            import urllib.request
+
+            url = f"{SEARCH_URL}?query={code}&page_size={SEARCH_LIMIT}"
+            with urllib.request.urlopen(  # noqa: S310 - fixed registry host
+                    urllib.request.Request(url, headers={"User-Agent": "shiftleft"}),
+                    timeout=timeout_seconds()) as response:
+                body = json.loads(response.read())
+        else:
+            body = fetch(code)
+    except Exception:  # noqa: BLE001
+        return []
+
+    out: list[str] = []
+    for row in (body or {}).get("results", [])[:SEARCH_LIMIT]:
+        name = str(row.get("repo_name") or "")
+        if not _trusted(name, bool(row.get("is_official")), code):
+            continue
+        path = name if "/" in name else f"library/{name}"
+        ref = f"docker.io/{path}"
+        if profile_rules.IMAGE_PATH.match(path) and ref not in out:
+            out.append(ref)
+    return out

@@ -391,6 +391,21 @@ def ensure(candidate: str, session: Session, *, target, shipped, run_proof,
         rerun: set[str] = set()
         while methods:
             method = methods.pop(0)
+            # THE CONTAINER RUNG NO LONGER NEEDS A MACHINE TO HAVE SPOKEN (D1).
+            #
+            # `published_image` used to be filled only by the discovery path —
+            # after a machine had been spent and reported nothing — so a rung
+            # the resolver offers from the start had no image to draft from.
+            #
+            # ASSIGNED, not resolved inline in the draft expression. The first
+            # version did the lookup inside the ternary below, so
+            # `published_image` stayed empty; the narrowing pass then rebuilt it
+            # as `{"listening": seen}` with the image REFERENCE LOST, and C8's
+            # second pass never ran. 26 tests said so.
+            if (method == "container" and not published_image
+                    and find_image is not None):
+                published_image = find_image(candidate) or {}
+
             attempt = (ai_blueprint.draft(candidate, session, target=target,
                                           shipped_codes=shipped_codes,
                                           method=method)

@@ -593,27 +593,37 @@ def draft_from_finding(candidate: str, finding: dict, target: str = "oci"):
         source="measured")
 
 
-def install_methods(code: str) -> list[str]:
-    """The ways this software could be installed, cheapest first.
+def install_methods(code: str, *, family: str = "rhel") -> list[str]:
+    """The ways this software could be installed, MOST CONFIDENT FIRST (D1).
 
-    ORDER IS COST, NOT CONFIDENCE. An OS package is one command and no trust
-    granted; a vendor repository trusts a publisher for everything it will ever
-    serve; an archive fetches and executes a specific file. Trying them in this
-    order means the cheapest correct answer is found first, and each failure
-    narrows the next attempt instead of repeating it.
+    This used to read, in its own words, "ORDER IS COST, NOT CONFIDENCE" — and
+    gate every rung but the first on a hand-written dictionary, so a technology
+    in neither dictionary had a one-rung ladder: guess the package name. Every
+    failure of 25-26 August lives in that sentence.
+
+    The order now reflects how much WE have to guess, and the dictionaries are
+    OVERRIDES rather than prerequisites. See api/resolve.py for the reasoning;
+    the two `curated_*` flags are the only thing this module still contributes,
+    because only this module knows what is in its own dictionaries.
     """
-    methods = ["package"]
-    if code in VENDOR_REPOS:
-        methods.append("repo")
-    if code in ARCHIVE_KNOWLEDGE:
-        methods.append("archive")
-    return methods
+    from api import resolve
+
+    return resolve.methods_for(
+        code, family=family,
+        curated_repo=code in VENDOR_REPOS,
+        curated_archive=code in ARCHIVE_KNOWLEDGE)
 
 
 def profile_for_method(code: str, method: str, target: str = "oci") -> dict | None:
     """The profile for one install method, or None if that method is not known."""
     if method == "package":
-        return _guessed_profile(code, target)
+        # SEARCHED, NOT GUESSED. The catalogue code is a label; `dotnet8` is not
+        # a package and `redis7` is not either. The repository metadata that
+        # says so is already downloaded for C10.
+        from api import resolve
+
+        return _guessed_profile(code, target,
+                                package=resolve.package_name(code) or None)
     if method == "repo" and code in VENDOR_REPOS:
         return _repo_profile(code, target)
     if method == "archive" and code in ARCHIVE_KNOWLEDGE:
@@ -632,7 +642,7 @@ def profile_for_method(code: str, method: str, target: str = "oci") -> dict | No
     return None
 
 
-def _guessed_profile(code: str, target: str) -> dict:
+def _guessed_profile(code: str, target: str, package: str | None = None) -> dict:
     """The obvious guess: a package named after the technology.
 
     Right surprisingly often (nginx, redis) and wrong in a way that costs
@@ -652,12 +662,13 @@ def _guessed_profile(code: str, target: str) -> dict:
     the software. The machine reports which units the installed packages
     actually provide (`units_<key>` in its report), so the answer is measured
     instead."""
+    package = package or code
     return {
         "code": code,
         "builds_on": "oci/service-vm" if target == "oci" else "",
         "ports": [],
         "version_command": f"{code} --version 2>&1",
-        "rhel": {"packages": [code], "services": []},
+        "rhel": {"packages": [package], "services": []},
         "_note": ("DRAFT — proposed by the agent, proven by booting a machine. "
                   "The package name is the obvious guess and may not exist in the "
                   "image's repositories; the machine's own report decides."),
