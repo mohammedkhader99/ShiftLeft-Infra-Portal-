@@ -196,3 +196,43 @@ def test_giving_up_still_says_what_the_repository_said():
     result, _ = _ladder([refusal])
 
     assert "dotnet8.0 is not published" in result.detail
+
+
+# --- the same mistake, three times --------------------------------------------
+
+def test_every_refusal_about_a_RECIPE_skips_its_rung_rather_than_ending_the_run():
+    """Written after making this mistake three times.
+
+        remembered   the loop always knew this one
+        repository   added 2026-08-26, after REQ-2026-0206 stranded mongodb on
+                     the package guess
+        linted       added 2026-08-27, after REQ-2026-0214 and REQ-2026-0216
+                     stranded it AGAIN — the linter correctly refused the
+                     vendor-repo recipe, and that refusal ended the whole ladder
+                     before the container rung it should have fallen through to
+
+    Each time I fixed the instance in front of me and did not name the class.
+    So the class is named now, and this asserts the distinction that decides
+    membership: a stage that judges a RECIPE lets the ladder continue; a stage
+    that judges the REQUEST ends it.
+    """
+    recipe_verdicts = {"repository", "linted"}
+    request_verdicts = {"catalogue", "preflight", "refused", "published"}
+
+    assert recipe_verdicts <= set(autobuild.PER_RUNG_REFUSALS) | {"remembered"}, (
+        "a refusal about one rung's recipe ends the whole run, so a technology "
+        "is stranded on whichever rung happened to be refused first")
+
+    assert not (request_verdicts & set(autobuild.PER_RUNG_REFUSALS)), (
+        "a verdict about the REQUEST — no egress, over the cost cap, not "
+        "installable software at all — is being treated as a skippable rung, so "
+        "the ladder will keep spending on something it has already been told to "
+        "stop")
+
+
+def test_remembered_is_not_in_the_set_and_that_is_deliberate():
+    """It is a per-rung refusal, but it has its own branch that reads the report
+    of the machine that refuted it — that machine may already hold the answer
+    the next rung needs. Adding it to the generic set made the skip fire first
+    and bypass that work; three tests said so immediately."""
+    assert "remembered" not in autobuild.PER_RUNG_REFUSALS

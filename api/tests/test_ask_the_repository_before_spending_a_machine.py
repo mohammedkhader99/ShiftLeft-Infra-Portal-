@@ -241,15 +241,21 @@ def test_a_repository_objection_skips_the_rung_and_does_not_end_the_ladder():
     stage: "treating the skip as a verdict would strand vault on the package
     guess for ever." The new stage simply was not in the list.
 
-    Asserted structurally: the loop must treat a `repository` attempt the same
-    way it treats a `remembered` one.
+    ASSERTED THROUGH THE SET, not the literal this used to check. Naming ONE
+    stage was itself the shape of the bug: `linted` is the same class and went
+    on ending the whole ladder for two more days and two more MongoDB requests
+    (REQ-2026-0214, REQ-2026-0216) before anyone noticed.
     """
     from pathlib import Path
+
+    from api import autobuild
+
     src = (Path(__file__).resolve().parent.parent / "autobuild.py").read_text(
         encoding="utf-8")
 
-    assert 'stage == "repository"' in src, (
+    assert "repository" in autobuild.PER_RUNG_REFUSALS, (
         "a repository objection ends the whole ladder, so a technology is "
         "stranded on whichever rung the gate happened to refuse first")
-    assert src.index('stage == "repository"') < src.index('stage == "remembered"'), (
-        "the repository skip must be reachable before the remembered branch")
+    assert "PER_RUNG_REFUSALS" in src, "the skip is not wired into the loop"
+    assert src.index("in PER_RUNG_REFUSALS") < src.index('stage == "remembered"'), (
+        "the per-rung skip must be reachable before the remembered branch")

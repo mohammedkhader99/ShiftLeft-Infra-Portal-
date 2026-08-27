@@ -191,3 +191,47 @@ def test_a_search_that_fails_returns_nothing_rather_than_raising():
         raise RuntimeError("hub down")
 
     assert registry.search("x", fetch=explode) == []
+
+
+# --- which of a vendor's images is THE one ------------------------------------
+
+def test_the_canonical_image_wins_not_whichever_the_search_returned_first():
+    """Found before a machine ran it, and it would have been hard to spot after.
+
+    MongoDB publishes several images under its own namespace. Trusting Docker
+    Hub's ordering picked `mongodb-atlas-local` — the LOCAL DEVELOPMENT EMULATOR
+    — over `mongodb-community-server`, and picked differently on the next call,
+    because Hub's relevance score is not stable. A request for a database would
+    have been provisioned a development tool, intermittently.
+    """
+    body = {"results": [
+        {"repo_name": "mongodb/mongodb-atlas-local", "star_count": 12},
+        {"repo_name": "mongodb/mongodb-community-server", "star_count": 194},
+        {"repo_name": "mongodb/mongodb-enterprise-server", "star_count": 40},
+    ]}
+
+    assert registry.search("mongodb", fetch=lambda code: body)[0] == (
+        "docker.io/mongodb/mongodb-community-server")
+
+
+def test_the_ranking_does_not_depend_on_the_order_the_registry_replied_in():
+    rows = [
+        {"repo_name": "mongodb/mongodb-atlas-local", "star_count": 12},
+        {"repo_name": "mongodb/mongodb-community-server", "star_count": 194},
+    ]
+    forward = registry.search("mongodb", fetch=lambda c: {"results": rows})
+    backward = registry.search("mongodb", fetch=lambda c: {"results": rows[::-1]})
+
+    assert forward == backward, f"{forward} vs {backward}"
+
+
+def test_an_official_image_still_beats_a_more_popular_vendor_one():
+    """Stars are a tiebreak WITHIN what is already trusted, never a promotion
+    into it. An official image is the publisher's own canonical build."""
+    body = {"results": [
+        {"repo_name": "mongodb/mongodb-community-server", "star_count": 9999},
+        {"repo_name": "mongo", "is_official": True, "star_count": 10},
+    ]}
+
+    assert registry.search("mongodb", fetch=lambda code: body)[0] == (
+        "docker.io/library/mongo")

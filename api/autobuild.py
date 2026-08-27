@@ -149,6 +149,27 @@ def _swap_packages(proposal, replacements: dict[str, str]):
     return revised
 
 
+#: REFUSALS THAT ARE ABOUT ONE RUNG'S RECIPE, NOT ABOUT THE REQUEST.
+#:
+#: Named as a SET rather than checked one at a time, because checking them one
+#: at a time is how this keeps recurring. The loop already knew `remembered`
+#: must skip; `repository` was added on 2026-08-26 after REQ-2026-0206 stranded
+#: mongodb on the package guess; and `linted` was added on 2026-08-27 after
+#: REQ-2026-0214 and REQ-2026-0216 stranded it again — the linter correctly
+#: refused the vendor-repo recipe, and that refusal ended the whole ladder
+#: before the container rung it should have fallen through to.
+#:
+#: Three instances of one mistake. A new stage that judges a RECIPE belongs
+#: here; a stage that judges the REQUEST (a cost cap, a capability, no egress)
+#: does not, and there is a test that makes the distinction explicit.
+#:
+#: `remembered` is DELIBERATELY ABSENT even though it is a per-rung refusal. It
+#: has its own branch below that does more than skip — it reads the report of
+#: the machine that refuted the rung, because that machine may already hold the
+#: answer the next rung needs. Adding it here made this generic skip fire first
+#: and bypass that work, and three tests said so immediately.
+PER_RUNG_REFUSALS = frozenset({"repository", "linted"})
+
 #: How many times a rung may revise its own recipe from what the repository
 #: said. Two is enough to correct one or two package names and short enough that
 #: a recipe the agent cannot get right stops costing anything — the same
@@ -481,7 +502,7 @@ def ensure(candidate: str, session: Session, *, target, shipped, run_proof,
             # REQ-2026-0206 was refused in seconds with no machine spent — an
             # improvement — but never reached the corrected repository URL that
             # might have worked.
-            if last.attempts and last.attempts[-1].stage == "repository":
+            if last.attempts and last.attempts[-1].stage in PER_RUNG_REFUSALS:
                 continue
 
             # A RUNG ALREADY REFUTED IS SKIPPED, NOT A REASON TO STOP. The
@@ -616,6 +637,15 @@ def _ensure_vm_service(candidate, session, proposal, *, target, shipped,
 
     blockers = [f for f in proposal.findings if f.severity == "blocker"]
     if blockers:
+        # A VERDICT ON THIS RECIPE, NOT ON THE REQUEST.
+        #
+        # The stage is `linted`, which `ensure` skips — so the ladder tries the
+        # next rung instead of ending here. Before 2026-08-27 this returned and
+        # the run was over: the linter correctly refused mongodb's vendor-repo
+        # recipe (a baseurl grants dnf no gpgcheck, so every package would
+        # install unverified) and the CONTAINER rung it should have fallen
+        # through to was never reached. REQ-2026-0214 and REQ-2026-0216 both
+        # ended in manual fulfilment for that reason.
         result.status = "failed"
         result.attempts.append(Attempt(
             1, "linted", "blocked", "; ".join(f.detail for f in blockers)[:300],

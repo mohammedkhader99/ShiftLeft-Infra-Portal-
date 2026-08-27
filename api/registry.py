@@ -292,13 +292,36 @@ def search(code: str, *, fetch=None) -> list[str]:
     except Exception:  # noqa: BLE001
         return []
 
-    out: list[str] = []
+    # RANKED HERE, NOT BY THE REGISTRY.
+    #
+    # Docker Hub's own ordering is a relevance score that is not stable between
+    # calls, and trusting it picked `mongodb/mongodb-atlas-local` — MongoDB's
+    # LOCAL DEVELOPMENT EMULATOR — over `mongodb/mongodb-community-server`, on
+    # one call and not the next. Provisioning a development emulator as a
+    # production database because a search API reshuffled is not a defect anyone
+    # would find by reading the code.
+    #
+    # official first, then most-used, then the shorter name. Stars are a fair
+    # tiebreak HERE and nowhere else: these are already the vendor's own images,
+    # so popularity separates the canonical one from its variants rather than
+    # separating a stranger from a vendor.
+    scored = []
     for row in (body or {}).get("results", [])[:SEARCH_LIMIT]:
         name = str(row.get("repo_name") or "")
-        if not _trusted(name, bool(row.get("is_official")), code):
+        official = bool(row.get("is_official"))
+        if not _trusted(name, official, code):
             continue
         path = name if "/" in name else f"library/{name}"
         ref = f"docker.io/{path}"
-        if profile_rules.IMAGE_PATH.match(path) and ref not in out:
+        if profile_rules.IMAGE_PATH.match(path):
+            try:
+                stars = int(row.get("star_count") or 0)
+            except (TypeError, ValueError):
+                stars = 0
+            scored.append((0 if official else 1, -stars, len(name), name, ref))
+
+    out: list[str] = []
+    for _o, _s, _l, _n, ref in sorted(scored):
+        if ref not in out:
             out.append(ref)
     return out
