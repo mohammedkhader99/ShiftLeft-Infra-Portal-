@@ -921,7 +921,13 @@ def _report_script(wanted: list[tuple[str, str]], packages: list[str],
         else:
             checks.append("    ALT=''")
         checks.append('    if [ -n "$ALT" ]; then')
-        checks.append(f'      echo "version_binary_{vkey}=$ALT"')
+        # `binary_`, NOT `version_binary_`. The verdict parses every key
+        # beginning `version_` as a version fact, so the diagnostic key
+        # naming WHICH binary was used was read as the version itself and
+        # condemned: "binary_dotnet8 is the wrong version — /usr/bin/dotnet".
+        # REQ-2026-0217 failed on a machine with .NET 8.0.130 installed and
+        # working, for a name I chose.
+        checks.append(f'      echo "binary_{vkey}=$ALT"')
         checks.append(f'      RAW=$("$ALT" {args})' if args
                       else '      RAW=$("$ALT")')
         checks.append("    else")

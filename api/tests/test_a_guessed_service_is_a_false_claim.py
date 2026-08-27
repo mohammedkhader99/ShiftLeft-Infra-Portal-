@@ -147,7 +147,7 @@ def test_a_missing_binary_asks_the_packages_what_they_installed(tmp_path, monkey
 
     assert "rpm -ql dotnet-sdk-8.0" in versions, (
         "the machine never asks the package what binary it provides")
-    assert "version_binary_dotnet8=" in versions, (
+    assert "binary_dotnet8=" in versions, (
         "the binary it used is not reported, so the ladder cannot redraft with it")
 
 
@@ -211,7 +211,7 @@ def test_a_package_that_owns_no_binary_still_finds_the_command(tmp_path, monkeyp
     the command is on the machine.
 
     The stem is tried last and only if it is executable, so it is a verified
-    answer rather than a second guess — and `version_binary_` reports which."""
+    answer rather than a second guess — and `binary_` reports which."""
     text = _profile(tmp_path, monkeypatch)
     versions = text.split("--- versions ---")[-1].split("--- services ---")[0]
 
@@ -221,3 +221,40 @@ def test_a_package_that_owns_no_binary_still_finds_the_command(tmp_path, monkeyp
     assert versions.index("rpm -ql") < versions.index("command -v dotnet 2>"), (
         "the stem is tried before the package's own file list, so a measured "
         "answer loses to a guessed one")
+
+
+def test_no_diagnostic_key_is_parsed_as_a_FACT_by_the_verdict(tmp_path, monkeypatch):
+    """REQ-2026-0217, and the machine had done everything right.
+
+        dotnet-sdk-8.0-8.0.130                  installed
+        version_binary_dotnet8=/usr/bin/dotnet   the rescue found the binary
+        version_dotnet8=UNPROMISED (8.0.130)     .NET 8.0.130, read correctly
+
+    and the proof failed on "binary_dotnet8 is the wrong version —
+    /usr/bin/dotnet", because `boot_reports.verdict` parses every key beginning
+    `version_` as a version and my diagnostic key began with it.
+
+    The same shape as the package manager's prose being mistaken for a fact,
+    which was solved by prefixing it. A key added to EXPLAIN something must not
+    be read as a CLAIM about something."""
+    from orchestrator import boot_reports
+
+    import re
+
+    text = _profile(tmp_path, monkeypatch)
+    keys = set(re.findall(r'echo "([a-z][a-z0-9_]*)=', text))
+    diagnostics = {k for k in keys if k.startswith("binary_")}
+    assert diagnostics, "the binary the machine used is no longer reported"
+
+    for key in diagnostics:
+        assert not key.startswith(("version_", "http_", "image_", "repo_",
+                                   "firewall_")), (
+            f"{key} begins with a prefix the verdict parses, so an explanation "
+            f"will be judged as a claim")
+
+    # And prove it end to end on a report shaped like the real one.
+    verdict = boot_reports.verdict(
+        "os_family=rhel\n--- versions ---\n"
+        "binary_dotnet8=/usr/bin/dotnet\n"
+        "version_dotnet8=UNPROMISED (8.0.130)\n")
+    assert verdict["ok"], verdict["problems"]
