@@ -101,6 +101,24 @@ class AutobuildResult:
         return self.status == "published"
 
 
+def _carry(prior, result):
+    """Carry attempts made BEFORE the ladder onto whatever the ladder returned.
+
+    `ensure` builds a fresh result for each path it can take, so anything
+    recorded before it chose a path was dropped from the object the caller reads
+    and audits. That was invisible until a stale recipe could be retired
+    mid-run: a machine had been built, a recipe had been withdrawn, and the
+    audit trail showed neither — which is precisely the question somebody asks
+    when a request took three machines instead of one.
+    """
+    if not prior:
+        return result
+    result.attempts = list(prior) + list(result.attempts)
+    for number, attempt in enumerate(result.attempts, start=1):
+        attempt.number = number
+    return result
+
+
 def _manifest_of(result, shipped, candidate):
     """The manifest the orchestrator says builds this technology, for a late
     certification. Asked rather than remembered: the wire-up check already
@@ -369,11 +387,45 @@ def ensure(candidate: str, session: Session, *, target, shipped, run_proof,
                 f"written. {outcome.detail}")
             return result
         result.attempts.append(Attempt(1, "proved", "failed", outcome.detail))
-        result.status = "failed"
-        result.detail = (
-            f"{candidate} has a recipe ({manifest.get('ref')}), but it did not "
-            f"pass a proof build, so it has NOT been certified. {outcome.detail}")
-        return result
+
+        # A RECIPE THAT FAILED ITS PROOF MUST STOP CLAIMING IT WORKS.
+        #
+        # THE FOURTH TIME I have written this fix, and the first time at the
+        # level that generalises. `make_withdraw` states the invariant in its
+        # own docstring — "a proof that fails has to take it back out. Left
+        # behind, an unproven profile makes an uninstallable technology look
+        # installable to every later request" — and this branch, the one place
+        # that proves a recipe it did not itself write, never called it.
+        #
+        # SQL SERVER IS THE BILL. A run guessed `dnf install mssql`, wrote
+        # generated/profiles/mssql.json, proved it on a machine and failed. The
+        # profile stayed. It made oci/service-vm advertise that it builds mssql,
+        # so the NEXT request found an existing recipe, arrived here, proved the
+        # same guess, failed, and returned — without ever reaching the ladder
+        # that knows about vendor repositories and containers. REQ-2026-0217,
+        # 0218, 0222, 0223 and 0224: five requests, five machines, one stale file
+        # and a branch that could not get past it.
+        #
+        # WITHDRAWING IS ALSO THE TEST OF OWNERSHIP. `withdraw` is confined to
+        # the generated store and reports what it actually deleted, so a recipe
+        # a PERSON reviewed removes nothing and the run ends exactly as it did
+        # before. We retire our own mistakes and nobody else's.
+        retired = list(withdraw({f"{candidate}.json": ""}) or []) if withdraw else []
+        if not retired:
+            result.status = "failed"
+            result.detail = (
+                f"{candidate} has a recipe ({manifest.get('ref')}), but it did "
+                f"not pass a proof build, so it has NOT been certified. "
+                f"{outcome.detail}")
+            return result
+
+        result.attempts.append(Attempt(
+            len(result.attempts) + 1, "retired", "withdrawn",
+            (f"The recipe that failed was written by the agent, not reviewed by "
+             f"a person, so it has been withdrawn and no longer advertises "
+             f"{candidate} as installable. Trying the remaining install methods "
+             f"rather than stopping. {outcome.detail}")[:300]))
+        # ... and fall through to the ladder below.
 
     # Nothing ships it. What kind of thing is it?
     # A CAPABILITY IS NOT AN INSTALLABLE THING, and the catalogue says so.
@@ -509,7 +561,7 @@ def ensure(candidate: str, session: Session, *, target, shipped, run_proof,
                     # replace, not to leave a proved one unclaimed.
                     certify(_manifest_of(last, shipped, candidate),
                             last.proof_reference)
-                return last
+                return _carry(result.attempts, last)
             # A REPOSITORY OBJECTION IS ABOUT THIS RUNG, NOT THIS REQUEST.
             #
             # The guess rung asks for `mongodb`; the repositories say there is
@@ -594,7 +646,7 @@ def ensure(candidate: str, session: Session, *, target, shipped, run_proof,
             # repository may be perfectly acceptable, so a block must not strand
             # the ladder any more than a refutation does.
             if not (last.machine_refuted or last.status == "blocked"):
-                return last
+                return _carry(result.attempts, last)
             if last.machine_refuted:
                 refuted_by_a_machine.append(method)
                 # ASK THE MACHINE WHAT IT LEARNED — once. Its report is fetched
@@ -625,12 +677,12 @@ def ensure(candidate: str, session: Session, *, target, shipped, run_proof,
                     f"{last.detail} Tried {len(refuted_by_a_machine)} install "
                     f"methods ({', '.join(refuted_by_a_machine)}); a machine was "
                     f"built for each and refuted it.")
-            return last
+            return _carry(result.attempts, last)
 
     built = build(candidate, session, blueprint=None, run_proof=run_proof,
                   publish=publish, target=target, shipped_codes=shipped_codes)
     if built.status != "published":
-        return built
+        return _carry(result.attempts, built)
 
     # PROVED IS NOT CERTIFIED, and nothing here was doing the second half.
     #
@@ -655,11 +707,11 @@ def ensure(candidate: str, session: Session, *, target, shipped, run_proof,
             f"A recipe for {candidate} was written and proved, but the "
             f"orchestrator still reports no blueprint that builds it, so it has "
             f"NOT been certified. {built.detail}")
-        return built
+        return _carry(result.attempts, built)
 
     certify(manifest, built.proof_reference)
     built.detail = f"{built.detail} Certified against {manifest.get('ref')}."
-    return built
+    return _carry(result.attempts, built)
 
 
 def _ensure_vm_service(candidate, session, proposal, *, target, shipped,
