@@ -208,6 +208,9 @@ export type RequestRow = {
   reference: string
   status: string
   status_detail?: string | null
+  // provision | decommission | refresh | restore | reduce. Already sent by
+  // /api/requests; the lifecycle stepper needs it to describe the right one.
+  request_type?: string | null
   requester: string
   requester_name?: string | null
   deployment_target?: string | null

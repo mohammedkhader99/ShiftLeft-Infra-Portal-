@@ -16,6 +16,15 @@ const TERMINAL_FAIL: Record<string, string> = {
   rejected: 'Approved',
 }
 
+// A decommission has no Provisioning or Provisioned stage to fail in. Without
+// this a teardown failure would name a stage the stepper no longer shows, and
+// nothing would be marked failed at all.
+const TERMINAL_FAIL_DECOMMISSION: Record<string, string> = {
+  'teardown-failed': 'Decommissioning',
+  'apply-failed': 'Decommissioning',
+  rejected: 'Approved',
+}
+
 // Approved and deliberately NOT built by the portal: nothing in the request
 // has a certified blueprint, so the infrastructure team fulfils it. Neither a
 // failure nor a completion — the lifecycle simply stops at Approved.
@@ -25,23 +34,45 @@ const STOPS_AT: Record<string, string> = {
 
 // Mirrors the HTMX portal's _workflow_steps: derive the lifecycle stages from
 // the request status + audit trail.
-export function workflowSteps(status: string, audit: AuditEntry[]): WFStep[] {
+export function workflowSteps(
+  status: string,
+  audit: AuditEntry[],
+  requestType?: string | null,
+): WFStep[] {
+  // A DECOMMISSION IS NOT A PROVISION RUN. It tears down what another request
+  // built, so "Provisioning" and "Provisioned" describe the wrong thing
+  // entirely — and `plan.previewed` never fires for one, which is why Planned
+  // goes too. Left in, Planned becomes the first pending step and the progress
+  // marker lands there: a teardown already in flight, shown as waiting to be
+  // planned.
+  const decommission = (requestType || '').trim().toLowerCase() === 'decommission'
+
   const firstTs: Record<string, string> = {}
   for (const e of audit) {
     if (e.event && !(e.event in firstTs)) firstTs[e.event] = e.created_at
   }
 
-  const raw: [string, boolean, string | undefined][] = [
-    ['Submitted', status !== 'draft' && status !== '', undefined],
-    ['Approved', 'approval.approved' in firstTs, firstTs['approval.approved']],
-    ['Planned', 'plan.previewed' in firstTs, firstTs['plan.previewed']],
-    [
-      'Provisioning',
-      'provisioning.started' in firstTs || 'jira.in_progress' in firstTs,
-      firstTs['provisioning.started'] || firstTs['jira.in_progress'],
-    ],
-    ['Provisioned', 'provisioned' in firstTs || status === 'provisioned', firstTs['provisioned']],
+  const started: [string, boolean, string | undefined] = [
+    decommission ? 'Decommissioning' : 'Provisioning',
+    'provisioning.started' in firstTs || 'jira.in_progress' in firstTs,
+    firstTs['provisioning.started'] || firstTs['jira.in_progress'],
   ]
+
+  const raw: [string, boolean, string | undefined][] = decommission
+    ? [
+        ['Submitted', status !== 'draft' && status !== '', undefined],
+        ['Approved', 'approval.approved' in firstTs, firstTs['approval.approved']],
+        started,
+        // No terminal step here: the `decommissioned` branch below appends
+        // Decommissioned, and declaring one in both places shows it twice.
+      ]
+    : [
+        ['Submitted', status !== 'draft' && status !== '', undefined],
+        ['Approved', 'approval.approved' in firstTs, firstTs['approval.approved']],
+        ['Planned', 'plan.previewed' in firstTs, firstTs['plan.previewed']],
+        started,
+        ['Provisioned', 'provisioned' in firstTs || status === 'provisioned', firstTs['provisioned']],
+      ]
 
   const steps: WFStep[] = raw.map(([label, done, when]) => ({
     label,
@@ -75,7 +106,17 @@ export function workflowSteps(status: string, audit: AuditEntry[]): WFStep[] {
     return steps
   }
 
-  const failedStage = TERMINAL_FAIL[status]
+  // STILL MOVING. Every step a decommission has is done the moment the teardown
+  // is handed off, so the generic "first pending step is the current one" rule
+  // finds nothing and the stepper reads as finished while the machine is still
+  // being destroyed.
+  if (decommission && status === 'decommissioning') {
+    const inFlight = steps.find((s) => s.label === 'Decommissioning')
+    if (inFlight) inFlight.state = 'current'
+    return steps
+  }
+
+  const failedStage = (decommission ? TERMINAL_FAIL_DECOMMISSION : TERMINAL_FAIL)[status]
   if (failedStage) {
     steps.forEach((s) => {
       if (s.label === failedStage) s.state = 'failed'

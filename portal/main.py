@@ -408,17 +408,33 @@ def _workflow_steps(req: dict, audit: list[dict]) -> list[dict]:
     status = req.get("status") or ""
     has_ticket = bool((req.get("approval") or {}).get("jira_key"))
 
+    # A DECOMMISSION IS NOT A PROVISION RUN. It tears down what another request
+    # built, so "Provisioning" and "Provisioned" name the wrong thing entirely.
+    # `plan.previewed` never fires for one either — checked against every
+    # decommission on record, which run approval.approved -> jira.in_progress ->
+    # destroy.handoff -> jira.resolved -> decommissioned — so Planned would sit
+    # pending forever and take the "current stage" marker with it, showing a
+    # teardown already in flight as waiting to be planned.
+    decommission = str(req.get("request_type") or "").strip().lower() == "decommission"
+
+    started = ("Decommissioning" if decommission else "Provisioning",
+               "provisioning.started" in first_ts or "jira.in_progress" in first_ts,
+               first_ts.get("provisioning.started") or first_ts.get("jira.in_progress"))
+
     # (label, done?, timestamp) along the happy path.
     raw = [
         ("Submitted", has_ticket or status not in ("draft", ""), None),
         ("Approved", "approval.approved" in first_ts, first_ts.get("approval.approved")),
-        ("Planned", "plan.previewed" in first_ts, first_ts.get("plan.previewed")),
-        ("Provisioning",
-         "provisioning.started" in first_ts or "jira.in_progress" in first_ts,
-         first_ts.get("provisioning.started") or first_ts.get("jira.in_progress")),
-        ("Provisioned", "provisioned" in first_ts or status == "provisioned",
-         first_ts.get("provisioned")),
     ]
+    if not decommission:
+        raw.append(("Planned", "plan.previewed" in first_ts,
+                    first_ts.get("plan.previewed")))
+    raw.append(started)
+    if not decommission:
+        # No terminal step for a decommission: the branch below appends
+        # Decommissioned, and declaring one in both places shows it twice.
+        raw.append(("Provisioned", "provisioned" in first_ts or status == "provisioned",
+                    first_ts.get("provisioned")))
     steps = [{"label": lbl, "done": bool(done), "when": when} for lbl, done, when in raw]
 
     # A torn-down request ran the whole path, then a terminal Decommissioned step.
@@ -428,12 +444,27 @@ def _workflow_steps(req: dict, audit: list[dict]) -> list[dict]:
         steps.append({"label": "Decommissioned", "done": True,
                       "when": first_ts.get("decommissioned") or first_ts.get("destroyed")})
 
-    failed_stage = {"apply-failed": "Provisioning", "decommission-failed": "Provisioning",
-                    "rejected": "Approved"}.get(status)
+    # `decommission-failed` is not a status this system ever sets — the API sets
+    # `teardown-failed` — so that entry never matched anything and a failed
+    # teardown was drawn as though it were still in progress.
+    failed_stage = ({"teardown-failed": "Decommissioning",
+                     "apply-failed": "Decommissioning",
+                     "rejected": "Approved"} if decommission else
+                    {"apply-failed": "Provisioning", "teardown-failed": "Provisioning",
+                     "rejected": "Approved"}).get(status)
 
     for step in steps:
         step["state"] = "failed" if step["label"] == failed_stage else (
             "done" if step["done"] else "pending")
+
+    # STILL MOVING. Every stage a decommission has is done the moment the
+    # teardown is handed off, so the rule below finds nothing pending and the
+    # stepper reads as finished while the machine is still being destroyed.
+    if decommission and status == "decommissioning":
+        for step in steps:
+            if step["label"] == "Decommissioning":
+                step["state"] = "current"
+        return steps
 
     # The current stage is the first not-yet-done one (unless failed / all done).
     if failed_stage is None and status != "decommissioned":

@@ -328,9 +328,12 @@ export default function MyRequests({ route }: { route: string }) {
 
   useEffect(() => {
     expanded.forEach((ref) => {
-      const status = rows.find((r) => r.reference === ref)?.status ?? ''
+      const row = rows.find((r) => r.reference === ref)
+      const status = row?.status ?? ''
       getAudit(ref)
-        .then((a) => setSteps((s) => ({ ...s, [ref]: workflowSteps(status, a) })))
+        .then((a) =>
+          setSteps((s) => ({ ...s, [ref]: workflowSteps(status, a, row?.request_type) })),
+        )
         .catch(() => {})
       // What the machine said about itself. Fetched on expand rather than with
       // the list: it is a per-request read through to the orchestrator, and most

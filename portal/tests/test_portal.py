@@ -536,3 +536,102 @@ def test_decommission_technologies_fragment(monkeypatch):
     assert 'value="postgres16:medium"' in body
     assert 'value="redis7:small"' in body
     assert "checked" in body
+
+
+# --- a decommission's stepper describes a decommission ------------------------
+#
+# The stepper was written for provisioning and reused verbatim for teardown, so
+# a request that destroys a machine was drawn as "Provisioning" and then waited
+# on a "Provisioned" step it would never reach.
+#
+# CHECKED AGAINST EVERY DECOMMISSION ON RECORD before changing anything: they
+# run approval.approved -> jira.in_progress -> destroy.handoff -> jira.resolved
+# -> decommissioned. `plan.previewed` never fires, which is why Planned goes
+# too — left in, it is the first pending step and takes the "current" marker,
+# showing a teardown already in flight as though it were waiting to be planned.
+
+DECOMMISSION_AUDIT = [
+    {"event": "approval.approved", "created_at": "2026-08-28T13:58:00"},
+    {"event": "jira.in_progress", "created_at": "2026-08-28T14:02:00"},
+    {"event": "destroy.handoff", "created_at": "2026-08-28T14:02:10"},
+]
+
+
+def _labels(status, audit=None, request_type="decommission"):
+    from portal.main import _workflow_steps
+
+    req = {"status": status, "request_type": request_type,
+           "approval": {"jira_key": "X"}}
+    steps = _workflow_steps(req, audit if audit is not None else DECOMMISSION_AUDIT)
+    return [s["label"] for s in steps], {s["label"]: s["state"] for s in steps}
+
+
+def test_a_decommission_is_not_called_provisioning():
+    labels, state = _labels("decommissioning")
+
+    assert "Decommissioning" in labels, labels
+    assert "Provisioning" not in labels
+    assert state["Decommissioning"] in ("done", "current")
+
+
+def test_a_decommission_has_no_provisioned_step_to_wait_for():
+    labels, _ = _labels("decommissioning")
+
+    assert "Provisioned" not in labels, labels
+
+
+def test_a_decommission_has_no_planned_step_it_will_never_reach():
+    """`plan.previewed` does not fire for a teardown. Left in the list it is the
+    first pending step, so the progress marker lands on it and a decommission
+    already in flight reads as waiting to be planned."""
+    labels, state = _labels("decommissioning")
+
+    assert "Planned" not in labels, labels
+    assert "current" not in [state[l] for l in labels if l != "Decommissioning"], state
+
+
+def test_a_decommission_in_flight_still_shows_something_in_flight():
+    """Every stage is done the moment the teardown is handed off, so without an
+    explicit rule the stepper reads as finished while the machine is still being
+    destroyed."""
+    _, state = _labels("decommissioning")
+
+    assert state["Decommissioning"] == "current", state
+
+
+def test_a_finished_decommission_ends_on_decommissioned_once():
+    labels, state = _labels("decommissioned", DECOMMISSION_AUDIT + [
+        {"event": "decommissioned", "created_at": "2026-08-28T14:05:00"}])
+
+    assert labels.count("Decommissioned") == 1, labels
+    assert labels[-1] == "Decommissioned"
+    assert all(s == "done" for s in state.values()), state
+
+
+def test_a_failed_teardown_names_the_stage_that_failed():
+    """The old mapping named `decommission-failed`, a status this system never
+    sets — the API sets `teardown-failed` — so a failed teardown was drawn as
+    though it were still running."""
+    _, state = _labels("teardown-failed")
+
+    assert state["Decommissioning"] == "failed", state
+
+
+def test_a_provision_request_is_completely_unchanged():
+    """The whole change is conditional on request_type, and every other kind of
+    request must be drawn exactly as it was."""
+    audit = [{"event": "approval.approved", "created_at": "2026-07-28T10:00:00"},
+             {"event": "plan.previewed", "created_at": "2026-07-28T10:01:00"}]
+    labels, state = _labels("planned", audit, request_type="provision")
+
+    assert labels == ["Submitted", "Approved", "Planned", "Provisioning", "Provisioned"]
+    assert state["Provisioning"] == "current"
+
+
+def test_a_request_with_no_type_at_all_is_treated_as_a_provision():
+    """Older rows predate the field, and a missing type must never silently
+    redraw a provisioning request as a teardown."""
+    labels, _ = _labels("provisioned", [], request_type=None)
+
+    assert "Provisioning" in labels and "Provisioned" in labels
+    assert "Decommissioning" not in labels
