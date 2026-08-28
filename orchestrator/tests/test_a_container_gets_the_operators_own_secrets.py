@@ -209,3 +209,55 @@ def test_the_rendered_user_data_is_still_valid_yaml(tmp_path, monkeypatch):
     doc = yaml.safe_load(render(tmp_path, monkeypatch))
 
     assert isinstance(doc, dict) and doc.get("write_files")
+
+
+# --- a file a person wrote, on the machine they had ---------------------------
+#
+# The reviewer set this file with PowerShell's `>` redirect, which writes UTF-16
+# LE with a byte-order mark by default. The first version of the reader opened
+# it as UTF-8 only — and `UnicodeDecodeError` is NOT an `OSError`, so it escaped
+# the guard and out of `render`. A mis-encoded secrets file would have taken
+# down the whole cloud-init render for the request, and the requester would have
+# seen an opaque crash rather than a missing password.
+
+def _written_as(tmp_path, monkeypatch, text, encoding):
+    path = tmp_path / "container.env"
+    path.write_bytes(text.encode(encoding))
+    monkeypatch.setattr(configure, "CONTAINER_SECRETS_FILE", str(path))
+    return path
+
+
+LINE = "mssql.MSSQL_SA_PASSWORD=Str0ng!Pass\n"
+
+
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-8-sig", "utf-16", "utf-16-le",
+                                      "utf-16-be", "ascii"])
+def test_the_file_is_read_however_the_operator_saved_it(
+        tmp_path, monkeypatch, encoding):
+    _written_as(tmp_path, monkeypatch, LINE, encoding)
+
+    assert configure.container_secrets("mssql") == {
+        "MSSQL_SA_PASSWORD": "Str0ng!Pass"}, f"unreadable when saved as {encoding}"
+
+
+def test_a_file_that_decodes_as_nothing_is_an_empty_answer_not_a_crash(
+        tmp_path, monkeypatch):
+    """THE property. Whatever arrives, this function returns a dict — because
+    the alternative is not "no password", it is a failed render for every
+    technology in the request."""
+    path = tmp_path / "container.env"
+    path.write_bytes(bytes([0x00, 0xC0, 0xC1, 0xF5, 0xFF, 0xFE, 0x00]))
+    monkeypatch.setattr(configure, "CONTAINER_SECRETS_FILE", str(path))
+
+    assert configure.container_secrets("mssql") == {}
+
+
+def test_a_utf16_file_still_reaches_the_machine(tmp_path, monkeypatch):
+    """End to end, because the unit test above could pass while the renderer
+    still failed on it."""
+    _written_as(tmp_path, monkeypatch, LINE, "utf-16")
+
+    content = unit_file(tmp_path, monkeypatch)["content"]
+
+    assert "Environment=MSSQL_SA_PASSWORD=Str0ng!Pass" in content
+    assert unit_file(tmp_path, monkeypatch)["permissions"] == "0600"

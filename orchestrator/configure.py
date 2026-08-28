@@ -1216,6 +1216,48 @@ def configurable_codes() -> set[str]:
 CONTAINER_SECRETS_FILE = "/secrets/container.env"
 
 
+def _decode_operator_file(blob: bytes) -> "str | None":
+    """Text from a file a PERSON wrote, on whatever machine they had.
+
+    THIS IS NOT PEDANTRY. Windows PowerShell's `>` redirect writes UTF-16 LE
+    with a byte-order mark by default, and Notepad still offers UTF-8 with a
+    BOM. Both are the ordinary result of an operator following "put your
+    password in this file", and the first version of this opened it as UTF-8
+    only. The reviewer hit it within a minute of being asked to set one.
+
+    THAT FAILURE WAS NOT SOFT. UnicodeDecodeError is not an OSError, so it
+    escaped the guard above and out of `render` — a mis-encoded secrets file
+    would have taken down the whole cloud-init render for the request, and
+    the requester would have seen an opaque crash rather than a container
+    saying it had no password.
+
+    DECIDED FROM THE BYTES, not by trying UTF-8 first and hoping. UTF-16 text
+    is full of NUL bytes and a NUL is perfectly valid UTF-8, so "try utf-8,
+    fall back to utf-16" DECODES BOM-LESS UTF-16 SUCCESSFULLY into a string
+    of interleaved NULs: no exception, no password, and no clue why. Silent
+    junk is worse than the crash this function exists to prevent. A real text
+    file contains no NUL, and that is the whole test.
+
+    None when nothing decodes, which the caller treats as an empty file: the
+    container then fails on the machine and says so in its own words.
+    """
+    if blob.startswith((b"\xff\xfe", b"\xfe\xff")):
+        candidates = ("utf-16",)                      # the BOM says which way
+    elif b"\x00" in blob:
+        # No BOM. ASCII in UTF-16 LE puts the NUL second; BE puts it first.
+        candidates = (("utf-16-le", "utf-16-be") if blob[1:2] == b"\x00"
+                      else ("utf-16-be", "utf-16-le"))
+    else:
+        candidates = ("utf-8-sig", "utf-8")           # utf-8-sig strips a BOM
+
+    for encoding in candidates:
+        try:
+            return blob.decode(encoding)
+        except (UnicodeDecodeError, UnicodeError):
+            continue
+    return None
+
+
 def container_secrets(code: str, path: str | None = None) -> dict[str, str]:
     """Environment an OPERATOR supplied for this technology's container.
 
@@ -1242,9 +1284,12 @@ def container_secrets(code: str, path: str | None = None) -> dict[str, str]:
     if not profile_rules.CODE.match(code or ""):
         return {}
     try:
-        with open(path or CONTAINER_SECRETS_FILE, encoding="utf-8") as handle:
-            raw = handle.read()
+        with open(path or CONTAINER_SECRETS_FILE, "rb") as handle:
+            blob = handle.read()
     except OSError:
+        return {}
+    raw = _decode_operator_file(blob)
+    if raw is None:
         return {}
 
     found: dict[str, str] = {}
