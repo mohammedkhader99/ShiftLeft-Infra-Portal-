@@ -116,13 +116,34 @@ def test_an_unknown_kind_is_refused_rather_than_billed_as_a_vm(db):
     assert li["billing_model"] is None
 
 
-def test_an_unpriceable_component_makes_the_proof_refuse(db):
-    """check_cost refuses on None, and make_price returns None when a plan
-    cannot be priced — so an unknown kind stops a proof instead of letting it
-    spend money against a meaningless ceiling."""
-    from common.proof_rules import check_cost
-    assert check_cost(None).allowed is False
+def test_an_unpriceable_component_is_recorded_not_refused(db):
+    """An unpriceable plan no longer refuses, and that is a deliberate trade.
 
+    This asserted `check_cost(None).allowed is False`, reasoning that an unknown
+    kind should stop a proof "instead of letting it spend money against a
+    meaningless ceiling". THERE IS NO CEILING NOW (2026-08-28, at the reviewer's
+    instruction), so the price gates nothing and refusing over a number that
+    would not be used is incoherent.
+
+    Three things make this the right way round:
+
+      * the supervisor has already approved the request, with the price — and
+        its licence breakdown — shown on the form and in the ticket;
+      * the pricing source is LIVE and intermittent. It failed for SQL Server
+        twice in twelve hours, and a proof that refuses whenever a rate API
+        hiccups is a new way for provisioning to fail;
+      * what a proof build costs is minutes of a small machine, not the monthly
+        figure this was ever compared against.
+
+    What must NOT happen is claiming a price we do not have, so the verdict says
+    so in words and records 0.00 rather than inventing a number.
+    """
+    from common.proof_rules import check_cost
+
+    verdict = check_cost(None)
+    assert verdict.allowed, "an unknown price refuses again, so a flaky rate API blocks proofs"
+    assert verdict.monthly == 0.0, "it invented a price it does not have"
+    assert "could not be priced" in verdict.reason, "the unknown is not stated"
 
 def test_the_caller_may_name_the_kind_before_a_blueprint_exists(db):
     """A proof prices a component that is NOT yet certified — that is the whole

@@ -242,6 +242,7 @@ def build(candidate: str, session: Session, *, blueprint, run_proof, publish,
             result.attempts.append(Attempt(
                 attempt_no, "proved", "passed", outcome.detail))
             result.status = "published"
+            result.proof_reference = outcome.reference or ""
             result.files = proposal.files
             result.detail = (
                 f"Built, verified and destroyed on attempt {attempt_no}. "
@@ -626,8 +627,39 @@ def ensure(candidate: str, session: Session, *, target, shipped, run_proof,
                     f"built for each and refuted it.")
             return last
 
-    return build(candidate, session, blueprint=None, run_proof=run_proof,
-                 publish=publish, target=target, shipped_codes=shipped_codes)
+    built = build(candidate, session, blueprint=None, run_proof=run_proof,
+                  publish=publish, target=target, shipped_codes=shipped_codes)
+    if built.status != "published":
+        return built
+
+    # PROVED IS NOT CERTIFIED, and nothing here was doing the second half.
+    #
+    # `build` drafts a recipe, proves it on a REAL machine, publishes it — and
+    # was never given `certify`. So REQ-2026-0223 built SQL Server successfully,
+    # reported "Built, verified and destroyed on attempt 1", and the request
+    # then fell to manual fulfilment because no certified blueprint existed.
+    # Every other path certifies: the existing-manifest branch above calls it,
+    # and `_ensure_vm_service` is handed it. This one branch simply did not.
+    #
+    # ASKED OF THE ORCHESTRATOR FIRST, the same guard `_ensure_vm_service` uses:
+    # a recipe in the generated store is not a recipe the executing layer can
+    # build, and certifying one it cannot build is how a request reaches apply
+    # with nothing behind it.
+    manifest = shipped(candidate)
+    if not manifest:
+        built.attempts.append(Attempt(
+            len(built.attempts) + 1, "published", "failed",
+            "the recipe did not reach the orchestrator"))
+        built.status = "failed"
+        built.detail = (
+            f"A recipe for {candidate} was written and proved, but the "
+            f"orchestrator still reports no blueprint that builds it, so it has "
+            f"NOT been certified. {built.detail}")
+        return built
+
+    certify(manifest, built.proof_reference)
+    built.detail = f"{built.detail} Certified against {manifest.get('ref')}."
+    return built
 
 
 def _ensure_vm_service(candidate, session, proposal, *, target, shipped,

@@ -258,3 +258,57 @@ def test_an_unreachable_orchestrator_is_not_mistaken_for_a_skew(monkeypatch):
 
     monkeypatch.setattr(main, "_orchestrator_posture", lambda: None)
     assert main._proof_contract_skew() == ""
+
+
+# --- proved is not certified --------------------------------------------------
+
+def test_a_recipe_the_agent_BUILT_is_also_certified(db):
+    """REQ-2026-0223. SQL Server was drafted, proved on a real machine, and
+    published — "Built, verified and destroyed on attempt 1" — and the request
+    then fell to manual fulfilment, because nothing certified it.
+
+    `build()` was never given `certify`. Every other path has it: the
+    existing-manifest branch calls it directly, and `_ensure_vm_service` is
+    handed it. That one branch did the expensive half and skipped the free one.
+    """
+    certified = []
+    written = []
+
+    # A CODE THAT REACHES `build()`. `cassandra5` classifies as vm-service and
+    # goes down the install ladder, so a test using it never touches the branch
+    # this is about — the plant that removed the fix passed against it.
+    # `oci-newthing` classifies as new-service, which is the Terraform path
+    # SQL Server fell through to when its ladder had no rungs at all.
+    result = autobuild.ensure(
+        "oci-newthing", db, target="oci",
+        shipped=lambda code: SERVICE_VM if written else None,
+        run_proof=proof("passed"), publish=written.append,
+        certify=lambda manifest, ref: certified.append((manifest.get("ref"), ref)),
+        withdraw=lambda files: list(files))
+
+    assert result.status == "published", result.detail
+    assert certified, (
+        "the agent built it, proved it on a real machine, and nobody certified "
+        "it — so the request that triggered this goes to manual fulfilment")
+
+
+def test_a_recipe_the_orchestrator_cannot_BUILD_is_not_certified(db):
+    """The guard `_ensure_vm_service` already had. A recipe in the generated
+    store is not a recipe the executing layer can build, and certifying one it
+    cannot build is how a request reaches apply with nothing behind it."""
+    certified = []
+
+    result = autobuild.ensure(
+        "oci-newthing", db, target="oci",
+        shipped=lambda code: None,          # the orchestrator never sees it
+        run_proof=proof("passed"), publish=lambda files: list(files),
+        certify=lambda manifest, ref: certified.append(manifest),
+        withdraw=lambda files: list(files))
+
+    # ASSERTED AS THE PROPERTY, not the sentence. Both paths carry this guard
+    # and they word it differently; pinning one wording would break the moment
+    # the other one answered, and say nothing about whether anything was
+    # certified — which is the only thing that matters here.
+    assert certified == [], "certified a recipe the orchestrator cannot build"
+    assert result.status == "failed"
+    assert "orchestrator" in result.detail and "no blueprint" in result.detail
