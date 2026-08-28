@@ -486,6 +486,21 @@ def _repo_profile(code: str, target: str) -> dict:
     }
 
 
+def licence_accepted() -> bool:
+    """Has an operator accepted vendor licence terms for container images?
+
+    OFF BY DEFAULT, AND DELIBERATELY. `mcr.microsoft.com/mssql/server` will not
+    start without ACCEPT_EULA=Y, and setting that variable accepts a Microsoft
+    contract on the organisation's behalf. The agent recommends; it does not
+    sign. So this is a recorded decision in the Admin console, and the recipe
+    says where the acceptance came from.
+    """
+    from api import settings
+
+    return (settings.env("CONTAINER_LICENCE_ACCEPTED", "false") or "false"
+            ).strip().lower() in ("1", "true", "yes", "on")
+
+
 def draft_from_image(candidate: str, image: dict, target: str = "oci"):
     """A draft that runs the vendor's own image on the machine (C8).
 
@@ -537,6 +552,18 @@ def draft_from_image(candidate: str, image: dict, target: str = "oci"):
             # operating system and a rebuild takes it along.
             "data_dir": f"/var/lib/{code}",
             "data_mount": f"/var/lib/{code}",
+            # A LICENCE ACCEPTANCE, WHEN AN OPERATOR HAS RECORDED ONE.
+            #
+            # SQL Server's image exits immediately without ACCEPT_EULA=Y, and no
+            # ladder, registry or proof can supply that: it is a contract, not a
+            # configuration value. So it comes from a setting a person turned
+            # on, and from nowhere else.
+            #
+            # SET FOR EVERY IMAGE, WHICH IS WHY THIS NEEDS NO TABLE. A container
+            # that does not read the variable ignores it; a container that needs
+            # it and does not get it dies. Harmless in one direction and fatal
+            # in the other, so there is no case for guessing which images care.
+            **({"environment": {"ACCEPT_EULA": "Y"}} if licence_accepted() else {}),
         },
         # No packages: podman is supplied by the renderer, because what runs a
         # container is its choice of runtime and not a property of RabbitMQ.
@@ -546,8 +573,10 @@ def draft_from_image(candidate: str, image: dict, target: str = "oci"):
             f"{image['image']} pinned at {image['digest'][:19]}..., "
             f"ports {ports or 'none published yet'}"
             + (f" of {declared} the image declares" if declared else "")
-            + f". Data on a separate block volume at /var/lib/{code}. Proven by "
-              f"booting a machine; that machine decides."),
+            + f". Data on a separate block volume at /var/lib/{code}."
+            + (" An operator has recorded acceptance of vendor licence terms, "
+               "so ACCEPT_EULA=Y is set." if licence_accepted() else "")
+            + f" Proven by booting a machine; that machine decides."),
     }
     findings = review_profile(profile)
     if [f for f in findings if f.severity == "blocker"]:

@@ -70,6 +70,16 @@ ALLOWLIST: dict[str, dict] = {
                                        "repository, then an archive, and a "
                                        "container only when none of those can "
                                        "work.")},
+    "CONTAINER_LICENCE_ACCEPTED": {
+        "label": "Accept vendor licence agreements for container images",
+        "type": "bool", "default": "false", "group": "Governance",
+        "help": ("Some vendor images refuse to start until an end-user licence "
+                 "agreement is accepted — Microsoft SQL Server wants "
+                 "ACCEPT_EULA=Y. That acceptance is a CONTRACT, so the agent "
+                 "must never grant it on its own. Turn this on only if your "
+                 "organisation accepts the licence terms of the images you have "
+                 "allowed, and note that the default edition of an image may be "
+                 "a development edition that is not licensed for production.")},
     "CONTAINER_REGISTRIES": {"label": "Additional container registries",
                              "type": "text", "default": "",
                              "group": "Governance",

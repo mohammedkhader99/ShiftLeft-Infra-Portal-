@@ -1210,6 +1210,57 @@ def configurable_codes() -> set[str]:
             | {k for k in _package_overrides() if isinstance(k, str)})
 
 
+#: Where an operator puts credentials a container needs to start. Inside the
+#: directory this service ALREADY mounts read-only, so no new mount and no new
+#: compose variable per technology — which would be a table by another name.
+CONTAINER_SECRETS_FILE = "/secrets/container.env"
+
+
+def container_secrets(code: str, path: str | None = None) -> dict[str, str]:
+    """Environment an OPERATOR supplied for this technology's container.
+
+    Some images cannot start without a credential — `mcr.microsoft.com/mssql/
+    server` wants MSSQL_SA_PASSWORD — and a credential is the one thing that
+    must never appear in a recipe. A recipe is drafted by an agent, written to a
+    store, read by two services, quoted in an audit trail and shown to an
+    approver. Nothing in that path should ever hold a password.
+
+    So it lives in a file only a person writes, and it is SCOPED BY TECHNOLOGY:
+
+        mssql.MSSQL_SA_PASSWORD=...
+
+    so SQL Server's password cannot reach a MongoDB container. A line with no
+    technology prefix is IGNORED rather than applied to everything, because
+    "applied to everything" is how a credential reaches somewhere nobody meant.
+
+    Every name and value is validated exactly as a profile's own environment is:
+    these end up in a systemd unit, and a newline in one would inject unit
+    directives. An unreadable or absent file is an ordinary empty answer — the
+    container then fails on the machine and says so itself, which is the honest
+    outcome and not one this function should invent.
+    """
+    if not profile_rules.CODE.match(code or ""):
+        return {}
+    try:
+        with open(path or CONTAINER_SECRETS_FILE, encoding="utf-8") as handle:
+            raw = handle.read()
+    except OSError:
+        return {}
+
+    found: dict[str, str] = {}
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        scoped, _, value = line.partition("=")
+        prefix, _, key = scoped.strip().partition(".")
+        if prefix.strip().lower() != code.lower() or not key:
+            continue
+        if profile_rules.ENV_KEY.match(key) and profile_rules.ENV_VALUE.match(value):
+            found[key] = value
+    return found
+
+
 def enabled() -> bool:
     """First-boot configuration is opt-in: it changes what a VM does at boot, and
     it needs subnet egress to work at all."""
@@ -1407,8 +1458,20 @@ def render(components: list[dict], family: str = "", report_url: str = "",
     # profile contributes data, never flags: there is no field it can set that
     # becomes a podman argument this renderer did not choose.
     for code, spec in containers:
+        # THE OPERATOR'S OWN ENVIRONMENT, merged over the recipe's.
+        #
+        # The recipe carries what an agent may decide (a licence acceptance an
+        # operator recorded); this carries what only a person may supply. The
+        # operator's values win, because a recipe is a draft and a credential
+        # is not.
+        secrets = container_secrets(code)
+        environment = {**(spec.get("environment") or {}), **secrets}
+
         lines.append(f"  - path: /etc/containers/systemd/{code}.container")
-        lines.append("    permissions: '0644'")
+        # 0600 ONCE THIS FILE HOLDS A CREDENTIAL. systemd reads it as root, so
+        # nothing needs it world-readable, and a password in a 0644 file is
+        # readable by every local account on the machine.
+        lines.append(f"    permissions: '{'0600' if secrets else '0644'}'")
         lines.append("    content: |")
         lines.append("      [Unit]")
         lines.append(f"      Description={code}, run by the provisioning portal")
@@ -1428,7 +1491,7 @@ def render(components: list[dict], family: str = "", report_url: str = "",
             # service fails for a reason that looks nothing like a mount problem.
             lines.append(
                 f"      Volume={spec['data_dir']}:{spec['data_mount']}:Z")
-        for env_key, env_value in sorted((spec.get("environment") or {}).items()):
+        for env_key, env_value in sorted(environment.items()):
             lines.append(f"      Environment={env_key}={env_value}")
         lines.append("      [Service]")
         lines.append("      Restart=always")
