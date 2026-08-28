@@ -232,3 +232,139 @@ def test_without_a_withdraw_collaborator_the_old_behaviour_stands(db):
 
     assert result.status == "failed"
     assert len(calls) == 1
+
+
+# --- and it is remembered, so no second machine proves it again ---------------
+#
+# Retiring a failed recipe stops it advertising itself, but the ladder may draft
+# the very same recipe straight back. RabbitMQ is exactly that case: the recipe
+# in its store and the only rung its ladder offers are both the same container
+# image, so a failure bought two machines to learn one thing.
+
+def _container_recipe(code, image):
+    """Precisely what the container rung will draft, so the two fingerprints
+    match — which is the whole condition being tested."""
+    from api import ai_blueprint
+    return autobuild._recipe_in(
+        ai_blueprint.draft_from_image(code, image, target="oci"))
+
+
+def test_the_retired_recipe_is_not_proved_a_second_time(db):
+    """THE test for the double proof. One machine, not two."""
+    store = Store()
+    same = _container_recipe("mssql", MSSQL_IMAGE)
+
+    _, proved = _run(db, store, proofs=["failed"], image=MSSQL_IMAGE,
+                     stored=lambda code: same)
+
+    assert len(proved) == 1, (
+        f"{len(proved)} machines were built; the ladder re-proved the recipe "
+        "that had just been retired")
+
+
+def test_a_DIFFERENT_recipe_is_still_tried(db):
+    """The memory is keyed on the recipe, not the technology. SQL Server's
+    stored recipe is a package guess and its ladder offers a container — a
+    genuinely different thing, and it must still get its machine."""
+    store = Store()
+
+    _, proved = _run(db, store, proofs=["failed", "passed"], image=MSSQL_IMAGE,
+                     stored=lambda code: {"code": "mssql", "rhel": {
+                         "packages": ["mssql"], "services": []}})
+
+    assert len(proved) == 2, "the container rung was skipped as if already tried"
+
+
+def test_the_recipe_is_read_before_it_is_deleted(db):
+    """Order is the whole mechanism: after `withdraw` there is no recipe left to
+    read, so a reader called afterwards remembers nothing."""
+    order = []
+    store = Store()
+    real_withdraw = store.withdraw
+
+    def watched_withdraw(files):
+        order.append("withdraw")
+        return real_withdraw(files)
+
+    store.withdraw = watched_withdraw
+
+    def stored(code):
+        order.append("read")
+        return _container_recipe("mssql", MSSQL_IMAGE)
+
+    _run(db, store, proofs=["failed"], image=MSSQL_IMAGE, stored=stored)
+
+    assert order[:2] == ["read", "withdraw"], order
+
+
+def test_nothing_is_remembered_when_the_recipe_cannot_be_read(db):
+    """`stored` is optional. A caller that passes none must behave as before —
+    a wasted machine is bad; a crash is worse."""
+    store = Store()
+
+    result, proved = _run(db, store, proofs=["failed", "passed"],
+                          image=MSSQL_IMAGE)
+
+    assert result.status == "published"
+    assert len(proved) == 2
+
+
+def test_nothing_is_remembered_when_nothing_was_retired(db):
+    """A recipe a person reviewed is not withdrawn, so it must not be recorded
+    as refuted either — that memory would strand a reviewed recipe."""
+    from api import recipe_memory
+
+    store = Store(reviewed=True)
+    same = _container_recipe("mssql", MSSQL_IMAGE)
+
+    _run(db, store, proofs=["failed"], image=MSSQL_IMAGE, stored=lambda c: same)
+
+    assert recipe_memory.previously_refuted(db, "mssql", "oci", same) == ""
+
+
+# --- reading the store safely -------------------------------------------------
+
+def test_make_stored_reads_a_published_recipe(tmp_path):
+    from api import proof_wiring
+
+    profiles = tmp_path / "profiles"
+    profiles.mkdir()
+    (profiles / "mssql.json").write_text('{"code": "mssql"}', encoding="utf-8")
+
+    assert proof_wiring.make_stored(tmp_path)("mssql") == {"code": "mssql"}
+
+
+def test_make_stored_never_reads_outside_the_generated_store(tmp_path):
+    """The same confinement `publish` and `withdraw` have. A candidate name
+    reaches this function from a catalogue row, and what it returns is read as a
+    recipe — so an escape here reads any file the API can reach.
+
+    THREE INDEPENDENT MECHANISMS defend this, and the test asserts the PROPERTY
+    rather than any one of them: a leading dot is refused, the name is reduced
+    to its last segment, and the resolved path must stay under the store.
+
+    The inputs below are chosen to reach DIFFERENT ones. `../secret` never gets
+    past the leading-dot check, so it proves nothing about the other two —
+    which is exactly the mistake this docstring exists to stop somebody
+    repeating: a test that passes for a reason it did not intend is a test that
+    will not notice when that reason is removed."""
+    from api import proof_wiring
+
+    (tmp_path / "profiles").mkdir()
+    (tmp_path.parent / "secret.json").write_text('{"a": 1}', encoding="utf-8")
+
+    stored = proof_wiring.make_stored(tmp_path)
+    assert stored("../secret") is None           # the leading-dot check
+    assert stored("/etc/passwd") is None         # an absolute path
+    assert stored("x/../../../secret") is None   # normalisation + confinement
+
+
+def test_make_stored_is_silent_about_what_is_not_there(tmp_path):
+    from api import proof_wiring
+
+    (tmp_path / "profiles").mkdir()
+    stored = proof_wiring.make_stored(tmp_path)
+
+    assert stored("absent") is None
+    (tmp_path / "profiles" / "broken.json").write_text("not json", encoding="utf-8")
+    assert stored("broken") is None

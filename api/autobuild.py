@@ -333,7 +333,7 @@ def ensure(candidate: str, session: Session, *, target, shipped, run_proof,
            publish, certify, withdraw=None,
            shipped_codes: frozenset[str] = frozenset(),
            reachable=None, ask_repository=None, discover=None, find_image=None,
-           search=None,
+           search=None, stored=None,
            observe_ports=None) -> AutobuildResult:
     """Make `candidate` provisionable, and certify it — no human involved.
 
@@ -410,7 +410,20 @@ def ensure(candidate: str, session: Session, *, target, shipped, run_proof,
         # the generated store and reports what it actually deleted, so a recipe
         # a PERSON reviewed removes nothing and the run ends exactly as it did
         # before. We retire our own mistakes and nobody else's.
+        # READ IT BEFORE DELETING IT, so the machine's verdict outlives the file.
+        #
+        # Retiring a failed recipe stops it advertising itself, but the ladder
+        # may draft the very same recipe back — RabbitMQ's stored recipe and the
+        # only rung its ladder offers are both the same container image — and
+        # then a second machine is spent proving what the first one just
+        # disproved. The refutation memory already prevents that; it is keyed on
+        # the RECIPE, so it needs the recipe, and after `withdraw` there is no
+        # recipe left to read.
+        failed_recipe = stored(candidate) if stored else None
         retired = list(withdraw({f"{candidate}.json": ""}) or []) if withdraw else []
+        if retired and failed_recipe is not None and session is not None:
+            recipe_memory.remember(session, candidate, target, failed_recipe,
+                                   outcome.reference, outcome.detail)
         if not retired:
             result.status = "failed"
             result.detail = (

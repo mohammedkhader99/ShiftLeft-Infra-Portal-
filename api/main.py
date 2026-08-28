@@ -3771,6 +3771,7 @@ def _autobuild_component(session: Session, code: str, target: str) -> dict:
     verify = proof_wiring.make_verify(post)
     publish = proof_wiring.make_publish()
     withdraw = proof_wiring.make_withdraw()
+    stored = proof_wiring.make_stored()
 
     def shipped(candidate: str) -> dict | None:
         """An existing recipe that already builds this, or None.
@@ -3894,7 +3895,7 @@ def _autobuild_component(session: Session, code: str, target: str) -> dict:
 
     result = autobuild.ensure(code, session, target=target, shipped=shipped,
                               run_proof=run_proof, publish=publish,
-                              certify=certify, withdraw=withdraw,
+                              certify=certify, withdraw=withdraw, stored=stored,
                               shipped_codes=shipped_codes, reachable=reachable,
                               ask_repository=ask_repository,
                               search=repo_facts.search_packages,

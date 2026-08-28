@@ -235,6 +235,40 @@ def make_verify(post, *, deadline_seconds: int | None = None,
     return verify
 
 
+def make_stored(root: pathlib.Path | None = None):
+    """Read back a recipe the agent published, or None.
+
+    `withdraw` can DELETE a recipe that failed but cannot say what it SAID, and
+    the refutation memory is keyed on the recipe itself. Without this, a recipe
+    retired from the store can be drafted again, identically, and proved on a
+    second machine — which is the cost the retirement was meant to avoid.
+
+    RabbitMQ is exactly that case: the recipe in its store and the only rung its
+    ladder offers are both the same container image, so a failure would have
+    bought two machines to learn one thing.
+
+    Confined to the store by the same rule as writing and withdrawing, and
+    silent about anything missing or unreadable: a recipe we cannot read is one
+    we cannot remember, which is the status quo rather than an error.
+    """
+    base = (root or GENERATED_ROOT).resolve()
+
+    def stored(candidate: str) -> dict | None:
+        name = pathlib.PurePosixPath(f"{candidate}.json").name
+        if not name or name.startswith("."):
+            return None
+        target = (base / "profiles" / name).resolve()
+        if not target.is_relative_to(base) or not target.is_file():
+            return None
+        try:
+            recipe = json.loads(target.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        return recipe if isinstance(recipe, dict) else None
+
+    return stored
+
+
 def make_withdraw(root: pathlib.Path | None = None):
     """Remove a published draft from the generated store.
 
