@@ -286,3 +286,59 @@ def test_bucket_and_tags_uses_derived_name():
     })
     assert bucket == "test-req-2026-0027"
     assert tags["reference"] == "REQ-2026-0027"
+
+
+# --- what was destroyed, said as data (REQ-2026-0226) -------------------------
+#
+# A FULL teardown deliberately sweeps up workspaces the portal did not name, so
+# a stack whose kinds changed since it was built does not leave the old resource
+# running and billing. That sweep is why REQ-2026-0226 destroyed the right
+# machine when the portal asked for the wrong one:
+#
+#     portal asked      ['oci-bucket']       the catalogue default 41 of 46
+#                                            technologies still carry
+#     workspace on disk  'oci-service-vm'
+#     destroyed          'oci-service-vm'
+#
+# Only this layer knew that. It said so in prose inside `summary`, the portal
+# marked its ledger from its own list instead, matched nothing, and a destroyed
+# VM stayed on the books as active at 790.59 AED a month.
+
+def _destroy_sweeping(monkeypatch, built, asked):
+    monkeypatch.setattr(orch.provisioner, "provision_mode", lambda: "apply")
+    monkeypatch.setattr(orch.provisioner, "existing_workspaces", lambda ref: list(built))
+    monkeypatch.setattr(
+        orch.provisioner, "terraform_destroy",
+        lambda ref, b, t, *a: {"summary": "Destroy complete! Resources: 3 destroyed.",
+                               "output": "..."})
+    body = _body(resource_kinds=list(asked))
+    return client.post("/destroy", content=body, headers=_signed(body))
+
+
+def test_destroy_reports_the_kinds_it_actually_destroyed(monkeypatch):
+    """THE test. The portal cannot know this — the sweep happens here."""
+    resp = _destroy_sweeping(monkeypatch, built=["oci-service-vm"],
+                             asked=["oci-bucket"])
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["kinds"] == ["oci-service-vm"], resp.json()
+
+
+def test_the_reported_kinds_are_what_was_swept_not_what_was_asked(monkeypatch):
+    """Asserting the difference, not just the presence of a field: if this
+    returned the request's own list it would agree with the portal and the
+    ledger would still be wrong."""
+    resp = _destroy_sweeping(monkeypatch, built=["oci-service-vm"],
+                             asked=["oci-bucket"])
+
+    assert "oci-bucket" not in resp.json()["kinds"], resp.json()
+
+
+def test_nothing_to_destroy_reports_an_empty_list_not_a_missing_one(monkeypatch):
+    """The portal falls back to its own list when `kinds` is absent, which is
+    right for an OLD orchestrator and wrong here — this one knows, and what it
+    knows is that nothing was destroyed."""
+    resp = _destroy_sweeping(monkeypatch, built=[], asked=["oci-bucket"])
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["kinds"] == []

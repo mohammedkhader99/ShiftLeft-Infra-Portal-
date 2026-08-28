@@ -1672,7 +1672,7 @@ async def destroy(request: Request) -> dict:
 
     if not targets:
         _provisioned.pop(payload.get("idempotency_key", ""), None)
-        return {"destroyed": True, "reference": reference,
+        return {"destroyed": True, "reference": reference, "kinds": [],
                 "summary": "nothing to destroy — no Terraform state for this request"}
 
     summaries = []
@@ -1688,4 +1688,17 @@ async def destroy(request: Request) -> dict:
                         + (f" — already destroyed: {'; '.join(summaries)}" if summaries else "")))
         summaries.append(f"{kind}: {result['summary']}")
     _provisioned.pop(payload.get("idempotency_key", ""), None)
-    return {"destroyed": True, "reference": reference, "summary": "; ".join(summaries)}
+    # WHAT WAS DESTROYED, as data rather than as prose in `summary`.
+    #
+    # This layer is the only one that knows. `targets` above is deliberately not
+    # the kind list the portal sent: a full teardown also sweeps up workspaces
+    # the portal did not name, precisely so a stack whose kinds changed since it
+    # was built does not leave the old resource running and billing.
+    #
+    # REQ-2026-0226 is what happens when only this end knows. The portal asked
+    # to destroy `oci-bucket`; the workspace on disk was `oci-service-vm`; the
+    # sweep above destroyed the right machine — and the portal then marked its
+    # ledger from its OWN list, matched nothing, and left a destroyed VM
+    # recorded as active and billing at 790.59 a month.
+    return {"destroyed": True, "reference": reference, "kinds": list(targets),
+            "summary": "; ".join(summaries)}

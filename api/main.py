@@ -6091,11 +6091,33 @@ def _decommission(session: Session, req: Request, actor: str) -> dict:
     # row — which is what happened before — told the portal a machine was gone
     # while it was still running and still billing, and there is no worse kind of
     # registry error than one that hides live infrastructure.
+    #
+    # FROM WHAT THE ORCHESTRATOR DESTROYED, NOT FROM WHAT WE ASKED IT TO.
+    #
+    # These were two independent derivations of the same fact, and on REQ-2026-0226
+    # they disagreed. The portal asked for `oci-bucket` — the catalogue default
+    # that 41 of 46 technologies still carry. The workspace on disk was
+    # `oci-service-vm`. A FULL teardown sweeps up workspaces it was not told
+    # about, on purpose, so the orchestrator destroyed the right machine and said
+    # so: "oci-service-vm: Destroy complete! Resources: 3 destroyed."
+    #
+    # Then this loop matched `oci-service-vm` against `['oci-bucket']`, marked
+    # nothing, found one row still active, and left the source PROVISIONED — a
+    # destroyed machine shown as running, in My Environments and in the cost
+    # report, at 790.59 a month.
+    #
+    # The executing layer is the authority on what it executed. Falling back to
+    # `selected_kinds` keeps an older orchestrator working exactly as before.
+    body_out = response.json() if response is not None else {}
+    destroyed_kinds = [k for k in (body_out.get("kinds") or []) if isinstance(k, str)]
+    if not destroyed_kinds:
+        destroyed_kinds = selected_kinds
+
     for res in session.scalars(
         select(ProvisionedResource).where(
             ProvisionedResource.reference == source.reference,
             ProvisionedResource.lifecycle_state == "active",
-            ProvisionedResource.kind.in_(selected_kinds),
+            ProvisionedResource.kind.in_(destroyed_kinds),
         )
     ):
         res.lifecycle_state = "decommissioned"
@@ -6113,10 +6135,11 @@ def _decommission(session: Session, req: Request, actor: str) -> dict:
     source.status = "provisioned" if still_active else "decommissioned"
     req.status = "decommissioned"
     _transition_jira(session, req, resolved_status(), "jira.resolved")
-    summary = response.json().get("summary")
+    summary = body_out.get("summary")
     append_audit(session, "decommissioned", reference=req.reference,
                  jira_key=req.approval.jira_key,
-                 detail={"source": source.reference, "summary": summary})
+                 detail={"source": source.reference, "summary": summary,
+                         "asked": selected_kinds, "destroyed": destroyed_kinds})
     session.commit()
     return {"approval": "approved", "decommissioned": True, "source": source.reference,
             "message": f"Decommissioned {source.reference}: {summary}"}
