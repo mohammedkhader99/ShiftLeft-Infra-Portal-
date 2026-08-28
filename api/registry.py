@@ -221,12 +221,31 @@ def find(code: str, tag: str = "latest") -> dict | None:
     # common case (`rabbitmq`, `nginx`). The search is what finds `mongodb`,
     # whose image is published under the vendor's own namespace and which no
     # name-shape rule was ever going to produce.
-    for image in list(candidates(code)) + [
-            ref for ref in search(code) if ref not in candidates(code)]:
+    guesses = list(candidates(code))
+    ordered = guesses + [ref for ref in search(code) if ref not in guesses]
+
+    # AN IMAGE THAT DECLARES NO PORT IS PROBABLY NOT THE SERVICE.
+    #
+    # `mcr.microsoft.com/mssql/*` offers a dozen repositories. `mssql/server`
+    # declares 1433; `mssql/ha` and every `mssql/bdc/*` controller declare
+    # nothing. The same shape as the `mongodb-atlas-local` mistake, and the same
+    # answer: rank on something MEASURED rather than on the order a registry
+    # happened to reply in. A service we are being asked to install listens.
+    #
+    # Still only a preference. An image that declares nothing is returned when
+    # nothing better resolves, because plenty of legitimate images say nothing
+    # and refusing them all would be a worse error than ranking them last.
+    silent = None
+    for image in ordered[:FIND_LIMIT]:
         described = describe(image, tag)
-        if described:
-            return {"image": image, "tag": tag, **described}
-    return None
+        if not described:
+            continue
+        found = {"image": image, "tag": tag, **described}
+        if described.get("ports"):
+            return found
+        if silent is None:
+            silent = found
+    return silent
 
 
 # --- D1: ask the registry, do not guess the image name -----------------------
@@ -266,12 +285,17 @@ def _trusted(repo_name: str, official: bool, code: str) -> bool:
     return bool(stem) and ns == stem
 
 
-def search(code: str, *, fetch=None) -> list[str]:
-    """Image references the registry itself offers for this technology.
+def search(code: str, *, fetch=None, fetch_catalogue=None) -> list[str]:
+    """Image references the registries themselves offer for this technology.
 
     Injected `fetch` for testability; returns [] on any problem, because a
     registry that cannot be searched is not a failure — it is one source of
     several, and the ladder has others.
+
+    HERMETIC WHEN `fetch` IS INJECTED. A caller that scripts Hub's answer is a
+    test, and a test that silently acquired a live catalogue sweep would make
+    the trust rule's own assertions depend on what Microsoft published today.
+    `image_for` in api/resolve.py carries the same rule for the same reason.
     """
     code = (code or "").strip().lower()
     if not profile_rules.CODE.match(code):
@@ -324,4 +348,117 @@ def search(code: str, *, fetch=None) -> list[str]:
     for _o, _s, _l, _n, ref in sorted(scored):
         if ref not in out:
             out.append(ref)
+
+    # AND THE NINETEEN OTHERS. Hub's answer stays first — it is a search, ranked
+    # by a registry that knows what is used — and the vendors' own catalogues
+    # follow, which is where software Hub does not carry lives.
+    if fetch is None or fetch_catalogue is not None:
+        for ref in catalogue_search(code, fetch_catalogue=fetch_catalogue):
+            if ref not in out:
+                out.append(ref)
     return out
+
+
+# --- D2: the nineteen registries we allow and never ask -----------------------
+#
+# `search` above asks Docker Hub, and Docker Hub only. Docker Hub is the registry
+# a stranger can publish to, so it is the one that needed a trust rule — and
+# having written the trust rule I never went back and asked the other nineteen.
+#
+# SQL SERVER IS WHAT THAT COST. Microsoft publishes it at
+# `mcr.microsoft.com/mssql/server` and nowhere else. `candidates` builds
+# `docker.io/library/mssql`, which does not exist; `search` asks Hub, which does
+# not carry it. So the container rung — the only rung SQL Server could ever have
+# used — was unreachable, and REQ-2026-0217 through 0224 each spent a real
+# machine establishing that `dnf install mssql` installs nothing.
+#
+# A FIRST-PARTY REGISTRY IS ONE PUBLISHER BY CONSTRUCTION, and that is precisely
+# why it is on the allow-list: everything on mcr.microsoft.com is Microsoft's,
+# everything on registry.redhat.io is Red Hat's. There is no stranger to guard
+# against, which is what makes the OCI catalogue endpoint usable here and
+# unusable on Hub.
+#
+# STILL A SHAPE AND NOT A TABLE. Nothing below names a technology.
+
+#: Registries where anyone may publish, so a namespace identifies a stranger and
+#: `_trusted` has to do the work. Everything else on the allow-list is a vendor
+#: publishing its own software.
+_SHARED_REGISTRIES = frozenset({
+    "docker.io", "quay.io", "ghcr.io", "registry.gitlab.com",
+})
+
+#: How much of a catalogue to parse. mcr.microsoft.com returns 3,728 entries in
+#: a single request; this bounds a registry that would return far more.
+CATALOGUE_LIMIT = 20000
+
+#: How many resolved candidates `find` will measure before settling. Each one is
+#: a manifest fetch, and a first-party catalogue can offer a dozen accessories
+#: around one product.
+FIND_LIMIT = 8
+
+_catalogues: dict[str, tuple[str, ...]] = {}
+
+
+def first_party_registries() -> list[str]:
+    """Allow-listed registries that are one vendor's own, sorted for stability."""
+    return sorted(r for r in profile_rules.REGISTRIES
+                  if r not in _SHARED_REGISTRIES)
+
+
+def catalogue(registry: str, *, fetch=None) -> tuple[str, ...]:
+    """Every repository a registry admits to publishing, or ().
+
+    CACHED FOR THE LIFE OF THE PROCESS. It is one request and the same answer
+    for every technology asked about in that time; a registry re-asked once per
+    candidate name would make the ladder's cost depend on how many names we
+    guessed.
+
+    () is the ordinary answer, not a failure: most registries require a token
+    even to list, and the ladder simply learns nothing from them.
+    """
+    if registry in _catalogues:
+        return _catalogues[registry]
+    try:
+        body = (fetch(registry) if fetch is not None
+                else _get(f"https://{registry}/v2/_catalog?n={CATALOGUE_LIMIT}", {}))
+        names = tuple(str(n) for n in ((body or {}).get("repositories") or ())
+                      )[:CATALOGUE_LIMIT]
+    except Exception:  # noqa: BLE001 - a registry that will not list is not an error
+        names = ()
+    _catalogues[registry] = names
+    return names
+
+
+def _first_party_match(path: str, code: str) -> bool:
+    """Is this repository THIS technology's, on a registry that is one vendor's?
+
+    The first path segment. On a shared registry that segment is an account name
+    and proves nothing, which is why `_trusted` exists; here it is the vendor's
+    own product grouping — `mssql/server`, `dotnet/core/sdk`.
+    """
+    stem = re.sub(r"[^a-z0-9]", "", (code or "").lower()).rstrip("0123456789")
+    head = re.sub(r"[^a-z0-9]", "", (path or "").split("/")[0].lower())
+    return bool(stem) and head == stem
+
+
+def catalogue_search(code: str, *, fetch_catalogue=None) -> list[str]:
+    """Image references first-party registries publish for this technology."""
+    code = (code or "").strip().lower()
+    if not profile_rules.CODE.match(code):
+        return []
+
+    out: list[str] = []
+    for registry in first_party_registries():
+        for path in catalogue(registry, fetch=fetch_catalogue):
+            ref = f"{registry}/{path}"
+            if (profile_rules.IMAGE_PATH.match(path)
+                    and _first_party_match(path, code) and ref not in out):
+                out.append(ref)
+
+    # SHALLOWEST PATH FIRST, and it is not cosmetic: a vendor groups accessories
+    # BELOW its product, so `mssql/server` outranks `mssql/bdc/mssql-controller`
+    # on depth alone. Depth is a weak signal and it does not decide — `find`
+    # measures the ports each image declares and prefers one that actually
+    # listens — but it decides what gets measured first, and there are 3,700
+    # repositories to get through.
+    return sorted(out, key=lambda ref: (ref.count("/"), len(ref), ref))
