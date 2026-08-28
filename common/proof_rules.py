@@ -71,17 +71,30 @@ def configured_sandbox_tier() -> str:
     return tier
 
 
-def cost_cap() -> float:
-    """Monthly ceiling for one proof build, in the portal's currency.
+def cost_cap() -> float | None:
+    """Monthly ceiling for one proof build, or None for no ceiling at all.
 
-    A proof is meant to be the smallest thing that proves the recipe. This is the
-    backstop for when it is not — and it is checked against the PLAN, so the
-    runner never discovers a price by paying it.
+    NO CEILING BY DEFAULT since 2026-08-28, at the reviewer's instruction:
+    "Do not put any cost threshold as a limit. Let supervisor decide whether to
+    approve the request or disapprove."
+
+    The cap was refusing licensed software on a number that is never spent. SQL
+    Server prices at 790.59 MONTHLY, of which 700.00 is licence — and a proof
+    build lives for about ten minutes, so the ~1.80 it actually costs was being
+    judged against a monthly figure. A supervisor who has approved the request
+    has already approved the software; the runner refusing it afterwards on an
+    annualised rate was second-guessing a decision that had already been made
+    by the person entitled to make it.
+
+    Set CERTIFICATION_COST_CAP_MONTHLY to a number to restore a ceiling.
     """
+    raw = (os.getenv("CERTIFICATION_COST_CAP_MONTHLY") or "").strip()
+    if not raw:
+        return None
     try:
-        return max(1.0, float(os.getenv("CERTIFICATION_COST_CAP_MONTHLY", "250")))
+        return max(1.0, float(raw))
     except ValueError:
-        return 250.0
+        return None
 
 
 def is_proof_reference(reference: str | None) -> bool:
@@ -118,6 +131,21 @@ def check_cost(monthly: float | None, cap: float | None = None) -> CostVerdict:
     what this costs" is not a reason to spend money unattended.
     """
     cap = cost_cap() if cap is None else cap
+
+    # NO CEILING: the price is RECORDED, never used to refuse.
+    #
+    # It is still computed and still written to the proof record, because "what
+    # did this cost" is a question somebody will ask later. What it no longer
+    # does is overrule a supervisor who has already approved the request.
+    if cap is None:
+        if monthly is None:
+            return CostVerdict(True, 0.0, 0.0,
+                               "The plan could not be priced. No cost ceiling is "
+                               "set, so this does not refuse the build — but the "
+                               "price is unknown and nothing recorded it.")
+        return CostVerdict(True, float(monthly), 0.0,
+                           f"{monthly:,.2f} monthly. No cost ceiling is set.")
+
     if monthly is None:
         return CostVerdict(False, 0.0, cap,
                            "The plan could not be priced, so the cost cap cannot "

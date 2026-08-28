@@ -212,3 +212,45 @@ def test_every_attempt_is_recorded_for_a_human_to_follow(db, bp, monkeypatch):
     assert [a["number"] for a in record["attempts"]] == [1, 2]
     assert record["attempts"][0]["outcome"] == "failed"
     assert record["at"]
+
+
+# --- a refusal is not a failed draft ------------------------------------------
+
+def test_an_unpriceable_plan_does_not_burn_the_attempt_budget(db, bp, monkeypatch):
+    """REQ-2026-0222, and the timestamps are the whole story:
+
+        17:26:42.914   refused
+        17:26:42.981   refused
+        17:26:43.028   refused
+
+    Three attempts in 114 MILLISECONDS. SQL Server was requested while the LIVE
+    pricing API was not answering; `make_price` returned None, the cost gate
+    refused — correctly — and the loop read that as a failed draft and redrafted
+    into the same outage. SQL Server was then written off as "the agent could
+    not produce a recipe that passed", which was never true: the recipe was
+    never reached.
+
+    A refusal comes from the preflight or the cost gate. Neither says anything
+    about the draft, so neither may cost an attempt.
+    """
+    allow(monkeypatch)
+    from api.proof import ProofOutcome
+
+    tried = []
+
+    def run_proof(session, blueprint):
+        tried.append(1)
+        return ProofOutcome("PROOF-X", "refused",
+                            "The plan could not be priced, so the cost cap "
+                            "cannot be checked. Refusing rather than building blind.")
+
+    result = autobuild.build("cassandra5", db, blueprint=bp,
+                             run_proof=run_proof, publish=Publisher())
+
+    assert len(tried) == 1, (
+        f"the budget was spent {len(tried)} times on a refusal that no redraft "
+        f"could have changed")
+    assert result.status == "refused", result.status
+    assert "could not be priced" in result.detail, (
+        "the reason was replaced by 'could not produce a recipe that passed', "
+        "which blames the draft for an external outage")

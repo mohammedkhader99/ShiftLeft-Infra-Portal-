@@ -248,6 +248,27 @@ def build(candidate: str, session: Session, *, blueprint, run_proof, publish,
                 f"{outcome.detail}")
             return result
 
+        if outcome.status == "refused":
+            # NOT THE RECIPE'S FAULT, so it does not cost an attempt.
+            #
+            # A refusal comes from the preflight or the cost gate, and neither
+            # says anything about the draft. REQ-2026-0222 asked for SQL Server
+            # while the LIVE pricing API was not answering; `make_price` returned
+            # None, the cost gate refused — correctly — and the loop treated it
+            # as a failed draft and redrafted. Three attempts were consumed in
+            # 114 MILLISECONDS against the same momentary outage, and SQL Server
+            # was written off as "the agent could not produce a recipe that
+            # passed". The recipe was never the problem, and every redraft was
+            # refused by the same unanswering API.
+            #
+            # Stopping here means the NEXT request tries again with a full
+            # budget, which is exactly right for a transient external failure.
+            result.attempts.append(Attempt(
+                attempt_no, "priced", "refused", outcome.detail))
+            result.status = "refused"
+            result.detail = outcome.detail
+            return result
+
         if outcome.status == "abandoned":
             # It could not tear down what it built. Stopping immediately: another
             # attempt would build a second copy of something already leaking.

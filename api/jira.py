@@ -374,13 +374,51 @@ def build_ticket_body(req: Request, estimate: dict, plan_preview: str) -> str:
                      "what will be built.")
 
     totals = estimate.get("totals", {})
+    currency = estimate.get("currency", "AED")
     lines.append("")
     lines.append(
-        f"Estimated cost ({estimate.get('currency', 'AED')}): "
+        f"Estimated cost ({currency}): "
         f"one-time {totals.get('one_time', 0):.2f}, "
         f"monthly {totals.get('monthly', 0):.2f}, "
         f"annual {totals.get('annual', 0):.2f}"
     )
+
+    # WHAT THE MONTHLY FIGURE IS MADE OF, and licence cost is why this is here.
+    #
+    # The ticket showed one number. SQL Server prices at 790.59 monthly, of
+    # which 700.00 is LICENCE and 90.59 is the machine — and an approver reading
+    # "790.59" could not tell those apart, so they were approving a licence
+    # commitment without being shown one. The requester's own form has always
+    # broken this out; the person actually granting the money had not.
+    by_category = estimate.get("by_category") or {}
+    shown = [(name, by_category.get(key) or 0.0) for name, key in (
+        ("Compute", "compute"), ("Storage", "storage"), ("Licence", "licence"),
+        ("Backup", "backup"), ("Monitoring", "monitoring"), ("Support", "support"))
+        if (by_category.get(key) or 0.0) > 0]
+    if shown:
+        lines.append("")
+        lines.append(f"  Monthly cost is made up of ({currency}):")
+        for name, amount in shown:
+            lines.append(f"    {name}: {amount:,.2f}")
+        licence = by_category.get("licence") or 0.0
+        if licence > 0:
+            lines.append("")
+            lines.append(
+                f"    NOTE: {licence:,.2f} of this is SOFTWARE LICENCE, not "
+                f"infrastructure. Approving this request commits to that "
+                f"licence cost for as long as the environment exists.")
+
+    # LICENCES BILLED IN ANOTHER CURRENCY cannot honestly be added to the total
+    # above, so they are stated separately rather than silently omitted.
+    for lic in estimate.get("external_licences") or []:
+        rate = lic.get("licence_rate")
+        cur = lic.get("licence_currency") or "?"
+        lines.append("")
+        lines.append(
+            f"  PLUS a separate {cur} licence charge for "
+            f"{lic.get('technology_name', 'a component')}"
+            + (f": {rate} {cur}" if rate is not None else "")
+            + " — billed by the publisher and NOT included in the total above.")
     lines.append("")
     lines.append("--- Plan preview ---")
     lines.append(plan_preview)
