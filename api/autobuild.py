@@ -561,6 +561,50 @@ def ensure(candidate: str, session: Session, *, target, shipped, run_proof,
                         and observe_ports is not None and last.proof_reference):
                     narrowed = True
                     seen = observe_ports(last.proof_reference, candidate)
+
+                    # DID IT COME UP AT ALL?
+                    #
+                    # This pass exists to narrow six declared ports down to the
+                    # two a container really binds. It took "whatever it bound"
+                    # as the answer — which makes it a specification when the
+                    # container came up, and a fiction when it did not.
+                    #
+                    # REQ-2026-0225 is the fiction. SQL Server was started with
+                    # no MSSQL_SA_PASSWORD, so it printed its complaint and
+                    # exited. The image DECLARES 1433. The machine saw 135 —
+                    # MSSQL_RPC_PORT, which is not the database. The narrowed
+                    # recipe published 135, the second proof confirmed 135 was
+                    # bound, and mssql was CERTIFIED on a container that had
+                    # never served a query. A firewall would have been opened on
+                    # the wrong port for a database nobody could reach.
+                    #
+                    # AT LEAST ONE, NOT ALL. `library/rabbitmq` declares six —
+                    # AMQP, AMQPS, epmd, clustering and two Prometheus endpoints
+                    # — and a default container binds fewer. Demanding the whole
+                    # declared set would refuse healthy containers; demanding
+                    # none of it certified a dead one. The publisher's list is
+                    # what the service is FOR, so overlapping it by one port is
+                    # the evidence that the thing inside actually started.
+                    #
+                    # An image that declares nothing is exempt: there is no
+                    # claim to check it against, and plenty of legitimate images
+                    # declare nothing at all.
+                    declared = {int(p) for p in (published_image.get("ports") or [])}
+                    if declared and not (declared & {int(p) for p in (seen or [])}):
+                        if withdraw:
+                            withdraw(last.files)
+                        last.status = "failed"
+                        last.detail = (
+                            f"{candidate} was not certified: its image declares "
+                            f"{sorted(declared)} and the machine found it listening on "
+                            f"{sorted(int(p) for p in (seen or [])) or 'nothing'}. A "
+                            f"container that never bound its own service port did not "
+                            f"start, so the proof established nothing. {last.detail}")
+                        last.attempts.append(Attempt(
+                            len(last.attempts) + 1, "listening", "failed",
+                            last.detail[:300]))
+                        return _carry(result.attempts, last)
+
                     if seen and seen != list(published_image.get("listening") or []):
                         published_image = {**published_image, "listening": seen}
                         if withdraw:

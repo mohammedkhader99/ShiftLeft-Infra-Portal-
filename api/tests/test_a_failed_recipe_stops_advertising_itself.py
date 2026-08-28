@@ -131,7 +131,13 @@ def _run(db, store, *, proofs, image=None, **kw):
         "mssql", db, target="oci", shipped=store.shipped, run_proof=run_proof,
         publish=store.publish, certify=lambda m, ref: None,
         withdraw=store.withdraw, search=lambda code, family: [],
-        find_image=(lambda code: image), observe_ports=lambda ref, code: [],
+        find_image=(lambda code: image),
+        # A HEALTHY CONTAINER: the machine sees it listening on 1433, the port
+        # the image declares. These tests are about retiring a failed recipe,
+        # not about ports — and a machine reporting NOTHING listening now means
+        # the container never started, which would fail them for a reason they
+        # are not testing.
+        observe_ports=lambda ref, code: [1433],
         **kw)
     return result, seen
 
@@ -272,7 +278,7 @@ def test_a_DIFFERENT_recipe_is_still_tried(db):
                      stored=lambda code: {"code": "mssql", "rhel": {
                          "packages": ["mssql"], "services": []}})
 
-    assert len(proved) == 2, "the container rung was skipped as if already tried"
+    assert len(proved) == 3, "the container rung was skipped as if already tried"
 
 
 def test_the_recipe_is_read_before_it_is_deleted(db):
@@ -306,7 +312,9 @@ def test_nothing_is_remembered_when_the_recipe_cannot_be_read(db):
                           image=MSSQL_IMAGE)
 
     assert result.status == "published"
-    assert len(proved) == 2
+    # Three: the stale recipe, the container's first pass, and the narrowed
+    # recipe re-proved. A changed recipe is never certified on the old proof.
+    assert len(proved) == 3
 
 
 def test_nothing_is_remembered_when_nothing_was_retired(db):

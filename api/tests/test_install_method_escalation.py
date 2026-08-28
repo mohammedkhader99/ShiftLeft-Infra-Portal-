@@ -963,10 +963,44 @@ def test_the_narrowed_recipe_IS_certified_when_it_proves(db):
     assert machine.published_ports[-1] == [5672]
 
 
+#: The same image with nothing declared. Plenty of legitimate images declare no
+#: ports at all, and for those "the container bound nothing" really is the whole
+#: truth rather than a symptom.
+SILENT_IMAGE = {**IMAGE, "ports": []}
+
+
 def test_a_container_that_binds_nothing_is_still_certified(db):
     """No ports to narrow to means publishing none was right all along, and it
     has already been proved. The deferral exists to avoid claiming a recipe we
-    are about to replace, not to leave a proved one unclaimed."""
+    are about to replace, not to leave a proved one unclaimed.
+
+    RE-POINTED 2026-08-28, and the distinction is the whole of REQ-2026-0225.
+    This asserted the bookkeeping using an image that DECLARES 5672 and 15672
+    and a machine that saw neither — which is not "nothing to narrow to", it is
+    a container that never started. SQL Server was certified through exactly
+    that gap: declared 1433, bound 135, proved, certified, provisioned.
+
+    The bookkeeping point stands and is what this still tests. It is simply
+    made with an image that declares nothing, which is the case its own words
+    describe. The health case is the test immediately below."""
+    certified = []
+    machine = Narrowing2(SILENT_IMAGE, [], narrow_fails=False)
+    result = autobuild.ensure(
+        "rabbitmq", db, target="oci", shipped=machine.shipped,
+        run_proof=machine.run_proof, publish=machine.publish,
+        certify=lambda m, r: certified.append(r), withdraw=machine.withdraw,
+        discover=lambda ref, code: {}, find_image=lambda code: SILENT_IMAGE,
+        observe_ports=lambda ref, code: [])
+
+    assert result.status == "published"
+    assert certified, "a proved recipe was left unclaimed"
+    assert machine.tried.count("container") == 1
+
+
+def test_a_container_that_DECLARES_ports_and_binds_none_is_not_certified(db):
+    """The other half, and the one REQ-2026-0225 needed. RabbitMQ's image says
+    it serves 5672; a container binding neither that nor 15672 is not RabbitMQ
+    running, whatever the proof says about the machine being healthy."""
     certified = []
     machine = Narrowing2(IMAGE, [], narrow_fails=False)
     result = autobuild.ensure(
@@ -976,9 +1010,9 @@ def test_a_container_that_binds_nothing_is_still_certified(db):
         discover=lambda ref, code: {}, find_image=lambda code: IMAGE,
         observe_ports=lambda ref, code: [])
 
-    assert result.status == "published"
-    assert certified, "a proved recipe was left unclaimed"
-    assert machine.tried.count("container") == 1
+    assert certified == [], "a container that never listened was certified"
+    assert result.status != "published", result.detail
+    assert "5672" in result.detail
 
 
 def test_take_it_back_ACTUALLY_calls_the_withdrawal(db):
