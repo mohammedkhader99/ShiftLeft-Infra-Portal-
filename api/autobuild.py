@@ -242,7 +242,14 @@ def build(candidate: str, session: Session, *, blueprint, run_proof, publish,
                      if failure_detail else [])
 
         # GATE 1 — defects this project has already paid for.
-        blockers = [f for f in proposal.findings if f.severity == "blocker"]
+        #
+        # `review_module` joins them here rather than in the drafter, because a
+        # draft that knows it is a skeleton is exactly the draft that will not
+        # stop itself: the scaffold announces "builds nothing yet" in its own
+        # first line and carried no findings at all. The judgement belongs with
+        # the code that decides whether to spend a machine.
+        findings = list(proposal.findings) + ai_blueprint.review_module(proposal.files)
+        blockers = [f for f in findings if f.severity == "blocker"]
         if blockers:
             result.attempts.append(Attempt(
                 attempt_no, "linted", "blocked",

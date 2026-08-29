@@ -314,6 +314,63 @@ def _scaffold_draft(candidate: str, target: str = "oci") -> Draft:
 # These are cheap checks against expensive lessons. Each one is a real failure:
 # nothing here is style.
 
+#: A resource type that is a placeholder rather than a provider's. The scaffold
+#: writes `TODO_provider_resource` on purpose, to be obvious; a model asked for
+#: a module it cannot write has been known to emit the same shape.
+_PLACEHOLDER_TYPE = re.compile(r'^\s*resource\s+"(TODO|PLACEHOLDER|CHANGEME)[A-Za-z0-9_]*"',
+                               re.IGNORECASE | re.MULTILINE)
+
+#: Any resource declaration at all.
+_ANY_RESOURCE = re.compile(r'^\s*resource\s+"[a-z][a-z0-9_]*"\s+"', re.MULTILINE)
+
+
+def review_module(files: dict) -> list[Finding]:
+    """Does this drafted Terraform declare anything a cloud would create?
+
+    REQ-2026-0234 asked for OCI Functions. The scaffold below writes, in the
+    file itself:
+
+        # DRAFT - not reviewed, not certified, builds nothing yet.
+        resource "TODO_provider_resource" "env" {
+          count = var.resource_kind == "oci-oci-functions" ? 1 : 0
+
+    `TODO_provider_resource` is not a Terraform resource type and the count is
+    zero, so the module PLANS AND APPLIES CLEANLY and creates nothing. Terraform
+    reported "Apply complete! Resources: 0 added", the proof passed, the
+    technology was CERTIFIED, and the request was reported provisioned with an
+    active resource recorded that had never existed.
+
+    Every honest signal was present and none was read: the draft's own first
+    line, its kind, and its reasoning. This is the one that the deciding code
+    can see.
+
+    JUDGED ON THE FILES, NOT ON THE KIND. `new-service` covers both the
+    deterministic scaffold AND a module the model actually wrote — refusing the
+    kind would take away the agent's ability to write Terraform at all, which is
+    the whole point of the loop. What disqualifies a module is that it declares
+    nothing real, whoever produced it.
+    """
+    terraform = {name: text for name, text in (files or {}).items()
+                 if str(name).endswith(".tf")}
+    if not terraform:
+        return []
+
+    body = "\n".join(terraform.values())
+    if _PLACEHOLDER_TYPE.search(body):
+        return [Finding(
+            "blocker", "placeholder-resource",
+            "The module declares a placeholder resource type rather than a real "
+            "one, so it applies cleanly and creates nothing. It is a starting "
+            "point for a person, not a recipe: the shape, network and "
+            "credentials are deliberately blank.")]
+    if not _ANY_RESOURCE.search(body):
+        return [Finding(
+            "blocker", "builds-nothing",
+            "The module declares no resources at all, so proving it would "
+            "establish only that Terraform can run.")]
+    return []
+
+
 def review_profile(profile: dict,
                    shipped_codes: frozenset[str] = frozenset()) -> list[Finding]:
     """Judge a technology profile before it costs a machine to find out.

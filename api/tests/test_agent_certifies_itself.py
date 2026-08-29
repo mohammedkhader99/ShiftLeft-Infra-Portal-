@@ -262,7 +262,32 @@ def test_an_unreachable_orchestrator_is_not_mistaken_for_a_skew(monkeypatch):
 
 # --- proved is not certified --------------------------------------------------
 
-def test_a_recipe_the_agent_BUILT_is_also_certified(db):
+#: A drafted module that DECLARES A REAL RESOURCE.
+#:
+#: Added 2026-08-29. Both tests below reached `build()` through `oci-newthing`,
+#: which in mock mode drafts the TODO scaffold — a module that applies cleanly
+#: and creates nothing, and is now refused before the proof because REQ-2026-0234
+#: certified one and reported a resource that had never existed.
+#:
+#: These tests are about `build()`'s CERTIFICATION WIRING, not about skeletons,
+#: so the draft is now a fixture: what they assert is unchanged.
+def _real_module(monkeypatch, candidate="oci-newthing"):
+    from api import ai_blueprint
+
+    draft = ai_blueprint.Draft(
+        candidate=candidate, kind="new-service",
+        files={"generated/terraform/main.tf":
+               'resource "oci_functions_application" "app" {\n'
+               '  compartment_id = var.compartment_ocid\n'
+               '}\n',
+               f"orchestrator/blueprints/oci-{candidate}.yaml":
+               f"ref: oci/{candidate}\ntarget: oci\n"},
+        reasoning="a module that actually declares something",
+        source="test")
+    monkeypatch.setattr(ai_blueprint, "draft", lambda *a, **k: draft)
+
+
+def test_a_recipe_the_agent_BUILT_is_also_certified(db, monkeypatch):
     """REQ-2026-0223. SQL Server was drafted, proved on a real machine, and
     published — "Built, verified and destroyed on attempt 1" — and the request
     then fell to manual fulfilment, because nothing certified it.
@@ -273,6 +298,7 @@ def test_a_recipe_the_agent_BUILT_is_also_certified(db):
     """
     certified = []
     written = []
+    _real_module(monkeypatch)
 
     # A CODE THAT REACHES `build()`. `cassandra5` classifies as vm-service and
     # goes down the install ladder, so a test using it never touches the branch
@@ -292,11 +318,12 @@ def test_a_recipe_the_agent_BUILT_is_also_certified(db):
         "it — so the request that triggered this goes to manual fulfilment")
 
 
-def test_a_recipe_the_orchestrator_cannot_BUILD_is_not_certified(db):
+def test_a_recipe_the_orchestrator_cannot_BUILD_is_not_certified(db, monkeypatch):
     """The guard `_ensure_vm_service` already had. A recipe in the generated
     store is not a recipe the executing layer can build, and certifying one it
     cannot build is how a request reaches apply with nothing behind it."""
     certified = []
+    _real_module(monkeypatch)
 
     result = autobuild.ensure(
         "oci-newthing", db, target="oci",
