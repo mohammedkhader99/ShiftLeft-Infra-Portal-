@@ -209,6 +209,66 @@ def _ports(base: str, auth: dict, manifest_raw: bytes) -> list[int]:
     return sorted(ports)
 
 
+#: A tag that names a RELEASE and nothing else: 9.5.2, v3, 1.24.0.
+#:
+#: Deliberately strict. `1-alpine`, `2017-CU1-ubuntu` and `8.15.0-arm64` are
+#: variants — a different base image or architecture, not a different version of
+#: the software — and `nightly`, `8.0.0-rc1` and `edge` are not releases at all.
+#: Choosing one of those as THE image for a technology would be picking a
+#: development build for production, which is the `mongodb-atlas-local` mistake
+#: in another costume.
+_RELEASE_TAG = re.compile(r"^v?\d+(?:\.\d+)*$")
+
+
+def _version_of(tag: str) -> tuple:
+    """A release tag as numbers, for ordering. Not a string sort: string order
+    puts `9.5.2` before `10.0.0`, which would pin a major version behind."""
+    return tuple(int(part) for part in tag.lstrip("vV").split("."))
+
+
+def tags(image: str, *, fetch=None) -> list[str]:
+    """Every tag a registry lists for this image, or [].
+
+    Fail-soft like everything else here: a registry that will not list is one
+    source of several, not a failure.
+    """
+    registry, _, path = (image or "").partition("/")
+    if registry not in profile_rules.REGISTRIES or not profile_rules.IMAGE_PATH.match(path):
+        return []
+    try:
+        if fetch is not None:
+            body = fetch(image)
+        else:
+            token = _token(registry, path)
+            auth = {"Authorization": f"Bearer {token}"} if token else {}
+            body = _get(f"https://{_host(registry)}/v2/{path}/tags/list", auth)
+    except Exception:  # noqa: BLE001 - a registry that will not list is not an error
+        return []
+    return [str(t) for t in ((body or {}).get("tags") or [])]
+
+
+def newest_release(image: str, *, fetch=None) -> str:
+    """The highest release tag this image publishes, or "".
+
+    WHY THIS EXISTS. `find` asked only for `latest`, and Elasticsearch does not
+    publish one: Docker Hub's official image was deprecated and its `latest` tag
+    withdrawn, leaving 406 versioned tags and no default. So an image that is
+    published, official, and on an allow-listed registry was invisible, the
+    ladder came back EMPTY, and REQ-2026-0232 fell through to drafting Terraform
+    and certified a guess that installed nothing.
+
+    HIGHEST, not "the one somebody pinned". A pin is a table, and this project
+    has spent a fortnight establishing that tables do not survive contact with
+    the next technology. The choice is still measured — the tag must resolve to
+    a real manifest — and still proved on a machine before anything is
+    certified, so a wrong guess costs a proof rather than a provisioning.
+    """
+    releases = [t for t in tags(image, fetch=fetch) if _RELEASE_TAG.match(t)]
+    if not releases:
+        return ""
+    return max(releases, key=_version_of)
+
+
 def find(code: str, tag: str = "latest") -> dict | None:
     """The first published image for this technology, pinned, or None.
 
@@ -237,10 +297,17 @@ def find(code: str, tag: str = "latest") -> dict | None:
     # and refusing them all would be a worse error than ranking them last.
     silent = None
     for image in ordered[:FIND_LIMIT]:
-        described = describe(image, tag)
+        used = tag
+        described = describe(image, used)
+        if not described and tag == "latest":
+            # NO `latest` IS NOT NO IMAGE. Elasticsearch publishes 406 tags and
+            # no `latest`; asking only for the default made it invisible.
+            newest = newest_release(image)
+            if newest:
+                used, described = newest, describe(image, newest)
         if not described:
             continue
-        found = {"image": image, "tag": tag, **described}
+        found = {"image": image, "tag": used, **described}
         if described.get("ports"):
             return found
         if silent is None:
