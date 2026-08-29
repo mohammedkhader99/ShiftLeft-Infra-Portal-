@@ -760,6 +760,49 @@ def ensure(candidate: str, session: Session, *, target, shipped, run_proof,
                     f"built for each and refuted it.")
             return _carry(result.attempts, last)
 
+    # SOFTWARE ON A MACHINE WITH NO WAY IN IS A REFUSAL, NOT A TERRAFORM JOB.
+    #
+    # REQ-2026-0232 asked for Elasticsearch. Its ladder came back EMPTY — the
+    # repositories do not carry it, no vendor repository or archive is curated
+    # for it, and no image was found — so the loop above never ran and control
+    # arrived here. `build` then drafted TERRAFORM for it and proved that.
+    #
+    # AND THE PROOF PASSED IN 120 SECONDS WITHOUT BUILDING ANYTHING. With no
+    # manifest, `run_proof` invents a resource kind from the technology code:
+    #
+    #     resource_kind = (manifest or {}).get("resource_kind", f"{target}-{code}")
+    #
+    # `oci-elasticsearch` is a kind no blueprint claims, so the orchestrator's
+    # `_report_expected` answered "not a machine — nothing boots, so nothing can
+    # report", `checked` came back 0, and verify read that silence as success:
+    # "nothing here files a report; it built and tore down". The certificate was
+    # then issued against `oci-service-vm` — a kind that IS a machine and DOES
+    # owe a report.
+    #
+    # So the proof asked whether a resource kind that does not exist was healthy,
+    # got silence, and certified a different kind on the strength of it. No
+    # instance was ever created. REQ-2026-0232 then built a real machine and it
+    # reported `elasticsearch NOT INSTALLED`.
+    #
+    # The ladder is the only thing that installs software onto a machine. If it
+    # offered nothing, the honest answer is that we have no way to install this —
+    # said plainly, with what would change it, and costing no machine at all.
+    if proposal.kind == "vm-service":
+        result.status = "refused"
+        result.detail = (
+            f"{candidate} is software that installs onto a machine, and no way "
+            f"to install it could be found: it is not in the operating system's "
+            f"repositories, no vendor repository or archive is curated for it, "
+            f"and no container image was found on a registry this portal trusts. "
+            f"Nothing was built and no machine was spent finding that out. It "
+            f"becomes provisionable as soon as any one of those exists — most "
+            f"often an image on an allow-listed registry, which needs no recipe "
+            f"written by hand.")
+        result.attempts.append(Attempt(
+            len(result.attempts) + 1, "unresolvable", "refused",
+            result.detail[:300]))
+        return result
+
     built = build(candidate, session, blueprint=None, run_proof=run_proof,
                   publish=publish, target=target, shipped_codes=shipped_codes)
     if built.status != "published":
