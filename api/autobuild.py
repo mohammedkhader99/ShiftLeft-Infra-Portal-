@@ -605,8 +605,32 @@ def ensure(candidate: str, session: Session, *, target, shipped, run_proof,
                             last.detail[:300]))
                         return _carry(result.attempts, last)
 
-                    if seen and seen != list(published_image.get("listening") or []):
-                        published_image = {**published_image, "listening": seen}
+                    # NARROWED TO THE INTERSECTION, not to everything observed.
+                    #
+                    # REQ-2026-0228 provisioned SQL Server with 135, 1431, 1433
+                    # and 1434 open in the firewall. Only 1433 is the database:
+                    # 1434 is the browser service, 1431 a secondary listener,
+                    # 135 the DTC RPC port. None of the other three needs to be
+                    # reachable for anyone to use the thing they asked for.
+                    #
+                    # The image DECLARES exactly one port, so the right answer
+                    # was already in hand and simply not used — this pass took
+                    # everything the container happened to bind. A container
+                    # binds what it likes internally; what the publisher DECLARES
+                    # is the interface, and what the machine CONFIRMED is what
+                    # actually works. Opening a port is a security decision, and
+                    # the honest basis for it is both facts agreeing, not either
+                    # one alone.
+                    #
+                    # An image that declares nothing keeps the old behaviour:
+                    # there is no interface to intersect with, so the machine's
+                    # observation is the only evidence there is.
+                    confirmed = ([p for p in (seen or []) if int(p) in declared]
+                                 if declared else list(seen or []))
+
+                    if confirmed and confirmed != list(
+                            published_image.get("listening") or []):
+                        published_image = {**published_image, "listening": confirmed}
                         if withdraw:
                             withdraw(last.files)
                         methods.append("container")

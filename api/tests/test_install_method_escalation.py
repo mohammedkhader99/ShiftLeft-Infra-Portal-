@@ -776,12 +776,15 @@ class Narrowing(Publishing):
         return super().run_proof(session, manifest)
 
 
-def _narrow(db, machine, listening=None):
+# `image` defaulted, so every existing caller is unchanged; without it a
+# test cannot describe an image that declares no ports at all.
+def _narrow(db, machine, listening=None, image=None):
     return autobuild.ensure(
         "rabbitmq", db, target="oci", shipped=machine.shipped,
         run_proof=machine.run_proof, publish=machine.publish,
         certify=lambda m, r: None, withdraw=machine.withdraw,
-        discover=lambda ref, code: {}, find_image=lambda code: IMAGE,
+        discover=lambda ref, code: {},
+        find_image=lambda code: (IMAGE if image is None else image),
         observe_ports=lambda ref, code: (
             machine.listening if listening is None else listening))
 
@@ -795,11 +798,45 @@ def test_the_first_container_attempt_publishes_no_ports(db):
         f"it opened ports on a guess: {machine.published_ports[0]}")
 
 
-def test_the_narrowed_profile_publishes_exactly_what_was_observed(db):
+def test_the_narrowed_profile_publishes_what_was_DECLARED_AND_OBSERVED(db):
+    """RE-POINTED 2026-08-29, and REQ-2026-0228 is why.
+
+    SQL Server was provisioned with 135, 1431, 1433 AND 1434 open in a real
+    firewall. Only 1433 is the database: 1434 is the browser service, 1431 a
+    secondary listener, 135 the DTC RPC port. The image DECLARES exactly one
+    port, so the right answer was in hand and this pass did not use it — it
+    published everything the container happened to bind.
+
+    A container binds what it likes internally. What the PUBLISHER DECLARES is
+    the interface; what the MACHINE CONFIRMED is what actually works. Opening a
+    port is a security decision, and the honest basis for one is both facts
+    agreeing rather than either alone.
+
+    `IMAGE` declares [5672, 15672]. 15692 is observed and NOT declared, so it
+    is not opened."""
     machine = Narrowing(IMAGE, [5672, 15692])
     result = _narrow(db, machine)
-    assert machine.published_ports[-1] == [5672, 15692]
+    assert machine.published_ports[-1] == [5672], machine.published_ports
     assert result.status == "published"
+
+
+def test_every_declared_port_the_machine_confirmed_is_still_published(db):
+    """The other direction. Narrowing must not become "publish one port and
+    hope" — a service with two real interfaces needs both."""
+    machine = Narrowing(IMAGE, [5672, 15672])
+    _narrow(db, machine)
+
+    assert machine.published_ports[-1] == [5672, 15672], machine.published_ports
+
+
+def test_an_image_that_declares_nothing_still_publishes_what_it_bound(db):
+    """No interface to intersect with, so the machine's observation is the only
+    evidence there is — the same exemption the certification gate makes."""
+    silent = {**IMAGE, "ports": []}
+    machine = Narrowing(silent, [8080])
+    _narrow(db, machine, image=silent)
+
+    assert machine.published_ports[-1] == [8080], machine.published_ports
 
 
 def test_the_narrowed_recipe_is_PROVED_not_assumed(db):
