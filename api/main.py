@@ -7194,6 +7194,22 @@ def _poll_once() -> None:
     # stayed certified, silently. A speed-up that can break the thing it sits
     # beside is not a speed-up — the same rule the capture itself follows.
     try:
+        # IMPORTED HERE, and its absence is why none of this has ever run.
+        #
+        # `proof_wiring` is not imported at module level — every other call site
+        # in this file imports it locally — and this block, added with G2 on
+        # 2026-08-25, did not. So the whole golden-image lifecycle raised
+        # NameError on EVERY poll for four days: promote, supersede, expire and
+        # reap never executed once. Captured images were never made usable,
+        # never retired and never deleted.
+        #
+        # It was invisible because the block has its own try/except by design —
+        # so an unreachable orchestrator cannot take the certification sweep
+        # down with it — and a NameError looks exactly like an unreachable
+        # orchestrator from outside. The only trace was a `golden.sweep.error`
+        # audit line every forty seconds that nothing read.
+        from api import proof_wiring
+
         with SessionLocal() as session:
             post = proof_wiring.make_post(_post_to_orchestrator, sign,
                                           WEBHOOK_SECRET)
