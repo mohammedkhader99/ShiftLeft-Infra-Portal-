@@ -120,7 +120,51 @@ def _compute_client():  # pragma: no cover - thin SDK seam (mocked in tests)
     return oci.core.ComputeClient(_oci_config())
 
 
+#: A blueprint that BOOTS A MACHINE has to say so, because the machine must
+#: report on itself at the end of first boot. That declaration is already made
+#: by every blueprint and already held to by test_every_machine_reports.py, so
+#: it is the existing authority on this question rather than a new one.
+_BOOTS_A_MACHINE = ("user_data", "template")
+
+
 def _is_compute(kind: str) -> bool:
+    """Is this resource kind a machine we can ask the compute API about?
+
+    ASKED OF THE BLUEPRINT, NOT INFERRED FROM THE NAME.
+
+    The name rule below matched "instance", "compute", "vm" and "oci-vm" — and
+    `oci-service-vm` is none of those, because "vm" was an EXACT match and not a
+    suffix. So the kind that 24 of this estate's resources are, and every VM
+    that carries software (nginx, redis, .NET, Vault, SQL Server), was invisible
+    to live cloud state: reconcile asked object storage for a bucket named after
+    a machine, got a 404, and would have reported a healthy running server as
+    deleted out-of-band. `oci-apache` and `oci-kafka` were invisible for the
+    same reason, another 13 resources.
+
+    A NAME RULE CANNOT FIX THIS. `oci-apache` and `oci-kafka` are single compute
+    instances and say nothing about it; `oci-oke`'s module creates instances too,
+    but the resource this kind TRACKS is a cluster, and asking the compute API
+    for a cluster's name finds nothing — which is the same false "missing" in the
+    other direction. Reading the Terraform is no better: the legacy flat module
+    declares a bucket, a database AND an instance.
+
+    So the question goes to the recipe, which is the only layer that knows what
+    it builds. `oci-oke` declares `boot_report: none` explicitly and is correctly
+    not a machine.
+
+    The old name rule survives ONLY for a kind no manifest claims, so a
+    resource from outside the registry is judged no worse than before.
+    """
+    from orchestrator import blueprint_registry
+
+    try:
+        manifest = blueprint_registry.for_resource_kind(kind)
+    except Exception:  # noqa: BLE001 - a registry that cannot answer is not a verdict
+        manifest = None
+    if manifest is not None:
+        declared = str(manifest.get("boot_report") or "").strip().lower()
+        return declared in _BOOTS_A_MACHINE
+
     k = (kind or "").lower()
     return "instance" in k or "compute" in k or k in ("vm", "oci-vm")
 
