@@ -442,10 +442,13 @@ export async function getMe(): Promise<{ email: string; roles: string[] } | null
 }
 
 export async function getRequests(
-  params: Record<string, string | undefined> = {},
+  // Booleans allowed so a caller can ask for a FLAG — `decommissionable: true`
+  // — rather than the string 'true'. A falsy value is dropped, which is what
+  // "do not apply this filter" means.
+  params: Record<string, string | boolean | undefined> = {},
 ): Promise<RequestRow[]> {
   const clean: Record<string, string> = {}
-  for (const [k, v] of Object.entries(params)) if (v) clean[k] = v
+  for (const [k, v] of Object.entries(params)) if (v) clean[k] = String(v)
   const qs = new URLSearchParams(clean).toString()
   const r = await fetch(`/api/requests${qs ? `?${qs}` : ''}`)
   return r.ok ? r.json() : []

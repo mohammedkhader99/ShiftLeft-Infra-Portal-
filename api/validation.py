@@ -327,12 +327,42 @@ def _validate_decommission_fields(data: dict, session: Session, errors: dict[str
     if source is None:
         errors["source_reference"] = f"Unknown request '{source_ref}'."
         return
-    if source.status != "provisioned":
-        errors["source_reference"] = (
-            f"{source_ref} is not currently provisioned (status: {source.status}); "
-            "only provisioned requests can be decommissioned."
-        )
-        return
+    # WHAT STILL EXISTS, NOT WHAT THE STATUS SAYS.
+    #
+    # REQ-2026-0232 built a real machine, failed its boot verification, and was
+    # left at `verify-failed`. The machine kept running and kept billing, and
+    # this check refused to let anyone decommission it: the portal had built
+    # infrastructure it would not let you remove.
+    #
+    # `provisioned` was always a PROXY for "there is something to tear down",
+    # and it is wrong for every request that built machines and then failed —
+    # verify-failed, teardown-failed, a partial apply. The fact itself is
+    # already computed a few lines below, from the resource ledger, so it is
+    # simply asked here instead.
+    #
+    # None means nothing was ever provisioned; an empty set means everything has
+    # already gone. Both are honestly "nothing to decommission", and neither is
+    # a machine somebody cannot reach.
+    live = _live_technologies(session, source)
+    if live is None:
+        # NO LEDGER AT ALL MEANS NO OPINION, and `_live_technologies` says so in
+        # its own docstring. Mock mode records no resources, and neither did
+        # requests provisioned before the ledger existed — refusing them would
+        # take decommissioning away from the whole demo path, which is the
+        # default posture this project runs in.
+        #
+        # So the old rule stands exactly where it always did, and the widening
+        # below applies only where there IS evidence to widen on.
+        if source.status != "provisioned":
+            errors["source_reference"] = (
+                f"{source_ref} is not currently provisioned (status: "
+                f"{source.status}), and nothing of it is recorded as running."
+            )
+            return
+    # An empty set — provisioned once, all of it torn down since — deliberately
+    # falls through. The per-component check below says which technology was
+    # picked and that nothing is left, which is more use than a verdict on the
+    # request as a whole.
 
     # At least one technology, each drawn from the source request's own stack.
     source_techs = {c.technology_code for c in source.components if c.technology_code}
@@ -346,7 +376,6 @@ def _validate_decommission_fields(data: dict, session: Session, errors: dict[str
     # Which of the source's components are still RUNNING. After a partial
     # decommission some are already gone, and asking to tear one down a second
     # time would hand the orchestrator a workspace that no longer exists.
-    live = _live_technologies(session, source)
     for component in selected:
         tech = (component.get("technology_code") or "").strip()
         if tech not in source_techs:

@@ -2734,6 +2734,7 @@ def list_requests(
     technology: str | None = None,
     deployment_target: str | None = None,
     created_week: str | None = None,
+    decommissionable: bool = False,
     session: Session = Depends(get_session),
 ) -> list[RequestOut]:
     """List requests newest-first with optional filters.
@@ -2757,6 +2758,28 @@ def list_requests(
     if status:
         wanted = [s.strip() for s in status.split(",") if s.strip()]
         stmt = stmt.where(Request.status.in_(wanted))
+    if decommissionable:
+        # ASKED OF THE LEDGER, NOT OF THE STATUS. The decommission picker used
+        # `status='provisioned'`, which hid REQ-2026-0232 — a request whose
+        # machine was built, failed verification, and went on running and
+        # billing with no way to remove it through the portal.
+        #
+        # A resource that still exists can still be destroyed, whatever the
+        # request that made it is called now.
+        # A WIDENING OF `status='provisioned'`, NOT A REPLACEMENT.
+        #
+        # Something still active is decommissionable whatever the request is
+        # called now — that is what hid REQ-2026-0232. But a request with NO
+        # ledger at all is not evidence of absence: mock mode records nothing,
+        # and neither did requests provisioned before the ledger existed.
+        # Dropping those would empty the picker for the entire demo path.
+        has_ledger = select(ProvisionedResource.id).where(
+            ProvisionedResource.reference == Request.reference)
+        stmt = stmt.where(or_(
+            has_ledger.where(
+                ProvisionedResource.lifecycle_state == "active").exists(),
+            (Request.status == "provisioned") & ~has_ledger.exists(),
+        ))
     if request_type:
         stmt = stmt.where(Request.request_type == request_type)
     if deployment_target:

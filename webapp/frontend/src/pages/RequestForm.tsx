@@ -305,7 +305,10 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
   // (decommission/refresh/restore/reduce operate on one; clone copies one).
   useEffect(() => {
     if ((isDecommission || isRefresh || isRestore || isClone || isReduce || isDr) && email) {
-      getRequests({ requester: email, status: 'provisioned' })
+      // Anything with a resource still active — not just requests whose
+      // status says 'provisioned'. A machine that failed its boot
+      // verification is still a machine, and still billing.
+      getRequests({ requester: email, decommissionable: true })
         .then(setProvisioned)
         .catch(() => setProvisioned([]))
     }
@@ -841,7 +844,7 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
               </Select>
               {provisioned.length === 0 && (
                 <p style={{ color: 'var(--cds-text-secondary)', fontSize: '0.85rem' }}>
-                  You have no provisioned requests to decommission.
+                  You have nothing with active resources to decommission.
                 </p>
               )}
               {sourceComponents.length > 0 && (
