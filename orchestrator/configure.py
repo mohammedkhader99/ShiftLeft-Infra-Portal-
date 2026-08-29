@@ -588,17 +588,61 @@ def _report_script(wanted: list[tuple[str, str]], packages: list[str],
         # The wait was built to depend on the very thing it was meant to
         # discover. Bounded at three minutes, and it returns the moment
         # something binds, so a fast container costs nothing.
-        checks.append("  LI=")
+        # WHAT THE IMAGE SAYS IT SERVES, asked of the image on this machine.
+        #
+        # REQ-2026-0227. The wait below used to stop at the FIRST port to bind,
+        # and for SQL Server that is 135 — the DTC RPC listener, which comes up
+        # at once, while the database engine takes another half minute or more
+        # to initialise a fresh instance. So the machine reported
+        # `listening_inside=135`, the narrowing pass took that as the answer,
+        # and the certification gate correctly refused a container that was
+        # merely still starting.
+        #
+        # The comment this replaces named the very defect it was fixing —
+        # "`listening_inside=none` then meant we looked too early" — and made
+        # the wait wait for SOMETHING when what it needed was THE THING.
+        #
+        # ASKED OF THE IMAGE, not carried in the recipe. The image is right here
+        # and it is the publisher's own statement; a field in the profile would
+        # be one more copy of a fact to disagree with the original.
+        checks.append(
+            f"  DECL=$(podman image inspect {pinned} --format "
+            f"'{{{{range $p, $v := .Config.ExposedPorts}}}}{{{{$p}}}} {{{{end}}}}' "
+            f"2>/dev/null | tr ' ' '\\n' "
+            f"| sed -n 's|^\\([0-9][0-9]*\\)/tcp$|\\1|p' "
+            f"| sort -un | paste -sd, -)")
+        checks.append(f'  echo "declares_{key}=${{DECL:-none}}"')
+        checks.append("  LI=; READY=")
         checks.append("  for _ in $(seq 1 36); do")
         checks.append(
             f"    LI=$(for F in /proc/net/tcp /proc/net/tcp6; do "
             f"podman exec {code} cat $F 2>/dev/null; done "
             f"| {awk_listen} | sort -u | {to_decimal} "
             f"| sort -un | paste -sd, -)")
-        checks.append('    [ -n "$LI" ] && break')
+        # An image that declares nothing keeps the old rule: anything will do,
+        # because there is no claim to wait for.
+        checks.append('    if [ -z "$DECL" ]; then')
+        checks.append('      [ -n "$LI" ] && READY=1')
+        checks.append("    else")
+        checks.append('      for W in $(echo "$DECL" | tr "," " "); do')
+        checks.append('        case ",$LI," in *,"$W",*) READY=1 ;; esac')
+        checks.append("      done")
+        checks.append("    fi")
+        checks.append('    [ -n "$READY" ] && break')
         checks.append("    sleep 5")
         checks.append("  done")
         checks.append(f'  echo "listening_inside_{key}=${{LI:-none}}"')
+        # AND IF IT NEVER CAME UP, SAY WHAT THE CONTAINER SAID.
+        #
+        # The report used to end at a port number, leaving "why" to be inferred
+        # from it — which is how three hours went on whether SQL Server was
+        # refusing a password, refusing a licence, or simply slow. The container
+        # holds the answer and was never asked for it.
+        checks.append('  if [ -z "$READY" ]; then')
+        checks.append(
+            f"    podman logs --tail 15 {code} 2>&1 "
+            f"| sed 's|^|  {key} log: |'")
+        checks.append("  fi")
 
         data_dir = spec.get("data_dir")
         if data_dir:

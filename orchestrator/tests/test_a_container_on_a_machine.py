@@ -480,8 +480,16 @@ def test_the_listening_probe_waits_for_the_container_to_bind(
     probe = text[text.index("LI="):text.index("listening_inside_rabbitmq=")]
     assert "seq 1 36" in probe, "it samples once and calls that a measurement"
     assert "sleep 5" in probe
-    assert '[ -n "$LI" ] && break' in probe, (
+    # RE-POINTED 2026-08-28, REQ-2026-0227. The property here is EARLY
+    # RETURN: a healthy container must not cost three minutes of first boot.
+    # It used to be asserted as `[ -n "$LI" ] && break`, which is early
+    # return for the WRONG reason — it stopped at whatever bound first, and
+    # for SQL Server that is the DTC listener on 135 while the database is
+    # still initialising. The guarantee is unchanged; the condition is now a
+    # port the IMAGE declares actually being up.
+    assert "break" in probe, (
         "it waits the full three minutes even when the container binds at once")
+    assert '[ -n "$READY" ] && break' in probe
 
 
 def test_the_wait_is_bounded():
@@ -512,3 +520,82 @@ def test_the_port_wait_does_not_assume_http(tmp_path, monkeypatch):
         assert "ss -lnt" in line, f"the wait assumes HTTP: {line.strip()}"
         assert "curl" not in line
     assert "grep -q ':5672 '" in run
+
+
+# --- waiting for the port the image declares (REQ-2026-0227) -------------------
+#
+# The wait used to stop at the FIRST port to bind. For SQL Server that is 135 —
+# the DTC RPC listener, up at once — while the database engine takes another
+# half minute or more to initialise a fresh instance. So the machine reported
+# `listening_inside_mssql=135`, the narrowing pass took that as the recipe, and
+# the certification gate correctly refused a container that was merely still
+# starting. Three requests and three machines to find out.
+#
+# The comment it replaced named the very defect it was fixing — "listening_
+# inside=none then meant we looked too early" — and made the wait wait for
+# SOMETHING when what it needed was THE THING.
+
+def test_the_machine_asks_the_IMAGE_what_it_serves(tmp_path, monkeypatch):
+    """Not carried in the recipe. The image is right there and it is the
+    publisher's own statement; a field in the profile would be one more copy of
+    a fact to disagree with the original."""
+    script = report(tmp_path, monkeypatch)
+
+    assert "DECL=$(podman image inspect" in script, (
+        "the declared ports come from somewhere other than the image itself")
+    assert "ExposedPorts" in script
+    assert "declares_rabbitmq=" in script
+
+
+def test_the_wait_does_not_stop_at_the_first_port_to_bind(tmp_path, monkeypatch):
+    """THE defect. The loop must break on a DECLARED port being up, never on
+    'something is listening'."""
+    script = report(tmp_path, monkeypatch)
+
+    assert '[ -n "$READY" ] && break' in script, (
+        "the wait still breaks on whatever bound first")
+    assert '[ -n "$LI" ] && break' not in script, (
+        "the old any-port break is still in the script")
+
+
+def test_an_image_that_declares_nothing_keeps_the_old_rule(tmp_path, monkeypatch):
+    """There is no claim to wait for, so anything will do — the same exemption
+    the certification gate makes."""
+    script = report(tmp_path, monkeypatch)
+
+    assert 'if [ -z "$DECL" ]; then' in script
+    assert '[ -n "$LI" ] && READY=1' in script
+
+
+def test_the_wait_is_still_bounded(tmp_path, monkeypatch):
+    """A machine that waits forever is worse than one that answers wrongly:
+    nothing else in the request can finish."""
+    script = report(tmp_path, monkeypatch)
+
+    assert "for _ in $(seq 1 36); do" in script  # 36 x 5s = three minutes
+    assert "sleep 5" in script
+
+
+def test_a_container_that_never_came_up_reports_its_own_words(
+        tmp_path, monkeypatch):
+    """The report used to end at a port number, leaving 'why' to be inferred
+    from it — which is how hours went on whether SQL Server was refusing a
+    password, refusing a licence, or simply slow. The container holds the
+    answer and was never asked for it."""
+    script = report(tmp_path, monkeypatch)
+
+    assert "podman logs --tail" in script
+    assert 'if [ -z "$READY" ]; then' in script, (
+        "the log is captured unconditionally, so every healthy machine pays for "
+        "it and the signal is buried")
+
+
+def test_the_log_is_prefixed_so_it_cannot_be_read_as_a_verdict(
+        tmp_path, monkeypatch):
+    """Every other line in this report is `key=value` and the verdict parses
+    them. Unprefixed container output could contain an `=` and be read as a
+    claim the machine never made — the mistake that renamed version_binary_ to
+    binary_ once already."""
+    script = report(tmp_path, monkeypatch)
+
+    assert "log: " in script
