@@ -250,3 +250,51 @@ def test_an_approved_request_is_not_reported_as_awaiting_approval(client, db):
 
     assert client.get(
         "/api/requests/REQ-2026-0001/queue").json()["awaiting_approval"] is False
+
+
+# --- a cached answer about a request that has moved on is a wrong answer ----------
+
+MY_REQUESTS = "webapp/frontend/src/pages/MyRequests.tsx"
+
+
+def test_the_queue_panel_is_gated_on_the_live_status_not_only_the_payload():
+    """REQ-2026-0243 read "Waiting for approval - nothing is built until this is
+    approved in Jira (SDIMD-81211)" while its own stepper on the same screen said
+    Approved 17:34 and the agent was already building it.
+
+    The API was right: request.status was `auto-building` and approval.status was
+    `approved`. The BROWSER was showing an answer it had fetched while the
+    request was still `submitted`, kept after the fetch stopped.
+
+    Two things fix it and this holds both: the cached answers are dropped when a
+    request's status changes, and the panel additionally refuses to render for a
+    request that is not in a waiting status -- so a stale payload cannot reach
+    the screen even for the frame between the two.
+
+    The front end has no test runner, so the contract is held here.
+    """
+    from pathlib import Path
+
+    source = Path(MY_REQUESTS).read_text(encoding="utf-8")
+
+    for panel in ("queue[r.reference]?.awaiting_approval",
+                  "queue[r.reference]?.waiting"):
+        guard = source[max(0, source.index(panel) - 200):source.index(panel)]
+        assert "WAITING_STATUSES.includes(r.status)" in guard, (
+            f"the {panel} panel is not gated on the request's live status, so a "
+            f"cached answer can be shown for a request that has moved on")
+
+
+def test_cached_panels_are_dropped_when_the_request_moves_on():
+    """The invalidation itself. Without it the panel is merely hidden while the
+    stale answer sits in memory, and it would reappear the moment a request
+    entered a waiting status again."""
+    from pathlib import Path
+
+    source = Path(MY_REQUESTS).read_text(encoding="utf-8")
+
+    assert "fetchedUnder[ref] !== status" in source, (
+        "nothing notices when a request's status changes")
+    for cache in ("setBoot", "setQueue"):
+        assert f"{cache}((s) => {{ const next = {{ ...s }}; delete next[ref]; return next }})" in source, (
+            f"{cache} is not invalidated when the request's status changes")

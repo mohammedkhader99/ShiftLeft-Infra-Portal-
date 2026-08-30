@@ -38,6 +38,12 @@ const SizedTable = Table as FC<
   ComponentProps<typeof Table> & { style?: CSSProperties }
 >
 
+// The statuses in which a request is waiting for the platform (or for an
+// approver) rather than being worked on. The queue panel is meaningful in these
+// and misleading in every other, so both the fetch AND the render are gated on
+// them -- see the comment on `fetchedUnder` below.
+const WAITING_STATUSES = ['submitted', 'planned']
+
 const FILTER_KEYS = ['status', 'request_type', 'technology', 'deployment_target', 'created_week', 'requested_by', 'subsidiary', 'reference']
 const OVERSIGHT = ['platform_admin', 'auditor', 'finops']
 
@@ -303,6 +309,20 @@ export default function MyRequests({ route }: { route: string }) {
   const [building, setBuilding] = useState<Record<string, AutobuildProgress | null>>({})
   // Where an approved request sits in the provisioning queue.
   const [queue, setQueue] = useState<Record<string, QueuePosition | null>>({})
+  // WHAT EACH CACHED ANSWER WAS FETCHED UNDER.
+  //
+  // A request moves: submitted -> auto-building -> provisioned. Every
+  // per-request panel cached here was fetched under one of those, and is
+  // wrong under the next. REQ-2026-0243 showed "Waiting for approval --
+  // nothing is built until this is approved in Jira" while its own stepper
+  // said Approved 17:34 and the agent was already building it: the queue
+  // was fetched while it was `submitted`, the fetch stopped when it moved
+  // on, and the answer from before stayed on screen.
+  //
+  // The boot report had the same fault more quietly -- fetched once per
+  // session, so a request expanded while building kept its "no report"
+  // answer after it provisioned.
+  const [fetchedUnder, setFetchedUnder] = useState<Record<string, string>>({})
   const [steps, setSteps] = useState<Record<string, WFStep[]>>({})
 
   const query = parseQuery(route)
@@ -348,6 +368,14 @@ export default function MyRequests({ route }: { route: string }) {
     expanded.forEach((ref) => {
       const row = rows.find((r) => r.reference === ref)
       const status = row?.status ?? ''
+      // The status this request's cached answers were fetched under has changed,
+      // so they describe a request that no longer exists. Drop them; the fetches
+      // below refill whichever still apply.
+      if (status && fetchedUnder[ref] !== status) {
+        setFetchedUnder((s) => ({ ...s, [ref]: status }))
+        setBoot((s) => { const next = { ...s }; delete next[ref]; return next })
+        setQueue((s) => { const next = { ...s }; delete next[ref]; return next })
+      }
       getAudit(ref)
         .then((a) =>
           setSteps((s) => ({ ...s, [ref]: workflowSteps(status, a, row?.request_type) })),
@@ -372,13 +400,13 @@ export default function MyRequests({ route }: { route: string }) {
       }
       // Queue position. Only meaningful before work starts, and it MOVES, so it
       // is refetched with the list rather than cached once.
-      if (status === 'submitted' || status === 'planned') {
+      if (WAITING_STATUSES.includes(status)) {
         getQueuePosition(ref)
           .then((q) => setQueue((s) => ({ ...s, [ref]: q })))
           .catch(() => setQueue((s) => ({ ...s, [ref]: null })))
       }
     })
-  }, [expanded, rows])
+  }, [expanded, rows, fetchedUnder])
 
   function toggle(ref: string) {
     setExpanded((s) => {
@@ -958,7 +986,8 @@ export default function MyRequests({ route }: { route: string }) {
                           waiting for the platform, and sending somebody to
                           watch a queue that is not holding them up wastes
                           their time. */}
-                      {queue[r.reference]?.awaiting_approval && (
+                      {WAITING_STATUSES.includes(r.status)
+                        && queue[r.reference]?.awaiting_approval && (
                         <div style={{ marginTop: '1rem', fontSize: '0.82rem' }}>
                           <strong>Waiting for approval</strong>
                           <div style={{ color: 'var(--cds-text-secondary)', marginTop: '0.3rem', fontSize: '0.78rem' }}>
@@ -969,7 +998,8 @@ export default function MyRequests({ route }: { route: string }) {
                         </div>
                       )}
 
-                      {queue[r.reference]?.waiting && (
+                      {WAITING_STATUSES.includes(r.status)
+                        && queue[r.reference]?.waiting && (
                         <div style={{ marginTop: '1rem', fontSize: '0.82rem' }}>
                           <strong>Waiting to be built</strong>
                           <div style={{ color: 'var(--cds-text-secondary)', marginTop: '0.3rem', fontSize: '0.78rem' }}>
