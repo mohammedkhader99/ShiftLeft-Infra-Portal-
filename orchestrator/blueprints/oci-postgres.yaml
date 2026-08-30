@@ -3,6 +3,23 @@ target: oci
 resource_kind: oci-postgres
 module: .
 version: 1.0.0
+
+# HOW THIS IS DELIVERED -- the cloud runs it, or we build machines and put the
+# software on them.
+#
+# DECLARED, NEVER INFERRED. The same fact was once guessed from the technology
+# CODE -- anything not prefixed `oci-`/`aws-` was assumed to be software on a
+# machine -- and it was wrong in both directions: `postgres16` is OCI's managed
+# database and read as software, while "Backup & Recovery" is an outcome nobody
+# can install and read as software too. db/models.TechnologyDelivery exists
+# because of that. This is the same fact about the BLUEPRINT, and it is stated
+# here for the same reason.
+#
+# It is what lets the request form tell a requester what they are actually
+# getting, and what will let them CHOOSE once a technology has more than one.
+#
+# OCI runs the database; no machine of ours is involved.
+delivery: managed
 builds: [postgres16]
 # The Terraform variable this module names its resource with.
 name_var: db_name

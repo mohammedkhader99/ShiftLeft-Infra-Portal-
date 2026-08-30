@@ -324,6 +324,18 @@ def discover(directory: Path | None = None,
             # machine. The catalogue's own list went stale — it offered nginx
             # 1.20 on an Oracle Linux 9.8 that has no such stream.
             "streams": _streams_for(manifest.get("builds") or []),
+            # HOW THIS DELIVERS: `managed` (the cloud runs it) or `vm` (we build
+            # machines and put software on them). "" means the manifest does not
+            # say, and the portal must then make NO delivery claim for it.
+            #
+            # NOT REQUIRED at runtime, deliberately. A required field here would
+            # DROP any manifest that lacked it, and a dropped blueprint makes its
+            # technologies unprovisionable — which is exactly how the
+            # certification gate left bare VMs unbuildable for twelve days
+            # without anyone noticing. The shipped set is held to declaring it by
+            # test_every_blueprint_says_how_it_delivers.py instead, where a gap
+            # fails a build rather than a request.
+            "delivery": str(manifest.get("delivery") or "").strip().lower(),
             "description": str(manifest.get("description") or ""),
             # Which Terraform variable carries the environment's name. Modules
             # disagree (bucket_name, instance_name, db_name...), and hard-coding

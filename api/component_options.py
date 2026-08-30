@@ -342,6 +342,9 @@ def options_for(session: Session, technology_code: str, deployment_target: str =
         "deployment_target": (deployment_target or "").strip() or None,
         "fields": fields,
         "presets": presets(session, technology_code),
+        # HOW THIS COMPONENT WILL BE DELIVERED — a managed service the cloud
+        # runs, or a machine we build. Reported, not asked: see delivery_for.
+        "delivery": delivery_for(session, technology_code, deployment_target),
         # The chosen image's OS family, and whether this technology can actually
         # be installed on it. The form shows the warning; validation refuses the
         # combination outright — see validate().
@@ -355,6 +358,61 @@ def options_for(session: Session, technology_code: str, deployment_target: str =
         # Same disclosure for the network check: False means images were
         # not filtered on what this subnet can reach.
         "network_known": network_egress.known(),
+    }
+
+
+#: How a delivery reads on screen, and what it means in one line.
+DELIVERY_LABELS = {
+    "managed": ("Managed service",
+                "the cloud provider runs it — there is no machine to patch"),
+    "vm": ("Virtual machine",
+           "a machine we build, with the software installed on it"),
+}
+
+
+def delivery_for(session: Session, technology_code: str,
+                 deployment_target: str = "") -> dict:
+    """How this technology will be delivered, from the blueprint that builds it.
+
+    WHY THE REQUESTER IS TOLD. "PostgreSQL" and "Kafka" sit next to each other on
+    one catalogue and arrive as completely different things: one is a database
+    OCI runs, the other is three machines somebody has to patch. Nothing on the
+    form said so. A requester learned it from the bill, or from being handed a
+    machine they did not know they now owned.
+
+    READ FROM THE BLUEPRINT THAT WILL ACTUALLY BUILD IT, never from the
+    technology's name or its catalogue classification. Inferring it from the code
+    is the mistake db/models.TechnologyDelivery was created to end: `postgres16`
+    reads as software by that rule and is a managed service.
+
+    Returns {options, chosen, known}. `known` False means the orchestrator could
+    not be reached, and the form must say "not known" rather than show nothing —
+    an unreachable orchestrator and a technology nothing builds are different
+    facts, and only one of them is the requester's problem.
+
+    MORE THAN ONE OPTION IS REPORTED, NOT CHOSEN. No technology has two today,
+    and the certification table cannot hold two: `blueprint` is keyed on
+    (technology, target), so a second certified delivery has nowhere to live.
+    Until that is widened the portal must not offer a choice it cannot honour —
+    which is the whole reason this reports what WILL happen rather than asking.
+    """
+    options = blueprint_capabilities.deliveries_for(technology_code,
+                                                    _fetch_blueprints)
+    target = (deployment_target or "").strip().lower()
+    if target:
+        options = [o for o in options
+                   if not o.get("target") or o["target"] == target]
+    out = []
+    for option in options:
+        label, meaning = DELIVERY_LABELS.get(
+            option["delivery"], (option["delivery"].title() or "Unclassified", ""))
+        out.append({**option, "label": label, "meaning": meaning})
+    return {
+        "options": out,
+        # What the platform will use. One option means one answer; with more than
+        # one the portal states the first rather than implying a choice exists.
+        "chosen": out[0]["delivery"] if out else None,
+        "known": blueprint_capabilities.known(),
     }
 
 

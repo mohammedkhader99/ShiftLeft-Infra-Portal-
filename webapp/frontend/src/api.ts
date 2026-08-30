@@ -43,6 +43,26 @@ export type ComponentOptions = {
   // it on submit, so the form says so rather than letting it get that far.
   os_family: string | null
   installable: boolean
+  // HOW THIS COMPONENT ARRIVES — a managed service the cloud runs, or a machine
+  // we build. Read from the blueprint that will actually build it, so the form
+  // cannot say one thing while the orchestrator does another.
+  //
+  // `known: false` means the orchestrator could not be reached. That is shown as
+  // "not known" and never as an absence: an unreachable orchestrator and a
+  // technology nothing builds are different facts.
+  delivery?: {
+    options: {
+      delivery: string
+      target: string
+      ref: string
+      resource_kind: string
+      description: string
+      label: string
+      meaning: string
+    }[]
+    chosen: string | null
+    known: boolean
+  }
 }
 
 export async function getComponentOptions(

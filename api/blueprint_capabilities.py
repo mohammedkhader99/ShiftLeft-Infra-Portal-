@@ -36,6 +36,9 @@ _proven: dict[str, set[str]] = {}
 _unverifiable: dict[str, str] = {}
 _network_tiers: dict[str, list] = {}
 _streams: dict[tuple[str, str], list] = {}
+# {technology: [{delivery, ref, resource_kind, description}]} — every way the
+# orchestrator can build this technology, in declaration order.
+_deliveries: dict[str, list[dict]] = {}
 _fetched_at: float = 0.0
 _lock = threading.Lock()
 
@@ -141,6 +144,26 @@ def refresh(fetcher) -> bool:
         _network_tiers.clear()
         _streams.clear()
         _internet.clear()
+        _deliveries.clear()
+        for bp in shipped or []:
+            delivery = str(bp.get("delivery") or "").strip().lower()
+            # A BLUEPRINT THAT DOES NOT SAY IS NOT COUNTED. Unclassified and
+            # `vm` are different facts, and defaulting one to the other would
+            # put a delivery on the request form that nobody declared.
+            if not delivery or bp.get("error"):
+                continue
+            for code in bp.get("builds") or []:
+                option = {"delivery": delivery,
+                          # The CLOUD this blueprint builds on. Without it a
+                          # request against AWS would be told how the OCI
+                          # blueprint delivers, which is a different product.
+                          "target": str(bp.get("target") or "").strip().lower(),
+                          "ref": str(bp.get("ref") or ""),
+                          "resource_kind": str(bp.get("resource_kind") or ""),
+                          "description": str(bp.get("description") or "")}
+                existing = _deliveries.setdefault(str(code), [])
+                if not any(o["ref"] == option["ref"] for o in existing):
+                    existing.append(option)
         for bp in shipped or []:
             for code, why in (bp.get("cannot_verify") or {}).items():
                 _unverifiable[str(code)] = str(why)
@@ -158,6 +181,25 @@ def refresh(fetcher) -> bool:
                     str(f).strip().lower() for f in families or [])
         _fetched_at = time.time()
     return True
+
+
+def deliveries_for(code: str, fetcher) -> list[dict]:
+    """Every way the orchestrator can build this technology.
+
+    Each entry is {delivery, ref, resource_kind, description}, where `delivery`
+    is `managed` (the cloud runs it) or `vm` (we build machines and install the
+    software on them).
+
+    EMPTY MEANS "NOTHING IS KNOWN", not "there is no way to build it" — the
+    orchestrator may simply be unreachable. The caller must show that as unknown
+    rather than as an absence, for the same reason families_for returns None: a
+    lookup failure that reads as a fact is how the Apache-on-Ubuntu filter came
+    to be silently inert in production.
+    """
+    global _cache
+    if _cache is None or (time.time() - _fetched_at) > ttl_seconds():
+        refresh(fetcher)
+    return [dict(o) for o in _deliveries.get((code or "").strip(), [])]
 
 
 def needs_internet(code: str) -> bool:
@@ -279,3 +321,4 @@ def reset() -> None:
         _refusals.clear()
         _proven.clear()
         _unverifiable.clear()
+        _deliveries.clear()

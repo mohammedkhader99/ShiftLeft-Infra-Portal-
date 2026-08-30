@@ -275,6 +275,11 @@ module: .
 version: 0.1.0
 builds: [{candidate}]
 name_var: {name_var}
+# The agent writes modules that build MACHINES. It does not draft managed
+# services: those are products a cloud sells, not Terraform anybody can compose,
+# and claiming one would put an offering on the request form that nothing can
+# build.
+delivery: vm
 description: DRAFT — proposed blueprint for {candidate}. Not certified.
 '''
 

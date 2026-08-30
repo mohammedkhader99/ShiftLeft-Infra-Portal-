@@ -1327,6 +1327,36 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
                                   </div>
                                 )}
 
+                                {/* WHAT YOU ARE ACTUALLY GETTING.
+                                    "PostgreSQL" and "Kafka" sit next to each
+                                    other on one catalogue and arrive as
+                                    completely different things: one is a
+                                    database OCI runs, the other is machines
+                                    somebody has to patch. Nothing here said so,
+                                    and a requester found out from the bill. */}
+                                {opts?.delivery && opts.delivery.options.length > 0 && (
+                                  <p style={{ fontSize: '0.72rem', color: 'var(--cds-text-secondary)', marginTop: '0.5rem' }}>
+                                    <strong>{opts.delivery.options[0].label}</strong>
+                                    {' — '}{opts.delivery.options[0].meaning}.
+                                    {opts.delivery.options.length > 1 && (
+                                      <>
+                                        {' '}This can also be delivered as{' '}
+                                        {opts.delivery.options.slice(1).map((o) => o.label.toLowerCase()).join(', ')}.
+                                        The platform will use the first; choosing between
+                                        them is not yet available.
+                                      </>
+                                    )}
+                                  </p>
+                                )}
+
+                                {opts?.delivery && opts.delivery.options.length === 0 && (
+                                  <p style={{ fontSize: '0.72rem', color: 'var(--cds-text-secondary)', marginTop: '0.5rem' }}>
+                                    {opts.delivery.known
+                                      ? 'No blueprint says how this is delivered, so the platform cannot tell you what you would get.'
+                                      : 'How this is delivered is not known right now — the build service could not be reached.'}
+                                  </p>
+                                )}
+
                                 {opts && !opts.installable && (
                                   <p style={{ fontSize: '0.75rem', color: 'var(--cds-text-error)', marginTop: '0.5rem' }}>
                                     {techName(c.technology_code)} cannot be installed on
