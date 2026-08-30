@@ -4235,6 +4235,56 @@ def request_boot_report(reference: str, session: Session = Depends(get_session),
     }
 
 
+@app.get("/api/requests/{reference}/queue")
+def request_queue_position(
+    reference: str, session: Session = Depends(get_session),
+    _auth: str = Depends(require_action("view_audit")),
+) -> dict:
+    """Why nothing is happening to this request yet.
+
+    THE PORTAL PROVISIONS ONE REQUEST AT A TIME, ON PURPOSE. The poller elects a
+    single leader and its sweep walks the approved requests in turn, because two
+    sweeps thirty seconds apart once started duplicate builds for one request.
+    One request auto-building for twenty minutes therefore holds every request
+    behind it, and until now the portal said nothing about that at all: an
+    approved request simply sat there.
+
+    Read from the SAME function the sweep uses, so the position shown is the
+    position that will actually be taken.
+
+    `working_on` is the request the poller is inside right now — the one actually
+    holding the queue. At most one, because the sweep is serial.
+    """
+    req = _load_request(reference, session)
+    queue = _queue_references(session)
+    working = [
+        r.reference
+        for r in session.scalars(
+            select(Request)
+            .where(Request.status.in_(WORKING_STATUSES))
+            .order_by(Request.id)).all()
+    ]
+
+    ahead = queue[:queue.index(reference)] if reference in queue else []
+    return {
+        "reference": reference,
+        # Waiting means: approved, and the sweep has not reached it yet.
+        "waiting": reference in queue,
+        # 1-based, and only meaningful while waiting.
+        "position": queue.index(reference) + 1 if reference in queue else None,
+        "ahead": ahead,
+        "working_on": working,
+        # So the page can say "checked every 30 seconds" rather than leaving a
+        # reader to wonder whether anything is watching at all.
+        "poll_interval_seconds": max(2, int(
+            os.getenv("POLL_INTERVAL_SECONDS", "30"))),
+        # An approved request that is NOT queued and NOT being worked on has
+        # nothing coming: the poller is off. Stated rather than shown as an
+        # empty queue, which looks identical and means something else entirely.
+        "poller_running": auto_provision_enabled(),
+    }
+
+
 @app.get("/api/requests/{reference}/autobuild")
 def request_autobuild_progress(
     reference: str, session: Session = Depends(get_session),
@@ -7272,17 +7322,45 @@ def _sweep_orphans(session: Session) -> None:
             session.commit()
 
 
+#: Statuses the sweep picks up. A request outside these is either not ready
+#: (draft, submitted-without-approval) or already being worked on.
+QUEUED_STATUSES = ("submitted", "planned")
+#: Statuses that mean the poller is INSIDE this request right now. One sweep
+#: advances a request from submitted all the way to provisioned in a single call,
+#: so at most one request is ever here — and it is the one holding the queue.
+WORKING_STATUSES = ("auto-building", "in-progress")
+
+
+def _queue_references(session: Session) -> list[str]:
+    """The approved requests waiting to be advanced, in the order they will be.
+
+    ORDERED, WHICH IT WAS NOT. This query had no `order_by`, so the sweep took
+    whatever order the database happened to return — usually insertion order,
+    never guaranteed, and free to change after any update. Nothing depended on
+    it while nobody could see the queue, and the moment a requester is told
+    "two requests ahead of you" it has to be true.
+
+    THE SAME FUNCTION ANSWERS BOTH QUESTIONS -- what the sweep will process, and
+    what a waiting requester is told. If the sweep ordered one way and the
+    display another, the two would drift, and the gap between them is where a
+    confident falsehood lives. The same reasoning as api.component_options.
+    """
+    return [
+        r.reference
+        for r in session.scalars(
+            select(Request)
+            .where(Request.status.in_(QUEUED_STATUSES))
+            .order_by(Request.id)
+        ).all()
+        if r.approval is not None
+    ]
+
+
 def _poll_once() -> None:
     """One sweep: advance every request that isn't finished, each in its own
     session so one bad request can't abort the others."""
     with SessionLocal() as session:
-        refs = [
-            r.reference
-            for r in session.scalars(
-                select(Request).where(Request.status.in_(("submitted", "planned")))
-            ).all()
-            if r.approval is not None
-        ]
+        refs = _queue_references(session)
     for ref in refs:
         try:
             with SessionLocal() as session:

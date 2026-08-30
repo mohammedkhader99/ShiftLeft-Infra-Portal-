@@ -1256,6 +1256,30 @@ export async function getAutobuildProgress(
   return (await r.json()) as AutobuildProgress
 }
 
+// Why nothing is happening to an approved request yet. The portal provisions
+// ONE request at a time by design — a single elected leader walks the approved
+// requests in turn — so one long build holds everything behind it. Until this,
+// an approved request simply sat there saying nothing.
+export type QueuePosition = {
+  reference: string
+  waiting: boolean
+  position: number | null
+  ahead: string[]
+  working_on: string[]
+  poll_interval_seconds: number
+  // False means the poller is OFF, which looks exactly like an empty queue and
+  // means something entirely different.
+  poller_running: boolean
+}
+
+export async function getQueuePosition(
+  reference: string,
+): Promise<QueuePosition | null> {
+  const r = await fetch(`/api/requests/${reference}/queue`)
+  if (!r.ok) return null
+  return (await r.json()) as QueuePosition
+}
+
 export async function getBootReport(reference: string): Promise<BootReport | null> {
   const r = await fetch(`/api/requests/${reference}/boot-report`)
   if (!r.ok) return null

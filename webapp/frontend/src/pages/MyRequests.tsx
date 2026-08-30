@@ -22,7 +22,7 @@ import {
   AccordionItem,
 } from '@carbon/react'
 import { WarningAltFilled, Renew, UserFollow, Search, Pause, Play, Close } from '@carbon/icons-react'
-import { getMe, getRequests, getAudit, renewRequest, cancelRequest, transferOwner, checkDrift, reconcileState, triageFailure, actuate, setRequestShutdown, createBackup, grantAccess, revokeAccess, setOwnerGroup, type RequestRow, type ShutdownPolicy, getBootReport, type BootReport, getAutobuildProgress, type AutobuildProgress } from '../api'
+import { getMe, getRequests, getAudit, renewRequest, cancelRequest, transferOwner, checkDrift, reconcileState, triageFailure, actuate, setRequestShutdown, createBackup, grantAccess, revokeAccess, setOwnerGroup, type RequestRow, type ShutdownPolicy, getBootReport, type BootReport, getAutobuildProgress, type AutobuildProgress, getQueuePosition, type QueuePosition } from '../api'
 import { workflowSteps, fmtWhen, type WFStep } from '../workflow'
 
 // Carbon's Table FORWARDS unknown props to the <table> element -- it spreads
@@ -301,6 +301,8 @@ export default function MyRequests({ route }: { route: string }) {
   // What the agent is doing to make this request buildable. Refetched
   // while it is still working, because that is the whole point.
   const [building, setBuilding] = useState<Record<string, AutobuildProgress | null>>({})
+  // Where an approved request sits in the provisioning queue.
+  const [queue, setQueue] = useState<Record<string, QueuePosition | null>>({})
   const [steps, setSteps] = useState<Record<string, WFStep[]>>({})
 
   const query = parseQuery(route)
@@ -367,6 +369,13 @@ export default function MyRequests({ route }: { route: string }) {
         getAutobuildProgress(ref)
           .then((b) => setBuilding((s) => ({ ...s, [ref]: b })))
           .catch(() => setBuilding((s) => ({ ...s, [ref]: null })))
+      }
+      // Queue position. Only meaningful before work starts, and it MOVES, so it
+      // is refetched with the list rather than cached once.
+      if (status === 'submitted' || status === 'planned') {
+        getQueuePosition(ref)
+          .then((q) => setQueue((s) => ({ ...s, [ref]: q })))
+          .catch(() => setQueue((s) => ({ ...s, [ref]: null })))
       }
     })
   }, [expanded, rows])
@@ -938,6 +947,42 @@ export default function MyRequests({ route }: { route: string }) {
                           </ul>
                         </div>
                       )}
+                      {/* WHY NOTHING IS HAPPENING YET.
+                          The portal provisions one request at a time on
+                          purpose: a single elected leader walks the approved
+                          requests in turn, because two sweeps thirty seconds
+                          apart once started duplicate builds for one request.
+                          A twenty-minute build therefore holds everything
+                          behind it, and the portal used to say nothing. */}
+                      {queue[r.reference]?.waiting && (
+                        <div style={{ marginTop: '1rem', fontSize: '0.82rem' }}>
+                          <strong>Waiting to be built</strong>
+                          <div style={{ color: 'var(--cds-text-secondary)', marginTop: '0.3rem', fontSize: '0.78rem' }}>
+                            {!queue[r.reference]!.poller_running ? (
+                              // An empty queue and a stopped poller look
+                              // identical and mean opposite things.
+                              <>Automatic provisioning is switched off, so this request
+                                is waiting for the infrastructure team rather than for a queue.</>
+                            ) : queue[r.reference]!.working_on.length > 0 ? (
+                              <>The platform builds one request at a time. It is working on{' '}
+                                <strong>{queue[r.reference]!.working_on.join(', ')}</strong>
+                                {queue[r.reference]!.ahead.length > 0 && (
+                                  <>, and {queue[r.reference]!.ahead.length} request
+                                    {queue[r.reference]!.ahead.length === 1 ? ' is' : 's are'} ahead of this one</>
+                                )}.
+                              </>
+                            ) : queue[r.reference]!.ahead.length > 0 ? (
+                              <>{queue[r.reference]!.ahead.length} request
+                                {queue[r.reference]!.ahead.length === 1 ? ' is' : 's are'} ahead of this one:{' '}
+                                {queue[r.reference]!.ahead.join(', ')}.
+                              </>
+                            ) : (
+                              <>Next in line — checked every {queue[r.reference]!.poll_interval_seconds} seconds.</>
+                            )}
+                          </div>
+                        </div>
+                      )}
+
                       {/* WHAT THE AGENT IS DOING, WHILE IT DOES IT.
                           A request rests on `auto-building` for tens of minutes
                           while real machines are built, tested and destroyed to
