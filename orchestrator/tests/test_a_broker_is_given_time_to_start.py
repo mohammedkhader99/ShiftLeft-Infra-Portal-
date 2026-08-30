@@ -89,6 +89,13 @@ def run_report(tmp_path, *, listening: bool, journal: str = "",
     # backslashes eaten as escapes -- C:\Users\... arrives as C:Users... and the
     # redirect fails silently. sh accepts C:/Users/... on this platform.
     here = str(tmp_path).replace("\\", "/")
+    # FAIL LOUDLY RATHER THAN WRITE SOMEWHERE ELSE. The first version of this
+    # harness left a Windows path in the script. sh ate the backslashes, so
+    # the redirect target stopped being absolute and became a RELATIVE file
+    # literally named "CUsersmohammed.khader...report.txt" -- created in the
+    # repository root, and committed before anyone noticed. The same shape as
+    # the draft blueprint that ended up outside the repository entirely.
+    assert "\\" not in here, f"the report path is not POSIX: {here}"
     script = (report_script()
               .replace("+ 180 ))", f"+ {deadline_seconds} ))")
               .replace("/var/log/infra-portal-report.txt", f"{here}/report.txt")

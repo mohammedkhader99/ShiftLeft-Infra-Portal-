@@ -1,3 +1,0 @@
-os_family=rhel
-technologies=kafka
-node=1
