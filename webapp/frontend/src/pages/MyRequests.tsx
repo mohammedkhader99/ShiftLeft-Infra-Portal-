@@ -22,7 +22,7 @@ import {
   AccordionItem,
 } from '@carbon/react'
 import { WarningAltFilled, Renew, UserFollow, Search, Pause, Play, Close } from '@carbon/icons-react'
-import { getMe, getRequests, getAudit, renewRequest, cancelRequest, transferOwner, checkDrift, reconcileState, triageFailure, actuate, setRequestShutdown, createBackup, grantAccess, revokeAccess, setOwnerGroup, type RequestRow, type ShutdownPolicy, getBootReport, type BootReport } from '../api'
+import { getMe, getRequests, getAudit, renewRequest, cancelRequest, transferOwner, checkDrift, reconcileState, triageFailure, actuate, setRequestShutdown, createBackup, grantAccess, revokeAccess, setOwnerGroup, type RequestRow, type ShutdownPolicy, getBootReport, type BootReport, getAutobuildProgress, type AutobuildProgress } from '../api'
 import { workflowSteps, fmtWhen, type WFStep } from '../workflow'
 
 // Carbon's Table FORWARDS unknown props to the <table> element -- it spreads
@@ -298,6 +298,9 @@ export default function MyRequests({ route }: { route: string }) {
   const [loaded, setLoaded] = useState(false)
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [boot, setBoot] = useState<Record<string, BootReport | null>>({})
+  // What the agent is doing to make this request buildable. Refetched
+  // while it is still working, because that is the whole point.
+  const [building, setBuilding] = useState<Record<string, AutobuildProgress | null>>({})
   const [steps, setSteps] = useState<Record<string, WFStep[]>>({})
 
   const query = parseQuery(route)
@@ -355,6 +358,15 @@ export default function MyRequests({ route }: { route: string }) {
         getBootReport(ref)
           .then((b) => setBoot((s) => ({ ...s, [ref]: b })))
           .catch(() => setBoot((s) => ({ ...s, [ref]: null })))
+      }
+      // The agent's progress. Fetched whenever a run is or was in flight --
+      // NOT cached like the boot report above, because the interesting case is
+      // precisely the one where the answer keeps changing. The list itself
+      // re-polls, so this rides along with it.
+      if (status === 'auto-building' || building[ref] === undefined) {
+        getAutobuildProgress(ref)
+          .then((b) => setBuilding((s) => ({ ...s, [ref]: b })))
+          .catch(() => setBuilding((s) => ({ ...s, [ref]: null })))
       }
     })
   }, [expanded, rows])
@@ -926,12 +938,90 @@ export default function MyRequests({ route }: { route: string }) {
                           </ul>
                         </div>
                       )}
+                      {/* WHAT THE AGENT IS DOING, WHILE IT DOES IT.
+                          A request rests on `auto-building` for tens of minutes
+                          while real machines are built, tested and destroyed to
+                          prove a recipe. All of this was already recorded and
+                          none of it was shown. */}
+                      {building[r.reference]
+                        && building[r.reference]!.components.some(
+                          (c) => c.proofs.length > 0 || c.recipe) && (
+                        <div style={{ marginTop: '1rem', fontSize: '0.82rem' }}>
+                          <strong>
+                            {building[r.reference]!.active
+                              ? 'Making it buildable — in progress'
+                              : 'How this was made buildable'}
+                          </strong>
+                          {building[r.reference]!.components.map((c) => (
+                            <div key={c.code} style={{ marginTop: '0.6rem' }}>
+                              <div style={{ color: 'var(--cds-text-secondary)' }}>
+                                <strong style={{ color: 'var(--cds-text-primary)' }}>{c.code}</strong>
+                                {c.certified
+                                  ? ' · buildable'
+                                  : ' · no certified recipe yet'}
+                              </div>
+
+                              {c.recipe && c.recipe.image && (
+                                <div style={{ marginTop: '0.3rem', fontSize: '0.74rem', color: 'var(--cds-text-secondary)' }}>
+                                  <div>The agent chose <strong>{c.recipe.image}</strong>{c.recipe.tag ? `:${c.recipe.tag}` : ''}</div>
+                                  {/* The pinned digest is the whole promise: the
+                                      image proved and the image installed are
+                                      the same bytes even if the tag moves. */}
+                                  {c.recipe.digest && (
+                                    <div style={{ fontFamily: 'monospace', fontSize: '0.7rem' }}>
+                                      pinned {c.recipe.digest.slice(0, 26)}…
+                                      {c.recipe.platform_digest && ' (+ its amd64 build)'}
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+
+                              {c.proofs.length > 0 && (
+                                <ul style={{ margin: '0.4rem 0 0', paddingLeft: '1rem', fontSize: '0.74rem' }}>
+                                  {c.proofs.map((p) => (
+                                    <li key={p.reference} style={{ marginBottom: '0.2rem' }}>
+                                      <span style={{
+                                        color: p.status === 'passed' ? 'var(--cds-support-success)'
+                                          : p.status === 'running' ? 'var(--cds-support-info)'
+                                          : 'var(--cds-support-error)',
+                                      }}>
+                                        {p.status === 'running' ? 'proving now' : p.status}
+                                      </span>
+                                      {' · '}{fmtWhen(p.started_at || undefined)}
+                                      {' · '}{Math.floor(p.seconds / 60)}m {p.seconds % 60}s
+                                      {p.status === 'running' && ' so far'}
+                                      {p.detail && (
+                                        <div style={{ color: 'var(--cds-text-secondary)' }}>{p.detail}</div>
+                                      )}
+                                    </li>
+                                  ))}
+                                </ul>
+                              )}
+                            </div>
+                          ))}
+                          {building[r.reference]!.active && !building[r.reference]!.attempts_recorded && (
+                            <p style={{ marginTop: '0.5rem', fontSize: '0.72rem', color: 'var(--cds-text-secondary)' }}>
+                              Each proof builds a real machine, installs the software, asks the
+                              machine what it became, and destroys it. Which install method is
+                              being tried right now is not recorded until the run finishes.
+                            </p>
+                          )}
+                        </div>
+                      )}
+
                       {/* What the machine said about itself at first boot.
                           Collapsed behind a disclosure, like "What was built":
                           it is a wall of text most of the time, and the one line
                           worth seeing without opening it is what the machine
                           turned out to be. */}
-                      {boot[r.reference] && (
+                      {/* NOT WHILE THE KIND IS STILL PROVISIONAL. Until a
+                          blueprint is certified the request carries the fallback
+                          `oci-bucket`, and this panel dutifully reported
+                          "oci-bucket · not a machine — nothing boots, so nothing
+                          can report" while a proof machine was being built and
+                          torn down. True of a bucket, and a flat falsehood about
+                          the request. The panel above says what is happening. */}
+                      {boot[r.reference] && r.status !== 'auto-building' && (
                         <div style={{ marginTop: '1rem', fontSize: '0.82rem' }}>
                           <strong>
                             What the machine reported

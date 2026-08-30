@@ -4235,6 +4235,115 @@ def request_boot_report(reference: str, session: Session = Depends(get_session),
     }
 
 
+@app.get("/api/requests/{reference}/autobuild")
+def request_autobuild_progress(
+    reference: str, session: Session = Depends(get_session),
+    _auth: str = Depends(require_action("view_audit")),
+) -> dict:
+    """What the agent is doing to make this request buildable, while it does it.
+
+    A REQUEST CAN SIT ON `auto-building` FOR HALF AN HOUR SAYING NOTHING.
+    REQ-2026-0239 spent that time productively — three package names refuted by
+    real machines in August, then a container recipe written, proved on a machine
+    for eight minutes, and re-proved with its ports narrowed — and the only thing
+    the requester could see was a stepper resting on "Planned". Everything below
+    was already in the database; nothing read it out.
+
+    A READ, AND NOTHING MORE. No new bookkeeping is added to the build path: the
+    proof rows are written by the certification loop because certification is
+    DERIVED from them (ARCHITECTURE P8), and the recipe is read from the store
+    through the same path-confined reader the agent publishes with. So this
+    cannot slow a build down or change what one does.
+
+    WHAT IT CANNOT SHOW, and says so rather than implying otherwise: which RUNG
+    of the install ladder is being tried right now. Those attempts live in memory
+    until the run ends. `attempts_recorded` is False so the panel can say "not
+    recorded while it runs" instead of leaving a reader to conclude nothing
+    happened.
+
+    Guarded by view_audit, exactly like the boot report beside it: this exposes a
+    proof's cost and a machine's failure text.
+    """
+    # Imported here, like the other request sub-resources do: main.py's
+    # module-level model imports are the ones the request path needs, and
+    # a proof row is read by exactly one endpoint.
+    from api import proof_wiring
+    from db.models import CertificationProof
+
+    req = _load_request(reference, session)
+    target = (req.deployment_target or "").strip().lower()
+    unmet = _unautomated_components(session, req)
+    stored = proof_wiring.make_stored()
+    now = datetime.now(timezone.utc)
+
+    started = session.scalar(
+        select(AuditLog.created_at)
+        .where(AuditLog.reference == reference,
+               AuditLog.event == "autobuild.started")
+        .order_by(AuditLog.id.desc()))
+
+    def seconds(row) -> int:
+        end = row.finished_at or now
+        begin = row.started_at
+        if begin is None:
+            return 0
+        if begin.tzinfo is None:  # SQLite hands these back naive
+            begin = begin.replace(tzinfo=timezone.utc)
+        if end.tzinfo is None:
+            end = end.replace(tzinfo=timezone.utc)
+        return max(0, int((end - begin).total_seconds()))
+
+    components = []
+    for code in [c.technology_code for c in req.components if c.technology_code]:
+        rows = session.scalars(
+            select(CertificationProof)
+            .where(CertificationProof.technology_code == code,
+                   CertificationProof.deployment_target == target)
+            .order_by(CertificationProof.id.desc())
+            .limit(12)).all()
+        recipe = stored(code) or {}
+        container = recipe.get("container") or {}
+        components.append({
+            "code": code,
+            # Whether it is buildable NOW. The whole point of the run is to turn
+            # this from false to true, so it is the one fact worth leading with.
+            "certified": code not in unmet,
+            # The recipe the agent wrote, if it has published one yet. The image
+            # and its pinned digest are what a reviewer actually wants to see —
+            # "which container did you decide to run in my estate".
+            "recipe": ({
+                "image": container.get("image"),
+                "tag": container.get("tag"),
+                "digest": container.get("digest"),
+                "platform_digest": container.get("platform_digest"),
+                "ports": recipe.get("ports") or [],
+                "builds_on": recipe.get("builds_on"),
+                "note": recipe.get("_note"),
+            } if container else None),
+            "proofs": [{
+                "reference": row.reference,
+                "status": row.status,
+                "resource_kind": row.resource_kind,
+                "started_at": row.started_at.isoformat() if row.started_at else None,
+                "finished_at": row.finished_at.isoformat() if row.finished_at else None,
+                "seconds": seconds(row),
+                "planned_monthly": float(row.planned_monthly)
+                if row.planned_monthly is not None else None,
+                "detail": row.detail or "",
+            } for row in reversed(rows)],
+        })
+
+    return {
+        "reference": reference,
+        "active": req.status == "auto-building",
+        "started_at": started.isoformat() if started else None,
+        "components": components,
+        # See the docstring: the ladder's per-rung attempts are not persisted
+        # while a run is in flight, and a panel must not imply they are.
+        "attempts_recorded": False,
+    }
+
+
 @app.get("/api/requests/{reference}/audit")
 def request_audit(reference: str, session: Session = Depends(get_session),
                   _auth: str = Depends(require_action("view_audit"))) -> dict:

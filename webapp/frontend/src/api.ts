@@ -1211,6 +1211,51 @@ export async function getCatalogueGaps(): Promise<CatalogueGaps | null> {
   return (await r.json()) as CatalogueGaps
 }
 
+// What the agent is doing to make a request buildable, while it does it.
+// A request can rest on `auto-building` for half an hour; this is what was
+// happening in that time. All of it is already recorded — proof rows are how
+// certification is derived — and nothing was reading it out.
+export type AutobuildProgress = {
+  reference: string
+  active: boolean
+  started_at: string | null
+  // False, always, today: the install ladder's per-rung attempts live in memory
+  // until a run ends. The panel says so rather than letting a reader conclude
+  // that nothing happened.
+  attempts_recorded: boolean
+  components: {
+    code: string
+    certified: boolean
+    recipe: {
+      image: string | null
+      tag: string | null
+      digest: string | null
+      platform_digest: string | null
+      ports: number[]
+      builds_on: string | null
+      note: string | null
+    } | null
+    proofs: {
+      reference: string
+      status: string
+      resource_kind: string
+      started_at: string | null
+      finished_at: string | null
+      seconds: number
+      planned_monthly: number | null
+      detail: string
+    }[]
+  }[]
+}
+
+export async function getAutobuildProgress(
+  reference: string,
+): Promise<AutobuildProgress | null> {
+  const r = await fetch(`/api/requests/${reference}/autobuild`)
+  if (!r.ok) return null
+  return (await r.json()) as AutobuildProgress
+}
+
 export async function getBootReport(reference: string): Promise<BootReport | null> {
   const r = await fetch(`/api/requests/${reference}/boot-report`)
   if (!r.ok) return null

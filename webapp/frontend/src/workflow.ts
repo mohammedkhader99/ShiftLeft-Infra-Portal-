@@ -69,6 +69,21 @@ export function workflowSteps(
     : [
         ['Submitted', status !== 'draft' && status !== '', undefined],
         ['Approved', 'approval.approved' in firstTs, firstTs['approval.approved']],
+        // THE STAGE THE STEPPER DID NOT HAVE.
+        //
+        // When a component has no certified blueprint the agent writes one and
+        // proves it on real machines, which takes tens of minutes. `auto-building`
+        // matched no stage, so the generic "first pending step is the current
+        // one" rule landed the marker on Planned: REQ-2026-0239 showed "Planned"
+        // for half an hour while three machines were built, tested and destroyed.
+        //
+        // Only appears when it actually happened, derived from the audit trail
+        // like every other stage here — a request the agent never touched does
+        // not grow a stage explaining that it did not.
+        ...(('autobuild.started' in firstTs
+          ? [['Making it buildable', 'autobuild.finished' in firstTs,
+              firstTs['autobuild.finished']]]
+          : []) as [string, boolean, string | undefined][]),
         ['Planned', 'plan.previewed' in firstTs, firstTs['plan.previewed']],
         started,
         ['Provisioned', 'provisioned' in firstTs || status === 'provisioned', firstTs['provisioned']],
