@@ -551,11 +551,29 @@ def _report_script(wanted: list[tuple[str, str]], packages: list[str],
         # org.opencontainers.image.version label is "24.04", which is Ubuntu's
         # version, not RabbitMQ's. The digest identifies what is running exactly,
         # which is more than a version string can do.
+        # EVERY repo digest podman holds, not just the first.
+        #
+        # A multi-architecture image has two names: the INDEX the recipe pins,
+        # and the PLATFORM manifest podman resolved it to. REQ-2026-0238 pinned
+        # `opensearchproject/opensearch` by its index and the machine reported
+        # its amd64 child, so the check said MISMATCH — correctly on the evidence
+        # it had, and wrongly about the world. Both digests name the same image.
+        #
+        # So the recipe carries both where they differ, and the machine accepts
+        # either. Reading the whole RepoDigests list rather than element zero is
+        # free and strictly better: podman's ordering is not a contract.
+        accepted = [spec["digest"]]
+        if spec.get("platform_digest"):
+            accepted.append(spec["platform_digest"])
         checks.append(
             f"  GOTIMG=$(podman image inspect {pinned} "
-            f"--format '{{{{index .RepoDigests 0}}}}' 2>/dev/null)")
+            f"--format '{{{{join .RepoDigests \" \"}}}}' 2>/dev/null)")
+        checks.append(f"  IMGOK=")
+        for want in accepted:
+            checks.append(
+                f'  case " $GOTIMG " in *"@{want}"*) IMGOK=1 ;; esac')
         checks.append(
-            f'  echo "image_{key}=$(test "$GOTIMG" = {pinned} '
+            f'  echo "image_{key}=$(test -n "$IMGOK" '
             f'&& echo "match ({spec["digest"][:19]}...)" '
             f'|| echo "MISMATCH got ${{GOTIMG:-nothing}}")"')
         checks.append(

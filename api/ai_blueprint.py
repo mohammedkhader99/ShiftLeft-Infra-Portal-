@@ -604,6 +604,11 @@ def draft_from_image(candidate: str, image: dict, target: str = "oci"):
             "image": image["image"],
             "tag": str(image.get("tag") or "latest"),
             "digest": image["digest"],
+            # The platform build a multi-architecture index resolves to. The
+            # machine reports THIS, not the index, so without it every
+            # multi-arch image reads as a digest mismatch.
+            **({"platform_digest": image["platform_digest"]}
+               if image.get("platform_digest") else {}),
             # ITS OWN BLOCK VOLUME. A container's data outlives the container and
             # often the machine; on the boot volume it is entangled with the
             # operating system and a rebuild takes it along.

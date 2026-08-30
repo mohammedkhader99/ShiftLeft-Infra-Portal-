@@ -242,7 +242,7 @@ DATA_DIR = re.compile(rf"^/var/lib/{_SEGMENT}(?:/{_SEGMENT})*$")
 MOUNT_PATH = re.compile(rf"^/{_SEGMENT}(?:/{_SEGMENT})*$")
 
 CONTAINER_FIELDS = frozenset({"image", "tag", "digest", "data_dir",
-                              "data_mount", "environment"})
+                              "data_mount", "environment", "platform_digest"})
 
 
 def report_key(code: str) -> str:
@@ -484,6 +484,16 @@ def container_problems(container: dict) -> list[str]:
             f"can be repointed after this recipe was proved, so what a proof "
             f"certified and what a request later installs would be different "
             f"things wearing the same name.")
+
+    # The platform build the index resolves to, when the tag names an index.
+    # Optional, and validated exactly as `digest` is — it reaches the same
+    # comparison on the same machine.
+    platform = container.get("platform_digest")
+    if platform is not None and (
+            not isinstance(platform, str) or not platform.startswith("sha256:")
+            or not SHA256.match(platform[len("sha256:"):])):
+        problems.append(
+            f"The platform digest {platform!r} is not a pinned sha256.")
 
     tag = container.get("tag")
     if tag is not None and (not isinstance(tag, str) or not IMAGE_TAG.match(tag)):

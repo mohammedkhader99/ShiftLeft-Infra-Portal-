@@ -167,7 +167,48 @@ def describe(image: str, tag: str = "latest") -> dict | None:
             digest[len("sha256:"):]):
         return None
 
-    return {"digest": digest, "ports": _ports(base, auth, raw)}
+    # BOTH, when the tag names an index. The recipe pins the index; the machine
+    # will report the platform build. Neither is wrong and they are not equal.
+    described = {"digest": digest, "ports": _ports(base, auth, raw)}
+    platform = _platform_digest(raw)
+    if platform and platform != digest:
+        described["platform_digest"] = platform
+    return described
+
+
+def _platform_digest(manifest_raw: bytes) -> str:
+    """The amd64/linux child of a multi-architecture index, or "".
+
+    WHY BOTH DIGESTS ARE KEPT. `opensearchproject/opensearch` publishes an
+    index — one digest naming a list of per-architecture manifests. The recipe
+    pins the INDEX, which is right: it is what a person reads and what stays
+    stable across architectures. But podman, having pulled it, reports the
+    PLATFORM manifest it actually resolved:
+
+        pinned              sha256:bcc179...   the index
+        the machine's own   sha256:39a8f8...   its amd64 child
+
+    The machine's check compared the two and reported MISMATCH — correctly, on
+    the evidence it had, and wrongly about the world. Both digests name the same
+    image. REQ-2026-0238 failed on this, and so would every multi-architecture
+    image, which is most modern ones.
+    """
+    try:
+        manifest = json.loads(manifest_raw)
+    except (ValueError, TypeError):
+        return ""
+    children = manifest.get("manifests")
+    if not isinstance(children, list):
+        return ""
+    for child in children:
+        platform = child.get("platform") or {}
+        if (platform.get("architecture") == "amd64"
+                and platform.get("os") == "linux"):
+            digest = str(child.get("digest") or "")
+            if digest.startswith("sha256:") and profile_rules.SHA256.match(
+                    digest[len("sha256:"):]):
+                return digest
+    return ""
 
 
 def _ports(base: str, auth: dict, manifest_raw: bytes) -> list[int]:

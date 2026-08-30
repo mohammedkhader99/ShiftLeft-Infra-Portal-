@@ -599,3 +599,126 @@ def test_the_log_is_prefixed_so_it_cannot_be_read_as_a_verdict(
     script = report(tmp_path, monkeypatch)
 
     assert "log: " in script
+
+
+# --- an index and its platform build are one image (REQ-2026-0238) --------------
+#
+#     image_opensearch=MISMATCH got ...@sha256:39a8f8c63028e8b5...
+#
+# The recipe pinned the multi-architecture INDEX and podman reported the amd64
+# manifest it resolved to. Both name the same image; the check said MISMATCH,
+# correctly on the evidence it had and wrongly about the world.
+#
+# Measured against the live registry: rabbitmq is multi-architecture too, mssql
+# is not — so this failed for most modern images and passed for a few, which is
+# the worst kind of intermittent.
+
+MULTIARCH = {
+    "code": "rabbitmq", "builds_on": "oci/service-vm", "ports": [5672],
+    "container": {
+        "image": "docker.io/library/rabbitmq", "tag": "latest",
+        "digest": "sha256:" + "b" * 64,
+        "platform_digest": "sha256:" + "3" * 64,
+        "data_dir": "/var/lib/rabbitmq", "data_mount": "/var/lib/rabbitmq",
+    },
+    "rhel": {"packages": [], "services": ["rabbitmq"]},
+}
+
+
+def test_both_digests_are_accepted(tmp_path, monkeypatch):
+    """THE fix. The machine reports whichever podman resolved; either is right."""
+    script = report(tmp_path, monkeypatch, profile=MULTIARCH)
+
+    assert "sha256:" + "b" * 64 in script, "the index digest is not accepted"
+    assert "sha256:" + "3" * 64 in script, "the platform digest is not accepted"
+
+
+def test_every_repo_digest_is_read_not_just_the_first(tmp_path, monkeypatch):
+    """podman's ordering is not a contract, and reading element zero is how the
+    right image came to be reported as the wrong one."""
+    script = report(tmp_path, monkeypatch, profile=MULTIARCH)
+
+    assert "index .RepoDigests 0" not in script
+    assert "join .RepoDigests" in script
+
+
+def test_a_single_architecture_recipe_accepts_only_its_own_digest(
+        tmp_path, monkeypatch):
+    """THE REGRESSION GUARD. Nothing certified before today carries a platform
+    digest, and none of them may start accepting a second one."""
+    script = report(tmp_path, monkeypatch, profile=PINNED)
+
+    accepted = [line for line in script.splitlines() if "IMGOK=1" in line]
+    assert len(accepted) == 1, accepted
+
+
+def image_verdict(script, key, repo_digests):
+    """RUN the generated check, with podman answering `repo_digests`.
+
+    Asserting that the right words appear in the script is not the same as
+    asserting the script decides correctly — a first version of the test below
+    passed happily against a planted check that accepted every image, because
+    the words it looked for were still there. So the real lines are executed.
+
+    Only the `podman image inspect` call is substituted, for a literal; the
+    acceptance logic under test runs verbatim. That podman is asked for the
+    whole RepoDigests list is a separate test, above.
+    """
+    lines = script.splitlines()
+    end = next(i for i, ln in enumerate(lines) if f'echo "image_{key}=' in ln)
+    start = max(i for i in range(end) if "GOTIMG=$(podman" in lines[i])
+    block = [f"  GOTIMG='{repo_digests}'"] + [ln for ln in lines[start + 1:end + 1]]
+
+    done = subprocess.run([shutil.which("sh"), "-c", "\n".join(block)],
+                          capture_output=True, text=True, timeout=30)
+    assert done.returncode == 0, done.stderr
+    return done.stdout.strip().split("=", 1)[1]
+
+
+INDEX_D = MULTIARCH["container"]["digest"]
+PLATFORM_D = MULTIARCH["container"]["platform_digest"]
+IMG = MULTIARCH["container"]["image"]
+
+
+def test_the_index_digest_is_a_match(tmp_path, monkeypatch):
+    script = report(tmp_path, monkeypatch, profile=MULTIARCH)
+
+    assert image_verdict(script, "rabbitmq", f"{IMG}@{INDEX_D}").startswith("match")
+
+
+def test_the_platform_digest_is_a_match(tmp_path, monkeypatch):
+    """REQ-2026-0238 EXACTLY: podman reports the amd64 child of the pinned index."""
+    script = report(tmp_path, monkeypatch, profile=MULTIARCH)
+
+    assert image_verdict(script, "rabbitmq", f"{IMG}@{PLATFORM_D}").startswith("match")
+
+
+def test_a_digest_that_was_never_pinned_is_a_mismatch(tmp_path, monkeypatch):
+    """THE CHECK IS NOT WEAKENED. A tag can be repointed after a proof, and what
+    was certified and what a request later installs would then be different
+    things wearing the same name. That is the whole reason this check exists."""
+    script = report(tmp_path, monkeypatch, profile=MULTIARCH)
+    other = "sha256:" + "9" * 64
+
+    assert image_verdict(script, "rabbitmq", f"{IMG}@{other}").startswith("MISMATCH")
+
+
+def test_no_image_at_all_is_a_mismatch(tmp_path, monkeypatch):
+    script = report(tmp_path, monkeypatch, profile=MULTIARCH)
+
+    assert image_verdict(script, "rabbitmq", "").startswith("MISMATCH")
+
+
+def test_a_single_architecture_recipe_refuses_a_second_digest(
+        tmp_path, monkeypatch):
+    """THE REGRESSION GUARD, run rather than read. Nothing certified before
+    today carries a platform digest, and none of them may start accepting one."""
+    script = report(tmp_path, monkeypatch, profile=PINNED)
+    key = PINNED["code"]
+    pinned_image = PINNED["container"]["image"]
+
+    assert image_verdict(
+        script, key,
+        f"{pinned_image}@{PINNED['container']['digest']}").startswith("match")
+    assert image_verdict(
+        script, key, f"{pinned_image}@sha256:{'7' * 64}").startswith("MISMATCH")
