@@ -1263,6 +1263,11 @@ export async function getAutobuildProgress(
 export type QueuePosition = {
   reference: string
   waiting: boolean
+  // Waiting for a PERSON, not for the platform. A pending Jira ticket is not
+  // ahead of anybody in the build queue; it is parked until somebody acts.
+  // Ten requests in this estate have sat like that since July.
+  awaiting_approval: boolean
+  jira_key: string | null
   position: number | null
   ahead: string[]
   working_on: string[]

@@ -4256,7 +4256,7 @@ def request_queue_position(
     holding the queue. At most one, because the sweep is serial.
     """
     req = _load_request(reference, session)
-    queue = _queue_references(session)
+    queue = _queue_references(session, approved_only=True)
     working = [
         r.reference
         for r in session.scalars(
@@ -4266,8 +4266,15 @@ def request_queue_position(
     ]
 
     ahead = queue[:queue.index(reference)] if reference in queue else []
+    # WAITING FOR A PERSON, NOT FOR A QUEUE. Ten requests in this database have
+    # sat with a pending ticket since July. "Waiting to be built" would send
+    # their owners to look at a platform that is not the thing holding them up.
+    approval = req.approval
+    awaiting_approval = approval is not None and approval.status == "pending"
     return {
         "reference": reference,
+        "awaiting_approval": awaiting_approval,
+        "jira_key": approval.jira_key if approval is not None else None,
         # Waiting means: approved, and the sweep has not reached it yet.
         "waiting": reference in queue,
         # 1-based, and only meaningful while waiting.
@@ -7331,8 +7338,23 @@ QUEUED_STATUSES = ("submitted", "planned")
 WORKING_STATUSES = ("auto-building", "in-progress")
 
 
-def _queue_references(session: Session) -> list[str]:
-    """The approved requests waiting to be advanced, in the order they will be.
+def _queue_references(session: Session, *, approved_only: bool = False) -> list[str]:
+    """The requests the sweep will walk, in the order it will walk them.
+
+    TWO QUESTIONS, ONE ORDER. The sweep must re-check every request that HAS an
+    approval ticket, because a pending ticket is exactly what it is polling Jira
+    about. A waiting requester must be told about neither more nor less than the
+    requests genuinely ahead of them in the BUILD queue — and a ticket nobody has
+    approved is not ahead of anybody; it is parked until a person acts.
+
+    Deployed without that distinction for one commit, and the live database said
+    so immediately: ten requests from 30 July to 16 August sit here with pending
+    tickets. A new requester would have been told "10 requests ahead of you",
+    which implies a wait that does not exist. The number would have been honest
+    about the sweep and a falsehood about the queue.
+
+    So `approved_only` separates them, and the ORDER is computed once for both:
+    they must never disagree about who comes first.
 
     ORDERED, WHICH IT WAS NOT. This query had no `order_by`, so the sweep took
     whatever order the database happened to return — usually insertion order,
@@ -7345,14 +7367,15 @@ def _queue_references(session: Session) -> list[str]:
     display another, the two would drift, and the gap between them is where a
     confident falsehood lives. The same reasoning as api.component_options.
     """
+    rows = session.scalars(
+        select(Request)
+        .where(Request.status.in_(QUEUED_STATUSES))
+        .order_by(Request.id)
+    ).all()
     return [
-        r.reference
-        for r in session.scalars(
-            select(Request)
-            .where(Request.status.in_(QUEUED_STATUSES))
-            .order_by(Request.id)
-        ).all()
+        r.reference for r in rows
         if r.approval is not None
+        and (not approved_only or r.approval.status == "approved")
     ]
 
 

@@ -185,3 +185,68 @@ def test_the_sweep_walks_the_queue_this_endpoint_reports():
 
     assert "_queue_references(session)" in body, (
         "_poll_once no longer uses the same queue the requester is shown")
+
+
+# --- ahead in the sweep is not ahead in the queue ---------------------------------
+#
+# Deployed without this distinction for exactly one commit, and the live
+# database said so at once: ten requests from 30 July to 16 August sit in
+# `submitted` with a PENDING Jira ticket. The sweep must keep re-checking them --
+# polling Jira is the whole reason they are there -- but they are not ahead of
+# anybody in the build queue, and telling a new requester "10 requests ahead of
+# you" would promise a wait that does not exist.
+
+def a_pending_request(db, ref):
+    req = a_request(db, ref, approved=False)
+    db.add(Approval(request_id=req.id, jira_key=f"SD-{ref[-4:]}", status="pending"))
+    db.flush()
+    return req
+
+
+def test_the_sweep_still_rechecks_a_pending_ticket(db):
+    """It has to: polling Jira for the decision is why it is in the sweep."""
+    a_pending_request(db, "REQ-2026-0001")
+    db.commit()
+
+    assert api_main._queue_references(db) == ["REQ-2026-0001"]
+
+
+def test_a_pending_ticket_is_not_ahead_of_anybody(db):
+    """THE DEFECT, as the live database showed it."""
+    a_pending_request(db, "REQ-2026-0001")
+    a_request(db, "REQ-2026-0002")
+    db.commit()
+
+    assert api_main._queue_references(db, approved_only=True) == ["REQ-2026-0002"]
+
+
+def test_a_requester_behind_pending_tickets_is_not_told_they_are_ahead(client, db):
+    for ref in ("REQ-2026-0001", "REQ-2026-0002"):
+        a_pending_request(db, ref)
+    a_request(db, "REQ-2026-0003")
+    db.commit()
+
+    body = client.get("/api/requests/REQ-2026-0003/queue").json()
+
+    assert body["ahead"] == []
+    assert body["position"] == 1
+
+
+def test_a_request_awaiting_approval_is_told_that_and_not_about_a_queue(client, db):
+    """"Waiting to be built" would send its owner to watch a platform that is
+    not the thing holding them up."""
+    a_pending_request(db, "REQ-2026-0001")
+    db.commit()
+
+    body = client.get("/api/requests/REQ-2026-0001/queue").json()
+
+    assert body["awaiting_approval"] is True
+    assert body["jira_key"] == "SD-0001"
+
+
+def test_an_approved_request_is_not_reported_as_awaiting_approval(client, db):
+    a_request(db, "REQ-2026-0001")
+    db.commit()
+
+    assert client.get(
+        "/api/requests/REQ-2026-0001/queue").json()["awaiting_approval"] is False

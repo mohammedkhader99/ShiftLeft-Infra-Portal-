@@ -954,6 +954,21 @@ export default function MyRequests({ route }: { route: string }) {
                           apart once started duplicate builds for one request.
                           A twenty-minute build therefore holds everything
                           behind it, and the portal used to say nothing. */}
+                      {/* Waiting for a person is a different sentence from
+                          waiting for the platform, and sending somebody to
+                          watch a queue that is not holding them up wastes
+                          their time. */}
+                      {queue[r.reference]?.awaiting_approval && (
+                        <div style={{ marginTop: '1rem', fontSize: '0.82rem' }}>
+                          <strong>Waiting for approval</strong>
+                          <div style={{ color: 'var(--cds-text-secondary)', marginTop: '0.3rem', fontSize: '0.78rem' }}>
+                            Nothing is built until this is approved in Jira
+                            {queue[r.reference]!.jira_key && <> ({queue[r.reference]!.jira_key})</>}.
+                            The platform is not holding it up.
+                          </div>
+                        </div>
+                      )}
+
                       {queue[r.reference]?.waiting && (
                         <div style={{ marginTop: '1rem', fontSize: '0.82rem' }}>
                           <strong>Waiting to be built</strong>
