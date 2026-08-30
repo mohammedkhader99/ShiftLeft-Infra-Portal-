@@ -154,10 +154,21 @@ def test_a_value_the_unit_file_cannot_carry_is_refused(tmp_path, monkeypatch):
 
 def test_a_name_that_is_not_an_environment_name_is_refused(
         tmp_path, monkeypatch):
-    secrets_file(tmp_path, monkeypatch,
-                 "mssql.lower_case=x\nmssql.HAS-DASH=y\nmssql.GOOD=z\n")
+    """RE-POINTED 2026-08-30. This asserted `lower_case` was refused, which
+    encoded the old SHOUTING_SNAKE spelling rather than the property.
+    Lowercase and dotted names are now accepted DELIBERATELY —
+    Elasticsearch's `discovery.type` is one, and refusing it left
+    REQ-2026-0237 with no way to start.
 
-    assert configure.container_secrets("mssql") == {"GOOD": "z"}
+    The property is unchanged: a name that would break
+    `Environment=NAME=value` is refused. A dash still is — nothing needs
+    one, and the narrower set is the safer one."""
+    secrets_file(tmp_path, monkeypatch,
+                 "mssql.HAS-DASH=y\nmssql.9lives=n\nmssql.GOOD=z\n"
+                 "mssql.lower_case=now-allowed\n")
+
+    assert configure.container_secrets("mssql") == {
+        "GOOD": "z", "lower_case": "now-allowed"}
 
 
 # --- what the machine actually receives ---------------------------------------
@@ -261,3 +272,63 @@ def test_a_utf16_file_still_reaches_the_machine(tmp_path, monkeypatch):
 
     assert "Environment=MSSQL_SA_PASSWORD=Str0ng!Pass" in content
     assert unit_file(tmp_path, monkeypatch)["permissions"] == "0600"
+
+
+# --- an env name may be dotted and lowercase (REQ-2026-0237) --------------------
+#
+# Elasticsearch failed its production bootstrap checks and shut itself down. One
+# of the two fixes is a single variable — `discovery.type=single-node` — and the
+# portal offers an operator channel for exactly this and then refused to carry
+# the name, because ENV_KEY demanded SHOUTING_SNAKE.
+#
+# Elasticsearch, OpenSearch and several others name their settings this way, and
+# podman passes them through unchanged. What protects the unit file is the VALUE
+# rule, which is untouched.
+
+def test_a_dotted_lowercase_setting_reaches_the_container(tmp_path, monkeypatch):
+    """THE test. Without this the operator cannot express the one thing that
+    makes Elasticsearch start."""
+    secrets_file(tmp_path, monkeypatch,
+                 "elasticsearch.discovery.type=single-node\n"
+                 "elasticsearch.xpack.security.enabled=false\n")
+
+    found = configure.container_secrets("elasticsearch")
+
+    assert found == {"discovery.type": "single-node",
+                     "xpack.security.enabled": "false"}, found
+
+
+def test_shouting_snake_names_are_unaffected(tmp_path, monkeypatch):
+    """THE REGRESSION GUARD. Every credential set so far uses this form."""
+    secrets_file(tmp_path, monkeypatch, "mssql.MSSQL_SA_PASSWORD=Str0ng!Pass\n")
+
+    assert configure.container_secrets("mssql") == {
+        "MSSQL_SA_PASSWORD": "Str0ng!Pass"}
+
+
+def test_a_name_that_would_break_the_unit_file_is_still_refused(
+        tmp_path, monkeypatch):
+    """The name becomes the left-hand side of `Environment=NAME=value`. Widening
+    it to allow dots must not admit `=`, whitespace, or a leading digit."""
+    #
+    # NOT an `=` case, and my first version of this test got that wrong. A
+    # line splits on the FIRST `=`, so `mssql.has=equals=x` yields the name
+    # `has` and the value `equals=x` — which is legal and correct. A name
+    # containing `=` cannot be expressed in this file format at all.
+    secrets_file(tmp_path, monkeypatch,
+                 "mssql.has space=y\n"
+                 "mssql.9lives=z\n"
+                 "mssql.trailing-dash-=w\n"
+                 "mssql.discovery.type=kept\n")
+
+    assert configure.container_secrets("mssql") == {"discovery.type": "kept"}
+
+
+def test_a_dotted_setting_is_rendered_into_the_unit(tmp_path, monkeypatch):
+    """End to end: the reader accepting it is no use if the renderer drops it."""
+    secrets_file(tmp_path, monkeypatch,
+                 "mssql.discovery.type=single-node\n")
+
+    content = unit_file(tmp_path, monkeypatch)["content"]
+
+    assert "Environment=discovery.type=single-node" in content

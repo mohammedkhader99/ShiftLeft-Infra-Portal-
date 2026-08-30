@@ -411,11 +411,37 @@ def test_a_mount_needs_both_halves():
 
 
 def test_an_environment_value_cannot_break_out_of_the_unit_file():
+    """A value becomes the right-hand side of `Environment=NAME=value` in a
+    file systemd reads as root, so a newline in one is a second directive."""
     assert profile_rules.container_problems(
         container(environment={"X": "a\nExecStart=/bin/sh"}))
-    assert profile_rules.container_problems(
-        container(environment={"lower": "x"}))
     assert profile_rules.container_problems(container(environment="X=1"))
+
+
+def test_an_environment_name_may_be_dotted_and_lowercase():
+    """RE-POINTED 2026-08-30. The test above also asserted that a lowercase
+    NAME was a problem — a spelling rule smuggled into a test about VALUES.
+
+    REQ-2026-0237 is what that cost. Elasticsearch failed its production
+    bootstrap checks and shut itself down, and one half of the fix is a
+    single setting — `discovery.type=single-node`. The portal offers an
+    operator channel for exactly this and then refused to carry the name.
+    Elasticsearch, OpenSearch and others name their settings this way, and
+    podman passes them through unchanged.
+
+    What the name still may not contain is anything that would break
+    `Environment=NAME=value` — whitespace, a dash, or a leading digit."""
+    assert profile_rules.container_problems(
+        container(environment={"discovery.type": "single-node"})) == []
+    assert profile_rules.container_problems(
+        container(environment={"lower_case": "x"})) == []
+
+    assert profile_rules.container_problems(
+        container(environment={"has space": "x"}))
+    assert profile_rules.container_problems(
+        container(environment={"HAS-DASH": "x"}))
+    assert profile_rules.container_problems(
+        container(environment={"9lives": "x"}))
 
 
 def test_a_container_counts_as_installing_something():

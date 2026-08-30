@@ -1797,6 +1797,32 @@ def render(components: list[dict], family: str = "", report_url: str = "",
         _ = key
 
     # --- containers ----------------------------------------------------------
+    #
+    # ROOM FOR A SEARCH ENGINE, before anything is pulled.
+    #
+    # REQ-2026-0237. Elasticsearch started, bound its transport port, ran its
+    # production bootstrap checks and SHUT ITSELF DOWN:
+    #
+    #     node validation exception
+    #     bootstrap check failure [1] of [1]: max virtual memory areas
+    #     vm.max_map_count [65530] is too low
+    #
+    # Oracle Linux ships 65530; Elasticsearch and OpenSearch both require
+    # 262144 and refuse to run as a non-loopback node without it. It is a host
+    # sysctl, so no container setting can supply it.
+    #
+    # APPLIED TO EVERY CONTAINER HOST, not to a list of technologies. The value
+    # is the vendors' own documented figure, it is inert for a container that
+    # does not use mmap heavily, and the alternative is a table of which images
+    # need it — which is the shape this project has spent a fortnight removing.
+    # Persisted as well as set, so it survives the reboot the [Install] section
+    # exists for.
+    if containers:
+        lines.append(cmd("sysctl -w vm.max_map_count=262144 || true"))
+        lines.append(cmd(
+            "echo 'vm.max_map_count=262144' > "
+            "/etc/sysctl.d/99-portal-containers.conf || true"))
+
     for code, spec in containers:
         image = spec["image"] + "@" + spec["digest"]
         lines.append(cmd(

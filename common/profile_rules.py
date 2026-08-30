@@ -96,7 +96,21 @@ VERSION_COMMAND = re.compile(
     r"(?: +[A-Za-z0-9._=:/\-]+)*"                     # its arguments
     r"(?: +2>&1)?$")                                  # stderr, where versions live
 
-ENV_KEY = re.compile(r"^[A-Z_][A-Z0-9_]{0,63}$")
+#: An environment variable name a container will accept.
+#:
+#: DOTTED AND LOWERCASE ARE REAL NAMES. This demanded SHOUTING_SNAKE, and
+#: REQ-2026-0237 is what that cost: Elasticsearch failed its production
+#: bootstrap checks and shut itself down, and the fix is one variable —
+#: `discovery.type=single-node`. The portal offers an operator channel for
+#: exactly this (secrets/container.env) and then refused to carry the name.
+#: Elasticsearch, OpenSearch and several others name their settings this
+#: way; podman passes them through unchanged.
+#:
+#: What actually protects the unit file is ENV_VALUE — printable ASCII and
+#: no newlines, so a value cannot inject a second systemd directive. The
+#: NAME still may not contain `=`, whitespace or anything outside this set,
+#: because it becomes the left-hand side of `Environment=NAME=value`.
+ENV_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]{0,63}$")
 ENV_VALUE = re.compile(r"^[\x20-\x7E]{0,512}$")
 
 # The only archive format the renderer can unpack. Declared here rather than
