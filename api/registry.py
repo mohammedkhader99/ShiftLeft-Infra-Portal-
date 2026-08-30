@@ -341,15 +341,52 @@ SEARCH_LIMIT = 10
 
 
 def _trusted(repo_name: str, official: bool, code: str) -> bool:
-    """Would we let this image run as root in the tenancy?"""
+    """Would we let this image run as root in the tenancy?
+
+    A VENDOR'S OWN ACCOUNT MAY CARRY A SUFFIX, and that is the norm rather than
+    the exception. REQ-2026-0236 asked for OpenSearch, which publishes at
+    `opensearchproject/opensearch` — 198 stars, manifestly the project's own
+    account — and this rule refused it because the namespace is not EXACTLY
+    `opensearch`. The request was refused with "no container image was found on
+    a registry this portal trusts", which was true as written and misleading.
+
+    So a namespace that STARTS with the technology's name is trusted too, but
+    only when the repository name does as well. Surveyed against what Docker
+    Hub actually returns before it was switched on:
+
+        opensearchproject/opensearch  198  trusted   the project's own account
+        onlyoffice/opensearch           0  refused   somebody else's product
+        rancher/opensearch              0  refused
+        bitnamicharts/opensearch        1  refused   a packager, not the vendor
+        itzg/elasticsearch             72  refused   popular and still a stranger
+        slacksec/dotnet                 0  refused   the image this rule exists for
+
+    THIS IS A REAL WIDENING OF WHAT MAY RUN AS ROOT and it is not free: an
+    account named `opensearchmalware` would satisfy it. What stands behind it is
+    that BOTH halves must match, the image is pinned by digest, ranking prefers
+    stars within what is already trusted, and nothing is certified until a
+    machine has built it. Recorded here so the next person weighing it has the
+    same facts.
+
+    WHAT IT DOES NOT FIX, and no name rule can: `apache/kafka` is Kafka's real
+    image, and nothing in the word "kafka" points at Apache. That needs a
+    first-party catalogue or a curated entry, not a looser rule here.
+    """
     if official:
         return True
-    namespace, _, _rest = (repo_name or "").partition("/")
+    namespace, _, tail = (repo_name or "").partition("/")
     if not namespace or "/" not in (repo_name or ""):
         return False
     stem = re.sub(r"[^a-z0-9]", "", (code or "").lower()).rstrip("0123456789")
     ns = re.sub(r"[^a-z0-9]", "", namespace.lower())
-    return bool(stem) and ns == stem
+    if not stem:
+        return False
+    if ns == stem:
+        return True
+    # The suffixed form. The repository has to name the technology too, so a
+    # vendor's unrelated tooling under the same account is not swept in.
+    repo = re.sub(r"[^a-z0-9]", "", (tail or "").lower())
+    return ns.startswith(stem) and repo.startswith(stem)
 
 
 def search(code: str, *, fetch=None, fetch_catalogue=None) -> list[str]:

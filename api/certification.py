@@ -30,6 +30,8 @@ actually broke instead of blaming both.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import os
 import re
 from datetime import datetime, timezone
@@ -228,6 +230,80 @@ def expire(session: Session, now: datetime | None = None) -> list[dict]:
 
 
 CERTIFIED_BY_RUNNER = "certification-runner"
+
+
+@dataclass
+class Retirement:
+    """What a retirement did, and whether it actually took."""
+
+    technology_code: str
+    deployment_target: str
+    removed: list          # files actually deleted from the generated store
+    suspended: bool        # did the certification change state
+    complete: bool         # does the orchestrator agree it is gone
+    detail: str
+
+
+def retire(session: Session, technology_code: str, target: str, why: str, *,
+           withdraw, builds=None) -> Retirement:
+    """Withdraw a recipe AND its certification, together, and check it held.
+
+    THE SHARP EDGE THIS REMOVES, walked into on 2026-08-29. `oci-functions` was
+    certified on a module that built nothing. Suspending it by hand looked like
+    it worked — and `restore()` re-certified it within one poll, because the
+    generated BLUEPRINT MANIFEST was still in the store, so the orchestrator went
+    on answering "yes, I build oci-functions". `restore()` was behaving exactly
+    as designed; the withdrawal was half done.
+
+    A recipe is more than one file. A profile is `<code>.json`; a drafted
+    blueprint's manifest is `<resource_kind>.yaml`. Removing one and not the
+    other leaves a manifest with no module — which is worse than either alone,
+    because it advertises a recipe that would hand Terraform an empty directory.
+
+    AND IT VERIFIES. `builds` is what the ORCHESTRATOR says it can build, asked
+    over the signed channel — the same source `restore()` consults. If the
+    technology is still in that list, the retirement did NOT take, and this says
+    so rather than reporting a success that a sweep will quietly undo. That is
+    the whole reason this exists as one operation instead of two calls a person
+    has to remember to pair.
+
+    Suspending is not deleting: the proof that earned the certification really
+    happened and the history is worth keeping.
+    """
+    row = session.get(Blueprint, (technology_code, target))
+    if row is None:
+        return Retirement(technology_code, target, [], False, True,
+                          f"No blueprint for {technology_code} on {target}.")
+
+    # BOTH FILES, derived from the row rather than guessed. A caller naming them
+    # by hand is how the manifest was left behind.
+    wanted = {f"{technology_code}.json": ""}
+    if row.resource_kind:
+        wanted[f"{row.resource_kind}.yaml"] = ""
+    removed = list(withdraw(wanted) or []) if withdraw else []
+
+    suspended = withdraw_for_missing_recipe(session, technology_code, target, why)
+
+    # DID IT HOLD? Absent means we could not ask, which is not the same as gone.
+    if builds is None:
+        complete, detail = False, (
+            f"Withdrew {len(removed)} file(s) and "
+            f"{'suspended' if suspended else 'left'} the certification, but the "
+            f"orchestrator could not be asked whether it still builds "
+            f"{technology_code}. Check before trusting this.")
+    elif technology_code in builds:
+        complete, detail = False, (
+            f"NOT RETIRED. The orchestrator still reports that it builds "
+            f"{technology_code}, so the certification sweep will restore it "
+            f"within one poll. Something of the recipe is still in the store; "
+            f"removed so far: {removed or 'nothing'}.")
+    else:
+        complete, detail = True, (
+            f"Retired {technology_code} on {target}: removed {removed or 'no files'} "
+            f"and the orchestrator no longer builds it.")
+
+    return Retirement(technology_code, target, removed, bool(suspended),
+                      complete, detail[:500])
 
 
 def withdraw_for_missing_recipe(session: Session, technology_code: str,
