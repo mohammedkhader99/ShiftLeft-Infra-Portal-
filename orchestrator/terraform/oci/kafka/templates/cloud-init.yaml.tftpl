@@ -108,12 +108,44 @@ write_files:
     permissions: '0755'
     content: |
       #!/bin/sh
+      # WAIT BEFORE JUDGING.
+      #
+      # This script runs in `runcmd` immediately after install.sh, which ends
+      # with `systemctl enable --now kafka`. Kafka in KRaft mode takes tens of
+      # seconds to form its quorum and bind, so the report was sampling the
+      # ports a few seconds after the broker was told to start and recording
+      # "nothing listening" about a broker that was still coming up.
+      #
+      # REQ-2026-0243 failed exactly there: Java installed, the archive fetched,
+      # the metadata directory formatted, the unit enabled and active -- and
+      # both ports reported empty, 6m22s of real machine spent to learn nothing.
+      #
+      # The same defect the container path had, fixed the same way: wait for the
+      # thing to be ready, then report what is true. A bounded wait -- a broker
+      # that has not bound in three minutes is not slow, it is broken, and the
+      # log capture below is what says why.
+      READY=
+      DEADLINE=$(( $(date +%s) + 180 ))
+      while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+        if ss -lnt 2>/dev/null | grep -q ':${client_port} ' \
+           && ss -lnt 2>/dev/null | grep -q ':${controller_port} '; then
+          READY=1
+          break
+        fi
+        sleep 5
+      done
       REPORT=/var/log/infra-portal-report.txt
       {
         echo 'os_family=rhel'
         echo 'technologies=kafka'
         echo 'node=${node_id}'
-        . /etc/os-release 2>/dev/null && echo "os=$PRETTY_NAME"
+        # GUARDED, because a failed `.` is FATAL in POSIX sh: the shell exits
+        # on the spot and `2>/dev/null` hides the message without
+        # preventing it. On an image without /etc/os-release the report
+        # would stop after three lines and the machine would be judged as
+        # having no packages, no services and no ports -- a false failure
+        # with no trace of why.
+        ([ -r /etc/os-release ] && . /etc/os-release && echo "os=$PRETTY_NAME") || echo "os=unknown"
         echo '--- packages ---'
         (rpm -q ${java_package} 2>/dev/null || echo '${java_package} NOT INSTALLED')
         (test -x /opt/kafka/bin/kafka-server-start.sh && echo "kafka $(readlink -f /opt/kafka)" || echo 'kafka NOT INSTALLED')
@@ -129,6 +161,28 @@ write_files:
         for P in ${client_port} ${controller_port}; do
           if firewall-cmd --query-port=$P/tcp >/dev/null 2>&1; then echo "firewall_$P=open"; else echo "firewall_$P=CLOSED"; fi
         done
+        # WHY IT IS NOT LISTENING, IN KAFKA'S OWN WORDS.
+        #
+        # `systemctl is-active` cannot answer this. The unit is Type=simple with
+        # Restart=on-failure, so systemd reports `active` the instant the process
+        # is spawned and a crash-looping broker reads exactly like a healthy one
+        # -- which is what REQ-2026-0243's report showed: active, and nothing
+        # listening on either port.
+        #
+        # Captured ONLY when the wait above gave up, so a healthy machine's
+        # report does not carry forty lines of noise. This is the change that
+        # made container failures diagnosable: twice in one afternoon it
+        # corrected a confident wrong guess about why a service would not start.
+        if [ -z "$READY" ]; then
+          echo '--- kafka log (never bound its ports) ---'
+          journalctl -u kafka --no-pager -n 40 > /tmp/kafka-journal 2>/dev/null || true
+          if [ -s /tmp/kafka-journal ]; then
+            sed 's|^|  kafka: |' /tmp/kafka-journal
+          else
+            echo '  (no journal for kafka)'
+          fi
+          tail -n 20 /opt/kafka/logs/server.log 2>/dev/null | sed 's|^|  server.log: |'
+        fi
         echo '--- first-boot log ---'
         cat /var/log/infra-portal.log 2>/dev/null || echo '(no portal log written)'
       } > $REPORT 2>&1

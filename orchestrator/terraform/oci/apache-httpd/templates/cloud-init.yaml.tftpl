@@ -71,7 +71,13 @@ write_files:
       {
         echo 'os_family=${os_family}'
         echo 'technologies=apache'
-        . /etc/os-release 2>/dev/null && echo "os=$PRETTY_NAME"
+        # GUARDED, because a failed `.` is FATAL in POSIX sh: the shell exits
+        # on the spot and `2>/dev/null` hides the message without
+        # preventing it. On an image without /etc/os-release the report
+        # would stop after three lines and the machine would be judged as
+        # having no packages, no services and no ports -- a false failure
+        # with no trace of why.
+        ([ -r /etc/os-release ] && . /etc/os-release && echo "os=$PRETTY_NAME") || echo "os=unknown"
         echo '--- packages ---'
         (rpm -q ${apache_package} 2>/dev/null || dpkg-query -W -f='${apache_package} $${Version}' ${apache_package} 2>/dev/null || echo '${apache_package} NOT INSTALLED')
         echo ''
