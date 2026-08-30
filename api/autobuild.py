@@ -101,6 +101,57 @@ class AutobuildResult:
         return self.status == "published"
 
 
+def _why_nothing_works(candidate: str, asked: dict, *, curated_repo: bool,
+                       curated_archive: bool) -> str:
+    """Every way this portal knows to deliver software, and what each answered.
+
+    A refusal that says "no container image was found" is true and leaves the
+    reader to guess what else was considered. REQ-2026-0236 was refused in
+    exactly those words while OpenSearch's image sat on Docker Hub under an
+    account the trust rule happened not to match — and nothing in the message
+    would have told anybody where to look.
+
+    REPORTS WHAT WAS ACTUALLY ASKED. The answers are recorded as the ladder
+    consults each source, not re-derived here: a second lookup could give a
+    different answer and describe a run that never happened.
+
+    AND SAYS WHICH RUNGS DO NOT EXIST YET, rather than silently omitting them.
+    "Not checked, because no registry credential is configured" is a different
+    statement from "checked and found nothing", and only one of them tells the
+    reader what to do next.
+    """
+    packages = asked.get("packages", "unasked")
+    image = asked.get("image", "unasked")
+
+    def line(rung: str, verdict: str) -> str:
+        return f"  {rung:<22} {verdict}"
+
+    rungs = [
+        line("certified blueprint", "none"),
+        line("reviewed recipe",
+             "none — the orchestrator builds nothing that provides it"),
+        line("OS packages",
+             "not searched" if packages == "unasked"
+             else ("searched the operating system's repositories: nothing "
+                   "named it" if not packages
+                   else f"found {', '.join(map(str, packages))}")),
+        line("vendor repository",
+             "curated, and it did not work" if curated_repo
+             else "none curated for it"),
+        line("archive", "curated, and it did not work" if curated_archive
+             else "none curated for it"),
+        line("container image",
+             "not searched" if image == "unasked"
+             else ("no image on a registry this portal allows" if not image
+                   else f"found {image.get('image')}")),
+        line("OCI managed service",
+             "not checked — this portal cannot yet ask OCI what it offers"),
+        line("OCI container registry",
+             "not checked — no registry credential is configured"),
+    ]
+    return "\n".join(rungs)
+
+
 def _carry(prior, result):
     """Carry attempts made BEFORE the ladder onto whatever the ladder returned.
 
@@ -499,8 +550,25 @@ def ensure(candidate: str, session: Session, *, target, shipped, run_proof,
         # `repo_facts.search_packages` here, so every caller — the entire test
         # suite included — did a live repository search, and the ladder's shape
         # depended on what a public service answered that minute.
+        # RECORDED AS THEY ARE CONSULTED, so a refusal can say what was really
+        # asked. Re-deriving it afterwards would describe a second run, and a
+        # second run can answer differently.
+        consulted: dict = {}
+
+        def _searched(code, family="rhel"):
+            out = search(code, family) if search is not None else None
+            consulted["packages"] = out
+            return out
+
+        def _found_image(code):
+            out = find_image(code) if find_image is not None else None
+            consulted["image"] = out
+            return out
+
         methods = list(ai_blueprint.install_methods(
-            candidate, find_image=find_image, search=search))
+            candidate,
+            find_image=_found_image if find_image is not None else None,
+            search=_searched if search is not None else None))
         last = None
         refuted_by_a_machine: list[str] = []
         discovered: dict = {}
@@ -798,13 +866,16 @@ def ensure(candidate: str, session: Session, *, target, shipped, run_proof,
         result.status = "refused"
         result.detail = (
             f"{candidate} is software that installs onto a machine, and no way "
-            f"to install it could be found: it is not in the operating system's "
-            f"repositories, no vendor repository or archive is curated for it, "
-            f"and no container image was found on a registry this portal trusts. "
-            f"Nothing was built and no machine was spent finding that out. It "
-            f"becomes provisionable as soon as any one of those exists — most "
-            f"often an image on an allow-listed registry, which needs no recipe "
-            f"written by hand.")
+            f"to install it could be found. Every way this portal knows to "
+            f"deliver software was tried:\n"
+            + _why_nothing_works(
+                candidate, consulted,
+                curated_repo=candidate in ai_blueprint.VENDOR_REPOS,
+                curated_archive=candidate in ai_blueprint.ARCHIVE_KNOWLEDGE)
+            + f"\nNothing was built and no machine was spent finding that out. "
+              f"It becomes provisionable as soon as any one of those exists — "
+              f"most often an image on an allow-listed registry, which needs no "
+              f"recipe written by hand.")
         result.attempts.append(Attempt(
             len(result.attempts) + 1, "unresolvable", "refused",
             result.detail[:300]))
