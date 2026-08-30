@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState } from 'react'
+import { Fragment, useEffect, useState, type FC, type ComponentProps, type CSSProperties } from 'react'
 import {
   TableContainer,
   Table,
@@ -24,6 +24,19 @@ import {
 import { WarningAltFilled, Renew, UserFollow, Search, Pause, Play, Close } from '@carbon/icons-react'
 import { getMe, getRequests, getAudit, renewRequest, cancelRequest, transferOwner, checkDrift, reconcileState, triageFailure, actuate, setRequestShutdown, createBackup, grantAccess, revokeAccess, setOwnerGroup, type RequestRow, type ShutdownPolicy, getBootReport, type BootReport } from '../api'
 import { workflowSteps, fmtWhen, type WFStep } from '../workflow'
+
+// Carbon's Table FORWARDS unknown props to the <table> element -- it spreads
+// `...other` onto it (@carbon/react DataTable/Table.js) -- but its type
+// declaration does not extend the element's attributes, so `style` is rejected
+// at compile time while working perfectly at run time.
+//
+// WIDENED, NOT SILENCED. `as any` would switch off checking for every prop on
+// this element; this adds back exactly the one the component really accepts and
+// leaves the rest of the contract intact. The inline style sets `table-layout:
+// fixed`, which is what makes the per-column widths below take effect.
+const SizedTable = Table as FC<
+  ComponentProps<typeof Table> & { style?: CSSProperties }
+>
 
 const FILTER_KEYS = ['status', 'request_type', 'technology', 'deployment_target', 'created_week', 'requested_by', 'subsidiary', 'reference']
 const OVERSIGHT = ['platform_admin', 'auditor', 'finops']
@@ -518,7 +531,7 @@ export default function MyRequests({ route }: { route: string }) {
       ) : (
         <div style={{ overflowX: 'auto', maxWidth: '100%' }}>
         <TableContainer title={estate ? 'Estate requests' : 'My requests'} description="Live — updates automatically.">
-          <Table size="sm" style={{ tableLayout: 'fixed', width: '100%' }}>
+          <SizedTable size="sm" style={{ tableLayout: 'fixed', width: '100%' }}>
             <TableHead>
               <TableRow>
                 <TableExpandHeader aria-label="Expand row" />
@@ -991,7 +1004,7 @@ export default function MyRequests({ route }: { route: string }) {
                 </Fragment>
               ))}
             </TableBody>
-          </Table>
+          </SizedTable>
         </TableContainer>
         </div>
       )}

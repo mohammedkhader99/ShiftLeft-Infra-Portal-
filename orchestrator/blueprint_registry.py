@@ -20,6 +20,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from common import paths
+
 BLUEPRINT_DIR = Path(__file__).resolve().parent / "blueprints"
 
 # Where an agent-written blueprint lands (C5a). A MOUNTED directory, not part of
@@ -31,8 +33,8 @@ BLUEPRINT_DIR = Path(__file__).resolve().parent / "blueprints"
 # not a reviewed one, and the two must never become indistinguishable — every
 # entry carries its origin, and a generated manifest may not take the name of a
 # shipped one (see _collides).
-GENERATED_DIR = Path(os.getenv("GENERATED_BLUEPRINT_DIR", "/generated/blueprints"))
-GENERATED_MODULE_ROOT = Path(os.getenv("GENERATED_MODULE_DIR", "/generated/terraform"))
+GENERATED_DIR = paths.generated_dir("GENERATED_BLUEPRINT_DIR")
+GENERATED_MODULE_ROOT = paths.generated_dir("GENERATED_MODULE_DIR")
 
 _REQUIRED_FIELDS = ("ref", "target", "resource_kind", "builds")
 

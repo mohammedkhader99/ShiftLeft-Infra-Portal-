@@ -79,6 +79,33 @@ DELIVERY = {
     "rhel9": ("machine", "A Red Hat Enterprise Linux 9 machine."),
     "win2019": ("machine", "A Windows Server 2019 machine."),
 
+    # --- software installed on a machine -----------------------------------
+    #
+    # Absence from this table used to mean "software" by convention. It does NOT
+    # any more: api.component_options._delivery_model returns "" for an unlisted
+    # code and its callers must treat that as "unclassified", never as a fact —
+    # so a technology nobody listed had no classification at all.
+    #
+    # THAT LEFT THE DRIFT GUARD BLIND. Every blueprint now declares whether it
+    # delivers a managed service or machines, and a test holds that declaration
+    # against this table. A technology missing from here could not be checked,
+    # so a blueprint that started calling Kafka a managed service would have
+    # passed. Everything any blueprint builds is listed, and
+    # test_the_form_says_how_a_thing_arrives keeps it that way.
+    "nginx": ("software", "NGINX — installed on a machine."),
+    "apache": ("software", "Apache HTTP Server — installed on a machine."),
+    "redis7": ("software",
+               "Redis 7 — installed on a machine. OCI Cache with Redis is the "
+               "managed alternative; this portal has no blueprint for it, so it "
+               "cannot be offered."),
+    "kafka": ("software",
+              "Apache Kafka — installed on machines, in KRaft mode. OCI "
+              "Streaming is the managed alternative; this portal has no "
+              "blueprint for it, so it cannot be offered."),
+    "java21": ("software", "OpenJDK 21 — a runtime installed on a machine."),
+    "python312": ("software", "Python 3.12 — a runtime installed on a machine."),
+    "nodejs20": ("software", "Node.js 20 — a runtime installed on a machine."),
+
     # --- an outcome, not an installable thing ------------------------------
     #
     # These have no package, no archive and no cloud resource. A requester

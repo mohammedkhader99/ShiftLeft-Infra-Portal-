@@ -201,3 +201,31 @@ def test_the_catalogue_and_the_blueprints_agree_about_what_is_managed():
                     f"{bp['ref']} delivers it as {built!r}")
 
     assert not disagreements, "\n".join(disagreements)
+
+
+def test_everything_a_blueprint_builds_is_classified():
+    """THE GUARD'S BLIND SPOT, closed.
+
+    The drift test above can only compare technologies that appear in BOTH
+    places. Seven of the fourteen a blueprint builds were absent from
+    db.seed.DELIVERY — so a blueprint that started calling Kafka a managed
+    service would have sailed past it, which is exactly what happened when that
+    defect was planted deliberately: only the blueprint test caught it.
+
+    Absence used to mean "software" by convention, and that convention is
+    precisely the inference this work exists to end. So it is written down, and
+    this keeps it written down: a technology added to a blueprint's `builds`
+    without a classification fails here rather than silently going unchecked.
+    """
+    from orchestrator import blueprint_registry
+
+    unclassified = sorted({
+        code
+        for bp in blueprint_registry.discover() if bp.get("delivery")
+        for code in (bp.get("builds") or [])
+        if code not in DELIVERY
+    })
+
+    assert not unclassified, (
+        "these are built by a blueprint but not classified in db.seed.DELIVERY, "
+        f"so nothing checks the two against each other: {', '.join(unclassified)}")

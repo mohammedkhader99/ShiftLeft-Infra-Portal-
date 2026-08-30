@@ -84,4 +84,16 @@ os.environ["RATE_LIMIT_PER_MINUTE"] = "0"
 # time, which is before a fixture could run.
 import tempfile as _tempfile
 
-os.environ["GENERATED_BLUEPRINT_DIR"] = _tempfile.mkdtemp(prefix="portal-generated-")
+# ALL FOUR, not just the blueprint directory. Only that one was pinned, so
+# GENERATED_MODULE_DIR and GENERATED_PROFILE_DIR still resolved to their
+# defaults during the suite -- the same hole, in the same file, for three
+# more variables. Now that the fallback is inside the REPOSITORY, an
+# unpinned profile directory would make the suite read the five real
+# agent-written recipes in generated/profiles/, which is precisely the
+# "tests read a directory that production had written to" failure this
+# pinning exists to prevent.
+_generated = _tempfile.mkdtemp(prefix="portal-generated-")
+os.environ["GENERATED_ROOT"] = _generated
+os.environ["GENERATED_BLUEPRINT_DIR"] = _generated + "/blueprints"
+os.environ["GENERATED_MODULE_DIR"] = _generated + "/terraform"
+os.environ["GENERATED_PROFILE_DIR"] = _generated + "/profiles"

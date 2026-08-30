@@ -21,6 +21,8 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+
+from common import paths
 import time
 from datetime import datetime, timezone
 
@@ -30,7 +32,7 @@ from api import pricing
 
 # Where agent-written blueprints land. The same directory the orchestrator has
 # mounted at /generated — the API writes, the orchestrator discovers.
-GENERATED_ROOT = pathlib.Path(os.getenv("GENERATED_ROOT", "/generated"))
+GENERATED_ROOT = paths.generated_dir("GENERATED_ROOT")
 
 
 def make_post(post_to_orchestrator, sign, secret: str):

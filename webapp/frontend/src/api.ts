@@ -19,7 +19,11 @@ export type Lookups = {
 // resolves from its size anchor server-side, exactly as before this form existed.
 export type Component = {
   technology_code: string
-  size: string
+  // NULL IS A REAL VALUE. A platform service — "Backup & Recovery" and its like —
+  // has nothing to size, and the form sets no size for one. The database column
+  // is nullable for the same reason. Typing it `string` made the form's own
+  // `{ technology_code, size: null }` a type error nothing was checking.
+  size: string | null
   version?: string
   image?: string
   vcpu?: number
@@ -814,7 +818,11 @@ export async function getUsers(): Promise<{ users: UserRow[]; source: string } |
 }
 
 // Generate a report on demand (F-RPT-11). Read-only; nothing is stored.
-export async function getReport(kind: string): Promise<{ report: string; data: any } | 'forbidden' | null> {
+// `generated_at` is an ISO timestamp the endpoint always returns (see
+// api/main.py, generate_report). It was missing from this type, so the
+// page read a property TypeScript believed did not exist — which the
+// build never checked, because it ran `vite build` alone.
+export async function getReport(kind: string): Promise<{ report: string; generated_at: string; data: any } | 'forbidden' | null> {
   const r = await fetch(`/api/reports/${kind}`)
   if (r.status === 403) return 'forbidden'
   return r.ok ? r.json() : null

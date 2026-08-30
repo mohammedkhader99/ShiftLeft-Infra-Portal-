@@ -31,7 +31,7 @@ import os
 import pathlib
 import shlex
 
-from common import profile_rules
+from common import paths, profile_rules
 
 # Where the agent's own technology profiles land (C6). Separate from TEMPLATES
 # for the same reason generated blueprints are separate from shipped ones: git
@@ -43,8 +43,7 @@ from common import profile_rules
 # machine reports the version it actually received.
 _log = logging.getLogger(__name__)
 
-GENERATED_PROFILE_DIR = pathlib.Path(
-    os.getenv("GENERATED_PROFILE_DIR", "/generated/profiles"))
+GENERATED_PROFILE_DIR = paths.generated_dir("GENERATED_PROFILE_DIR")
 
 # technology code -> {packages, services, ports}. Deliberately a small, defensible
 # set of services installable from the base repositories; adding one is a data

@@ -457,7 +457,10 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
           // blank and what is shown is what gets priced. A dropdown renders its
           // first option when its value is empty, so without this the form would
           // SHOW an image the state does not hold.
-          if (!next.vcpu) Object.assign(next, opts.presets?.[c.size] ?? {})
+          // No size means no preset to seed from — a platform service has
+          // nothing to size. `presets[null]` looked up the key "null",
+          // found nothing and was hidden by the `?? {}`.
+          if (!next.vcpu && c.size) Object.assign(next, opts.presets?.[c.size] ?? {})
           for (const field of TEXT_DETAIL_FIELDS) {
             const key = field as 'version' | 'image'
             if (!next[key] && opts.fields?.[field]?.default) {
@@ -519,7 +522,9 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
     // Before the options load — and for a component carrying no explicit shape
     // at all — the size IS the shape, so report it rather than flashing
     // "Custom" at a requester who has chosen nothing unusual.
-    if (c.vcpu == null) return c.size
+    // '' rather than null: React renders both as nothing, and the callers
+    // treat this as a string.
+    if (c.vcpu == null) return c.size ?? ''
     const presets = techOptions[c.technology_code]?.presets ?? {}
     const match = Object.entries(presets).find(
       ([, p]) =>
@@ -985,7 +990,13 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
                   </p>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
                     {sourceComponents.map((c) => {
-                      const smaller = SIZES.filter((s) => SIZE_INDEX[s] < SIZE_INDEX[c.size])
+                      // Nothing is smaller than a component that has no size.
+                      // Previously SIZE_INDEX[null] was undefined and every
+                      // comparison against it was false, which gave the same
+                      // empty list by accident rather than on purpose.
+                      const smaller = c.size
+                        ? SIZES.filter((s) => SIZE_INDEX[s] < SIZE_INDEX[c.size as string])
+                        : []
                       return (
                         <div key={c.technology_code} style={{ display: 'flex', gap: '0.75rem', alignItems: 'flex-end' }}>
                           <div style={{ flex: 1, fontSize: '0.85rem' }}>

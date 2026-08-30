@@ -88,11 +88,35 @@ def test_the_rest_of_the_catalogue_is_recorded(db, code, expected):
     assert ab.delivery_model(code, db) == expected
 
 
-@pytest.mark.parametrize("code", ["keycloak", "nginx", "kafka", "oracle-db"])
+@pytest.mark.parametrize(
+    "code", ["keycloak", "oracle-db", "a-technology-nobody-has-added-yet"])
 def test_software_falls_through_to_the_guess_and_still_works(db, code):
     """An unrecorded technology must keep working — one added tomorrow is
-    guessed at rather than known, and `delivery_model` says which."""
+    guessed at rather than known, and `delivery_model` says which.
+
+    RE-POINTED 2026-08-30. This listed `nginx` and `kafka`, which are now
+    RECORDED: every technology a blueprint builds was classified so that the
+    blueprint-versus-catalogue drift guard could see it (a blueprint that started
+    calling Kafka a managed service previously slipped past). The property here
+    is unchanged and still worth holding — it is about technologies nobody has
+    classified, and the examples had stopped being examples of that.
+
+    Recording them changed no answer, which was measured rather than assumed:
+    `software` and `machine` both resolve to `vm-service`, the same verdict the
+    guess produced for all seven. The invented code keeps this test honest even
+    if every real technology is classified one day."""
     assert ab.delivery_model(code, db) == ""
+    assert ab.classify(code, db)[0] == "vm-service"
+
+
+@pytest.mark.parametrize("code", ["nginx", "kafka", "redis7", "python312"])
+def test_recording_a_technology_gives_the_same_answer_as_the_guess(db, code):
+    """The classification added knowledge; it must not have changed behaviour.
+
+    Four of the seven are VERSIONED codes, which take a different branch in
+    `classify` — the version-bump path — when nothing is recorded for them. So
+    "it obviously cannot change anything" was not good enough."""
+    assert ab.delivery_model(code, db) == "software"
     assert ab.classify(code, db)[0] == "vm-service"
 
 

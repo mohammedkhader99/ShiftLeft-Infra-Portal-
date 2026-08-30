@@ -26,7 +26,12 @@ from api.main import _EXECUTION_GATE_LABELS
 
 _ROOT = Path(__file__).resolve().parents[2]
 _SCANNED = sorted((_ROOT / "api").glob("*.py")) + sorted((_ROOT / "orchestrator").glob("*.py"))
-_READ = re.compile(r'(?:os\.getenv|settings\.env)\(\s*"([A-Z_][A-Z0-9_]*)"')
+# `generated_dir` is included because it READS THE ENVIRONMENT too --
+# common.paths.generated_dir("GENERATED_ROOT") is os.getenv with a
+# repo-relative fallback. Without it here, moving a setting behind a
+# helper would silently drop it out of this guard's sight, which is the
+# exact drift the guard exists to catch.
+_READ = re.compile(r'(?:os\.getenv|settings\.env|generated_dir)\(\s*"([A-Z_][A-Z0-9_]*)"')
 
 # The orchestrator's posture keys are snake_case; map them to the env vars they
 # report so the scan can see them as covered.
