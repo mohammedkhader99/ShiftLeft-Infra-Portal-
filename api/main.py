@@ -4282,25 +4282,65 @@ def request_autobuild_progress(
                AuditLog.event == "autobuild.started")
         .order_by(AuditLog.id.desc()))
 
+    def aware(when):
+        """Postgres hands these back with a timezone and SQLite does not."""
+        if when is None:
+            return None
+        return when if when.tzinfo is not None else when.replace(tzinfo=timezone.utc)
+
+    run_began = aware(started)
+
+    def _within_this_run(row) -> bool:
+        """Is this proof part of THIS request's run, or somebody else's?
+
+        `certification_proof` is keyed on the TECHNOLOGY, not the request -- it
+        has to be, because certification is a property of the technology and is
+        derived from these rows. So reading them straight back listed every proof
+        ever run for nginx under REQ-2026-0240, including five from other
+        people's requests in August. Presented under this request's heading, that
+        reads as this request's history, which it is not.
+
+        Scoped by the run's own start, taken from this request's
+        `autobuild.started` audit entry. The agent CLAIMS a request before
+        building it, so a proof begun after that moment belongs to this run.
+
+        NO RUN, NO PROOFS. A request the agent never worked on shows nothing,
+        rather than adopting the newest proofs that happen to exist.
+        """
+        if run_began is None:
+            return False
+        began = aware(row.started_at)
+        return began is not None and began >= run_began
+
     def seconds(row) -> int:
-        end = row.finished_at or now
-        begin = row.started_at
+        """How long a proof took, or has been going.
+
+        THE NORMALISATION IS LOAD-BEARING HERE, and only here. `now` is
+        timezone-aware and SQLite hands these columns back naive, so subtracting
+        one from the other raises outright — which is what makes `aware` a real
+        rule rather than defensive decoration. (Its use in `_within_this_run`
+        compares two values from the same column and cannot tell the difference;
+        a planted defect proved that, so the helper earns its place by being the
+        one used here.)
+        """
+        begin = aware(row.started_at)
         if begin is None:
             return 0
-        if begin.tzinfo is None:  # SQLite hands these back naive
-            begin = begin.replace(tzinfo=timezone.utc)
-        if end.tzinfo is None:
-            end = end.replace(tzinfo=timezone.utc)
+        end = aware(row.finished_at) or now
         return max(0, int((end - begin).total_seconds()))
 
     components = []
     for code in [c.technology_code for c in req.components if c.technology_code]:
-        rows = session.scalars(
+        # Read a generous window and narrow it here rather than in SQL: the
+        # timestamps come back naive from SQLite and aware from Postgres, and a
+        # comparison that is right on one and wrong on the other is exactly the
+        # kind of thing that passes every test and misbehaves in production.
+        rows = [row for row in session.scalars(
             select(CertificationProof)
             .where(CertificationProof.technology_code == code,
                    CertificationProof.deployment_target == target)
             .order_by(CertificationProof.id.desc())
-            .limit(12)).all()
+            .limit(24)).all() if _within_this_run(row)]
         recipe = stored(code) or {}
         container = recipe.get("container") or {}
         components.append({

@@ -952,38 +952,69 @@ export default function MyRequests({ route }: { route: string }) {
                               ? 'Making it buildable — in progress'
                               : 'How this was made buildable'}
                           </strong>
-                          {building[r.reference]!.components.map((c) => (
-                            <div key={c.code} style={{ marginTop: '0.6rem' }}>
-                              <div style={{ color: 'var(--cds-text-secondary)' }}>
-                                <strong style={{ color: 'var(--cds-text-primary)' }}>{c.code}</strong>
-                                {c.certified
-                                  ? ' · buildable'
-                                  : ' · no certified recipe yet'}
-                              </div>
-
-                              {c.recipe && c.recipe.image && (
-                                <div style={{ marginTop: '0.3rem', fontSize: '0.74rem', color: 'var(--cds-text-secondary)' }}>
-                                  <div>The agent chose <strong>{c.recipe.image}</strong>{c.recipe.tag ? `:${c.recipe.tag}` : ''}</div>
-                                  {/* The pinned digest is the whole promise: the
-                                      image proved and the image installed are
-                                      the same bytes even if the tag moves. */}
-                                  {c.recipe.digest && (
-                                    <div style={{ fontFamily: 'monospace', fontSize: '0.7rem' }}>
-                                      pinned {c.recipe.digest.slice(0, 26)}…
-                                      {c.recipe.platform_digest && ' (+ its amd64 build)'}
+                          {/* COLLAPSED BY DEFAULT, like "What was built" and
+                              "What the machine reported" beside it. Five proofs
+                              with their failure text is a wall; the summary line
+                              is what a reader needs at a glance, and the detail
+                              is one click away when they want it. */}
+                          <Accordion size="sm">
+                            {building[r.reference]!.components.map((c) => {
+                              const live = c.proofs.find((p) => p.status === 'running')
+                              const done = c.proofs.filter((p) => p.status !== 'running')
+                              // The one line worth reading without expanding.
+                              const summary = live
+                                ? 'proving now'
+                                : c.certified
+                                  ? 'buildable'
+                                  : c.proofs.length
+                                    ? 'no certified recipe yet'
+                                    : 'not started yet'
+                              return (
+                                <AccordionItem
+                                  key={c.code}
+                                  title={(
+                                    <span style={{ fontSize: '0.82rem' }}>
+                                      <strong>{c.code}</strong>
+                                      <span style={{
+                                        color: live ? 'var(--cds-support-info)'
+                                          : c.certified ? 'var(--cds-support-success)'
+                                            : 'var(--cds-text-secondary)',
+                                      }}> · {summary}</span>
+                                      {done.length > 0 && (
+                                        <span style={{ color: 'var(--cds-text-secondary)' }}>
+                                          {' · '}{done.length} attempt{done.length === 1 ? '' : 's'}
+                                        </span>
+                                      )}
+                                    </span>
+                                  )}
+                                >
+                                  {c.recipe && c.recipe.image && (
+                                    <div style={{ marginBottom: '0.5rem', fontSize: '0.74rem', color: 'var(--cds-text-secondary)' }}>
+                                      <div>The agent chose <strong>{c.recipe.image}</strong>{c.recipe.tag ? `:${c.recipe.tag}` : ''}</div>
+                                      {/* The pinned digest is the whole promise: the
+                                          image proved and the image installed are
+                                          the same bytes even if the tag moves. */}
+                                      {c.recipe.digest && (
+                                        <div style={{ fontFamily: 'monospace', fontSize: '0.7rem' }}>
+                                          pinned {c.recipe.digest.slice(0, 26)}…
+                                          {c.recipe.platform_digest && ' (+ its amd64 build)'}
+                                        </div>
+                                      )}
                                     </div>
                                   )}
-                                </div>
-                              )}
 
-                              {c.proofs.length > 0 && (
-                                <ul style={{ margin: '0.4rem 0 0', paddingLeft: '1rem', fontSize: '0.74rem' }}>
+                                  {c.proofs.length === 0 && (
+                                    <p style={{ fontSize: '0.74rem', color: 'var(--cds-text-secondary)', margin: 0 }}>
+                                      No machine has been built for this component in this run yet.
+                                    </p>
+                                  )}
+
                                   {c.proofs.map((p) => (
-                                    <li key={p.reference} style={{ marginBottom: '0.2rem' }}>
+                                    <div key={p.reference} style={{ marginBottom: '0.35rem', fontSize: '0.74rem' }}>
                                       <span style={{
                                         color: p.status === 'passed' ? 'var(--cds-support-success)'
                                           : p.status === 'running' ? 'var(--cds-support-info)'
-                                          : 'var(--cds-support-error)',
+                                            : 'var(--cds-support-error)',
                                       }}>
                                         {p.status === 'running' ? 'proving now' : p.status}
                                       </span>
@@ -993,12 +1024,12 @@ export default function MyRequests({ route }: { route: string }) {
                                       {p.detail && (
                                         <div style={{ color: 'var(--cds-text-secondary)' }}>{p.detail}</div>
                                       )}
-                                    </li>
+                                    </div>
                                   ))}
-                                </ul>
-                              )}
-                            </div>
-                          ))}
+                                </AccordionItem>
+                              )
+                            })}
+                          </Accordion>
                           {building[r.reference]!.active && !building[r.reference]!.attempts_recorded && (
                             <p style={{ marginTop: '0.5rem', fontSize: '0.72rem', color: 'var(--cds-text-secondary)' }}>
                               Each proof builds a real machine, installs the software, asks the

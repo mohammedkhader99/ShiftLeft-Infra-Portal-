@@ -88,6 +88,9 @@ def a_proof(db, status, code="mongodb", minutes=8, finished=True):
 
 def test_the_proofs_already_recorded_are_reported(client, db):
     a_request(db)
+    # The run marker is what scopes these to this request — see the boundary
+    # tests at the foot of this file. Without it, correctly, nothing is shown.
+    an_autobuild_started(db, datetime(2026, 8, 30, 13, 6, tzinfo=timezone.utc))
     a_proof(db, "failed")
     a_proof(db, "passed", minutes=9)
     db.commit()
@@ -104,6 +107,7 @@ def test_a_proof_still_running_reports_how_long_it_has_been_going(client, db):
     """The one a requester actually wants while they wait. A proof with no
     finish time must report elapsed time, not zero and not nothing."""
     a_request(db)
+    an_autobuild_started(db, datetime(2026, 8, 30, 13, 6, tzinfo=timezone.utc))
     a_proof(db, "running", finished=False)
     db.commit()
 
@@ -163,6 +167,7 @@ def test_the_proofs_of_another_technology_are_not_borrowed(client, db):
     """Proof rows are keyed by technology, not by request. Reporting every
     proof would show a requester somebody else's failures as their own."""
     a_request(db, code="mongodb")
+    an_autobuild_started(db, datetime(2026, 8, 30, 13, 6, tzinfo=timezone.utc))
     a_proof(db, "failed", code="rabbitmq")
     db.commit()
 
@@ -202,3 +207,83 @@ def test_the_stage_only_appears_when_the_agent_actually_ran():
 
     assert "'autobuild.started' in firstTs" in guard, (
         "the stage is not conditional on the agent having run")
+
+
+# --- THIS request's run, not the technology's whole history -----------------------
+#
+# `certification_proof` is keyed on the TECHNOLOGY, not the request — it has to
+# be, because certification is a property of the technology and is derived from
+# these rows. Reading them straight back listed every proof ever run for nginx
+# under REQ-2026-0240, five of them from other people's requests in August.
+# Under this request's heading that reads as this request's history.
+
+def an_autobuild_started(db, at):
+    db.add(AuditLog(event="autobuild.started", reference="REQ-2026-9999",
+                    actor="agent", detail={}, entry_hash="x", created_at=at))
+    db.flush()
+
+
+def a_proof_at(db, when, status="passed", code="mongodb"):
+    db.add(CertificationProof(
+        technology_code=code, deployment_target="oci",
+        resource_kind="oci-service-vm",
+        reference=f"PROOF-{code.upper()}-{when:%Y%m%dT%H%M%S}",
+        status=status, detail="", started_at=when,
+        finished_at=when + timedelta(minutes=4)))
+    db.flush()
+
+
+RUN_BEGAN = datetime(2026, 8, 30, 13, 6, 36, tzinfo=timezone.utc)
+
+
+def test_a_proof_from_an_earlier_request_is_not_shown(client, db):
+    """THE DEFECT. nginx's five August proofs belong to other requests, and
+    appeared under REQ-2026-0240 as though they were its own."""
+    a_request(db)
+    a_proof_at(db, datetime(2026, 8, 21, 15, 23, tzinfo=timezone.utc), "failed")
+    a_proof_at(db, RUN_BEGAN + timedelta(minutes=1))
+    an_autobuild_started(db, RUN_BEGAN)
+    db.commit()
+
+    proofs = client.get("/api/requests/REQ-2026-9999/autobuild").json()[
+        "components"][0]["proofs"]
+
+    assert len(proofs) == 1, [p["reference"] for p in proofs]
+    assert proofs[0]["started_at"].startswith("2026-08-30")
+
+
+def test_a_proof_begun_after_the_run_started_is_this_run(client, db):
+    a_request(db)
+    an_autobuild_started(db, RUN_BEGAN)
+    a_proof_at(db, RUN_BEGAN + timedelta(seconds=1))
+    a_proof_at(db, RUN_BEGAN + timedelta(minutes=10))
+    db.commit()
+
+    assert len(client.get("/api/requests/REQ-2026-9999/autobuild").json()[
+        "components"][0]["proofs"]) == 2
+
+
+def test_a_proof_begun_one_second_before_the_run_is_not_this_run(client, db):
+    """The boundary, pinned. The agent CLAIMS a request before it builds
+    anything, so the run's start is a real dividing line rather than an
+    approximation."""
+    a_request(db)
+    an_autobuild_started(db, RUN_BEGAN)
+    a_proof_at(db, RUN_BEGAN - timedelta(seconds=1))
+    db.commit()
+
+    assert client.get("/api/requests/REQ-2026-9999/autobuild").json()[
+        "components"][0]["proofs"] == []
+
+
+def test_a_request_the_agent_never_touched_adopts_no_proofs(client, db):
+    """NO RUN, NO PROOFS. Without this a request that never auto-built would
+    show whichever proofs happen to be newest, and claim them."""
+    a_request(db, status="in-progress")
+    a_proof_at(db, RUN_BEGAN)
+    db.commit()
+
+    body = client.get("/api/requests/REQ-2026-9999/autobuild").json()
+
+    assert body["started_at"] is None
+    assert body["components"][0]["proofs"] == []
