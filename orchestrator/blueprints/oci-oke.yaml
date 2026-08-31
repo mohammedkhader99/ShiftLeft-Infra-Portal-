@@ -104,12 +104,35 @@ builds: [oci-oke]
 description: OCI Container Engine for Kubernetes — private API endpoint, VCN-native pod networking, its own VCN and subnets, a worker node pool sized from the request, and a bastion for access.
 # The Terraform variable this module names its resources with.
 name_var: instance_name
-# Longest name this module's own validation rule accepts (24 characters,
-# from its instance_name regex). The portal composes names as
-# <environment>-<reference>-<suffix>, which overshot this and failed at PLAN
-# time — after the requester had a Jira ticket approved. Declared here so the
-# portal can compose a name that fits, and refuse one that cannot.
-name_max_length: 24
+# Longest name the portal may compose for this blueprint.
+#
+# TWENTY-TWO, NOT THE MODULE'S OWN 24, and the difference is the whole point.
+# `instance_name` validates against `^[a-zA-Z][a-zA-Z0-9-]{0,23}$` — 24 — and a
+# 24-character name passes that regex, plans cleanly, and is then REFUSED BY OCI
+# twenty minutes into the apply:
+#
+#     400-InvalidParameter, Invalid name:
+#     Node pool name must be 32 characters or less.
+#
+# because the module derives the node pool's name from it:
+#
+#     name = "${local.label_prefix}-node-pool"     (oke-nodepool.tf)
+#            = instance_name + 10 characters
+#            32 - 10 = 22
+#
+# THE SECOND TIME A DERIVED NAME HAS BROKEN THIS BLUEPRINT. The note this
+# replaces records the first: the portal composed a name longer than the module
+# accepted and Terraform refused it at PLAN time, after a Jira approval. That
+# was fixed by declaring the limit of the resource that is named DIRECTLY. The
+# node pool is named INDIRECTLY, has its own tighter cap, and nothing knew.
+#
+# A plan failure costs nothing. THIS one failed at APPLY, after the VCN, the
+# subnets and the cluster were already created — twenty minutes of build, and a
+# teardown that had to succeed for nothing to be left billing.
+#
+# test_a_derived_name_still_fits keeps this arithmetic honest: it reads the
+# suffixes out of the module and holds them against this number.
+name_max_length: 22
 # OCI takes 10-20 minutes to build a cluster. The default 600s would kill the
 # apply part way through, leaving real, billing resources that Terraform never
 # recorded and a later destroy cannot find.
