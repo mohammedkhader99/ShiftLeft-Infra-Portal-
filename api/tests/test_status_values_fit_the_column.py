@@ -39,24 +39,59 @@ STATUS_LIMIT = min(
 )
 
 
-def _assigned_literals(attribute: str) -> list[tuple[str, int, str]]:
-    """Every string literal assigned to `.<attribute>` anywhere in the API.
+def _module_constants(tree: ast.Module) -> dict[str, str]:
+    """Module-level NAME = "literal" bindings, so an assignment through one of
+    them can be followed to the string it really writes."""
+    constants: dict[str, str] = {}
+    for node in tree.body:
+        if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Constant):
+            continue
+        if not isinstance(node.value.value, str):
+            continue
+        for target in node.targets:
+            if isinstance(target, ast.Name):
+                constants[target.id] = node.value.value
+    return constants
 
-    Deliberately crude: it does not work out which model each assignment targets,
-    because it does not need to. It compares against the NARROWEST status column,
-    so a value that passes is safe wherever it lands.
+
+def _assigned_literals(attribute: str) -> list[tuple[str, int, str]]:
+    """Every string assigned to `.<attribute>` anywhere in the API — whether
+    written inline or reached through a module-level constant.
+
+    THE CONSTANT IS WHY THIS FILE DID NOT DO ITS JOB. It looked only for a string
+    LITERAL on the right-hand side, and the value that broke production was not
+    one:
+
+        REAPPROVAL_NEEDED = "awaiting-reapproval"   # 19 chars
+        ...
+        req.status = REAPPROVAL_NEEDED             # a Name, invisible to the scan
+
+    REQ-2026-0247's cost guard fired exactly as designed -- OKE was unpriced when
+    approved, was certified mid-run, and the real figure was 499.67 a month
+    against the 90.59 shown -- and then could not record its verdict. The
+    transaction rolled back, the request stayed `auto-building`, and the sweep
+    does not collect that status: orphaned, by the guard meant to protect it.
+
+    Deliberately crude in the other direction still: it does not work out which
+    model each assignment targets, because it compares against the NARROWEST
+    status column, so a value that passes is safe wherever it lands.
     """
     found: list[tuple[str, int, str]] = []
     for path in SOURCES:
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        constants = _module_constants(tree)
         for node in ast.walk(tree):
             if not isinstance(node, ast.Assign):
                 continue
             for target in node.targets:
-                if (isinstance(target, ast.Attribute) and target.attr == attribute
-                        and isinstance(node.value, ast.Constant)
-                        and isinstance(node.value.value, str)):
-                    found.append((path.name, node.lineno, node.value.value))
+                if not (isinstance(target, ast.Attribute)
+                        and target.attr == attribute):
+                    continue
+                value = node.value
+                if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                    found.append((path.name, node.lineno, value.value))
+                elif isinstance(value, ast.Name) and value.id in constants:
+                    found.append((path.name, node.lineno, constants[value.id]))
     return found
 
 
@@ -64,6 +99,18 @@ def test_the_scan_finds_the_assignments_at_all():
     """A refactor that moved these would make every test below pass vacuously."""
     found = _assigned_literals("status")
     assert len(found) >= 8, f"only found {len(found)} — the scan has stopped working"
+
+
+def test_the_scan_follows_a_constant_and_not_only_a_literal():
+    """THE HOLE THIS FILE HAD. A status written through a module-level constant
+    was invisible to it, and that is exactly how a nineteen-character value
+    reached a varchar(16) column in production."""
+    reached = {value for _, _, value in _assigned_literals("status")}
+
+    from api import main as api_main
+
+    assert api_main.REAPPROVAL_NEEDED in reached, (
+        "a status assigned through a module-level constant is not being checked")
 
 
 @pytest.mark.parametrize("where,line,value", _assigned_literals("status"),

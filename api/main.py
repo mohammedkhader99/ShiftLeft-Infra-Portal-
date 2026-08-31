@@ -5199,13 +5199,32 @@ def retry_request(reference: str, session: Session = Depends(get_session),
 # DECOMMISSION, which destroys the infrastructure and closes the loop. Letting
 # cancel close the record while the resources kept running is precisely how an
 # orphan is made, and this portal already has a page for finding those.
+#: The request is waiting for somebody to agree a price it did not have
+#: when it was approved.
+#:
+#: TEN CHARACTERS, NOT NINETEEN. `Request.status` is varchar(16) and this
+#: read "awaiting-reapproval". The guard fired for REQ-2026-0247 exactly as
+#: designed -- OKE was unpriced at approval, was certified mid-run, and the
+#: real figure turned out to be 499.67 a month against the 90.59 shown --
+#: and then could not WRITE its own verdict:
+#:
+#:     StringDataRightTruncation: value too long for character varying(16)
+#:
+#: The transaction rolled back, so the request stayed `auto-building`, and
+#: `auto-building` is not in QUEUED_STATUSES -- the sweep never looks at it
+#: again. A cost guard whose only failure mode is orphaning the request it
+#: was protecting is worse than no guard.
+#:
+#: SQLite does not enforce VARCHAR lengths, so the whole suite passed.
+REAPPROVAL_NEEDED = "reapproval"
+
 CANCELLABLE = {"draft", "submitted", "planned", "in-progress",
                "apply-failed", "verify-failed", "manual-fulfil",
                # Waiting for somebody to agree a price it did not have when it
                # was approved. Nothing has been built, and a request whose only
                # exit is an approval that may never come is how REQ-2026-0176
                # ended up closed by editing the database.
-               "awaiting-reapproval"}
+               REAPPROVAL_NEEDED}
 CANCELLED = "cancelled"
 
 
@@ -6672,9 +6691,6 @@ def _record_scan(session: Session, req: Request, jira_key: str, scan: dict | Non
 
 
 # --- a price that became knowable after approval ------------------------------
-
-REAPPROVAL_NEEDED = "awaiting-reapproval"
-
 
 def _needs_reapproval(raw: str) -> bool:
     """Whether the orchestrator refused because the cost changed since approval.
