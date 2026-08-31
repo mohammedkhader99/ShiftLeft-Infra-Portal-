@@ -109,7 +109,7 @@ def test_the_scan_follows_a_constant_and_not_only_a_literal():
 
     from api import main as api_main
 
-    assert api_main.REAPPROVAL_NEEDED in reached, (
+    assert api_main.COST_CHANGED in reached, (
         "a status assigned through a module-level constant is not being checked")
 
 

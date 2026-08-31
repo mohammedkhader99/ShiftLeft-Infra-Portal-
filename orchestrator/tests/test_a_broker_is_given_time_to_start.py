@@ -78,7 +78,7 @@ def report_script() -> str:
 
 
 def run_report(tmp_path, *, listening: bool, journal: str = "",
-               deadline_seconds: int = 6) -> str:
+               deadline_seconds: int = 6, ready_after: int = 0) -> str:
     """Run the real report script with stubbed system commands, and return what
     it wrote.
 
@@ -107,8 +107,23 @@ def run_report(tmp_path, *, listening: bool, journal: str = "",
     binaries.mkdir()
     ss_out = ("LISTEN 0 50 0.0.0.0:9092 0.0.0.0:*\n"
               "LISTEN 0 50 0.0.0.0:9093 0.0.0.0:*\n") if listening else ""
+    # A BROKER THAT COMES UP LATE. `ready_after` makes the stub answer empty for
+    # its first N calls and then report the ports, which is what a real broker
+    # does: nothing, nothing, nothing, then bound. A script that checks once
+    # never sees it; a script that waits does.
+    if ready_after:
+        ports = ("LISTEN 0 50 0.0.0.0:9092 0.0.0.0:*\n"
+                 "LISTEN 0 50 0.0.0.0:9093 0.0.0.0:*\n")
+        ss_body = (
+            "#!/bin/sh\n"
+            f"C={here}/ss.count\n"
+            'N=$(cat "$C" 2>/dev/null || echo 0)\n'
+            'N=$((N+1)); echo "$N" > "$C"\n'
+            f'if [ "$N" -ge {ready_after} ]; then printf \'%s\' \'{ports}\'; fi\n')
+    else:
+        ss_body = f"#!/bin/sh\nprintf '%s' '{ss_out}'\n"
     stubs = {
-        "ss": f"#!/bin/sh\nprintf '%s' '{ss_out}'\n",
+        "ss": ss_body,
         "systemctl": "#!/bin/sh\necho active\n",
         "rpm": "#!/bin/sh\necho java-21-openjdk-headless-21.0.12\n",
         "firewall-cmd": "#!/bin/sh\nexit 0\n",
@@ -164,35 +179,32 @@ def test_a_broker_that_never_binds_says_why_in_its_own_words(tmp_path):
 
 
 @pytest.mark.skipif(not shutil.which("sh"), reason="needs a POSIX shell")
-def test_it_waits_rather_than_judging_immediately(tmp_path):
-    """The wait is the fix; the log capture only explains what the wait proves.
+def test_a_broker_that_comes_up_late_is_still_seen(tmp_path):
+    """THE WAIT, tested by what it achieves rather than by a stopwatch.
 
-    MEASURED AS A DIFFERENCE, and the first version of this test was not. It
-    asserted the run took at least six seconds -- and a planted script with the
-    wait deleted still took ten, because starting a shell and seven stub
-    programs costs about that much on this machine. It passed with the very
-    defect it existed to catch.
+    The stub answers empty for its first few calls and then reports the ports —
+    which is what a real broker does: nothing, nothing, nothing, then bound. A
+    script that checks once records "nothing listening" about a machine that is
+    perfectly healthy, which is exactly what happened to REQ-2026-0243.
 
-    A broker that is already up returns on the first check; one that never binds
-    waits out the deadline. Both pay the same start-up cost, so the difference
-    between them is the wait and nothing else."""
-    import time
+    MEASURED BY DURATION BEFORE, AND THAT WAS FLAKY. The first version asserted
+    the run took six seconds; starting a shell and seven stubs costs about ten,
+    so a planted script with the wait deleted still passed. The second compared
+    a waiting run against a non-waiting one and asserted the difference — better,
+    and still load-sensitive: on a busy machine it read 22.5s against 17.1s and
+    failed a correct implementation. A test that cries wolf teaches people to
+    ignore it.
 
-    up, down = tmp_path / "up", tmp_path / "down"
-    up.mkdir()
-    down.mkdir()
+    This depends on no clock at all.
+    """
+    out = run_report(tmp_path, listening=False, ready_after=3, deadline_seconds=40)
 
-    began = time.monotonic()
-    run_report(up, listening=True, deadline_seconds=12)
-    without = time.monotonic() - began
-
-    began = time.monotonic()
-    run_report(down, listening=False, deadline_seconds=12)
-    with_wait = time.monotonic() - began
-
-    assert with_wait - without >= 8, (
-        f"the report did not wait for the broker: {with_wait:.1f}s when it never "
-        f"bound against {without:.1f}s when it was already up")
+    assert "nothing listening on 9092" not in out, (
+        "the report judged the broker before it had bound — it checks once "
+        "instead of waiting")
+    assert "0.0.0.0:9092" in out
+    assert "kafka log (never bound its ports)" not in out, (
+        "a broker that did come up was reported as though it never had")
 
 
 @pytest.mark.skipif(not shutil.which("sh"), reason="needs a POSIX shell")

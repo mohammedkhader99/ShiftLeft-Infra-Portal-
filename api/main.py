@@ -5199,8 +5199,18 @@ def retry_request(reference: str, session: Session = Depends(get_session),
 # DECOMMISSION, which destroys the infrastructure and closes the loop. Letting
 # cancel close the record while the resources kept running is precisely how an
 # orphan is made, and this portal already has a page for finding those.
-#: The request is waiting for somebody to agree a price it did not have
-#: when it was approved.
+#: The price changed after approval, so this request will not be built.
+#:
+#: THE REMEDY IS A NEW REQUEST, not a second approval, decided by the platform
+#: owner on 2026-08-31. Re-approving in place needs a resume path this portal
+#: does not have: `cost-changed` is not in QUEUED_STATUSES, so a re-approved
+#: request would sit exactly where it is, and putting it into the sweep would
+#: re-post a Jira comment every thirty seconds. Cancel-and-resubmit uses paths
+#: that already work and are already proven.
+#:
+#: NAMED FOR WHAT HAPPENED, not for a remedy that is no longer offered. It read
+#: `reapproval`, which told a requester to do the one thing this portal cannot
+#: carry out.
 #:
 #: TEN CHARACTERS, NOT NINETEEN. `Request.status` is varchar(16) and this
 #: read "awaiting-reapproval". The guard fired for REQ-2026-0247 exactly as
@@ -5216,7 +5226,7 @@ def retry_request(reference: str, session: Session = Depends(get_session),
 #: was protecting is worse than no guard.
 #:
 #: SQLite does not enforce VARCHAR lengths, so the whole suite passed.
-REAPPROVAL_NEEDED = "reapproval"
+COST_CHANGED = "cost-changed"
 
 CANCELLABLE = {"draft", "submitted", "planned", "in-progress",
                "apply-failed", "verify-failed", "manual-fulfil",
@@ -5224,7 +5234,7 @@ CANCELLABLE = {"draft", "submitted", "planned", "in-progress",
                # was approved. Nothing has been built, and a request whose only
                # exit is an approval that may never come is how REQ-2026-0176
                # ended up closed by editing the database.
-               REAPPROVAL_NEEDED}
+               COST_CHANGED}
 CANCELLED = "cancelled"
 
 
@@ -6724,13 +6734,14 @@ def _ask_for_reapproval(session: Session, req, jira_key: str | None,
     from api.pricing import CURRENCY
 
     figure = f"{monthly:.2f} {CURRENCY}" if monthly is not None else "a real figure"
-    req.status = REAPPROVAL_NEEDED
+    req.status = COST_CHANGED
     req.status_detail = (
-        f"Approved before this could be priced, and it now costs {figure} a month. "
-        f"Nothing has been built. The component was certified automatically while "
-        f"this request was in flight, so the price is real for the first time — and "
-        f"a cost nobody has agreed to is not one the portal will build. Approve it "
-        f"again at this figure, or cancel the request.")
+        f"Approved at a price that has since changed: it now costs {figure} a "
+        f"month. Nothing has been built and nothing is running. The component was "
+        f"certified automatically while this request was in flight, so the price "
+        f"is real for the first time — and a cost nobody has agreed to is not one "
+        f"the portal will build. Cancel this request and raise a new one; it will "
+        f"be priced at the real figure and approved on that.")
     append_audit(session, "cost.reapproval_requested", reference=req.reference,
                  jira_key=jira_key, actor="poller",
                  detail={"monthly": monthly, "was_approved_at": "unpriced"})
@@ -6740,8 +6751,10 @@ def _ask_for_reapproval(session: Session, req, jira_key: str | None,
                         f"This request was approved before its cost could be "
                         f"calculated. The component has since been certified "
                         f"automatically, so it now has a real price: {figure} a "
-                        f"month. Nothing has been built. Please approve again at "
-                        f"this figure, or cancel the request.")
+                        f"month. Nothing has been built and nothing is running. "
+                        f"Please CANCEL this request and raise a new one — it "
+                        f"will be priced at the real figure and approved on that. "
+                        f"Approving this ticket again will not build it.")
         except Exception as exc:  # noqa: BLE001 — a comment must not block the state
             logger.warning("re-approval: could not comment on %s: %s", jira_key, exc)
 

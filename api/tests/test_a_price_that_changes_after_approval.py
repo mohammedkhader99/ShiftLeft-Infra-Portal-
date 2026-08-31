@@ -1,4 +1,13 @@
-"""A price that becomes knowable after approval needs approving again.
+"""A price that becomes knowable after approval stops the request.
+
+THE REMEDY IS A NEW REQUEST, decided by the platform owner on 2026-08-31.
+This file used to hold "approve it again"; re-approving in place needs a
+resume path the portal does not have, and building one would mean putting
+the status into the sweep, which would re-post a Jira comment every thirty
+seconds. Cancel-and-resubmit uses paths that already work.
+
+The property under test is unchanged and is the important one: a cost
+nobody agreed to is never built.
 
 REQ-2026-0176 and REQ-2026-0178, both keycloak, both the same shape:
 
@@ -85,12 +94,12 @@ def test_other_refusals_are_left_alone(other):
 
 # --- what happens instead of stalling -----------------------------------------
 
-def test_the_request_goes_back_for_approval_at_the_real_figure(session):
+def test_the_request_is_stopped_and_marked_with_the_real_figure(session):
     req = a_request(session)
     main._ask_for_reapproval(session, req, jira_key=None, monthly=90.59)
     session.commit()
 
-    assert req.status == main.REAPPROVAL_NEEDED
+    assert req.status == main.COST_CHANGED
     assert "90.59" in req.status_detail
     assert "Nothing has been built" in req.status_detail
 
@@ -105,12 +114,19 @@ def test_it_says_the_work_succeeded_rather_than_reading_as_a_failure(session):
     detail = req.status_detail
     assert "certified automatically" in detail
     assert "price is real for the first time" in detail
-    assert "Approve it again" in detail or "approve" in detail.lower()
+    # THE REMEDY, and it changed on 2026-08-31: cancel and raise a new one.
+    # Telling a requester to approve again would name the one action this
+    # portal cannot carry out — there is no resume path, so a second
+    # approval leaves the request exactly where it is.
+    assert "Cancel this request and raise a new one" in detail
+    assert "approve it again" not in detail.lower(), (
+        "the message still offers re-approval, which does nothing")
 
 
 def test_it_offers_the_way_out_as_well_as_the_way_on(session):
-    """Approving again is one answer; not wanting it at 90.59 a month is another,
-    and a request with no exit is how REQ-2026-0176 sat in-progress for ever."""
+    """Cancelling is now the ONLY exit, which makes it matter more rather than
+    less: a request with no exit is how REQ-2026-0176 sat in-progress for ever,
+    and was closed in the end by editing the database by hand."""
     req = a_request(session, "REQ-REAPPROVE-3")
     main._ask_for_reapproval(session, req, jira_key=None, monthly=90.59)
     assert "cancel" in req.status_detail.lower()
@@ -121,7 +137,7 @@ def test_a_missing_figure_still_asks_rather_than_crashing(session):
     req = a_request(session, "REQ-REAPPROVE-4")
     main._ask_for_reapproval(session, req, jira_key=None, monthly=None)
 
-    assert req.status == main.REAPPROVAL_NEEDED
+    assert req.status == main.COST_CHANGED
     assert "a real figure" in req.status_detail
 
 
@@ -141,16 +157,18 @@ def test_it_is_recorded_in_the_audit_trail(session):
 # --- it must not be swept up and built ----------------------------------------
 
 def test_the_new_status_is_not_one_the_sweep_provisions(session):
-    """The sweep picks up 'submitted' and 'planned'. A request waiting for a
-    human to agree a price must not quietly resume — that would be the portal
+    """The sweep picks up 'submitted' and 'planned'. A request stopped on a
+    price nobody agreed to must not quietly resume — that would be the portal
     building something nobody approved, which is the whole thing being guarded
-    against."""
-    assert main.REAPPROVAL_NEEDED not in ("submitted", "planned")
+    against.
+
+    It is also why the remedy is a new request rather than a second approval:
+    putting this status into the sweep is exactly what must not happen."""
+    assert main.COST_CHANGED not in ("submitted", "planned")
 
 
 def test_it_can_be_cancelled_like_any_other_stalled_request(session):
     """The status was added after the cancel feature. A request that cannot be
     closed is how the first one ended up edited in the database by hand."""
-    assert main.REAPPROVAL_NEEDED in main.CANCELLABLE, (
-        "a request waiting for re-approval cannot be cancelled, so its only exit "
-        "is an approval it may never get")
+    assert main.COST_CHANGED in main.CANCELLABLE, (
+        "cancelling is the ONLY exit this request has, and it is not cancellable")
