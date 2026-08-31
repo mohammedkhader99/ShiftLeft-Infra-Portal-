@@ -232,6 +232,10 @@ export type RequestRow = {
   reference: string
   status: string
   status_detail?: string | null
+  // Whether cancel would be ACCEPTED, decided by the API's own CANCELLABLE set.
+  // This page used to keep its own copy of that list; the copy drifted, and a
+  // request whose message said "cancel this request" offered no way to do it.
+  cancellable?: boolean
   // provision | decommission | refresh | restore | reduce. Already sent by
   // /api/requests; the lifecycle stepper needs it to describe the right one.
   request_type?: string | null

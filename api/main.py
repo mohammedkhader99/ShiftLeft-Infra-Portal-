@@ -2602,6 +2602,26 @@ def _compute_sla(status: str | None, submitted_at, created_at) -> dict | None:
 
 class RequestOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
+
+    @computed_field
+    @property
+    def cancellable(self) -> bool:
+        """Whether cancel would be ACCEPTED, decided by the same set that decides
+        it for real.
+
+        THE BROWSER USED TO KEEP ITS OWN COPY of the status list, under a comment
+        saying "Mirrors the API's CANCELLABLE set. A button offered where the API
+        would refuse is a worse experience than no button at all." The risk was
+        understood and the copy drifted anyway: `cost-changed` was added to the
+        API's set and never to the browser's, so REQ-2026-0247 told its owner to
+        cancel the request and then offered no way to do it.
+
+        A mirror is two sources of truth for one fact, which is what nearly every
+        defect found this week has turned out to be. So the question is answered
+        HERE, by the set the endpoint actually consults, and the browser renders
+        the answer instead of recomputing it.
+        """
+        return self.status in CANCELLABLE
     reference: str
     status: str
     status_detail: str | None = None

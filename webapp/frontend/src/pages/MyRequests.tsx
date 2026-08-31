@@ -453,10 +453,14 @@ export default function MyRequests({ route }: { route: string }) {
     refresh()
   }
 
-  // Mirrors the API's CANCELLABLE set. A button offered where the API would
-  // refuse is a worse experience than no button at all.
-  const CANCELLABLE = ['draft', 'submitted', 'planned', 'in-progress',
-                       'apply-failed', 'verify-failed', 'manual-fulfil']
+  // NO LOCAL LIST. This held a copy of the API's CANCELLABLE set, under a
+  // comment saying it mirrored it -- and the copy drifted: `cost-changed` was
+  // added to the API's set and never to this one, so REQ-2026-0247 told its
+  // owner to cancel the request and then showed no way to do it.
+  //
+  // The API now says whether cancel would be accepted, decided by the same set
+  // the endpoint consults, and this renders that answer. A mirror is two
+  // sources of truth for one fact.
 
   const [transferInputs, setTransferInputs] = useState<Record<string, string>>({})
   async function onTransfer(ref: string) {
@@ -745,7 +749,7 @@ export default function MyRequests({ route }: { route: string }) {
                           style={{ maxWidth: 'none', marginBottom: '1rem' }}
                         />
                       )}
-                      {CANCELLABLE.includes(r.status) && (
+                      {r.cancellable && (
                         <div style={{ marginBottom: '1.25rem', display: 'flex', alignItems: 'flex-end', gap: '0.75rem', flexWrap: 'wrap' }}>
                           <TextInput
                             id={`cancel-reason-${r.reference}`}

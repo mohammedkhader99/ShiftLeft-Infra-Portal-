@@ -172,3 +172,42 @@ def test_it_can_be_cancelled_like_any_other_stalled_request(session):
     closed is how the first one ended up edited in the database by hand."""
     assert main.COST_CHANGED in main.CANCELLABLE, (
         "cancelling is the ONLY exit this request has, and it is not cancellable")
+
+
+# --- the button must exist wherever the API would accept the click ---------------
+
+def test_the_api_tells_the_browser_whether_cancel_would_be_accepted(session):
+    """A MIRROR IS TWO SOURCES OF TRUTH, and this one drifted.
+
+    The requests page kept its own copy of the status list, under a comment
+    saying "Mirrors the API's CANCELLABLE set. A button offered where the API
+    would refuse is a worse experience than no button at all." The risk was
+    understood; the copy was still never updated when this status was added.
+
+    So REQ-2026-0247 told its owner, in the portal, to cancel the request — and
+    showed no way to cancel it. The only remedy the platform offers, unreachable.
+
+    The API answers now, from the set the endpoint actually consults.
+    """
+    from api.main import RequestOut
+
+    out = RequestOut(reference="REQ-X", status=main.COST_CHANGED, requester="a@b.c")
+    assert out.cancellable is True
+
+    assert RequestOut(reference="REQ-X", status="provisioned",
+                      requester="a@b.c").cancellable is False, (
+        "a provisioned request must not offer cancel — it has real resources, "
+        "and closing the record while they run is how an orphan is made")
+
+
+def test_the_browser_does_not_keep_its_own_copy_of_the_list():
+    """The fix is not "add the missing status"; it is that there is one list."""
+    from pathlib import Path
+
+    page = Path("webapp/frontend/src/pages/MyRequests.tsx").read_text(encoding="utf-8")
+
+    assert "r.cancellable" in page, (
+        "the page no longer renders the API's answer")
+    assert "const CANCELLABLE" not in page, (
+        "the page has grown its own copy of the cancellable statuses again; it "
+        "will drift, because the last one did")
