@@ -2261,6 +2261,28 @@ def _is_capability(code: str, session: Session) -> bool:
     return ai_blueprint.delivery_model(code, session) == "capability"
 
 
+def _offerable(session: Session):
+    """Technologies the form may show. Withdrawn ones are not among them.
+
+    `eol` ALREADY MEANT THIS EVERYWHERE ELSE. The catalogue gap report filters
+    on it; validation refuses a request naming one. This endpoint — the request
+    form's own dropdown, the single place a requester chooses from — selected
+    every row and filtered only capabilities.
+
+    So withdrawing OCI Functions and Oracle Autonomous Database on 2026-08-31
+    took them out of the catalogue everywhere except the list people pick from.
+    A requester could select one, fill in the whole form, and be refused on
+    submit — offering a thing and then declining it, which is the failure this
+    project keeps removing. Never offer what cannot be built.
+    """
+    return [
+        t for t in session.scalars(
+            select(Technology)
+            .where(Technology.lifecycle_state != "eol")
+            .order_by(Technology.name)).all()
+    ]
+
+
 @app.get("/api/lookups", response_model=LookupsResponse)
 def lookups(session: Session = Depends(get_session)) -> LookupsResponse:
     """Read-only reference data for the guided-request form's dropdowns."""
@@ -2288,15 +2310,15 @@ def lookups(session: Session = Depends(get_session)) -> LookupsResponse:
         # They keep their route: a `platform-service` request asks the
         # infrastructure team directly, with no sizing, no price and no build
         # path to fail at.
-        technologies=[_technology_out(t, fulfilment.certified_pairs(session)) for t in
-                      session.scalars(select(Technology).order_by(Technology.name)).all()
+        technologies=[_technology_out(t, fulfilment.certified_pairs(session))
+                      for t in _offerable(session)
                       if not _is_capability(t.code, session)],
         # Offered separately, so the form can ask for one without pretending it
         # is a component.
         platform_services=[
             {"code": t.code, "name": t.name,
              "note": ai_blueprint.delivery_note(t.code, session)}
-            for t in session.scalars(select(Technology).order_by(Technology.name)).all()
+            for t in _offerable(session)
             if _is_capability(t.code, session)],
         environments=session.scalars(select(Environment).order_by(Environment.name)).all(),
     )

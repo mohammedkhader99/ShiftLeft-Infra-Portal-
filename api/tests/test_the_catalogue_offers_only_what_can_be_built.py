@@ -63,6 +63,19 @@ def db():
     session.close()
 
 
+@pytest.fixture()
+def client_for_lookups(db):
+    from fastapi.testclient import TestClient
+    from api.main import app, get_session
+
+    def override():
+        yield db
+
+    app.dependency_overrides[get_session] = override
+    yield TestClient(app)
+    app.dependency_overrides.clear()
+
+
 @pytest.mark.parametrize("code", NEEDS_A_HUMAN_MODULE)
 def test_a_component_nothing_can_build_is_withdrawn(db, code):
     tech = db.scalar(select(Technology).where(Technology.code == code))
@@ -121,3 +134,37 @@ def test_the_refusal_carries_that_reason(db):
         "the refusal still calls everything end-of-life, including things "
         "withdrawn because this portal cannot build them")
     assert validation is not None
+
+
+# --- withdrawn everywhere, including the list people actually pick from ----------
+
+def test_a_withdrawn_component_is_not_on_the_request_form(client_for_lookups):
+    """THE GAP THE FIRST VERSION LEFT.
+
+    `eol` already meant this everywhere else — the catalogue gap report filters
+    on it, validation refuses a request naming one. `/api/lookups`, which is the
+    form's own dropdown and the single place a requester chooses from, selected
+    every row and filtered only capabilities.
+
+    So the withdrawal took these out of the catalogue everywhere except the list
+    people pick from: select one, fill in the whole form, be refused on submit.
+    Offering a thing and then declining it is the failure this project keeps
+    removing.
+    """
+    body = client_for_lookups.get("/api/lookups").json()
+    offered = {t["code"] for t in body["technologies"]}
+    services = {t["code"] for t in body["platform_services"]}
+
+    for code in NEEDS_A_HUMAN_MODULE:
+        assert code not in offered, f"{code} is still on the request form"
+        assert code not in services, f"{code} is still offered as a platform service"
+
+
+def test_the_form_still_offers_what_can_be_built(client_for_lookups):
+    """The other half. A filter that empties the catalogue would pass the test
+    above and be far worse than the bug."""
+    offered = {t["code"] for t in client_for_lookups.get("/api/lookups").json()["technologies"]}
+
+    assert "nginx" in offered
+    for code in HAS_A_REVIEWED_MODULE:
+        assert code in offered, f"{code} was removed from the form as well"
