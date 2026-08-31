@@ -277,6 +277,15 @@ def test_the_queue_panel_is_gated_on_the_live_status_not_only_the_payload():
 
     source = Path(MY_REQUESTS).read_text(encoding="utf-8")
 
+    # The agent-progress heading is decided by the row's LIVE status too, for
+    # the same reason: a fetched payload is a photograph of a moment that has
+    # already passed, and the row's own status is what the list poll refreshes.
+    assert "{r.status === 'auto-building'" in source, (
+        "the progress heading is not driven by the request's live status")
+    assert "building[r.reference]!.active" not in source, (
+        "the heading still reads `active` from the cached payload, which is "
+        "what left REQ-2026-0244 saying 'in progress' after it had moved on")
+
     for panel in ("queue[r.reference]?.awaiting_approval",
                   "queue[r.reference]?.waiting"):
         guard = source[max(0, source.index(panel) - 200):source.index(panel)]
@@ -295,6 +304,64 @@ def test_cached_panels_are_dropped_when_the_request_moves_on():
 
     assert "fetchedUnder[ref] !== status" in source, (
         "nothing notices when a request's status changes")
-    for cache in ("setBoot", "setQueue"):
+    # ALL THREE. The first version of this listed setBoot and setQueue and left
+    # setBuilding out — and the bug came straight back in the cache the test did
+    # not name: REQ-2026-0244 went on reading "Making it buildable — in progress"
+    # while the stepper beside it had that stage ticked. A guard that covers two
+    # of three caches does not cover the class.
+    for cache in ("setBoot", "setQueue", "setBuilding"):
         assert f"{cache}((s) => {{ const next = {{ ...s }}; delete next[ref]; return next }})" in source, (
             f"{cache} is not invalidated when the request's status changes")
+
+
+def test_nothing_claims_the_present_tense_from_a_fetched_snapshot():
+    """THE RULE, rather than the three places it was broken.
+
+    Every "this is happening now" message on a request row was computed from a
+    payload fetched at some earlier moment. Invalidating the caches on a status
+    change narrows the window but does not close it: there is still a poll's
+    width between a request moving on and the refetch landing, and REQ-2026-0244
+    sat in exactly that window reading
+
+        kafka - proving now - 6m49s so far
+
+    while it was already provisioned. It was reported twice, in two different
+    panels, because each fix addressed the instance in front of it.
+
+    So the rule is: the ROW'S OWN STATUS decides whether anything is happening,
+    and the payload only supplies the detail. A request that is not building
+    cannot say it is proving anything.
+
+    IT ALSO FIXES A CASE NOBODY HAS HIT YET. A proof abandoned mid-flight leaves
+    its row `running` forever; without this it would read "proving now - 3 days
+    so far" indefinitely.
+    """
+    from pathlib import Path
+
+    source = Path(MY_REQUESTS).read_text(encoding="utf-8")
+
+    assert "const stillBuilding = r.status === 'auto-building'" in source, (
+        "there is no live-status gate for present-tense messages")
+
+    # `live` is the summary's gate and is itself derived from the live status,
+    # so either name counts as a guard.
+    assert "const live = stillBuilding" in source, (
+        "the summary's 'proving now' is not gated on the live status")
+
+    lines = source.splitlines()
+    for number, line in enumerate(lines):
+        if line.lstrip().startswith("//"):
+            continue  # a comment quoting the bug is not a claim
+        for claim in ("'proving now'", "' so far'"):
+            if claim not in line:
+                continue
+            # TWO LINES, NOT SIX. A wider window let ADJACENT claims cover for
+            # each other: deleting the guard from the elapsed-time line still
+            # found the one belonging to the line above it, and the plant went
+            # undetected. A guard has to sit near enough to the thing it guards
+            # that removing it is visible.
+            window = "\n".join(lines[max(0, number - 2):number + 1])
+            assert "stillBuilding" in window or "live" in window, (
+                f"line {number + 1} renders {claim} without checking the request "
+                f"is actually building, so a finished request can claim to be "
+                f"working: {line.strip()}")

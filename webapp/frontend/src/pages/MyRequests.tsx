@@ -375,6 +375,13 @@ export default function MyRequests({ route }: { route: string }) {
         setFetchedUnder((s) => ({ ...s, [ref]: status }))
         setBoot((s) => { const next = { ...s }; delete next[ref]; return next })
         setQueue((s) => { const next = { ...s }; delete next[ref]; return next })
+        // ALL THREE. The first version of this invalidation dropped `boot` and
+        // `queue` and left `building` behind, and the bug came straight back in
+        // the cache that was missed: REQ-2026-0244's panel went on saying
+        // "Making it buildable — in progress" while the stepper beside it showed
+        // that stage ticked at 00:58 and Planned already current. Fixing two of
+        // three caches is not fixing the class.
+        setBuilding((s) => { const next = { ...s }; delete next[ref]; return next })
       }
       getAudit(ref)
         .then((a) =>
@@ -1038,7 +1045,12 @@ export default function MyRequests({ route }: { route: string }) {
                           (c) => c.proofs.length > 0 || c.recipe) && (
                         <div style={{ marginTop: '1rem', fontSize: '0.82rem' }}>
                           <strong>
-                            {building[r.reference]!.active
+                            {/* THE LIVE STATUS DECIDES, not the payload. A
+                                fetched answer is a photograph of a moment that
+                                has passed; the row's own status is refreshed by
+                                the list poll and is the only thing here that is
+                                current. Same guarantee as the queue panel. */}
+                            {r.status === 'auto-building'
                               ? 'Making it buildable — in progress'
                               : 'How this was made buildable'}
                           </strong>
@@ -1049,7 +1061,26 @@ export default function MyRequests({ route }: { route: string }) {
                               is one click away when they want it. */}
                           <Accordion size="sm">
                             {building[r.reference]!.components.map((c) => {
-                              const live = c.proofs.find((p) => p.status === 'running')
+                              // NOTHING CLAIMS THE PRESENT TENSE FROM A SNAPSHOT.
+                              //
+                              // Every message below describes what is happening
+                              // NOW, and every one of them was computed from a
+                              // payload fetched at some earlier moment. Even with
+                              // the cache invalidated on a status change there is
+                              // a poll's width between the request moving on and
+                              // the refetch landing -- and REQ-2026-0244 sat in
+                              // that window reading "kafka - proving now - 6m49s
+                              // so far" while it was already provisioned.
+                              //
+                              // The row's own status is refreshed by the list
+                              // poll, so a request that is not building cannot
+                              // say it is proving anything. A proof row still
+                              // marked `running` then shows its raw status --
+                              // which is honest, and is also how an abandoned
+                              // proof stops looking like live work.
+                              const stillBuilding = r.status === 'auto-building'
+                              const live = stillBuilding
+                                && c.proofs.find((p) => p.status === 'running')
                               const done = c.proofs.filter((p) => p.status !== 'running')
                               // The one line worth reading without expanding.
                               const summary = live
@@ -1103,14 +1134,17 @@ export default function MyRequests({ route }: { route: string }) {
                                     <div key={p.reference} style={{ marginBottom: '0.35rem', fontSize: '0.74rem' }}>
                                       <span style={{
                                         color: p.status === 'passed' ? 'var(--cds-support-success)'
-                                          : p.status === 'running' ? 'var(--cds-support-info)'
+                                          : p.status === 'running'
+                                            ? (stillBuilding ? 'var(--cds-support-info)'
+                                              : 'var(--cds-text-secondary)')
                                             : 'var(--cds-support-error)',
                                       }}>
-                                        {p.status === 'running' ? 'proving now' : p.status}
+                                        {stillBuilding && p.status === 'running'
+                                          ? 'proving now' : p.status}
                                       </span>
                                       {' · '}{fmtWhen(p.started_at || undefined)}
                                       {' · '}{Math.floor(p.seconds / 60)}m {p.seconds % 60}s
-                                      {p.status === 'running' && ' so far'}
+                                      {stillBuilding && p.status === 'running' && ' so far'}
                                       {p.detail && (
                                         <div style={{ color: 'var(--cds-text-secondary)' }}>{p.detail}</div>
                                       )}
@@ -1120,7 +1154,8 @@ export default function MyRequests({ route }: { route: string }) {
                               )
                             })}
                           </Accordion>
-                          {building[r.reference]!.active && !building[r.reference]!.attempts_recorded && (
+                          {r.status === 'auto-building'
+                            && !building[r.reference]!.attempts_recorded && (
                             <p style={{ marginTop: '0.5rem', fontSize: '0.72rem', color: 'var(--cds-text-secondary)' }}>
                               Each proof builds a real machine, installs the software, asks the
                               machine what it became, and destroys it. Which install method is
