@@ -936,8 +936,22 @@ def _validate_components(data: dict, session: Session, errors: dict[str, str]) -
             if tech is None:
                 errors[f"component_{index}_technology"] = f"Unknown technology '{technology}'."
             elif tech.lifecycle_state == "eol":
+                # WHY, NOT JUST NO. "End-of-life" is the right words for software
+                # a vendor has retired, and the wrong ones for something withdrawn
+                # because this portal cannot build it: OCI Functions is very much
+                # alive at Oracle. A requester told the wrong reason goes and
+                # argues with the wrong people.
+                #
+                # The catalogue already records a sentence per technology for
+                # exactly this — TechnologyDelivery.note, "shown to a requester
+                # who picked something the portal cannot build, so a refusal
+                # explains rather than merely declines".
+                from db.models import TechnologyDelivery
+                withdrawn = session.get(TechnologyDelivery, tech.code)
+                why = (withdrawn.note or "").strip() if withdrawn else ""
                 errors[f"component_{index}_technology"] = (
-                    f"{tech.name} is end-of-life and can no longer be requested."
+                    f"{tech.name} can no longer be requested."
+                    + (f" {why}" if why else "")
                 )
             elif target in DEPLOYMENT_TARGETS and target not in _tech_targets(tech):
                 errors[f"component_{index}_technology"] = (

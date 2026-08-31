@@ -383,6 +383,34 @@ def build_ticket_body(req: Request, estimate: dict, plan_preview: str) -> str:
         f"annual {totals.get('annual', 0):.2f}"
     )
 
+    # WHAT THE FIGURE LEAVES OUT — and it belongs HERE, next to the number.
+    #
+    # A component nothing can build cannot be priced: no certified blueprint
+    # says whether it is a bucket, a cluster or a database, and those differ by
+    # a hundredfold. The portal is right to refuse to invent a figure, and the
+    # form has told the requester so since REQ-2026-0176 — where 0.00 AED was
+    # quoted, approved by a person, and the build then refused.
+    #
+    # THE APPROVER WAS NEVER TOLD. The caveat reached the submit response and
+    # the requester's screen; this ticket, which is what the person granting the
+    # money actually reads, carried the total alone. REQ-2026-0246 showed
+    # "90.59" for OKE + OpenSearch + OCI Functions — the price of ONE of the
+    # three — with nothing here to say so.
+    #
+    # Same reasoning as the licence note below: a number an approver cannot take
+    # apart is a number they cannot judge.
+    unpriced = [str(u) for u in (estimate.get("unpriced") or [])]
+    if unpriced:
+        lines.append("")
+        lines.append(
+            f"  NOT THE WHOLE COST. No price is included for: "
+            f"{', '.join(unpriced)}.")
+        lines.append(
+            f"    Nothing certified says what {'these build' if len(unpriced) > 1 else 'this builds'}, "
+            f"and what it builds is what decides how it is charged — so the "
+            f"figure above EXCLUDES it. The infrastructure team fulfils it, and "
+            f"the real cost is settled with them.")
+
     # WHAT THE MONTHLY FIGURE IS MADE OF, and licence cost is why this is here.
     #
     # The ticket showed one number. SQL Server prices at 790.59 monthly, of

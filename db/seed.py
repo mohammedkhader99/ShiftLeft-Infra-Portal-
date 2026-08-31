@@ -52,8 +52,18 @@ DELIVERY = {
     # --- the cloud runs it; we consume an endpoint -------------------------
     "oci-objectstorage": ("managed", "OCI Object Storage — a bucket, billed per GB."),
     "oci-oke": ("managed", "OCI Container Engine for Kubernetes — a managed control plane."),
-    "oci-adb": ("managed", "Oracle Autonomous Database — fully managed by OCI."),
-    "oci-functions": ("managed", "OCI Functions — serverless; there is no machine."),
+    "oci-adb": ("managed",
+                "Oracle Autonomous Database — fully managed by OCI. Withdrawn "
+                "from the catalogue: the portal has no Terraform module for "
+                "it, and the agent writes modules for machines, not for "
+                "managed services. It needs one written and reviewed by the "
+                "infrastructure team before it can be offered again."),
+    "oci-functions": ("managed",
+                      "OCI Functions — serverless; there is no machine. Withdrawn "
+                      "from the catalogue: the agent tried three times and could "
+                      "only produce a module that applies cleanly and creates "
+                      "nothing. It needs Terraform written and reviewed by the "
+                      "infrastructure team before it can be offered again."),
     "postgres16": ("managed",
                    "OCI Database with PostgreSQL — the MANAGED service, not PostgreSQL "
                    "installed on a VM. The plain name hides that, which is why it is "
@@ -189,10 +199,20 @@ TECHNOLOGIES = [
     {"code": "azure-functions", "name": "Azure Functions", "lifecycle_state": "certified", "targets": "azure"},
     {"code": "azure-cosmos", "name": "Azure Cosmos DB", "lifecycle_state": "certified", "targets": "azure"},
     # --- OCI-managed services (targets: oci) ----------------------------------
-    {"code": "oci-adb", "name": "Oracle Autonomous Database", "lifecycle_state": "certified", "targets": "oci"},
+    # WITHDRAWN 2026-08-31. A managed OCI service, and the portal has no
+    # Terraform for it. The agent writes modules for MACHINES; a managed
+    # service is a product Oracle sells, not something anyone composes
+    # from a provider resource by guessing. Offering it put a thing on the
+    # catalogue that nothing could build.
+    {"code": "oci-adb", "name": "Oracle Autonomous Database", "lifecycle_state": "eol", "targets": "oci"},
     {"code": "oci-objectstorage", "name": "OCI Object Storage", "lifecycle_state": "certified", "targets": "oci"},
     {"code": "oci-oke", "name": "OCI Container Engine (OKE)", "lifecycle_state": "certified", "targets": "oci"},
-    {"code": "oci-functions", "name": "OCI Functions", "lifecycle_state": "certified", "targets": "oci"},
+    # WITHDRAWN 2026-08-31, on evidence rather than judgement. The agent
+    # tried three times for REQ-2026-0246 and gave up: "The module
+    # declares a placeholder resource type rather than a real one, so it
+    # applies cleanly and creates nothing." An earlier attempt PASSED a
+    # proof on exactly that basis, before the module review existed.
+    {"code": "oci-functions", "name": "OCI Functions", "lifecycle_state": "eol", "targets": "oci"},
     # --- GCP-managed services (targets: gcp) ----------------------------------
     {"code": "gcp-cloudsql", "name": "Google Cloud SQL", "lifecycle_state": "certified", "targets": "gcp"},
     {"code": "gcp-gcs", "name": "Google Cloud Storage", "lifecycle_state": "certified", "targets": "gcp"},
