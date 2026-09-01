@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import re
 import shutil
 import subprocess
 
@@ -478,7 +479,15 @@ def test_the_listening_probe_waits_for_the_container_to_bind(
     built to depend on the very thing it was meant to discover."""
     text = report(tmp_path, monkeypatch, profile=PINNED)
     probe = text[text.index("LI="):text.index("listening_inside_rabbitmq=")]
-    assert "seq 1 36" in probe, "it samples once and calls that a measurement"
+    # RE-POINTED 2026-09-01. This asserted `seq 1 36` literally, and the
+    # deadline moved to six minutes because three was not enough for
+    # OpenSearch. What this test is about is that the probe SAMPLES REPEATEDLY
+    # rather than looking once -- the number itself is pinned against the
+    # portal's own verification deadline in
+    # test_a_service_is_not_reported_on_its_first_port.py, which is the
+    # relationship that actually has to hold.
+    passes = int(re.search(r"seq 1 (\d+)", probe).group(1))
+    assert passes > 1, "it samples once and calls that a measurement"
     assert "sleep 5" in probe
     # RE-POINTED 2026-08-28, REQ-2026-0227. The property here is EARLY
     # RETURN: a healthy container must not cost three minutes of first boot.
@@ -488,8 +497,16 @@ def test_the_listening_probe_waits_for_the_container_to_bind(
     # still initialising. The guarantee is unchanged; the condition is now a
     # port the IMAGE declares actually being up.
     assert "break" in probe, (
-        "it waits the full three minutes even when the container binds at once")
-    assert '[ -n "$READY" ] && break' in probe
+        "it waits the full deadline even when the container binds at once")
+    # BOTH BRANCHES, because there are now two and they leave for different
+    # reasons. Asserting only the READY one passed while the common case was
+    # broken: `[ -n "$READY" ] && break` still exists in the branch for an image
+    # that declares NO ports, so a plant that deleted the early return for
+    # declared ports -- every real container -- was caught by nothing here.
+    assert '[ -n "$ALL" ] && break' in probe, (
+        "a container with every port it declares already up still waits")
+    assert '[ -n "$READY" ] && break' in probe, (
+        "an image declaring no ports waits even once something is listening")
 
 
 def test_the_wait_is_bounded():
@@ -499,7 +516,13 @@ def test_the_wait_is_bounded():
     import re
     from orchestrator import configure as c
     source = pathlib.Path(c.__file__).read_text(encoding="utf-8")
-    assert re.search(r"seq 1 36", source)
+    # A COUNTED LOOP, whatever the count. `while true` or `seq 1` with anything
+    # unbounded would hang first boot and the machine would never speak at all;
+    # the exact number is a tuning decision pinned elsewhere against the
+    # portal's fifteen-minute verification deadline.
+    assert "seq 1 {_READY_PASSES}" in source, (
+        "the wait is no longer a counted loop")
+    assert c._READY_PASSES > 0, "the wait is not bounded"
 
 
 def test_the_port_wait_does_not_assume_http(tmp_path, monkeypatch):
@@ -572,8 +595,13 @@ def test_the_wait_is_still_bounded(tmp_path, monkeypatch):
     nothing else in the request can finish."""
     script = report(tmp_path, monkeypatch)
 
-    assert "for _ in $(seq 1 36); do" in script  # 36 x 5s = three minutes
+    from orchestrator import configure as c
+    assert f"for _ in $(seq 1 {c._READY_PASSES}); do" in script
     assert "sleep 5" in script
+    # Six minutes as this is written. Bounded is the property; the number is
+    # held against the portal's own deadline by
+    # test_the_machine_gives_up_well_inside_the_portals_deadline.
+    assert 0 < c._READY_PASSES * 5 < 15 * 60, "the machine can outlast the portal"
 
 
 def test_a_container_that_never_came_up_reports_its_own_words(

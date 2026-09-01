@@ -630,7 +630,13 @@ def _report_script(wanted: list[tuple[str, str]], packages: list[str],
             f"| sort -un | paste -sd, -)")
         checks.append(f'  echo "declares_{key}=${{DECL:-none}}"')
         checks.append("  LI=; READY=; GRACE=0")
-        checks.append("  for _ in $(seq 1 36); do")
+        # SPLIT ONCE, NOT ON EVERY PASS. `$DECL` cannot change inside the
+        # loop, and `$(echo | tr)` is a subshell and an external binary
+        # each time round -- 72 of each, on a machine that is still
+        # booting. It also made the test that drives this loop take two
+        # minutes on a Windows host and time out.
+        checks.append('  WANT=$(echo "$DECL" | tr "," " ")')
+        checks.append(f"  for _ in $(seq 1 {_READY_PASSES}); do")
         checks.append(
             f"    LI=$(for F in /proc/net/tcp /proc/net/tcp6; do "
             f"podman exec {code} cat $F 2>/dev/null; done "
@@ -668,7 +674,7 @@ def _report_script(wanted: list[tuple[str, str]], packages: list[str],
         checks.append('      [ -n "$LI" ] && READY=1')
         checks.append('      [ -n "$READY" ] && break')
         checks.append("    else")
-        checks.append('      for W in $(echo "$DECL" | tr "," " "); do')
+        checks.append('      for W in $WANT; do')
         checks.append('        case ",$LI," in *,"$W",*) READY=1 ;; *) ALL= ;; esac')
         checks.append("      done")
         checks.append('      [ -n "$ALL" ] && break')
@@ -1307,6 +1313,30 @@ def configurable_codes() -> set[str]:
 #: compose variable per technology — which would be a table by another name.
 CONTAINER_SECRETS_FILE = "/secrets/container.env"
 
+
+#: How many five-second passes to watch for a service to start before giving up
+#: and writing down what the machine found.
+#:
+#: SIX MINUTES, RAISED FROM THREE. The machine was giving up five times sooner
+#: than the portal was willing to wait: `BOOT_VERIFY_DEADLINE_MINUTES` in
+#: api/main.py defaults to fifteen, and REQ-2026-0256 went from apply-complete
+#: to a settled verdict in about eight. Three minutes was leaving most of that
+#: budget unused, and it cost a real build -- OpenSearch with an admin password
+#: set runs demo certificate generation and a security-index bootstrap on first
+#: start, bound nothing at all inside three minutes, and was recorded as serving
+#: nothing.
+#:
+#: NOT TEN MINUTES, though the headroom looks like it is there. A normal build
+#: would then finish around fifteen and start tripping the portal's own
+#: deadline, which trades one silent failure for another. Six keeps the whole
+#: sequence near eleven.
+#:
+#: A HEALTHY SERVICE NEVER WAITS THIS LONG -- it leaves the moment every port it
+#: declares is listening. This is the budget for something that is struggling,
+#: and the cost of raising it is that a genuinely dead container takes six
+#: minutes to say so instead of three. A complete report is worth more than a
+#: fast one. The relationship to the portal's deadline is pinned by a test.
+_READY_PASSES = 72
 
 #: How many further five-second passes to keep watching after the FIRST declared
 #: port appears, when the others have not.

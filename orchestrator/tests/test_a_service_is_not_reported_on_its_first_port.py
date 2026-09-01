@@ -45,6 +45,7 @@ import re
 import shutil
 import subprocess
 import textwrap
+from pathlib import Path
 
 import pytest
 import yaml
@@ -232,7 +233,7 @@ def test_a_service_that_binds_nothing_still_waits_the_full_deadline(
     loop = loop_of(tmp_path, monkeypatch, "openshift", [53, 8443])
     out = run(tmp_path, loop, "53,8443", [None])
 
-    assert out["passes"] == 36, "a dead container is now given up on early"
+    assert out["passes"] == 72, "a dead container is now given up on early"
     assert out["listening"] == "none"
     assert not out["ready"], "a container listening on nothing was called ready"
 
@@ -253,16 +254,45 @@ def test_an_image_declaring_no_ports_and_binding_none_is_still_not_ready(
     loop = loop_of(tmp_path, monkeypatch, "somesoftware", [])
     out = run(tmp_path, loop, "", [None])
 
-    assert out["passes"] == 36
+    assert out["passes"] == 72
     assert not out["ready"]
 
 
 # --- the deadline itself ----------------------------------------------------------
 
-def test_the_worst_case_wait_did_not_grow(tmp_path, monkeypatch):
-    """The change may make a proof finish sooner; it must never make one take
-    longer than the three minutes it already allowed."""
-    loop = loop_of(tmp_path, monkeypatch, "opensearch", [9200])
+def test_the_machine_gives_up_well_inside_the_portals_deadline(
+        tmp_path, monkeypatch):
+    """TWO NUMBERS IN TWO FILES THAT HAVE TO AGREE.
 
-    assert "seq 1 36" in loop and "sleep 5" in loop, (
-        "the deadline is no longer 36 passes of five seconds")
+    The machine watches for a service to start. The portal waits for the report
+    that watching produces. Nothing connected them, and they disagreed by a
+    factor of five: the machine gave up after three minutes while the portal was
+    willing to wait fifteen, so most of the budget went unused and REQ-2026-0256
+    recorded an OpenSearch serving nothing — it was still generating demo
+    certificates when the machine stopped looking.
+
+    Raising the machine's wait PAST the portal's would fail just as silently in
+    the other direction: the report would arrive after nobody was listening for
+    it. So what is pinned here is the relationship, not either number — either
+    may be tuned, but not past the other.
+
+    Half is the margin, because the wait is not the only thing in the window:
+    the machine still has to install, start, write the report and upload it, and
+    the portal's clock is already running through all of it.
+    """
+    loop = loop_of(tmp_path, monkeypatch, "opensearch", [9200])
+    passes = int(re.search(r"seq 1 (\d+)", loop).group(1))
+    every = int(re.search(r"sleep (\d+)", loop).group(1))
+    machine = passes * every
+
+    portal_minutes = int(re.search(
+        r'_boot_verify_int\("BOOT_VERIFY_DEADLINE_MINUTES", (\d+)\)',
+        Path("api/main.py").read_text(encoding="utf-8")).group(1))
+    portal = portal_minutes * 60
+
+    assert machine <= portal / 2, (
+        f"the machine watches for {machine}s while the portal gives up at "
+        f"{portal}s — a report finished this late is written to nobody")
+    assert machine >= 300, (
+        f"{machine}s is back under the five minutes that proved too short: "
+        f"OpenSearch bound nothing at all within three")
