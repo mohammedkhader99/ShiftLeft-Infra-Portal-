@@ -141,6 +141,20 @@ DELIVERY = {
     "k8s": ("capability",
             "Generic Kubernetes. On OCI the buildable thing is OCI Container Engine "
             "(oci-oke) — request that instead."),
+    # The same shape as k8s above, and withdrawn for the same reason it gives.
+    #
+    # KEEP IT UNDER 300 CHARACTERS. `note` is a varchar(300), and the first
+    # draft of this one was 489. SQLite does not enforce a VARCHAR limit and
+    # Postgres does, so every test passed and the seed would have failed in the
+    # container -- the same way `awaiting-reapproval` fitted a varchar(16)
+    # everywhere except the database that mattered. There is now a guard test.
+    "openshift": ("capability",
+                  "Red Hat's Kubernetes distribution: openshift-install "
+                  "across several nodes, with DNS, a load balancer, a pull "
+                  "secret and a subscription — not software that goes on a "
+                  "machine. Withdrawn after a proof build confirmed it. "
+                  "Request OCI Container Engine (oci-oke), or ask the "
+                  "infrastructure team."),
 }
 # Everything else in the catalogue is software installed on a machine the
 # customer owns: nginx, keycloak, kafka, oracle-db, mssql and their like.
@@ -174,7 +188,19 @@ TECHNOLOGIES = [
     {"code": "nodejs20", "name": "Node.js 20", "lifecycle_state": "certified"},
     {"code": "python312", "name": "Python 3.12", "lifecycle_state": "certified"},
     {"code": "apache", "name": "Apache HTTP Server", "lifecycle_state": "certified"},
-    {"code": "openshift", "name": "OpenShift", "lifecycle_state": "preview"},
+    # WITHDRAWN 2026-08-31, on evidence. REQ-2026-0255 spent a machine and
+    # fifteen minutes learning it: the agent found docker.io/openshift/origin,
+    # pinned it, pulled it and started it, and the container died at once --
+    # "openshift is failed", nothing listening, no log left to read. The
+    # image is a build artefact, not a runnable service, and the ports it
+    # declares say so: 53 and 8443 are cluster infrastructure.
+    #
+    # NO IMAGE WOULD HAVE WORKED. OpenShift is installed with
+    # `openshift-install` across several nodes, with DNS records, a load
+    # balancer, a Red Hat pull secret and a subscription. The agent delivers
+    # software onto machines; this is not that, the same way OCI Functions
+    # was not that.
+    {"code": "openshift", "name": "OpenShift", "lifecycle_state": "eol"},
     {"code": "vault", "name": "HashiCorp Vault", "lifecycle_state": "certified"},
     {"code": "keycloak", "name": "Keycloak", "lifecycle_state": "certified"},
     # A first-class compute (VM) type — a stoppable OCI Compute instance, which

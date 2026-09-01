@@ -629,23 +629,54 @@ def _report_script(wanted: list[tuple[str, str]], packages: list[str],
             f"| sed -n 's|^\\([0-9][0-9]*\\)/tcp$|\\1|p' "
             f"| sort -un | paste -sd, -)")
         checks.append(f'  echo "declares_{key}=${{DECL:-none}}"')
-        checks.append("  LI=; READY=")
+        checks.append("  LI=; READY=; GRACE=0")
         checks.append("  for _ in $(seq 1 36); do")
         checks.append(
             f"    LI=$(for F in /proc/net/tcp /proc/net/tcp6; do "
             f"podman exec {code} cat $F 2>/dev/null; done "
             f"| {awk_listen} | sort -u | {to_decimal} "
             f"| sort -un | paste -sd, -)")
-        # An image that declares nothing keeps the old rule: anything will do,
-        # because there is no claim to wait for.
+        # STOPPING AT THE FIRST PORT REPORTED A SEARCH ENGINE NOBODY COULD QUERY.
+        #
+        # OpenSearch declares 9200, 9300, 9600 and 9650. 9300 is the port nodes
+        # use to talk to each other; 9200 is the REST API a client actually
+        # calls. It binds 9300 first. The loop broke there, and REQ-2026-0253's
+        # report reads
+        #
+        #     declares_opensearch=9200,9300,9600,9650
+        #     listening_inside_opensearch=9300
+        #
+        # which certified the component on evidence that says nothing about
+        # whether it can be used. It may well have bound 9200 seconds later --
+        # the check simply stopped looking, and that is the fault: the verdict
+        # was lenient AND the evidence behind it was incomplete.
+        #
+        # WAITING FOR ALL OF THEM IS ALSO WRONG, and is why "any" was chosen.
+        # `library/rabbitmq` declares six -- AMQP, AMQPS, epmd, clustering and
+        # two Prometheus endpoints -- and a default container binds far fewer by
+        # design. Demanding all six would fail a healthy broker.
+        #
+        # So: leave early the moment EVERY declared port is up, which is both
+        # correct and faster than before for a healthy service. If only some
+        # are, keep watching for a bounded grace period rather than reporting
+        # the first -- long enough for an API port that comes up a few seconds
+        # after a transport port, short enough that a service which never binds
+        # the rest is not punished with the full deadline. If none are, nothing
+        # changes: the full wait, then the container's own log.
+        checks.append("    ALL=1")
         checks.append('    if [ -z "$DECL" ]; then')
         checks.append('      [ -n "$LI" ] && READY=1')
+        checks.append('      [ -n "$READY" ] && break')
         checks.append("    else")
         checks.append('      for W in $(echo "$DECL" | tr "," " "); do')
-        checks.append('        case ",$LI," in *,"$W",*) READY=1 ;; esac')
+        checks.append('        case ",$LI," in *,"$W",*) READY=1 ;; *) ALL= ;; esac')
         checks.append("      done")
+        checks.append('      [ -n "$ALL" ] && break')
+        checks.append('      if [ -n "$READY" ]; then')
+        checks.append("        GRACE=$((GRACE+1))")
+        checks.append(f'        [ "$GRACE" -ge {_GRACE_PASSES} ] && break')
+        checks.append("      fi")
         checks.append("    fi")
-        checks.append('    [ -n "$READY" ] && break')
         checks.append("    sleep 5")
         checks.append("  done")
         checks.append(f'  echo "listening_inside_{key}=${{LI:-none}}"')
@@ -1275,6 +1306,16 @@ def configurable_codes() -> set[str]:
 #: directory this service ALREADY mounts read-only, so no new mount and no new
 #: compose variable per technology — which would be a table by another name.
 CONTAINER_SECRETS_FILE = "/secrets/container.env"
+
+
+#: How many further five-second passes to keep watching after the FIRST declared
+#: port appears, when the others have not.
+#:
+#: Twelve is a minute. Long enough for OpenSearch's REST port, which follows its
+#: transport port once the security plugin finishes; short enough that RabbitMQ,
+#: which declares six ports and binds three by design, is not held for the full
+#: three-minute deadline on every proof.
+_GRACE_PASSES = 12
 
 
 def _decode_operator_file(blob: bytes) -> "str | None":

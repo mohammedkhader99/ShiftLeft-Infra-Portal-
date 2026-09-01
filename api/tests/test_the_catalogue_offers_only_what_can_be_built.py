@@ -15,6 +15,13 @@ TWO QUALIFY, ON EVIDENCE.
                     modules for MACHINES; a managed service is a product Oracle
                     sells, not something to compose by guessing at provider
                     resources.
+    openshift       REQ-2026-0255 spent a machine on it. The agent found
+                    docker.io/openshift/origin, pinned it, pulled it and started
+                    it, and the container died at once. No image would have
+                    worked: OpenShift is installed with `openshift-install`
+                    across several nodes, with DNS, a load balancer, a Red Hat
+                    pull secret and a subscription. The buildable equivalent on
+                    OCI is OKE, which certified this morning.
 
 AND TWO THAT LOOK IDENTICAL FROM THE OUTSIDE MUST STAY. Both lack a certified
 blueprint, which is the obvious rule to reach for and the wrong one:
@@ -44,7 +51,7 @@ from db.seed import seed
 from db.session import Base
 
 #: Withdrawn because the portal has no Terraform for them and cannot write it.
-NEEDS_A_HUMAN_MODULE = ("oci-adb", "oci-functions")
+NEEDS_A_HUMAN_MODULE = ("oci-adb", "oci-functions", "openshift")
 
 #: Uncertified, but a reviewed module for them exists in the repository.
 HAS_A_REVIEWED_MODULE = ("oci-oke", "postgres16")

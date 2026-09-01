@@ -1174,7 +1174,29 @@ async def verify_boot(request: Request) -> dict:
             # managed database file no boot report and never will, and until now
             # that read as "nothing to prove". It is not: it means the proof has
             # to come from the thing itself reaching a working state.
-            if provisioner.provision_mode() == "apply":
+            #
+            # BUT NOT FOR A MACHINE, and the distinction is the whole point.
+            # `_report_expected` says no for several different reasons, and only
+            # some of them mean "nothing could ever report":
+            #
+            #   not a machine, nothing boots   a bucket or a cluster -- substitute
+            #   blueprint is exempt            OKE's managed nodes   -- substitute
+            #   no PAR configured              the machine COULD have reported
+            #                                  and was not asked     -- do NOT
+            #
+            # A compute instance reaching RUNNING says the VM exists. It says
+            # nothing about whether the software installed, which is the entire
+            # reason boot reports exist: "Terraform exiting zero says the VM
+            # exists, not that anything was installed on it." Substituting a
+            # power state for a boot report would certify a machine that came up
+            # empty -- the failure this gate was built to stop, arriving through
+            # the gate itself.
+            #
+            # resource_state still answers for machines; it is asked directly,
+            # for the live "is it running now" question, which is a different
+            # question from "did it become what was promised".
+            if (provisioner.provision_mode() == "apply"
+                    and kind not in resource_state.COMPUTE_KINDS):
                 try:
                     health = resource_state.check(
                         kind, _resource_name(name, kind, reference, primary))

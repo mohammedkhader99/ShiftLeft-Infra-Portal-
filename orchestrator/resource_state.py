@@ -26,7 +26,12 @@ import os
 # Resource kinds this can speak for, and what "working" means for each. A kind
 # absent from here is NOT silently healthy — verify() says it cannot judge, and
 # the portal treats that as unproven rather than as permission.
-CHECKABLE = ("oci-oke", "oci-bucket", "oci-postgres")
+#: Kinds that boot a COMPUTE INSTANCE. Every one of these is a VM with a
+#: display name, so one check speaks for all of them: a new blueprint that
+#: builds machines is covered the day it ships, without a line here.
+COMPUTE_KINDS = ("oci-service-vm", "oci-instance", "oci-apache", "oci-kafka")
+
+CHECKABLE = ("oci-oke", "oci-bucket", "oci-postgres") + COMPUTE_KINDS
 
 
 class StateUnavailable(RuntimeError):
@@ -111,13 +116,77 @@ def _bucket(name: str, clients) -> dict:
     return {"state": "ok", "detail": f"bucket exists in {bucket.namespace}"}
 
 
+def _compute(name: str, clients) -> dict:
+    """Are the machines of this environment running NOW.
+
+    WHAT THIS ADDS. The boot report already proves the SOFTWARE — what was
+    installed, its version, whether the service is active, which ports it
+    opened — and it is written once, at the end of first boot. It is a
+    photograph. A VM that booted perfectly and was stopped last week still
+    carries a report saying everything is fine. REQ-2026-0250 asked the other
+    question, and the answer was "no health check is defined for oci-service-vm".
+
+    THE NAME THE LEDGER RECORDS IS NOT THE NAME OCI CARRIES, and the first
+    version of this matched exactly and would have reported every machine in the
+    tenancy as missing. The modules name instances
+
+        format("%s-%02d", var.instance_name, count.index + 1)
+
+    so the ledger's `test-req-2026-0250-service-vm` is `...-service-vm-01` in
+    OCI. Found by running the check against the real cloud; the unit tests all
+    passed, because their fakes carried the name this code expected.
+
+    SEVERAL MACHINES IS NORMAL, not a fault: a Kafka quorum is three, named -01,
+    -02 and -03 by the same rule. What is NOT normal is two instances sharing one
+    display name — OCI permits it, and it would mean a re-apply built a second
+    copy that the tenancy is quietly billing for.
+    """
+    import re
+
+    compute = clients[2] if len(clients) > 2 else None
+    if compute is None:
+        raise StateUnavailable("no compute client, so no machine can be asked")
+
+    # `name` or `name-NN`. Anchored at both ends so a longer environment name
+    # that merely starts the same way cannot be mistaken for this one.
+    belongs = re.compile(rf"^{re.escape(name)}(-\d{{2,}})?$")
+    found = [i for i in _list_all(compute.list_instances,
+                                  compartment_id=_compartment())
+             if belongs.match(i.display_name or "")
+             and i.lifecycle_state not in ("TERMINATED", "TERMINATING")]
+    if not found:
+        return {"state": "waiting", "detail": f"no instance named {name} yet"}
+
+    names = [i.display_name for i in found]
+    if len(set(names)) != len(names):
+        return {"state": "broken",
+                "detail": f"two instances share a display name under {name}; "
+                          f"one of them is unaccounted for and still billing"}
+
+    starting = [i for i in found
+                if i.lifecycle_state in ("PROVISIONING", "STARTING")]
+    stopped = [i for i in found
+               if i.lifecycle_state not in ("RUNNING", "PROVISIONING", "STARTING")]
+    if stopped:
+        detail = "; ".join(f"{i.display_name} is {i.lifecycle_state}" for i in stopped)
+        return {"state": "broken",
+                "detail": f"{detail}; it will not become RUNNING on its own"}
+    if starting:
+        detail = "; ".join(f"{i.display_name} is {i.lifecycle_state}" for i in starting)
+        return {"state": "waiting", "detail": f"{detail}, not yet RUNNING"}
+    machine = "machine" if len(found) == 1 else "machines"
+    return {"state": "ok",
+            "detail": f"{len(found)} {machine} RUNNING ({', '.join(sorted(names))})"}
+
+
 def _clients():  # pragma: no cover - thin SDK seam (mocked in tests)
     import oci
 
     from orchestrator.cloud_state import _oci_config
     cfg = _oci_config()
     return (oci.container_engine.ContainerEngineClient(cfg),
-            oci.object_storage.ObjectStorageClient(cfg))
+            oci.object_storage.ObjectStorageClient(cfg),
+            oci.core.ComputeClient(cfg))
 
 
 def check(resource_kind: str, name: str, clients=None) -> dict:
@@ -139,6 +208,8 @@ def check(resource_kind: str, name: str, clients=None) -> dict:
         return _oke(name, clients)
     if kind == "oci-bucket":
         return _bucket(name, clients)
+    if kind in COMPUTE_KINDS:
+        return _compute(name, clients)
     # oci-postgres: the managed database reports its own lifecycle, and the
     # module already surfaces it through cloud_state. Left explicitly unhandled
     # rather than guessed at — an unknown answer blocks certification, which is
