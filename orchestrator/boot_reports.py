@@ -256,4 +256,77 @@ def verdict(report: str) -> dict:
                 and any(phrase in line.lower()
                         for phrase in ("failed", "could not", "no install recipe"))):
             problems.append(line)
+    problems += _ports_never_served(report)
     return {"ok": not problems, "problems": problems}
+
+
+def _ports_never_served(report: str) -> list[str]:
+    """An image that declares ports and serves none of them is a broken machine.
+
+    REQ-2026-0256 built OpenSearch and was marked provisioned on this report:
+
+        container_opensearch=running
+        declares_opensearch=9200,9300,9600,9650
+        listening_inside_opensearch=none
+        opened_ports=9300
+        LISTEN 0      4096         0.0.0.0:9300       0.0.0.0:*
+        firewall_9300=open
+
+    Nothing inside the container was listening on anything, and every check the
+    verdict made was satisfied. THE CHECK THAT COULD BE FOOLED PASSED AND THE
+    CHECK THAT KNEW THE TRUTH WAS NEVER CONSULTED: `ss -lnt` on the host saw
+    0.0.0.0:9300 and reported a listener, but that is podman's published-port
+    proxy, which exists whether or not anything inside the container ever binds.
+    `listening_inside_` is taken inside the container's own network namespace,
+    it said `none`, and no rule read it.
+
+    That is also why `answered_but_broken` can afford to forgive an `http_ 000`:
+    it says absence "is already caught -- `nothing listening on <port>` is a
+    failure in its own right". For a container it was not caught, because the
+    host-side line the report writes is about the proxy.
+
+    THE RULE IS THE ONE THE MACHINE ITSELF APPLIED. The first-boot script waits
+    until a declared port is listening and gives up after three minutes; that
+    verdict was computed on the machine and thrown away. Deriving it here from
+    the two lines the report does carry means old reports are judged by it too,
+    with nothing new asked of machines that are already running.
+
+    DECLARING NOTHING IS NOT A FAILURE. An image with no ExposedPorts makes no
+    claim to check -- a batch or worker container is entitled to listen on
+    nothing -- so only a stated claim can be broken. This is the same care that
+    keeps RabbitMQ passing: it declares six ports and a default container binds
+    three by design, so ONE declared port listening is enough here, exactly as
+    it is on the machine.
+
+    Prefix matching, NOT `key.isidentifier()`: catalogue codes contain hyphens,
+    so `declares_oracle-db=...` is not an identifier and the branch above skips
+    it entirely. `archive_oracle-db=failed` was read as healthy for that reason.
+    """
+    declared: dict[str, str] = {}
+    listening: dict[str, str] = {}
+    for line in (report or "").splitlines():
+        line = line.strip()
+        for prefix, into in (("declares_", declared),
+                             ("listening_inside_", listening)):
+            if line.startswith(prefix) and "=" in line:
+                key, value = line.split("=", 1)
+                into[key[len(prefix):]] = value.strip()
+
+    problems = []
+    for code, decl in sorted(declared.items()):
+        if decl in ("", "none"):
+            continue
+        got = listening.get(code, "none")
+        have = set() if got in ("", "none") else set(got.split(","))
+        if have & set(decl.split(",")):
+            continue
+        inside = ("nothing inside the container is listening at all"
+                  if not have else
+                  f"the only port listening inside it is {got}")
+        problems.append(
+            f"{code} is not serving any port it declares: the image declares "
+            f"{decl} and {inside}. The container is running, so the software "
+            f"started and did not begin serving -- it either failed after "
+            f"start-up or was still starting when the machine gave up "
+            f"waiting. Its own log is in this report.")
+    return problems
