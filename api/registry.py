@@ -54,6 +54,46 @@ _SHAPES = (
     "quay.io/{name}/{name}",
 )
 
+#: Where a vendor publishes an image that NO RULE COULD DERIVE.
+#:
+#: `_SHAPES` above says "a shape, not a table", and that is right: a technology
+#: whose image can be guessed must never need a row anywhere. This is for the
+#: case where guessing is not merely unlucky but impossible, and Oracle is the
+#: clean example. Three independent things defeat discovery there, each verified
+#: against the live registry:
+#:
+#:   the shapes      produce docker.io/library/oracle-db and quay.io/... ,
+#:                   none of which exist
+#:   the catalogue   container-registry.oracle.com/v2/_catalog answers 401, and
+#:                   Oracle will not issue a catalog-scope token anonymously, so
+#:                   the first-party sweep that found SQL Server learns nothing
+#:   the match rule  `_first_party_match("database/free", "oracle-db")` is False.
+#:                   Microsoft groups by PRODUCT (`mssql/server`); Oracle groups
+#:                   by FAMILY (`database/free`), so the first path segment is
+#:                   `database` and matches no sensible catalogue code
+#:
+#: There is precedent and it is deliberate: VENDOR_REPOS and ARCHIVE_KNOWLEDGE
+#: are curated for the same reason, and the refusal ladder reports "none curated
+#: for it" as a first-class answer rather than hiding the gap.
+#:
+#: CONSULTED LAST, NEVER FIRST. Discovery runs unchanged and wins; this is only
+#: reached when the shapes and the vendor catalogues have all found nothing. A
+#: curated entry that could override discovery would rot silently the day a
+#: vendor moved an image, and nothing would notice.
+#:
+#: An entry here is a claim that a HUMAN checked where a vendor publishes. It is
+#: not a licence to skip the proof: the image is still pinned by digest, still
+#: built on a real machine, and still has to serve a port before anything is
+#: certified.
+PUBLISHED_IMAGES: dict[str, str] = {
+    # Oracle's free editions pull anonymously; `database/enterprise` answers 401
+    # without a credential, which is the licence boundary and not a bug.
+    "oracle-free": "container-registry.oracle.com/database/free",
+    "oracle-xe": "container-registry.oracle.com/database/express",
+    "oracle-db": "container-registry.oracle.com/database/enterprise",
+}
+
+
 _MANIFEST_TYPES = ", ".join((
     "application/vnd.oci.image.index.v1+json",
     "application/vnd.docker.distribution.manifest.list.v2+json",
@@ -120,6 +160,22 @@ def _token(registry: str, path: str) -> str:
                       "?service=registry.docker.io&scope=repository:{path}:pull"),
         "quay.io": "https://quay.io/v2/auth?service=quay.io&scope=repository:{path}:pull",
         "ghcr.io": "https://ghcr.io/token?service=ghcr.io&scope=repository:{path}:pull",
+        # ORACLE'S REALM IS A DIFFERENT SHAPE, and its absence was not a policy
+        # decision. `container-registry.oracle.com` has been on the allow-list
+        # since the registries were broadened, and no image has ever been pulled
+        # from it, because a registry with no entry here gets no token and every
+        # manifest request comes back 401. REQ-2026-0265 asked for Oracle
+        # Database and was told "no image on a registry this portal allows" --
+        # true as written, and misleading: the registry was allowed and
+        # unreachable.
+        #
+        # It is `/auth` rather than `/token`, and the service is "Oracle
+        # Registry" with a space. The free editions -- database/free and
+        # database/express -- answer anonymously; database/enterprise refuses,
+        # which is the licence boundary and not something to work around here.
+        "container-registry.oracle.com":
+            "https://container-registry.oracle.com/auth"
+            "?service=Oracle%20Registry&scope=repository:{path}:pull",
     }
     url = services.get(registry)
     if not url:
@@ -324,6 +380,13 @@ def find(code: str, tag: str = "latest") -> dict | None:
     # name-shape rule was ever going to produce.
     guesses = list(candidates(code))
     ordered = guesses + [ref for ref in search(code) if ref not in guesses]
+
+    # LAST, so discovery always wins. A vendor that starts publishing somewhere
+    # guessable is found by the guess, and the curated row becomes dead weight
+    # rather than a wrong answer that outranks a right one.
+    curated = PUBLISHED_IMAGES.get(code)
+    if curated and curated not in ordered:
+        ordered.append(curated)
 
     # AN IMAGE THAT DECLARES NO PORT IS PROBABLY NOT THE SERVICE.
     #
