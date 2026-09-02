@@ -520,9 +520,17 @@ def test_the_wait_is_bounded():
     # unbounded would hang first boot and the machine would never speak at all;
     # the exact number is a tuning decision pinned elsewhere against the
     # portal's fifteen-minute verification deadline.
-    assert "seq 1 {_READY_PASSES}" in source, (
-        "the wait is no longer a counted loop")
-    assert c._READY_PASSES > 0, "the wait is not bounded"
+    assert "seq 1 {passes}" in source, "the wait is no longer a counted loop"
+    # RE-POINTED 2026-09-02. The count is now per-technology -- Oracle creates
+    # its database on first start and cannot be watched in the default six
+    # minutes -- so what has to hold is that EVERY answer is finite and capped,
+    # not that one constant appears in the source. A profile may ask for
+    # anything; it may not hold a machine past what the portal will wait for.
+    for asked in (0, 5, 600, 99999, -1, None):
+        passes = c._ready_passes_for("x", {"start_budget_seconds": asked})
+        assert 0 < passes <= c._READY_PASSES_MAX, (asked, passes)
+    assert c._ready_passes_for("nginx") == c._READY_PASSES, (
+        "a technology that asked for nothing no longer gets the default")
 
 
 def test_the_port_wait_does_not_assume_http(tmp_path, monkeypatch):

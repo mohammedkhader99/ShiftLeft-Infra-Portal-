@@ -281,9 +281,12 @@ def test_the_machine_gives_up_well_inside_the_portals_deadline(
     the portal's clock is already running through all of it.
     """
     loop = loop_of(tmp_path, monkeypatch, "opensearch", [9200])
-    passes = int(re.search(r"seq 1 (\d+)", loop).group(1))
     every = int(re.search(r"sleep (\d+)", loop).group(1))
-    machine = passes * every
+    # THE WORST CASE, not this one loop. The budget is per-technology now, so
+    # what has to fit inside the portal's patience is the MOST any technology
+    # can be given -- reading one rendered loop let the ceiling be raised to
+    # any value at all without this noticing.
+    machine = configure._READY_PASSES_MAX * every
 
     portal_minutes = int(re.search(
         r'_boot_verify_int\("BOOT_VERIFY_DEADLINE_MINUTES", (\d+)\)',
@@ -296,3 +299,33 @@ def test_the_machine_gives_up_well_inside_the_portals_deadline(
     assert machine >= 300, (
         f"{machine}s is back under the five minutes that proved too short: "
         f"OpenSearch bound nothing at all within three")
+
+
+# --- some software takes longer to start (O3a) ----------------------------------
+
+def test_a_technology_known_to_be_slow_is_watched_for_longer(
+        tmp_path, monkeypatch):
+    """OpenSearch bound nothing at all inside six minutes once an admin password
+    made its security plugin generate certificates on first start. One number
+    cannot fit both that and a web server that listens in a second."""
+    slow = loop_of(tmp_path, monkeypatch, "opensearch", [9200])
+    ordinary = loop_of(tmp_path, monkeypatch, "caddy", [80])
+
+    slow_passes = int(re.search(r"seq 1 (\d+)", slow).group(1))
+    ordinary_passes = int(re.search(r"seq 1 (\d+)", ordinary).group(1))
+
+    assert slow_passes > ordinary_passes, (
+        "a technology known to start slowly is watched no longer than a web "
+        "server — the budget is not reaching the generated script")
+    assert ordinary_passes == configure._READY_PASSES, (
+        "everything else stopped getting the default")
+
+
+def test_no_technology_may_be_watched_past_the_ceiling(tmp_path, monkeypatch):
+    """A recipe may ask for longer; it may not hold a machine past what the
+    portal will wait for. A timeout raised until something passes is not a
+    measurement."""
+    for code in ("opensearch", "caddy", "somesoftware"):
+        loop = loop_of(tmp_path, monkeypatch, code, [9200])
+        passes = int(re.search(r"seq 1 (\d+)", loop).group(1))
+        assert passes <= configure._READY_PASSES_MAX, (code, passes)

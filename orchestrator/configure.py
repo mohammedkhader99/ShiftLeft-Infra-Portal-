@@ -636,7 +636,8 @@ def _report_script(wanted: list[tuple[str, str]], packages: list[str],
         # booting. It also made the test that drives this loop take two
         # minutes on a Windows host and time out.
         checks.append('  WANT=$(echo "$DECL" | tr "," " ")')
-        checks.append(f"  for _ in $(seq 1 {_READY_PASSES}); do")
+        passes = _ready_passes_for(code, profile_for(code, family))
+        checks.append(f"  for _ in $(seq 1 {passes}); do")
         checks.append(
             f"    LI=$(for F in /proc/net/tcp /proc/net/tcp6; do "
             f"podman exec {code} cat $F 2>/dev/null; done "
@@ -1337,6 +1338,65 @@ CONTAINER_SECRETS_FILE = "/secrets/container.env"
 #: minutes to say so instead of three. A complete report is worth more than a
 #: fast one. The relationship to the portal's deadline is pinned by a test.
 _READY_PASSES = 72
+
+#: The most any one technology may be given, whatever it asks for.
+#:
+#: TEN MINUTES, AND THE CEILING IS NOT ARBITRARY. The portal gives up waiting for
+#: a boot report after BOOT_VERIFY_DEADLINE_MINUTES, and the machine must finish
+#: watching, write its report and upload it well inside that -- a report that
+#: arrives after nobody is listening is the same silence as no report at all. A
+#: test pins the two numbers against each other; neither may be tuned past the
+#: other.
+_READY_PASSES_MAX = 120
+
+#: Software that is KNOWN to take longer than the default, in seconds, with the
+#: evidence for each.
+#:
+#: CURATED FROM FAILURES, not from vendor documentation. Every entry here is a
+#: machine this portal actually built and watched give up:
+#:
+#:   opensearch   REQ-2026-0253 bound 9300 inside three minutes. Once an admin
+#:                password was set the security plugin began generating demo
+#:                certificates and bootstrapping its security index on first
+#:                start, and REQ-2026-0256 plus three proofs bound NOTHING inside
+#:                six minutes -- `listening_inside_opensearch=none` every time.
+#:
+#:   oracle-free  Oracle creates the database itself on first start. Not yet
+#:   oracle-xe    measured here; ten minutes is the ceiling rather than a
+#:                measurement, and the proof will say whether it is enough. If it
+#:                is not, the honest answer is that this shape of machine cannot
+#:                start Oracle in the time the portal can wait -- not a larger
+#:                number.
+#:
+#: A TIMEOUT RAISED UNTIL SOMETHING PASSES IS NOT A MEASUREMENT. Each entry is a
+#: claim about one technology, made because a machine was observed failing at the
+#: default, and it must never become the place a stubborn build is made to go
+#: green.
+START_BUDGET_SECONDS: dict[str, int] = {
+    "opensearch": 600,
+    "oracle-free": 600,
+    "oracle-xe": 600,
+}
+
+
+def _ready_passes_for(code: str, profile: dict | None = None) -> int:
+    """Five-second passes to watch this technology for, bounded.
+
+    A profile may state its own budget -- the agent writes profiles, and a
+    recipe that knows its software is slow should be able to say so -- and the
+    curated table above covers technologies whose profiles predate that. Both
+    are capped: no recipe may hold a machine past what the portal will wait for.
+    """
+    asked = 0
+    if profile:
+        try:
+            asked = int(profile.get("start_budget_seconds") or 0)
+        except (TypeError, ValueError):
+            asked = 0
+    asked = asked or START_BUDGET_SECONDS.get((code or "").strip().lower(), 0)
+    if asked <= 0:
+        return _READY_PASSES
+    return max(_READY_PASSES, min(_READY_PASSES_MAX, -(-asked // 5)))
 
 #: How many further five-second passes to keep watching after the FIRST declared
 #: port appears, when the others have not.

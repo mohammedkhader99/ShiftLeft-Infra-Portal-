@@ -5285,7 +5285,13 @@ def _await_boot_reports(reference: str, body: bytes, signature: str) -> dict:
         return {"ok": True, "event": "verification.skipped",
                 "summary": "", "detail": {"enforced": False}}
 
-    deadline_minutes = _boot_verify_int("BOOT_VERIFY_DEADLINE_MINUTES", 15)
+    # RAISED 15 -> 30 with the per-technology start budget. A machine may now
+    # watch for up to ten minutes before writing its report, and the portal
+    # has to outlast that by a clear margin -- the machine still has to
+    # install, start, write and upload inside this window. Adjustable in the
+    # Admin console; the relationship to the machine's budget is pinned by a
+    # test so neither can be tuned past the other.
+    deadline_minutes = _boot_verify_int("BOOT_VERIFY_DEADLINE_MINUTES", 30)
     interval = _boot_verify_int("BOOT_VERIFY_POLL_SECONDS", 20)
     give_up_at = time.monotonic() + deadline_minutes * 60
     last: dict = {}
