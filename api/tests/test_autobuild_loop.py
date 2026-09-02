@@ -58,11 +58,25 @@ class Publisher:
     """Stands in for writing to the generated store, and records whether it was
     ever called — which is the property most of these tests turn on."""
 
-    def __init__(self):
+    def __init__(self, writes: bool = True):
         self.calls: list[dict] = []
+        self.writes = writes
 
     def __call__(self, files):
         self.calls.append(files)
+        # WHAT IT WROTE, because that is publish's contract and a proof now
+        # checks the answer. This returned None, which reads as an empty store,
+        # so the FAKE decided whether a build could pass.
+        # PROOF-MYSQL-20260902T123737 reported a published profile that existed
+        # nowhere, and nothing here would have caught it.
+        # SPELT THE WAY make_publish SPELLS IT. A draft names repository-style
+        # paths and the real publisher returns resolved absolute ones, so only
+        # the file name is comparable. Returning the caller's own strings made
+        # the two sides match trivially, and a comparison that used whole paths
+        # -- and would therefore never match in production -- passed here.
+        import pathlib
+        return ([f"/generated/store/{pathlib.PurePosixPath(str(n)).name}"
+                 for n in (files or {})] if self.writes else [])
 
 
 def proves(*statuses):
@@ -254,3 +268,85 @@ def test_an_unpriceable_plan_does_not_burn_the_attempt_budget(db, bp, monkeypatc
     assert "could not be priced" in result.detail, (
         "the reason was replaced by 'could not produce a recipe that passed', "
         "which blames the draft for an external outage")
+
+
+# --- the recipe has to be in the store (PROOF-MYSQL-20260902T123737) ------------
+
+def test_a_proof_that_publishes_nothing_is_not_a_pass(db, bp, monkeypatch):
+    """THE DEFECT. That proof reported "Built, verified and destroyed on attempt
+    1" and named a profile which was in neither container nor on the host.
+    `publish` returns what it wrote; the caller threw that away and reported
+    what was PROPOSED instead.
+
+    A recipe that is not in the store builds a machine with nothing installed on
+    it -- make_publish's own comment says exactly that -- while every step
+    reports success.
+    """
+    allow(monkeypatch)
+    pub = Publisher(writes=False)
+
+    result = autobuild.build("cassandra5", db, blueprint=bp,
+                             run_proof=proves("passed"), publish=pub)
+
+    assert result.status == "failed", (
+        "a proof whose recipe never reached the store was reported as published")
+    assert pub.calls, "it did not even try to publish"
+    assert not result.files, "it still claims files that are not there"
+    assert "does not contain" in result.detail or "did not reach" in result.detail
+
+
+def test_a_partly_written_recipe_is_detected():
+    """A profile without its module, or a module without its profile, is a
+    recipe with a hole in it.
+
+    The RULE is tested here rather than a build, because how many files a draft
+    proposes is not this test's to control -- an earlier version asserted only
+    when the draft happened to propose more than one, which meant it could not
+    fail.
+    """
+    proposed = {"generated/profiles/x.json": "{}",
+                "generated/terraform/main.tf": "resource {}"}
+    written = ["/generated/store/x.json"]          # the module never landed
+
+    missing = autobuild._stored_names(proposed) - autobuild._stored_names(written)
+
+    assert missing == {"main.tf"}, missing
+
+
+def test_writing_something_else_is_not_writing_the_recipe(db, bp, monkeypatch):
+    """A store that takes A file is not a store that took THIS file.
+
+    The check has to compare what was asked for against what came back, not
+    merely notice that the list is non-empty. Testing the rule in isolation left
+    that open: a version reading "no complaint if anything at all was written"
+    passed every test here while a recipe with a hole in it sailed through.
+
+    This drives the real build, so the comparison in `build` is what answers.
+    """
+    allow(monkeypatch)
+
+    class WroteSomethingElse(Publisher):
+        def __call__(self, files):
+            self.calls.append(files)
+            return ["/generated/store/not-the-recipe.json"]
+
+    pub = WroteSomethingElse()
+    result = autobuild.build("cassandra5", db, blueprint=bp,
+                             run_proof=proves("passed"), publish=pub)
+
+    assert result.status == "failed", (
+        "the store returned a file nobody asked for and the proof called it "
+        "published")
+    assert not result.files
+
+
+def test_the_comparison_survives_the_two_spellings():
+    """A draft names `generated/profiles/x.json`; the store returns
+    `/generated/profiles/x.json`. Comparing whole paths would find NOTHING in
+    common and fail every build -- or, with the sides swapped, match nothing and
+    pass every one."""
+    proposed = {"generated/profiles/x.json": "{}"}
+    written = ["/generated/profiles/x.json"]
+
+    assert not (autobuild._stored_names(proposed)
+                - autobuild._stored_names(written))

@@ -87,7 +87,7 @@ def test_an_existing_recipe_is_proved_and_certified_without_writing_anything(db)
     written = []
     result = autobuild.ensure(
         "nginx", db, target="oci", shipped=lambda c: SERVICE_VM,
-        run_proof=proof("passed"), publish=written.append, certify=certifier(db))
+        run_proof=proof("passed"), publish=lambda f: (written.append(f), list(f))[1], certify=certifier(db))
     db.commit()
 
     assert result.status == "published"
@@ -102,7 +102,7 @@ def test_the_certification_records_the_runner_not_a_person(db):
     """An audit trail that attributed this to a human would be a lie, and which
     of these a person approved is the first question anybody asks later."""
     autobuild.ensure("nginx", db, target="oci", shipped=lambda c: SERVICE_VM,
-                     run_proof=proof("passed"), publish=lambda f: None,
+                     run_proof=proof("passed"), publish=lambda f: list(f),
                      certify=certifier(db))
     db.commit()
 
@@ -117,7 +117,7 @@ def test_a_recipe_that_fails_its_proof_is_NOT_certified(db):
     certified by hand and then failed four consecutive real requests."""
     result = autobuild.ensure(
         "nginx", db, target="oci", shipped=lambda c: SERVICE_VM,
-        run_proof=proof("failed"), publish=lambda f: None, certify=certifier(db))
+        run_proof=proof("failed"), publish=lambda f: list(f), certify=certifier(db))
     db.commit()
 
     assert result.status == "failed"
@@ -146,7 +146,7 @@ def test_a_component_with_no_recipe_is_written_a_profile_not_a_module(db):
         # The orchestrator re-read: once the profile is in the store, the
         # blueprint that builds machines reports that it now builds this too.
         shipped=lambda c: (SERVICE_VM if written else None),
-        run_proof=proof("passed"), publish=written.append, certify=certifier(db),
+        run_proof=proof("passed"), publish=lambda f: (written.append(f), list(f))[1], certify=certifier(db),
         withdraw=lambda f: None)
 
     assert result.status == "published", result.detail
@@ -174,7 +174,7 @@ def test_drafting_is_not_reached_when_a_recipe_already_exists(db):
     ab.ai_blueprint.draft = spy
     try:
         autobuild.ensure("nginx", db, target="oci", shipped=lambda c: SERVICE_VM,
-                         run_proof=proof("passed"), publish=lambda f: None,
+                         run_proof=proof("passed"), publish=lambda f: list(f),
                          certify=certifier(db))
     finally:
         ab.ai_blueprint.draft = original
@@ -187,7 +187,7 @@ def test_drafting_is_not_reached_when_a_recipe_already_exists(db):
 def test_it_does_nothing_when_autobuild_is_disabled(db, monkeypatch):
     monkeypatch.setenv("AUTOBUILD_ENABLED", "false")
     result = autobuild.ensure("nginx", db, target="oci", shipped=lambda c: SERVICE_VM,
-                              run_proof=proof("passed"), publish=lambda f: None,
+                              run_proof=proof("passed"), publish=lambda f: list(f),
                               certify=certifier(db))
     assert result.status == "refused"
     assert nginx(db) is None
@@ -199,7 +199,7 @@ def test_an_agent_certified_blueprint_is_still_withdrawn_when_it_fails(db):
     """C1 does not care who certified it. Self-certification must not create a
     blueprint that cannot be taken away."""
     autobuild.ensure("nginx", db, target="oci", shipped=lambda c: SERVICE_VM,
-                     run_proof=proof("passed"), publish=lambda f: None,
+                     run_proof=proof("passed"), publish=lambda f: list(f),
                      certify=certifier(db))
     db.commit()
     assert nginx(db).status == "certified"
@@ -308,7 +308,7 @@ def test_a_recipe_the_agent_BUILT_is_also_certified(db, monkeypatch):
     result = autobuild.ensure(
         "oci-newthing", db, target="oci",
         shipped=lambda code: SERVICE_VM if written else None,
-        run_proof=proof("passed"), publish=written.append,
+        run_proof=proof("passed"), publish=lambda f: (written.append(f), list(f))[1],
         certify=lambda manifest, ref: certified.append((manifest.get("ref"), ref)),
         withdraw=lambda files: list(files))
 

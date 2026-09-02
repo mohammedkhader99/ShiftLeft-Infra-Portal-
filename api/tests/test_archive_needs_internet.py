@@ -158,7 +158,7 @@ def test_a_package_profile_is_unaffected_by_the_subnet_having_no_nat():
         shipped=lambda c: {"ref": "oci/service-vm", "target": "oci",
                            "resource_kind": "oci-service-vm"},
         run_proof=lambda s, m: proved.append(1) or _passed(),
-        publish=lambda f: None, certify=lambda m, r: None,
+        publish=lambda f: list(f), certify=lambda m, r: None,
         withdraw=lambda f: None, reachable=lambda: False)
 
     assert proved == [1], "a package install was refused for lacking internet"

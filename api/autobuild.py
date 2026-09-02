@@ -101,6 +101,19 @@ class AutobuildResult:
         return self.status == "published"
 
 
+def _stored_names(paths) -> set[str]:
+    """The file names in a set of paths, however they are spelt.
+
+    A draft names repository-style paths (`generated/profiles/mysql.json`) and
+    `publish` returns absolute ones (`/generated/profiles/mysql.json`). Only the
+    name is comparable, which is also all `publish` itself uses.
+    """
+    import pathlib
+
+    return {pathlib.PurePosixPath(str(x)).name
+            for x in (paths or ())} - {""}
+
+
 def _why_nothing_works(candidate: str, asked: dict, *, curated_repo: bool,
                        curated_archive: bool) -> str:
     """Every way this portal knows to deliver software, and what each answered.
@@ -314,7 +327,46 @@ def build(candidate: str, session: Session, *, blueprint, run_proof, publish,
         # disk. The proof destroys whatever it creates either way.
         outcome = run_proof(session, blueprint)
         if outcome.status == "passed":
-            publish(proposal.files)
+            # A PROOF THAT CANNOT SHOW ITS RECIPE REACHED THE STORE IS NOT A
+            # PASSED PROOF.
+            #
+            # `publish` returned what it wrote and this threw it away, while
+            # `result.files` reported what was PROPOSED -- so the summary named
+            # files nobody had checked existed. PROOF-MYSQL-20260902T123737
+            # reported "Built, verified and destroyed on attempt 1", listed
+            # `generated/profiles/mysql.json`, and that file was in neither
+            # container nor on the host. A real request would then have built a
+            # machine with nothing installed on it, which is precisely what
+            # make_publish's own comment warns about: "configure.py would never
+            # read it and the machine would boot with nothing installed while
+            # every step reported success."
+            #
+            # TWO DOORS INTO THE SAME ROOM. `ensure` -- the path a real request
+            # takes -- already asks the orchestrator whether the profile wired
+            # up, and withdraws if it did not. `build` is what the admin
+            # endpoint and the certification runner call, and it had no such
+            # check at all. The weaker door is the one an operator uses.
+            #
+            # Not retried: a re-draft does not fix a store that would not take
+            # the file. It is reported, and nothing is claimed.
+            written = publish(proposal.files)
+            unwritten = _stored_names(proposal.files) - _stored_names(written)
+            if unwritten:
+                missing = ", ".join(sorted(unwritten))
+                result.attempts.append(Attempt(
+                    attempt_no, "published", "failed",
+                    f"the generated store does not contain {missing}"))
+                result.status = "failed"
+                result.files = {}
+                result.detail = (
+                    f"{candidate} built and verified on a real machine, and its "
+                    f"recipe did not reach the generated store: {missing}. "
+                    f"Nothing is published, because a recipe that is not there "
+                    f"would build a machine with nothing installed on it while "
+                    f"every step reported success."
+                )
+                return result
+
             result.attempts.append(Attempt(
                 attempt_no, "proved", "passed", outcome.detail))
             result.status = "published"
@@ -1063,7 +1115,25 @@ def _ensure_vm_service(candidate, session, proposal, *, target, shipped,
                 1, "remembered", "refused", already[:300]))
             return result
 
+    # THE SAME CHECK ON THE OTHER DOOR. This path goes on to ask the
+    # orchestrator whether the profile wired up, which is a stronger question --
+    # but it asks it about a file nobody confirmed was written, so a store that
+    # silently took nothing would be reported as "the profile did not reach the
+    # blueprint" rather than "the profile was never stored". Two different
+    # faults, two different fixes, and one misleading message.
     written = publish(proposal.files)
+    unwritten = _stored_names(proposal.files) - _stored_names(written)
+    if unwritten:
+        missing = ", ".join(sorted(unwritten))
+        result.attempts.append(Attempt(
+            1, "published", "failed",
+            f"the generated store does not contain {missing}"))
+        result.status = "failed"
+        result.detail = (
+            f"A recipe for {candidate} was drafted and the generated store did "
+            f"not take it: {missing}. Nothing was built."
+        )
+        return result
     result.files = proposal.files
 
     def take_it_back(why: str) -> AutobuildResult:

@@ -311,7 +311,7 @@ def test_a_second_request_for_a_refuted_recipe_builds_nothing(db):
         shipped=lambda c: {"ref": "oci/service-vm", "target": "oci",
                            "resource_kind": "oci-service-vm"},
         run_proof=lambda s, m: proved.append(1),
-        publish=published.append, certify=lambda m, r: None,
+        publish=lambda f: (published.append(f), list(f))[1], certify=lambda m, r: None,
         withdraw=lambda f: None)
 
     assert result.status == "refused"
@@ -327,7 +327,7 @@ def test_the_first_failure_is_recorded_for_the_next_time(db):
         shipped=lambda c: {"ref": "oci/service-vm", "target": "oci",
                            "resource_kind": "oci-service-vm"},
         run_proof=lambda s, m: ProofOutcome("PROOF-X", "failed", THE_MACHINE_SAID),
-        publish=lambda f: None, certify=lambda m, r: None, withdraw=lambda f: None)
+        publish=lambda f: list(f), certify=lambda m, r: None, withdraw=lambda f: None)
 
     row = db.scalar(select(RecipeRefutation).where(
         RecipeRefutation.technology_code == "backup"))
@@ -346,6 +346,6 @@ def test_a_cost_refusal_is_not_remembered_as_a_refutation(db):
                            "resource_kind": "oci-service-vm"},
         run_proof=lambda s, m: ProofOutcome(
             "PROOF-X", "refused", "Plan prices at 1240.00, above the 250.00 cap."),
-        publish=lambda f: None, certify=lambda m, r: None, withdraw=lambda f: None)
+        publish=lambda f: list(f), certify=lambda m, r: None, withdraw=lambda f: None)
 
     assert db.scalar(select(RecipeRefutation)) is None
