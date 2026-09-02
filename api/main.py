@@ -4123,6 +4123,159 @@ def draft_blueprint(body: DraftBlueprintIn, session: Session = Depends(get_sessi
     }
 
 
+#: What a requester may type into "something else". Whitespace becomes hyphens
+#: and the result must be a catalogue code -- the SAME rule the rest of the
+#: portal uses, not a looser one invented for a text box.
+#:
+#: THE BOX FEEDS A PATH THAT RUNS AS ROOT. Whatever comes out of it is used to
+#: query registries and, if a build follows, to pull an image that a machine
+#: executes. `slacksec/dotnet` is the standing example: zero stars, unknown
+#: user, and pulling it as root is far worse than a failed guess. So the text is
+#: narrowed to the shape a catalogue code may take before it reaches anything,
+#: and the trust rule still decides what may be pulled afterwards.
+def _as_candidate_name(typed: str) -> str:
+    """A requester's words, as a catalogue code, or "" if they cannot be one."""
+    from common import profile_rules
+
+    words = (typed or "").strip().lower().split()
+    # A NAME, NOT A DESCRIPTION. "Apache Kafka" and "Oracle Database Free" are
+    # real names; a sentence is a different kind of input and would be carried
+    # to a registry as a query that cannot match anything. Four is generous
+    # enough for the longest product name in the catalogue and short enough
+    # that prose is turned away with an explanation rather than searched for.
+    if len(words) > 4:
+        return ""
+    name = "-".join(words)
+    return name if profile_rules.CODE.match(name) else ""
+
+
+class CanWeBuildOut(BaseModel):
+    """What the portal can say about a technology it was asked for by name."""
+
+    asked: str
+    name: str
+    known: bool
+    lifecycle: str = ""
+    reason: str = ""
+    buildable: bool = False
+    image: str = ""
+    digest: str = ""
+    ports: list[int] = []
+    methods: list[str] = []
+    explanation: str = ""
+
+
+@app.get("/api/catalogue/can-we-build", response_model=CanWeBuildOut)
+def can_we_build(name: str = "",
+                 session: Session = Depends(get_session),
+                 _auth: str = Depends(require_action("create_request"))
+                 ) -> CanWeBuildOut:
+    """Could the portal build this? Asked BEFORE anything is requested.
+
+    F1. A requester who cannot find their technology on the form had no way to
+    ask about it: `_validate_components` answers "Unknown technology" and stops.
+    The machinery to answer properly already existed and was reachable only by
+    an admin -- `install_methods` walks every rung of the ladder, and
+    `_why_nothing_works` explains what each one said.
+
+    READ-ONLY, AND DELIBERATELY SO. It creates no catalogue row, raises no
+    request, starts no build and spends nothing. A typo must not leave a
+    technology behind it, and "can you?" must never be a way to make the portal
+    do something.
+
+    IT ANSWERS IN THE AGENT'S OWN WORDS. The explanation comes from the same
+    function the autobuild ladder uses, so what a requester is told here and
+    what happens if they go ahead cannot drift apart -- two explanations of one
+    mechanism is how a portal starts lying slowly.
+    """
+    from api import ai_blueprint, autobuild, registry, repo_facts
+    from common import profile_rules
+    from db.models import TechnologyDelivery
+
+    asked = (name or "").strip()
+    candidate = _as_candidate_name(asked)
+    if not candidate:
+        return CanWeBuildOut(
+            asked=asked, name="", known=False,
+            reason=("Give the technology's name on its own — letters, digits, "
+                    "dots and hyphens, up to 48 characters, like `clickhouse` "
+                    "or `mysql`. A description or a sentence cannot be looked "
+                    "up; the name is what registries and package repositories "
+                    "are indexed by."))
+
+    # ALREADY OURS is the commonest answer and the cheapest: no network at all.
+    #
+    # MATCHED ON THE NAME AS WELL AS THE CODE, because the whole reason someone
+    # is typing into this box is that they did not find their software on the
+    # form -- and the likeliest reason for THAT is that we call it something
+    # else. "PostgreSQL 16" is the name;  is the code; a requester
+    # typing the product's actual name would have been told we do not have it.
+    # Compared with punctuation and case removed from both sides, so "SQL
+    # Server 2022" finds  and "Oracle Database 19c" finds .
+    def _squash(text):
+        return re.sub(r"[^a-z0-9]", "", (text or "").lower())
+
+    wanted = _squash(candidate)
+    known = session.scalar(select(Technology).where(Technology.code == candidate))
+    if known is None:
+        known = next((t for t in session.scalars(select(Technology)).all()
+                      if _squash(t.code) == wanted or _squash(t.name) == wanted),
+                     None)
+    if known is not None:
+        note = session.get(TechnologyDelivery, candidate)
+        return CanWeBuildOut(
+            asked=asked, name=candidate, known=True,
+            lifecycle=known.lifecycle_state or "",
+            reason=((note.note if note else "")
+                    or f"{known.name} is already in the catalogue."))
+
+    consulted: dict = {}
+
+    def found_image(code):
+        out = registry.find(code)
+        consulted["image"] = out
+        return out
+
+    def searched(code, family):
+        out = repo_facts.search_packages(code, family)
+        consulted["packages"] = out
+        return out
+
+    methods = list(ai_blueprint.install_methods(
+        candidate, find_image=found_image, search=searched))
+
+    image = consulted.get("image") or {}
+    if image:
+        return CanWeBuildOut(
+            asked=asked, name=candidate, known=False, buildable=True,
+            methods=methods,
+            image=str(image.get("image") or ""),
+            digest=str(image.get("digest") or ""),
+            ports=[int(p) for p in (image.get("ports") or [])],
+            reason=("Nothing is built yet. Ask for it in a request and, once "
+                    "that is approved, the portal proves this by building it on "
+                    "a real machine — it reaches the catalogue only if that "
+                    "works."))
+
+    if methods:
+        return CanWeBuildOut(
+            asked=asked, name=candidate, known=False, buildable=True,
+            methods=methods,
+            reason=("No container image resolved, but there is another way to "
+                    "install it. It is proved by building it before anything is "
+                    "offered."))
+
+    return CanWeBuildOut(
+        asked=asked, name=candidate, known=False, buildable=False,
+        methods=[],
+        explanation=autobuild._why_nothing_works(
+            candidate, consulted,
+            curated_repo=candidate in ai_blueprint.VENDOR_REPOS,
+            curated_archive=candidate in ai_blueprint.ARCHIVE_KNOWLEDGE),
+        reason=("No way to install this could be found. Nothing was built and "
+                "no machine was spent finding that out."))
+
+
 @app.get("/api/catalogue/delivery")
 def catalogue_delivery(target: str = "oci",
                        session: Session = Depends(get_session),
