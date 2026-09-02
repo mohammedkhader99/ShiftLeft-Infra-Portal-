@@ -350,3 +350,83 @@ def test_the_comparison_survives_the_two_spellings():
 
     assert not (autobuild._stored_names(proposed)
                 - autobuild._stored_names(written))
+
+
+# --- a recipe has to claim something a machine could refute ---------------------
+
+def _profile(**fields):
+    import json
+    return {"generated/profiles/thing.json": json.dumps({"code": "thing", **fields})}
+
+
+def test_a_recipe_that_claims_nothing_is_refused():
+    """A PROOF CAN ONLY REFUTE A CLAIM. No port to serve and no version to ask
+    means a machine can build it, report success, and have established nothing
+    about whether the software is there at all.
+
+    This is Oracle's shape when its container binds nothing inside the watch:
+    container profiles carry no version command by design -- an image's version
+    label is usually its base OS -- so ports are the only claim they have.
+    """
+    assert autobuild._claims_nothing(_profile(ports=[])) == "thing"
+    assert autobuild._claims_nothing(_profile(ports=[], version_command="")) == "thing"
+    assert autobuild._claims_nothing(_profile()) == "thing"
+
+
+def test_a_runtime_that_serves_nothing_is_fine():
+    """NOT "must serve". `dotnet8` has no ports and is perfectly good -- it is a
+    runtime, and its version is what a machine checks. Demanding ports would
+    condemn it, exactly as demanding every declared port would condemn
+    RabbitMQ."""
+    assert autobuild._claims_nothing(
+        _profile(ports=[], version_command="dotnet8 --version 2>&1")) == ""
+
+
+def test_a_service_with_ports_and_no_version_is_fine():
+    """Every container profile in the store is this shape."""
+    assert autobuild._claims_nothing(_profile(ports=[9200])) == ""
+
+
+def test_a_draft_with_no_profile_is_not_this_gates_business():
+    """A Terraform module is judged by the build. Inventing a complaint here
+    would refuse work this rule was never about."""
+    assert autobuild._claims_nothing({"generated/terraform/main.tf": "resource {}"}) == ""
+    assert autobuild._claims_nothing({}) == ""
+
+
+def test_every_recipe_already_in_the_store_still_passes():
+    """SURVEYED BEFORE ENABLING, which is the lesson from the certification gate
+    that made bare VMs unprovisionable for twelve days. A rule that condemns
+    work already done is a rule that gets switched off in a hurry."""
+    import json
+    import pathlib
+
+    store = pathlib.Path("generated/profiles")
+    if not store.is_dir():
+        import pytest
+        pytest.skip("no generated store in this checkout")
+
+    condemned = {}
+    for f in sorted(store.glob("*.json")):
+        silent = autobuild._claims_nothing({str(f): f.read_text(encoding="utf-8")})
+        if silent:
+            condemned[f.stem] = json.loads(f.read_text(encoding="utf-8"))
+
+    assert not condemned, (
+        f"enabling this would condemn recipes already certified: "
+        f"{sorted(condemned)}")
+
+
+def test_a_build_whose_recipe_claims_nothing_does_not_publish(db, bp, monkeypatch):
+    """The rule reaching the build, not just existing beside it."""
+    allow(monkeypatch)
+    pub = Publisher()
+    monkeypatch.setattr(autobuild, "_claims_nothing", lambda files: "thing")
+
+    result = autobuild.build("cassandra5", db, blueprint=bp,
+                             run_proof=proves("passed"), publish=pub)
+
+    assert result.status == "failed", "a recipe claiming nothing was published"
+    assert pub.calls == [], "it reached the store despite claiming nothing"
+    assert not result.files
+    assert "claims nothing" in result.detail or "claimed nothing" in result.detail

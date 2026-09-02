@@ -101,6 +101,56 @@ class AutobuildResult:
         return self.status == "published"
 
 
+def _claims_nothing(files) -> str:
+    """The technology whose recipe makes no checkable claim, or "".
+
+    A PROOF CAN ONLY REFUTE A CLAIM. Every recipe in the store today carries at
+    least one -- surveyed before this was enabled, which is the lesson from the
+    certification gate that made bare VMs unprovisionable for twelve days:
+
+        dotnet8     no ports, and `dotnet8 --version` to ask      a runtime
+        keycloak    8080, and a version command                   both
+        mongodb     27017                                         a service
+        mssql       135, 1431, 1433, 1434                         a service
+        opensearch  9300                                          a service
+        rabbitmq    4369, 5672, 15692, 25672                      a service
+        vault       8200, and a version command                   both
+
+    So the rule is not "it must serve a port". `dotnet8` serves nothing and is
+    perfectly good -- it is a runtime, and its version is what a machine can
+    check. Demanding ports would condemn it, the same way demanding every
+    declared port would condemn RabbitMQ.
+
+    What cannot be allowed is a recipe with NEITHER: nothing to serve and
+    nothing to ask. A machine can build that, report success, and have
+    established nothing at all about whether the software is there. Oracle is
+    exactly this shape when its container binds nothing inside the watch --
+    containers carry no version command by design, because an image's version
+    label is usually its base OS, so ports are the only claim a container
+    profile has.
+    """
+    import json
+    import pathlib
+
+    for path, content in (files or {}).items():
+        if not str(path).endswith(".json"):
+            continue
+        try:
+            profile = json.loads(content or "{}")
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(profile, dict):
+            continue
+        if profile.get("ports") or (profile.get("version_command") or "").strip():
+            return ""
+        return str(profile.get("code")
+                   or pathlib.PurePosixPath(str(path)).stem)
+    # No profile in this draft. Not this gate's business -- a Terraform module
+    # is judged by the build, and inventing a complaint here would refuse work
+    # this rule was never about.
+    return ""
+
+
 def _stored_names(paths) -> set[str]:
     """The file names in a set of paths, however they are spelt.
 
@@ -349,6 +399,26 @@ def build(candidate: str, session: Session, *, blueprint, run_proof, publish,
             #
             # Not retried: a re-draft does not fix a store that would not take
             # the file. It is reported, and nothing is claimed.
+            # AND IT HAS TO HAVE PROVED SOMETHING. Checked AFTER the proof,
+            # not before: the first container pass publishes no ports on
+            # purpose and asks the machine what it bound, so refusing a
+            # portless recipe up front would break the narrowing that
+            # discovers them. By here the recipe is final.
+            silent = _claims_nothing(proposal.files)
+            if silent:
+                result.attempts.append(Attempt(
+                    attempt_no, "published", "failed",
+                    f"{silent} would be certified having claimed nothing"))
+                result.status = "failed"
+                result.files = {}
+                result.detail = (
+                    f"{silent} built on a real machine and its recipe claims "
+                    f"nothing a machine could check -- no port it serves and no "
+                    f"version it can be asked. A proof can only refute a claim, "
+                    f"so this one established nothing. Nothing is published."
+                )
+                return result
+
             written = publish(proposal.files)
             unwritten = _stored_names(proposal.files) - _stored_names(written)
             if unwritten:
