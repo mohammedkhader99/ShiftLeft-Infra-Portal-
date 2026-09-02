@@ -10,6 +10,16 @@ The tests split evenly between "must block" and "must NOT block", because a
 duplicate guard that is too eager is its own bug: it would stop a requester
 decommissioning one component while a colleague decommissions another, or stop
 them retrying after a failure.
+
+AND THEN IT MISSED THE WORST CASE (REQ-2026-0264, 2026-09-02). The status list
+held every state BEFORE execution and none of the states DURING it, so the guard
+covered "someone else has asked" and not "someone else is doing it right now" --
+which is when a second teardown does the most damage, because the resources are
+disappearing underneath both. `decommissioning` is set at destroy.handoff, and
+was not in the list.
+
+The status list is no longer copied into these tests. The copy said four while
+the code meant five, which is exactly how a duplicated list falls behind.
 """
 
 import pytest
@@ -17,7 +27,8 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from api.validation import validate_submission
+from api.validation import (EXECUTING_STATUSES, IN_FLIGHT_STATUSES,
+                            validate_submission)
 from db.models import Approval, Request, RequestComponent
 from db.seed import seed
 from db.session import Base
@@ -104,12 +115,72 @@ def test_a_second_refresh_of_the_same_environment_is_refused(db):
     assert "source_reference" in errors
 
 
-@pytest.mark.parametrize("status", ["submitted", "approved", "planned", "in-progress"])
+@pytest.mark.parametrize("status", IN_FLIGHT_STATUSES)
 def test_every_in_flight_status_blocks(db, status):
-    """All four mean the other request can still act on the resource."""
+    """Every status the list names means the other request can still act.
+
+    Parametrised over the constant itself. It used to name the four statuses in
+    a literal beside the four in the code, and when the code needed a fifth the
+    test went on passing while agreeing with the wrong list."""
     _existing(db, "REQ-2026-0121", "decommission", ["nginx"], status=status)
     assert "source_reference" in validate_submission(
         _submitting("decommission", ["nginx"]), db)
+
+
+# --- while it is actually running (REQ-2026-0264) -------------------------------
+
+def test_a_teardown_already_running_blocks_a_second_one(db):
+    """THE DEFECT. REQ-2026-0263 entered `decommissioning` at 09:36:11, one
+    minute after REQ-2026-0264 was drafted against the same environment and the
+    same two components. Had 0264 been submitted after that moment the guard
+    would have accepted it: two approved teardowns, two Jira tickets, one
+    environment, resources vanishing under both."""
+    _existing(db, "REQ-2026-0263", "decommission", ["nginx"],
+              status="decommissioning")
+
+    errors = validate_submission(_submitting("decommission", ["nginx"]), db)
+
+    assert "source_reference" in errors, (
+        "a second teardown is accepted while the first is actively running")
+    assert "REQ-2026-0263" in errors["source_reference"]
+
+
+def test_a_running_teardown_is_not_called_awaiting_approval(db):
+    """It is past approval. Saying otherwise is the portal stating something
+    untrue about its own state, and it points the reader at the wrong action."""
+    _existing(db, "REQ-2026-0263", "decommission", ["nginx"],
+              status="decommissioning")
+
+    message = validate_submission(
+        _submitting("decommission", ["nginx"]), db)["source_reference"]
+
+    assert "awaiting approval" not in message, (
+        "a teardown that is already running is described as awaiting approval")
+    assert "cannot be cancelled" in message, (
+        "it tells the reader to cancel something that can no longer be stopped")
+
+
+def test_one_still_awaiting_approval_keeps_the_advice_that_applies(db):
+    """The other half of the same split: this one CAN be cancelled, and saying
+    so is the useful part of the message."""
+    _existing(db, "REQ-2026-0121", "decommission", ["nginx"], status="submitted")
+
+    message = validate_submission(
+        _submitting("decommission", ["nginx"]), db)["source_reference"]
+
+    assert "awaiting approval" in message
+    assert "cancel it" in message
+
+
+def test_every_executing_status_is_also_an_in_flight_one():
+    """The message branches on EXECUTING_STATUSES, but the query only finds
+    requests whose status is in IN_FLIGHT_STATUSES. A status in the first and
+    not the second would read as handled and never fire once."""
+    missing = sorted(set(EXECUTING_STATUSES) - set(IN_FLIGHT_STATUSES))
+
+    assert not missing, (
+        f"{missing} would be described by the message but never matched by the "
+        f"query that produces it")
 
 
 # --- Must NOT block -----------------------------------------------------------

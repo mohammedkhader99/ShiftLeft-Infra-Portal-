@@ -156,7 +156,28 @@ COMPONENT_SCOPED_TYPES = {"decommission", "reduce"}
 # A request that could still act on its target. A `*-failed` request has stopped,
 # and blocking on one forever would make retrying impossible; a draft is not a
 # commitment to anything and would block the requester against themselves.
-IN_FLIGHT_STATUSES = ("submitted", "approved", "planned", "in-progress")
+#
+# `decommissioning` ADDED 2026-09-02, from REQ-2026-0264. The original four are
+# every state BEFORE execution, and the state a decommission enters when it
+# actually starts -- set at destroy.handoff -- was never considered. So the one
+# window where a second teardown does the most damage was the one window this
+# guard ignored: REQ-2026-0263 went `submitted` at 09:34 and `decommissioning`
+# at 09:36:11, and a duplicate submitted after that moment would have been
+# ACCEPTED, giving two approved teardowns of one environment with the resources
+# vanishing under both.
+#
+# The lesson generalises past this list: "still in flight" was written meaning
+# "not yet approved", and execution is also flight.
+IN_FLIGHT_STATUSES = ("submitted", "approved", "planned", "in-progress",
+                      "decommissioning")
+
+#: Of those, the ones that are PAST approval and acting on the resource now.
+#:
+#: The distinction changes the advice, so it cannot be left out of the message:
+#: a request awaiting approval can be cancelled, and one already tearing down
+#: cannot. Telling someone to "cancel it" when nothing can stop it is worse than
+#: saying nothing.
+EXECUTING_STATUSES = ("in-progress", "decommissioning")
 
 
 def validate_submission(data: dict, session: Session) -> dict[str, str]:
@@ -894,14 +915,29 @@ def _validate_not_already_in_flight(data: dict, session: Session, errors: dict[s
             continue  # a different part of the same stack — not a clash
 
         ticket = getattr(getattr(other, "approval", None), "jira_key", "") or ""
-        awaiting = f" (Jira {ticket})" if ticket else ""
+        jira = f" (Jira {ticket})" if ticket else ""
         what = f" for {', '.join(overlap)}" if overlap else ""
-        errors["source_reference"] = (
-            f"{other.reference} is already requesting {request_type} of "
-            f"{source_ref}{what} and is awaiting approval{awaiting}. Wait for it "
-            f"to finish, or cancel it, rather than raising a second one for the "
-            f"same resource."
-        )
+
+        # WHICH STATE IT IS IN CHANGES WHAT THE READER SHOULD DO. Before this
+        # split the message said "awaiting approval" about every clash, which
+        # for a teardown already running was simply untrue -- and it advised
+        # cancelling something that can no longer be cancelled.
+        if other.status in EXECUTING_STATUSES:
+            errors["source_reference"] = (
+                f"{other.reference} is carrying out {request_type} of "
+                f"{source_ref}{what} right now{jira}. It is past approval and "
+                f"already running, so it cannot be cancelled. Wait for it to "
+                f"finish, then look at what is left before raising another — "
+                f"a second one now would act on resources that are "
+                f"disappearing underneath it."
+            )
+        else:
+            errors["source_reference"] = (
+                f"{other.reference} is already requesting {request_type} of "
+                f"{source_ref}{what} and is awaiting approval{jira}. Wait for it "
+                f"to finish, or cancel it, rather than raising a second one for "
+                f"the same resource."
+            )
         return
 
 
