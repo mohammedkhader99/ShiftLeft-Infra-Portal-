@@ -430,3 +430,147 @@ def test_a_build_whose_recipe_claims_nothing_does_not_publish(db, bp, monkeypatc
     assert pub.calls == [], "it reached the store despite claiming nothing"
     assert not result.files
     assert "claims nothing" in result.detail or "claimed nothing" in result.detail
+
+
+# --- installed is not running (MySQL certified as a client) ---------------------
+
+def _recipe(**fields):
+    import json
+    return {"generated/profiles/thing.json": json.dumps({"code": "thing", **fields})}
+
+
+def test_a_client_is_not_the_service_it_was_asked_for():
+    """THE DEFECT. On Oracle Linux the package `mysql` is the command-line
+    CLIENT; the server is `mysql-server`. The package rung is tried first when
+    the repositories carry the name, so the agent installed the client, wrote
+    `services: []`, opened no port, asked `mysql --version`, got an answer, and
+    every gate passed. A requester would have had a machine with no database.
+
+    It slipped past `_claims_nothing` because it DOES claim something. It claims
+    the wrong kind of thing.
+    """
+    recipe = _recipe(ports=[], version_command="mysql --version 2>&1",
+                     rhel={"packages": ["mysql"], "services": []})
+
+    assert autobuild._installed_but_not_running(recipe, [3306, 33060]) == "thing"
+
+
+def test_a_runtime_is_not_condemned_for_serving_nothing():
+    """`dotnet8` serves nothing and is perfectly correct -- a runtime is files
+    you invoke. Its image declares no ports, so the vendor claims nothing and
+    there is nothing to contradict. A rule that fired here would condemn every
+    runtime in the catalogue to catch one database."""
+    recipe = _recipe(ports=[], version_command="dotnet8 --version 2>&1",
+                     rhel={"packages": ["dotnet-sdk-8.0"], "services": []})
+
+    assert autobuild._installed_but_not_running(recipe, []) == ""
+    assert autobuild._installed_but_not_running(recipe, None) == ""
+
+
+def test_a_recipe_that_serves_a_port_is_fine():
+    recipe = _recipe(ports=[3306], rhel={"packages": ["mysql-server"]})
+
+    assert autobuild._installed_but_not_running(recipe, [3306, 33060]) == ""
+
+
+def test_a_recipe_that_starts_a_unit_is_running_even_before_its_ports_are_known():
+    """The first container pass publishes no ports on purpose and asks the
+    machine what it bound. A package recipe that starts a service is a running
+    thing whether or not its ports have been narrowed yet -- refusing it would
+    break the narrowing pass."""
+    recipe = _recipe(ports=[], rhel={"packages": ["mysql-server"],
+                                     "services": ["mysqld"]})
+
+    assert autobuild._installed_but_not_running(recipe, [3306]) == ""
+
+
+def test_every_recipe_in_the_store_survives_its_own_vendors_claim():
+    """SURVEYED BEFORE ENABLING. Each judged against what its own image
+    declares, because a rule that condemns work already certified is a rule
+    that gets switched off in a hurry."""
+    import json
+    import pathlib
+
+    store = pathlib.Path("generated/profiles")
+    if not store.is_dir():
+        import pytest
+        pytest.skip("no generated store in this checkout")
+
+    # What each publisher's image declares, measured against the live registries.
+    declares = {"dotnet8": [], "keycloak": [8080, 8443, 9000], "mongodb": [27017],
+                "mssql": [1433], "rabbitmq": [5672], "vault": [8200],
+                "opensearch": [9200]}
+
+    condemned = []
+    for f in sorted(store.glob("*.json")):
+        if f.stem not in declares:
+            continue                      # not surveyed; mysql is the known bad one
+        if autobuild._installed_but_not_running(
+                {str(f): f.read_text(encoding="utf-8")}, declares[f.stem]):
+            condemned.append(f.stem)
+
+    assert not condemned, f"this would condemn recipes already certified: {condemned}"
+
+
+def test_a_build_whose_recipe_installs_but_runs_nothing_does_not_publish(
+        db, bp, monkeypatch):
+    """The rule reaching the build, not merely existing beside it."""
+    allow(monkeypatch)
+    pub = Publisher()
+    monkeypatch.setattr(autobuild, "_installed_but_not_running",
+                        lambda files, declares: "thing")
+
+    result = autobuild.build("cassandra5", db, blueprint=bp,
+                             run_proof=proves("passed"), publish=pub,
+                             image_declares=[3306])
+
+    assert result.status == "failed", "a client-only recipe was published"
+    assert pub.calls == [], "it reached the store anyway"
+    assert not result.files
+
+
+def test_without_the_vendors_claim_the_rule_cannot_fire(db, bp, monkeypatch):
+    """`build` is also called by the admin endpoint and the certification
+    runner, which may not have resolved an image. No evidence, no verdict --
+    it must not invent one."""
+    allow(monkeypatch)
+    pub = Publisher()
+
+    result = autobuild.build("cassandra5", db, blueprint=bp,
+                             run_proof=proves("passed"), publish=pub)
+
+    assert result.status == "published", result.detail
+
+
+def test_the_request_path_hands_the_vendors_claim_to_the_build():
+    """THE WIRING, which a plant showed nothing was testing.
+
+    `ensure` is the path a real request takes and the only place the image's
+    declaration is gathered; `build` is where the rule runs. Cut the wire and
+    the rule still exists, still has passing tests, and never fires for a
+    requester -- the same two-doors defect `must publish` had.
+
+    READ FROM THE SOURCE, and deliberately. Driving `ensure` far enough to reach
+    `build` needs six collaborators stubbed into agreeing, and a test that
+    elaborate tends to prove things about the stubs. The repository already does
+    this where a wiring guarantee is what matters -- see
+    test_a_machine_is_never_verified_by_its_power_state. What is asserted is
+    narrow and exact: the call passes the evidence.
+    """
+    import pathlib
+
+    source = pathlib.Path("api/autobuild.py").read_text(encoding="utf-8")
+    # The statement, up to the blank line that ends it. A regex over balanced
+    # parentheses was the first attempt and it did not match the real call --
+    # which has two levels of nesting -- so the test failed whether or not the
+    # wire was cut, and a plant looked "caught" when it was merely failing for
+    # a second reason.
+    at = source.index("built = build(")
+    call = source[at:source.index(chr(10) + chr(10), at)]
+
+    assert "image_declares=" in call, (
+        "ensure does not hand the image's declaration to build, so the rule "
+        "cannot fire for a real request")
+    assert "consulted" in call, (
+        "the declaration passed is not the one gathered while resolving the "
+        "ladder")

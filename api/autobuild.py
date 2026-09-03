@@ -101,6 +101,74 @@ class AutobuildResult:
         return self.status == "published"
 
 
+def _installed_but_not_running(files, image_declares) -> str:
+    """The technology that its own image says listens, whose recipe serves
+    nothing, or "".
+
+    MYSQL CERTIFIED AS A COMMAND-LINE CLIENT. The package rung is tried first
+    when the operating system's repositories carry the name, and on Oracle Linux
+    the package `mysql` is the CLIENT -- the server is `mysql-server`. So the
+    agent installed it, wrote `services: []`, opened no port, asked
+    `mysql --version`, got an answer, and every gate passed. A requester would
+    have received a machine with no database on it.
+
+    IT SLIPPED PAST `_claims_nothing` BECAUSE IT DOES CLAIM SOMETHING -- a
+    version. It claims the wrong KIND of thing, and telling those apart is what
+    this portal could not do: `dotnet8` serves nothing and is perfectly correct,
+    because a runtime is files you invoke.
+
+    THE EVIDENCE WAS ALREADY GATHERED AND THROWN AWAY. Resolving MySQL found
+    docker.io/library/mysql declaring 3306 and 33060 -- the vendor's own
+    statement that this is a thing you connect to -- and the package rung won,
+    so that statement was discarded. Surveyed across the catalogue:
+
+        mysql        image declares 3306, 33060       a service
+        postgres16   image declares 5432              a service
+        keycloak     image declares 8080, 8443, 9000  a service
+        vault        image declares 8200              a service
+        dotnet8      image declares nothing           a runtime, correctly
+        python312    image declares nothing           a runtime, correctly
+        java21       no image at all                  a runtime
+        nodejs20     no image at all                  a runtime
+
+    Eight for eight, with no curation and no new lookup.
+
+    WHERE IT STOPS, SAID PLAINLY: `container-registry.oracle.com/database/free`
+    declares NO ports and is unmistakably a service. This rule does not cover
+    Oracle and is not claimed to. Oracle's own failure is different anyway -- it
+    does not finish starting inside the watch -- and inventing a rule from a
+    vendor's silence would condemn every runtime to catch one database.
+    """
+    import json
+    import pathlib
+
+    wanted = [int(p) for p in (image_declares or ())]
+    if not wanted:
+        # The vendor claims nothing, so there is nothing to contradict. A
+        # runtime lives here, and so does Oracle -- see above.
+        return ""
+
+    for path, content in (files or {}).items():
+        if not str(path).endswith(".json"):
+            continue
+        try:
+            profile = json.loads(content or "{}")
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(profile, dict):
+            continue
+        if profile.get("ports"):
+            return ""
+        # A package recipe that starts a unit is still a running service even
+        # before its ports are narrowed; one that starts nothing is files.
+        family = profile.get("rhel") or profile.get("debian") or {}
+        if isinstance(family, dict) and family.get("services"):
+            return ""
+        return str(profile.get("code")
+                   or pathlib.PurePosixPath(str(path)).stem)
+    return ""
+
+
 def _claims_nothing(files) -> str:
     """The technology whose recipe makes no checkable claim, or "".
 
@@ -317,7 +385,8 @@ def _findings_as_dicts(findings) -> list[dict]:
 
 def build(candidate: str, session: Session, *, blueprint, run_proof, publish,
           target: str = "oci",
-          shipped_codes: frozenset[str] = frozenset()) -> AutobuildResult:
+          shipped_codes: frozenset[str] = frozenset(),
+          image_declares=None) -> AutobuildResult:
     """Draft a recipe for `candidate`, prove it, and publish it if it survives.
 
     The three collaborators are injected so the whole loop — including the
@@ -404,6 +473,24 @@ def build(candidate: str, session: Session, *, blueprint, run_proof, publish,
             # purpose and asks the machine what it bound, so refusing a
             # portless recipe up front would break the narrowing that
             # discovers them. By here the recipe is final.
+            idle = _installed_but_not_running(proposal.files, image_declares)
+            if idle:
+                result.attempts.append(Attempt(
+                    attempt_no, "published", "failed",
+                    f"{idle} installs but runs nothing, and its image says it "
+                    f"listens on {', '.join(str(p) for p in image_declares)}"))
+                result.status = "failed"
+                result.files = {}
+                result.detail = (
+                    f"{idle} built on a real machine and its recipe starts no "
+                    f"service and serves no port -- while the image its own "
+                    f"publisher ships declares "
+                    f"{', '.join(str(p) for p in image_declares)}. That is a "
+                    f"recipe which installed files, not one that runs the "
+                    f"software. Nothing is published."
+                )
+                return result
+
             silent = _claims_nothing(proposal.files)
             if silent:
                 result.attempts.append(Attempt(
@@ -543,6 +630,17 @@ def ensure(candidate: str, session: Session, *, target, shipped, run_proof,
     """
     result = AutobuildResult(candidate=candidate, status="refused")
 
+    # AT FUNCTION SCOPE, because it is read at the end and written in the
+    # middle of a block that does not always run. It was created inside the
+    # ladder loop and read at the `build` call, which raised
+    # UnboundLocalError on every path reaching the build without walking the
+    # ladder first -- two tests in test_agent_certifies_itself, immediately.
+    #
+    # RECORDED AS THEY ARE CONSULTED, so a refusal can say what was really
+    # asked, and so the image's own declaration survives a different rung
+    # winning.
+    consulted: dict = {}
+
     if not enabled():
         result.detail = (
             "Automatic blueprint building is disabled. Set AUTOBUILD_ENABLED=true "
@@ -672,10 +770,7 @@ def ensure(candidate: str, session: Session, *, target, shipped, run_proof,
         # `repo_facts.search_packages` here, so every caller — the entire test
         # suite included — did a live repository search, and the ladder's shape
         # depended on what a public service answered that minute.
-        # RECORDED AS THEY ARE CONSULTED, so a refusal can say what was really
-        # asked. Re-deriving it afterwards would describe a second run, and a
-        # second run can answer differently.
-        consulted: dict = {}
+        # (`consulted` is created at function scope above -- see the note there.)
 
         def _searched(code, family="rhel"):
             out = search(code, family) if search is not None else None
@@ -1003,8 +1098,11 @@ def ensure(candidate: str, session: Session, *, target, shipped, run_proof,
             result.detail[:300]))
         return result
 
+    # THE VENDOR'S OWN STATEMENT, gathered while resolving the ladder and until
+    # now discarded the moment a different rung won.
     built = build(candidate, session, blueprint=None, run_proof=run_proof,
-                  publish=publish, target=target, shipped_codes=shipped_codes)
+                  publish=publish, target=target, shipped_codes=shipped_codes,
+                  image_declares=((consulted.get("image") or {}).get("ports")))
     if built.status != "published":
         return _carry(result.attempts, built)
 
