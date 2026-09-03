@@ -103,6 +103,12 @@ DELIVERY = {
     # passed. Everything any blueprint builds is listed, and
     # test_the_form_says_how_a_thing_arrives keeps it that way.
     "nginx": ("software", "NGINX — installed on a machine."),
+    "opensearch": ("software",
+                   "Withdrawn after four machines built it and none ever "
+                   "served a port: with an admin password set it is still "
+                   "starting when the portal stops waiting. The recipe is "
+                   "sound and the fault is start-up time. Ask the "
+                   "infrastructure team if you need it."),
     "apache": ("software", "Apache HTTP Server — installed on a machine."),
     "redis7": ("software",
                "Redis 7 — installed on a machine. OCI Cache with Redis is the "
@@ -182,7 +188,28 @@ TECHNOLOGIES = [
     {"code": "kafka", "name": "Apache Kafka", "lifecycle_state": "certified"},
     {"code": "rabbitmq", "name": "RabbitMQ", "lifecycle_state": "certified"},
     {"code": "elasticsearch", "name": "Elasticsearch 8", "lifecycle_state": "certified"},
-    {"code": "opensearch", "name": "OpenSearch 2", "lifecycle_state": "preview"},
+    # WITHDRAWN 2026-09-02, on four machines' worth of evidence.
+    #
+    # REQ-2026-0253 certified it on `listening_inside_opensearch=9300` --
+    # the cluster transport port, not 9200, the REST API a client calls.
+    # Once an admin password was set the security plugin began generating
+    # demo certificates and bootstrapping a security index on first start,
+    # and after that NOTHING bound at all inside the watch:
+    #
+    #   REQ-2026-0256   listening_inside=none, marked provisioned anyway
+    #   REQ-2026-0257   listening_inside=none, verification failed
+    #   three proofs    listening_inside=none, every one
+    #
+    # The container is running and the software is starting; it simply does
+    # not finish inside the time the portal can wait. Withdrawn rather than
+    # left on the form, because every request for it built a machine that
+    # billed and served nothing.
+    #
+    # NOT ABANDONED. The recipe is sound and the start-up budget is now
+    # per-technology; what is missing is a proof that OpenSearch finishes
+    # starting at all on this shape of machine. Prove that and it comes
+    # back.
+    {"code": "opensearch", "name": "OpenSearch 2", "lifecycle_state": "eol"},
     {"code": "java21", "name": "Java 21 (JVM)", "lifecycle_state": "certified"},
     {"code": "dotnet8", "name": ".NET 8", "lifecycle_state": "certified"},
     {"code": "nodejs20", "name": "Node.js 20", "lifecycle_state": "certified"},
