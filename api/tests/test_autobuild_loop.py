@@ -546,9 +546,16 @@ def test_the_request_path_hands_the_vendors_claim_to_the_build():
     """THE WIRING, which a plant showed nothing was testing.
 
     `ensure` is the path a real request takes and the only place the image's
-    declaration is gathered; `build` is where the rule runs. Cut the wire and
-    the rule still exists, still has passing tests, and never fires for a
-    requester -- the same two-doors defect `must publish` had.
+    declaration is gathered; `build` is where the rule runs FOR A NEW-SERVICE
+    DRAFT. Cut the wire and the rule still exists, still has passing tests, and
+    never fires for a requester -- the same two-doors defect `must publish` had.
+
+    NOT THE WIRE A PACKAGE OR CONTAINER TECHNOLOGY TRAVELS. A vm-service
+    candidate returns from `ensure` before ever reaching this call; those go
+    through `_ensure_vm_service`, which for a day had none of these gates at
+    all. That wire is asserted in test_the_requesters_door_has_every_lock.py.
+    This one is kept because it is real, and named so nobody reads it as
+    covering more than it does.
 
     READ FROM THE SOURCE, and deliberately. Driving `ensure` far enough to reach
     `build` needs six collaborators stubbed into agreeing, and a test that

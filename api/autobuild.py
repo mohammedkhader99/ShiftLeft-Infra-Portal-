@@ -833,6 +833,14 @@ def ensure(candidate: str, session: Session, *, target, shipped, run_proof,
                                       ask_repository=ask_repository,
                                       method=method,
                                       ignore_memory=method in rerun,
+                                      # THE VENDOR'S OWN STATEMENT, gathered while
+                                      # resolving the ladder. Without it the
+                                      # installed-but-not-running gate cannot
+                                      # fire, and the wire to `build` below
+                                      # carries nothing for a vm-service: that
+                                      # path returns before reaching it.
+                                      image_declares=((consulted.get("image")
+                                                       or {}).get("ports")),
                                       # A container's first pass is a QUESTION
                                       # (what do you bind?), not a candidate for
                                       # the catalogue.
@@ -1141,7 +1149,8 @@ def _ensure_vm_service(candidate, session, proposal, *, target, shipped,
                        reachable=None, method="",
                        ask_repository=None,
                        ignore_memory: bool = False,
-                       may_certify: bool = True) -> AutobuildResult:
+                       may_certify: bool = True,
+                       image_declares=None) -> AutobuildResult:
     """Teach the proven machine blueprint one more technology, and prove it.
 
     THE ORDER IS INVERTED HERE, deliberately. Everywhere else a draft is proved
@@ -1346,7 +1355,51 @@ def _ensure_vm_service(candidate, session, proposal, *, target, shipped,
         # REQ-2026-0193 showed — that claim then survives the narrowing proof
         # failing and the profile being withdrawn. The caller certifies once it
         # knows this is the recipe it means to keep.
+        #
+        # AND PROVED IS NOT ALWAYS THE RIGHT THING. Two gates lived only in
+        # `build`, which the admin endpoint and the certification runner call
+        # -- and never here, on the path a real request takes. So a request for
+        # mysql would have certified the command-line client: package `mysql`,
+        # `services: []`, no port, `mysql --version` answering, every check
+        # green. PROOF-MYSQL-20260903T164538 refused exactly that recipe -- on
+        # the admin door. This is the requester's door.
+        #
+        # GUARDED BY may_certify, and that is the whole placement. The first
+        # container pass has no ports and no version BY DESIGN -- it is a
+        # question to the machine -- and gating it would break the narrowing
+        # that discovers ports. The gates run at the moment a recipe is about
+        # to be KEPT, which is the only moment they mean anything.
+        #
+        # A refusal takes the recipe back. It was published before the proof
+        # (publish -> prove -> withdraw), so `take_it_back` withdraws it and
+        # the claim resting on it, and returns "failed" -- which is what makes
+        # the ladder in `ensure` climb to the next method instead of stopping.
         if may_certify:
+            idle = _installed_but_not_running(proposal.files, image_declares)
+            if idle:
+                result.attempts.append(Attempt(
+                    1, "certified", "refused",
+                    f"{idle} installs but runs nothing, and its image says it "
+                    f"listens on {', '.join(str(p) for p in image_declares)}"))
+                return take_it_back(
+                    f"{candidate} built and its proof passed, and the recipe "
+                    f"starts no service and serves no port -- while the image "
+                    f"its own publisher ships declares "
+                    f"{', '.join(str(p) for p in image_declares)}. That is a "
+                    f"recipe which installed files, not one that runs the "
+                    f"software. Withdrawn rather than certified; the next "
+                    f"install method is tried.")
+            silent = _claims_nothing(proposal.files)
+            if silent:
+                result.attempts.append(Attempt(
+                    1, "certified", "refused",
+                    f"{silent} would be certified having claimed nothing"))
+                return take_it_back(
+                    f"{candidate} built and its proof passed, and the recipe "
+                    f"claims nothing a machine could check -- no port it serves "
+                    f"and no version it can be asked. A proof can only refute a "
+                    f"claim, so this one established nothing. Withdrawn rather "
+                    f"than certified.")
             certify(manifest, outcome.reference)
         result.attempts.append(Attempt(1, "proved", "passed", outcome.detail))
         result.status = "published"
