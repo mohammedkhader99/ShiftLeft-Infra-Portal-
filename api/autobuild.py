@@ -101,6 +101,32 @@ class AutobuildResult:
         return self.status == "published"
 
 
+def _runs_nothing(files) -> bool:
+    """Does this recipe start no service and serve no port?
+
+    Asked BEFORE the vendor is consulted, so the registry is paid for only when
+    a recipe is silent -- which is the only case its answer can change.
+    """
+    import json
+
+    for path, content in (files or {}).items():
+        if not str(path).endswith(".json"):
+            continue
+        try:
+            profile = json.loads(content or "{}")
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(profile, dict):
+            continue
+        if profile.get("ports"):
+            return False
+        family = profile.get("rhel") or profile.get("debian") or {}
+        if isinstance(family, dict) and family.get("services"):
+            return False
+        return True
+    return False
+
+
 def _installed_but_not_running(files, image_declares) -> str:
     """The technology that its own image says listens, whose recipe serves
     nothing, or "".
@@ -841,6 +867,10 @@ def ensure(candidate: str, session: Session, *, target, shipped, run_proof,
                                       # path returns before reaching it.
                                       image_declares=((consulted.get("image")
                                                        or {}).get("ports")),
+                                      # AND THE MEANS TO ASK, for the case the
+                                      # ladder never did: a package rung that
+                                      # succeeded at installing the wrong thing.
+                                      find_image=find_image,
                                       # A container's first pass is a QUESTION
                                       # (what do you bind?), not a candidate for
                                       # the catalogue.
@@ -1150,7 +1180,7 @@ def _ensure_vm_service(candidate, session, proposal, *, target, shipped,
                        ask_repository=None,
                        ignore_memory: bool = False,
                        may_certify: bool = True,
-                       image_declares=None) -> AutobuildResult:
+                       image_declares=None, find_image=None) -> AutobuildResult:
     """Teach the proven machine blueprint one more technology, and prove it.
 
     THE ORDER IS INVERTED HERE, deliberately. Everywhere else a draft is proved
@@ -1375,25 +1405,69 @@ def _ensure_vm_service(candidate, session, proposal, *, target, shipped,
         # the claim resting on it, and returns "failed" -- which is what makes
         # the ladder in `ensure` climb to the next method instead of stopping.
         if may_certify:
-            idle = _installed_but_not_running(proposal.files, image_declares)
+            # THE GATE HAD THE RIGHT RULE AND WAS HANDED THE WRONG EVIDENCE.
+            # PROOF-MYSQL-20260903T173811 ran this exact path with the gate
+            # live and certified the command-line client anyway, because
+            # resolve.py asks the registry only when the package search finds
+            # NOTHING -- and Oracle Linux carries a package called `mysql`. The
+            # search succeeded, the image was never resolved, `image_declares`
+            # arrived as None, and "the vendor claims nothing" was the honest
+            # verdict on wrong evidence.
+            #
+            # So: if nobody fetched the declaration, and this recipe is about
+            # to be kept while running nothing, ask now. Only then -- a recipe
+            # that serves is not judged by it, and a declaration the ladder
+            # already gathered is not paid for twice. None means "not
+            # gathered"; [] means "gathered, and the vendor declares nothing".
+            declares = image_declares
+            if (declares is None and find_image is not None
+                    and _runs_nothing(proposal.files)):
+                declares = list(((find_image(candidate) or {}).get("ports")) or [])
+            idle = _installed_but_not_running(proposal.files, declares)
             if idle:
-                result.attempts.append(Attempt(
-                    1, "certified", "refused",
-                    f"{idle} installs but runs nothing, and its image says it "
-                    f"listens on {', '.join(str(p) for p in image_declares)}"))
+                VERDICT = (f"{idle} installs but runs nothing, and its image says "
+                           f"it listens on {', '.join(str(p) for p in declares)}")
+                result.attempts.append(Attempt(1, "certified", "refused", VERDICT))
+                # A VERDICT ON THE RECIPE, NOT A COST CAP. The ladder climbs
+                # only on a machine's verdict -- deliberately, because cost
+                # caps and failed teardowns also come back "failed" and it was
+                # buying the same refusal at every rung. This refusal IS a
+                # verdict: a real machine built this recipe and it ran nothing.
+                # Without the flag the ladder stopped here, and the discovered
+                # rung -- the package plus the unit the machine actually
+                # started -- was never reached. Remembered, so the next request
+                # does not pay for the same answer.
+                result.machine_refuted = True
+                if session is not None:
+                    recipe_memory.remember(session, candidate, target, recipe,
+                                           outcome.reference, VERDICT)
+                    session.commit()
                 return take_it_back(
                     f"{candidate} built and its proof passed, and the recipe "
                     f"starts no service and serves no port -- while the image "
                     f"its own publisher ships declares "
-                    f"{', '.join(str(p) for p in image_declares)}. That is a "
+                    f"{', '.join(str(p) for p in declares)}. That is a "
                     f"recipe which installed files, not one that runs the "
                     f"software. Withdrawn rather than certified; the next "
                     f"install method is tried.")
             silent = _claims_nothing(proposal.files)
             if silent:
-                result.attempts.append(Attempt(
-                    1, "certified", "refused",
-                    f"{silent} would be certified having claimed nothing"))
+                VERDICT = f"{silent} would be certified having claimed nothing"
+                result.attempts.append(Attempt(1, "certified", "refused", VERDICT))
+                # A VERDICT ON THE RECIPE, NOT A COST CAP. The ladder climbs
+                # only on a machine's verdict -- deliberately, because cost
+                # caps and failed teardowns also come back "failed" and it was
+                # buying the same refusal at every rung. This refusal IS a
+                # verdict: a real machine built this recipe and it ran nothing.
+                # Without the flag the ladder stopped here, and the discovered
+                # rung -- the package plus the unit the machine actually
+                # started -- was never reached. Remembered, so the next request
+                # does not pay for the same answer.
+                result.machine_refuted = True
+                if session is not None:
+                    recipe_memory.remember(session, candidate, target, recipe,
+                                           outcome.reference, VERDICT)
+                    session.commit()
                 return take_it_back(
                     f"{candidate} built and its proof passed, and the recipe "
                     f"claims nothing a machine could check -- no port it serves "

@@ -639,16 +639,30 @@ def test_an_unsound_search_does_NOT_reach_for_an_image(db):
     assert asked == [], "it reached for an image without knowing anything"
 
 
-def test_a_package_that_installs_never_reaches_the_container_rung(db):
+def test_a_package_that_installs_and_runs_never_reaches_the_container_rung(db):
     """The cheapest correct answer still wins. A container is the last resort,
     not the first — it changes how the service is patched, backed up and
     monitored, and that cost is only worth paying when nothing else works.
 
-    THE REGISTRY IS NEVER EVEN ASKED. Asserted separately from the rung order,
-    because a plant that put `container` first was INERT — with no image
-    resolved the rung is skipped — so ordering alone proved nothing. What
-    actually holds the line is that no image is looked up until a machine has
-    refuted something.
+    REWRITTEN 2026-09-03. This used to be "a package that INSTALLS never
+    reaches the container rung", with a machine that reported nothing running
+    and a claim that the registry was never asked. That is the conflation the
+    MySQL client exposed: installed is not running. A package draft is silent
+    by design -- the drafter invents no unit, the machine's report supplies it
+    -- so "installed fine" can only mean the machine found something running.
+
+    Here it does. The silent draft passes its proof, the certification gate
+    declines to keep a recipe that runs nothing, the machine's report is
+    consulted, and the `discovered` rung redrafts the SAME package with the
+    unit and port the machine actually started. That is the cheapest correct
+    answer, and the container is never reached.
+
+    THE REGISTRY IS ASKED EXACTLY ONCE, and the reason is precise: a silent
+    draft that passed looks identical whether it is a runtime (dotnet8, files
+    you invoke) or a service that installed its client. Only the vendor's
+    declaration separates them, and the gate fetches it at that one moment.
+    Asking is not the same as using: what this test still holds is that no
+    CONTAINER is built while a package can be made to run.
     """
     asked = []
     machine = Publishing(IMAGE, accepts=("package",))
@@ -656,12 +670,38 @@ def test_a_package_that_installs_never_reaches_the_container_rung(db):
         "haproxy", db, target="oci", shipped=machine.shipped,
         run_proof=machine.run_proof, publish=machine.publish,
         certify=lambda m, r: None, withdraw=machine.withdraw,
-        discover=lambda ref, code: {},
+        # What the machine reported: the package installed, and started this.
+        discover=lambda ref, code: {"package": "haproxy",
+                                    "repo_id": "ol9_appstream", "ports": [80]},
         find_image=lambda code: (asked.append(code), IMAGE)[1])
 
-    assert machine.tried == ["package"]
-    assert result.status == "published"
-    assert asked == [], "a registry was queried for software that installed fine"
+    assert "container" not in machine.tried, machine.tried
+    assert result.status == "published", result.detail
+    assert asked == ["haproxy"], (
+        f"asked {asked}: once, to tell a runtime from a service; never again "
+        f"once the machine's report answered")
+
+
+def test_a_package_that_installs_but_runs_nothing_is_not_fine(db):
+    """THE OTHER HALF, and the belief the old test encoded. A package whose
+    proof passes -- installed, version answers -- while the machine reports
+    nothing running is the MySQL client: files, not a service. With the
+    vendor's image declaring ports it is refused, not certified, and the ladder
+    climbs. This machine accepts nothing but the package, so the climb ends in
+    exhaustion -- and that is the honest answer, because nothing here ran."""
+    machine = Publishing(IMAGE, accepts=("package",))
+    withdrawn = []
+    result = autobuild.ensure(
+        "haproxy", db, target="oci", shipped=machine.shipped,
+        run_proof=machine.run_proof, publish=machine.publish,
+        certify=lambda m, r: None,
+        withdraw=lambda files: withdrawn.append(files) or machine.withdraw(files),
+        discover=lambda ref, code: {},          # looked, and nothing was running
+        find_image=lambda code: IMAGE)
+
+    assert result.status != "published", (
+        "a package that installed and ran nothing was certified as the service")
+    assert withdrawn, "the silent recipe was left in the store"
 
 
 def test_no_image_is_looked_up_before_a_machine_has_spoken(db):
