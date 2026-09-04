@@ -261,3 +261,27 @@ def test_a_suspended_blueprint_is_not_shown_as_a_plain_draft(client, session, sh
     assert body["suspended"] == 1
     # It is emphatically not certified any more.
     assert body["certified"] == 0
+
+
+def test_a_withdrawn_recipe_has_its_own_state(client, session, shipped):
+    """'suspended' means the evidence turned against a recipe that is still
+    there; 'withdrawn' means the recipe is gone. The admin's next step differs,
+    and the sweep treats them differently, so the console must not fold one
+    into the other."""
+    from api import certification
+    session.add(Blueprint(technology_code="mysql", deployment_target="oci",
+                          blueprint_ref="oci/service-vm", resource_kind="oci-service-vm",
+                          status="certified", certified_by=certification.CERTIFIED_BY_RUNNER))
+    session.commit()
+    assert certification.withdraw_for_missing_recipe(
+        session, "mysql", "oci", "the recipe was the command-line client")
+    session.commit()
+
+    body = client.get("/api/blueprints").json()
+    row = next(b for b in body["blueprints"]
+               if (b["technology_code"], b["deployment_target"]) == ("mysql", "oci"))
+
+    assert row["state"] == "withdrawn", row["state"]
+    assert "command-line client" in (row["notes"] or "")
+    assert body["withdrawn"] == 1
+    assert body["suspended"] == 0

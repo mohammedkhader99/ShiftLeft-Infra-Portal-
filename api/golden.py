@@ -30,7 +30,7 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 
-from db.models import GoldenImage
+from db.models import GoldenImage, RecipeRefutation
 
 #: What OCI calls an image that is finished and usable.
 _READY = "AVAILABLE"
@@ -132,8 +132,23 @@ def usable_for(session, technology_codes, target: str) -> dict[str, str]:
                GoldenImage.technology_code.in_(codes))
         .order_by(GoldenImage.created_at.desc(), GoldenImage.id.desc()))
 
+    # NEVER THE IMAGE OF A RECIPE THE GATE REFUSED. The machine passed its
+    # proof and was captured before the door judged the recipe; the
+    # refutation names that proof. PROOF-MYSQL-20260904T005319-DBF8CE left
+    # an available image of the command-line client, which this offered as
+    # the newest image for `mysql`. The withdrawal retires it; this is the
+    # guard for the moment between the two, and for anything that retires
+    # nothing.
+    refuted = set(session.scalars(
+        select(RecipeRefutation.proof_reference)
+        .where(RecipeRefutation.deployment_target == target,
+               RecipeRefutation.technology_code.in_(codes),
+               RecipeRefutation.proof_reference != "")))
+
     chosen: dict[str, str] = {}
     for row in rows:
+        if row.proof_reference and row.proof_reference in refuted:
+            continue
         if is_a_real_image(row.image_ocid) and row.technology_code not in chosen:
             chosen[row.technology_code] = row.image_ocid
     return chosen
@@ -197,6 +212,37 @@ def _retire(row, state: str, detail: str, now: datetime) -> dict:
             "image_ocid": row.image_ocid, "state": state, "detail": row.detail}
 
 
+def withdraw(session, proof_reference: str, why: str, *,
+             now: datetime | None = None) -> list[dict]:
+    """Retire every image captured by one proof, because its recipe was refused.
+
+    A golden image is captured between "healthy" and "destroy" -- before
+    the door judges the recipe. When the door then refuses it (installed,
+    runs nothing), the image is of something the catalogue must never boot,
+    and it was left `available`: the newest image for its technology, which
+    is exactly the one `usable_for` picks.
+
+    `capturing` rows are retired too. OCI finishes the capture regardless,
+    and `promote` only ever moves rows that still say `capturing`, so a
+    withdrawn one cannot come back as available when the cloud is done.
+    Retired is not deleted: `reap` deletes after the grace, as for any
+    other retirement, so a request already mid-apply with the OCID is safe.
+    """
+    if not proof_reference:
+        return []
+    now = now or datetime.now(timezone.utc)
+    changed: list[dict] = []
+    for row in session.scalars(
+            select(GoldenImage)
+            .where(GoldenImage.proof_reference == proof_reference)
+            .where(GoldenImage.state.in_(["available", "capturing"]))):
+        changed.append(_retire(
+            row, "withdrawn",
+            f"Withdrawn: the recipe this image was captured from was refused. "
+            f"{why}", now))
+    return changed
+
+
 def supersede(session, *, now: datetime | None = None) -> list[dict]:
     """Keep only the newest available image per technology and cloud.
 
@@ -253,7 +299,7 @@ def expire(session, *, now: datetime | None = None) -> list[dict]:
 
 #: States a reap may consider. `available` and `capturing` are absent on
 #: purpose — this list is the whole safety of the delete path.
-REAPABLE = frozenset({"superseded", "expired", "failed"})
+REAPABLE = frozenset({"superseded", "expired", "failed", "withdrawn"})
 
 
 def reap(session, delete, *, now: datetime | None = None) -> list[dict]:

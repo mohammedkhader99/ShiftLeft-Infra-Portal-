@@ -95,6 +95,13 @@ class AutobuildResult:
     # The proof whose machine produced the last verdict, so its report can be
     # fetched and read. Empty when nothing was ever built.
     proof_reference: str = ""
+    # THE VENDOR'S IMAGE THE DOOR JUDGED ON, when it refused a recipe that
+    # runs nothing. PROOF-MYSQL-20260904T005319-DBF8CE was refused against
+    # this exact declaration and the ladder then had no rung to climb to:
+    # the door kept the ports, threw the image away, and `ensure` looked
+    # for a discovery section that a package which INSTALLED never writes.
+    # Empty unless the door fetched it.
+    image: dict = field(default_factory=dict)
 
     @property
     def published(self) -> bool:
@@ -1074,10 +1081,34 @@ def ensure(candidate: str, session: Session, *, target, shipped, run_proof,
                     elif finding == {} and not looked_for_an_image:
                         looked_for_an_image = True
                         if find_image is not None:
-                            found = find_image(candidate)
+                            # What the door already fetched, before a
+                            # second call for the same answer.
+                            found = last.image or find_image(candidate)
                             if found:
                                 published_image = found
                                 methods.append("container")
+                # THE EVIDENCE THE GATE JUDGED ON IS THE EVIDENCE FOR THE NEXT
+                # RUNG. A package that installs but runs nothing is refused
+                # against the vendor's image and its declared ports; that image
+                # IS the container rung. The branch above climbs only on what
+                # the machine discovered, and the discovery section is written
+                # only for packages that are MISSING -- a package that installed
+                # reports nothing, `discover` honestly answers None, and the
+                # ladder stopped holding the answer. PROOF-MYSQL-20260904T005319
+                # ended exactly there: refused, remembered, withdrawn, and "the
+                # next install method is tried" -- with nothing tried.
+                #
+                # After the discovered rung, if there is one: a package plus
+                # the unit it provides is cheaper than a container and keeps
+                # its place. Never twice, and never for the container rung
+                # refusing itself.
+                image = last.image or (consulted.get("image") or {})
+                if (image.get("image") and method != "container"
+                        and "container" not in methods
+                        and "container" not in refuted_by_a_machine):
+                    published_image = dict(image)
+                    looked_for_an_image = True
+                    methods.append("container")
         if last is not None:
             if len(refuted_by_a_machine) > 1:
                 # SAY ONLY WHAT HAPPENED. This sentence used to claim "a machine
@@ -1343,7 +1374,7 @@ def _ensure_vm_service(candidate, session, proposal, *, target, shipped,
         return result
     result.files = proposal.files
 
-    def take_it_back(why: str) -> AutobuildResult:
+    def take_it_back(why: str, proof_reference: str = "") -> AutobuildResult:
         if withdraw:
             withdraw(proposal.files)
         # AND THE CLAIM THAT RESTED ON IT. A profile can be withdrawn AFTER an
@@ -1355,6 +1386,17 @@ def _ensure_vm_service(candidate, session, proposal, *, target, shipped,
         if session is not None:
             certification.withdraw_for_missing_recipe(
                 session, candidate, target, why[:300])
+            # AND THE MACHINE THAT WAS KEPT. The proof's instance was captured
+            # as a golden image between "healthy" and "destroy" -- BEFORE
+            # this verdict. PROOF-MYSQL-20260904T005319-DBF8CE left an
+            # available image of the command-line client, which the fast
+            # path offers as the newest image for `mysql` the first time a
+            # real one's capture fails. The verdict on the recipe is the
+            # verdict on its image.
+            if proof_reference:
+                from api import golden
+
+                golden.withdraw(session, proof_reference, why[:300])
         result.status = "failed"
         result.detail = why
         return result
@@ -1420,11 +1462,17 @@ def _ensure_vm_service(candidate, session, proposal, *, target, shipped,
             # already gathered is not paid for twice. None means "not
             # gathered"; [] means "gathered, and the vendor declares nothing".
             declares = image_declares
+            fetched: dict = {}
             if (declares is None and find_image is not None
                     and _runs_nothing(proposal.files)):
-                declares = list(((find_image(candidate) or {}).get("ports")) or [])
+                fetched = dict(find_image(candidate) or {})
+                declares = list(fetched.get("ports") or [])
             idle = _installed_but_not_running(proposal.files, declares)
             if idle:
+                # KEPT, NOT JUST ITS PORTS. The image that refutes this
+                # recipe is the recipe the next rung runs; the ladder needs
+                # its reference and digest, and it was in hand right here.
+                result.image = fetched
                 VERDICT = (f"{idle} installs but runs nothing, and its image says "
                            f"it listens on {', '.join(str(p) for p in declares)}")
                 result.attempts.append(Attempt(1, "certified", "refused", VERDICT))
@@ -1449,7 +1497,8 @@ def _ensure_vm_service(candidate, session, proposal, *, target, shipped,
                     f"{', '.join(str(p) for p in declares)}. That is a "
                     f"recipe which installed files, not one that runs the "
                     f"software. Withdrawn rather than certified; the next "
-                    f"install method is tried.")
+                    f"install method is tried.",
+                    proof_reference=outcome.reference)
             silent = _claims_nothing(proposal.files)
             if silent:
                 VERDICT = f"{silent} would be certified having claimed nothing"
@@ -1473,7 +1522,8 @@ def _ensure_vm_service(candidate, session, proposal, *, target, shipped,
                     f"claims nothing a machine could check -- no port it serves "
                     f"and no version it can be asked. A proof can only refute a "
                     f"claim, so this one established nothing. Withdrawn rather "
-                    f"than certified.")
+                    f"than certified.",
+                    proof_reference=outcome.reference)
             certify(manifest, outcome.reference)
         result.attempts.append(Attempt(1, "proved", "passed", outcome.detail))
         result.status = "published"

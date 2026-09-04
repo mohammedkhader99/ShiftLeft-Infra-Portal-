@@ -1005,6 +1005,13 @@ def list_blueprints(session: Session = Depends(get_session),
             # Not the same as suspended: nothing failed, the evidence simply
             # expired. An admin re-proves it rather than investigating it.
             state = "stale"
+        elif row_cert and row_cert.status == certification.WITHDRAWN:
+            # THE RECIPE IS GONE, not merely condemned. Taken back by the
+            # ladder or withdrawn by an operator; nothing a sweep can see
+            # brings it back, only a proof of a new recipe. Shown apart from
+            # 'suspended' because the admin's next step differs: there is no
+            # recipe here to re-prove.
+            state = "withdrawn"
         elif row_cert and row_cert.status == certification.SUSPENDED:
             # WITHDRAWN BY EVIDENCE (C1), not merely un-approved. Its own state,
             # because "nobody certified this yet" and "this was certified and
@@ -1042,6 +1049,7 @@ def list_blueprints(session: Session = Depends(get_session),
         "certified": sum(1 for r in rows if r["state"] == "certified"),
         "missing": sum(1 for r in rows if r["state"] == "missing"),
         "suspended": sum(1 for r in rows if r["state"] == "suspended"),
+        "withdrawn": sum(1 for r in rows if r["state"] == "withdrawn"),
         "stale": sum(1 for r in rows if r["state"] == "stale"),
         "targets": sorted(DEPLOYMENT_TARGETS),
     }

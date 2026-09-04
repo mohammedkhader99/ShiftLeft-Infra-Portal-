@@ -696,12 +696,21 @@ def test_a_package_that_installs_but_runs_nothing_is_not_fine(db):
         run_proof=machine.run_proof, publish=machine.publish,
         certify=lambda m, r: None,
         withdraw=lambda files: withdrawn.append(files) or machine.withdraw(files),
-        discover=lambda ref, code: {},          # looked, and nothing was running
+        # WHAT THE MACHINE REALLY ANSWERS. The discovery section is written
+        # only for packages that are missing; this one installed, so the
+        # report has none and the ladder is told "never asked". The first
+        # version of this test said `{}` here -- "looked, found nothing" --
+        # which a machine whose package installed never says, and the
+        # ladder that stranded PROOF-MYSQL-20260904T005319 passed it.
+        discover=lambda ref, code: None,
         find_image=lambda code: IMAGE)
 
     assert result.status != "published", (
         "a package that installed and ran nothing was certified as the service")
     assert withdrawn, "the silent recipe was left in the store"
+    assert machine.tried == ["package", "container"], (
+        f"the ladder did not climb to the vendor's image on the gate's own "
+        f"evidence: {machine.tried}")
 
 
 def test_no_image_is_looked_up_before_a_machine_has_spoken(db):
@@ -1021,7 +1030,7 @@ def test_a_withdrawn_recipe_suspends_an_EARLIER_certification(db):
 
     assert cert.withdraw_for_missing_recipe(db, "rabbitmq", "oci", "narrowing failed")
     db.commit()
-    assert db.get(Blueprint, ("rabbitmq", "oci")).status == cert.SUSPENDED
+    assert db.get(Blueprint, ("rabbitmq", "oci")).status == cert.WITHDRAWN
 
 
 def test_the_narrowed_recipe_IS_certified_when_it_proves(db):
@@ -1114,7 +1123,7 @@ def test_take_it_back_ACTUALLY_calls_the_withdrawal(db):
                      certify=lambda m, r: None, withdraw=machine.withdraw)
     db.commit()
 
-    assert db.get(Blueprint, ("vault", "oci")).status == cert.SUSPENDED, (
+    assert db.get(Blueprint, ("vault", "oci")).status == cert.WITHDRAWN, (
         "the recipe was withdrawn and the catalogue still claims the "
         "technology — the next request builds a machine and configures nothing")
 

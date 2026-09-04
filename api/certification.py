@@ -39,7 +39,13 @@ from datetime import datetime, timezone
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
-from db.models import Blueprint, CertificationProof, ProvisionedResource, Request
+from db.models import (
+    Blueprint,
+    CertificationProof,
+    ProvisionedResource,
+    RecipeRefutation,
+    Request,
+)
 
 # "Terraform apply failed for oci-postgres: ..." — the orchestrator writes the
 # resource kind it was building. Anchored on the whole marker so a stray
@@ -66,6 +72,19 @@ SUSPENDED = "suspended"
 # Certified once, never re-proven since. Distinct from SUSPENDED, which means the
 # evidence turned against it: stale means the evidence simply ran out.
 STALE = "stale"
+# The recipe this certification rested on is GONE from the generated store --
+# taken back by the ladder, or withdrawn by an operator. Distinct from both
+# of the above on purpose: a suspended or stale blueprint has a recipe that a
+# new proof can vouch for, so the sweep may bring it back. A withdrawn one has
+# nothing to vouch for. Only `certify_from_proof` -- a proof of a recipe --
+# ends a withdrawal, and `restore()` never touches it.
+#
+# Audit 12766, 2026-09-04 04:53:49: the sweep re-certified `mysql` thirty
+# seconds after a draft of the same withdrawn recipe reappeared in the store
+# to be proved again, on the strength of the proof the withdrawal had
+# rejected. The catalogue offered a command-line client as MySQL for
+# nineteen minutes. With this state the sweep had nothing to do.
+WITHDRAWN = "withdrawn"
 
 # How many recent finished requests to look back through when attributing
 # outcomes. Generous enough that a busy week of unrelated builds cannot hide a
@@ -156,16 +175,73 @@ def should_withdraw(outcomes: list[tuple[str, bool, str]],
 
 def last_passing_proof(session: Session, technology_code: str,
                        target: str) -> datetime | None:
-    """When this blueprint was last proven by a build, or None."""
+    """When this blueprint was last proven by a build, or None.
+
+    A PROOF THE GATE REFUSED IS NOT A PROOF. `recipe_memory` records a
+    refutation against the proof's reference when a machine passed and the
+    door then refused the recipe -- the command-line client installed cleanly
+    and ran nothing. That proof says the recipe installs files. It is not
+    evidence for anything the catalogue may offer, and until this it was the
+    "last passing proof" the sweep restored blueprints on.
+    """
+    refuted = select(RecipeRefutation.proof_reference).where(
+        RecipeRefutation.technology_code == technology_code,
+        RecipeRefutation.deployment_target == target,
+        RecipeRefutation.proof_reference != "")
     row = session.scalars(
         select(CertificationProof)
         .where(CertificationProof.technology_code == technology_code)
         .where(CertificationProof.deployment_target == target)
         .where(CertificationProof.status == "passed")
+        .where(~CertificationProof.reference.in_(refuted))
         .order_by(desc(CertificationProof.finished_at))
         .limit(1)
     ).first()
     return row.finished_at if row else None
+
+
+def proof_in_flight(session: Session, technology_code: str, target: str) -> bool:
+    """Is a machine being built right now to answer for this blueprint?
+
+    While it is, the answer is that machine's. The sweep racing it is how a
+    draft under proof was offered to requesters (audit 12766).
+    """
+    return session.scalar(
+        select(CertificationProof.id)
+        .where(CertificationProof.technology_code == technology_code)
+        .where(CertificationProof.deployment_target == target)
+        .where(CertificationProof.status == "running")
+        .limit(1)
+    ) is not None
+
+
+def newest_failure_at(session: Session, resource_kind: str,
+                      target: str) -> datetime | None:
+    """When a request last failed and blamed this resource kind, or None.
+
+    The same attribution as `outcomes_for_kind`, asked for a time instead of
+    a verdict: a proof that passed BEFORE the failures that suspended a
+    blueprint is not the evidence that answers them.
+    """
+    if not resource_kind:
+        return None
+    considered = session.scalars(
+        select(Request)
+        .where(Request.request_type == "create")
+        .where(Request.deployment_target == target)
+        .where(Request.status.in_(FAILURE_STATUSES))
+        .order_by(desc(Request.id))
+        .limit(SCAN_LIMIT)
+    ).all()
+    for req in considered:
+        if blamed_kind(req.status_detail) == resource_kind:
+            return req.updated_at or req.created_at
+    return None
+
+
+def _utc(moment: datetime) -> datetime:
+    """SQLite hands back naive datetimes; Postgres aware ones. Compare alike."""
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
 
 
 def proofs_began(session: Session) -> datetime | None:
@@ -331,11 +407,14 @@ def withdraw_for_missing_recipe(session: Session, technology_code: str,
     it until a recipe exists and a machine proves it again.
     """
     row = session.get(Blueprint, (technology_code, target))
-    if row is None or row.status in (SUSPENDED, STALE):
+    if row is None or row.status == WITHDRAWN:
         return False
-    row.status = SUSPENDED
-    row.notes = (f"Suspended: the recipe this certification rested on was "
-                 f"withdrawn. {why}")[:500]
+    # WITHDRAWN, whatever it was before. A suspension (the evidence turned
+    # against it) followed by a withdrawal (the recipe is gone) ends in the
+    # stronger state -- the one the sweep never brings back on its own.
+    row.status = WITHDRAWN
+    row.notes = (f"Withdrawn: the recipe this certification rested on was "
+                 f"withdrawn. {why}")[:400]
     return True
 
 
@@ -382,6 +461,24 @@ def restore(session: Session, now: datetime | None = None,
     something this organisation wants to offer. The OKE bastion carried
     `assign_public_ip = true` and built perfectly for months. First certification
     stays a human act; only coming BACK is earned by proof.
+
+    AND IT WILL NOT BRING BACK A WITHDRAWN RECIPE. Suspended and stale mean the
+    recipe is there and the evidence for it ran out or turned; withdrawn means
+    the recipe is gone. Nothing a sweep can see vouches for a recipe that does
+    not exist -- and on 2026-09-04 (audit 12766) the sweep saw exactly enough
+    to be wrong: a passing proof from the day before, and a draft of the same
+    withdrawn recipe just published to the store to be proved AGAIN. It
+    certified the draft. Only `certify_from_proof`, called by the ladder on a
+    proof of a recipe, ends a withdrawal.
+
+    WHAT COUNTS AS EVIDENCE, each a rule the same audit row taught:
+
+      * not a proof a machine is still running -- that machine decides;
+      * not a proof the gate refused -- excluded by `last_passing_proof`;
+      * not the proof that granted the certification now suspended: a proof is
+        spent by being used, and a restoration stamps `certified_at` so the
+        same proof cannot restore twice;
+      * not a proof older than the failures that suspended it.
     """
     from api import proof
 
@@ -393,12 +490,16 @@ def restore(session: Session, now: datetime | None = None,
     for row in session.scalars(select(Blueprint)).all():
         if row.status not in (SUSPENDED, STALE):
             continue
-        # This used to require a human fingerprint (certified_by) before a proof
-        # could bring a blueprint back — first certification stayed a human act.
-        # That requirement was removed on 2026-08-21 with §7: a passing proof is
-        # now sufficient in both directions.
-        last = last_passing_proof(session, row.technology_code, row.deployment_target)
+        code, target = row.technology_code, row.deployment_target
+        if proof_in_flight(session, code, target):
+            continue
+        last = last_passing_proof(session, code, target)
         if last is None or proof.is_stale(last, now):
+            continue
+        if row.certified_at is not None and _utc(last) <= _utc(row.certified_at):
+            continue
+        failed_at = newest_failure_at(session, row.resource_kind, target)
+        if failed_at is not None and _utc(last) <= _utc(failed_at):
             continue
         # A PASSING PROOF IS NOT A RECIPE. This looked only at proofs, so it
         # re-certified a technology whose recipe had been withdrawn from the
@@ -412,15 +513,16 @@ def restore(session: Session, now: datetime | None = None,
         # and the safe direction is not to restore: a delayed restoration costs
         # a request its automatic path, while a wrong one costs a machine and
         # tells nobody.
-        if builds is None or row.technology_code not in builds:
+        if builds is None or code not in builds:
             continue
         was = row.status
         row.status = "certified"
+        row.certified_at = now
         row.notes = (f"Re-certified by a passing proof build on "
                      f"{last:%Y-%m-%d %H:%M} UTC, after being {was}.")[:400]
         restored.append({
-            "technology": row.technology_code,
-            "target": row.deployment_target,
+            "technology": code,
+            "target": target,
             "was": was,
             "proved_at": last.isoformat(),
         })

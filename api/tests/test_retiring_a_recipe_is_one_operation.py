@@ -95,7 +95,9 @@ def test_the_certification_is_suspended(db):
                                withdraw=store.withdraw, builds=set())
 
     assert out.suspended
-    assert db.get(Blueprint, ("oci-functions", "oci")).status == certification.SUSPENDED
+    # WITHDRAWN, not suspended, since 2026-09-04: the recipe is gone, and a
+    # state the sweep may restore on a passing proof would be the wrong one.
+    assert db.get(Blueprint, ("oci-functions", "oci")).status == certification.WITHDRAWN
 
 
 # --- and it says whether it actually took ---------------------------------------
