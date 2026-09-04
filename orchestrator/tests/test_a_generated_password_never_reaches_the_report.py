@@ -82,23 +82,66 @@ def report_script(tmp_path, monkeypatch, code="somesoftware", ports=(3306,)):
                 if f["path"].endswith("report.sh"))
 
 
-def capture_pipeline(script: str) -> str:
-    """The shipped `podman logs | sed ... | sed ...` line, with podman removed.
+def capture_block(script: str) -> str:
+    """The whole `if [ -z "$READY" ]; then ... fi` capture, as generated.
 
-    Only the command that FETCHES the log is dropped; every filter it is piped
-    through is the script's own text, unmodified.
+    Not just the podman line: what the capture DOES when podman has nothing is
+    the point of the tests below, and that is a decision the block makes.
+
+    BALANCED, not "up to the first `fi`". The capture contains a nested `if`
+    (ask the container, and if it has nothing ask the journal), so stopping at
+    the first `fi` hands sh an unterminated block -- a syntax error, which is
+    not the same as a failing test.
     """
-    line = next(ln for ln in script.splitlines() if "podman logs" in ln)
-    assert "sed" in line, f"the capture no longer filters anything: {line!r}"
-    return line.split("|", 1)[1].strip()
+    lines = script.splitlines()
+    start = next(i for i, l in enumerate(lines)
+                 if 'if [ -z "$READY" ]' in l)
+    depth = 0
+    for i in range(start, len(lines)):
+        stripped = lines[i].strip()
+        if stripped.startswith("if "):
+            depth += 1
+        elif stripped == "fi":
+            depth -= 1
+            if depth == 0:
+                return "\n".join(lines[start:i + 1])
+    raise AssertionError("the capture block is not terminated")
 
 
-def run(tmp_path, monkeypatch, text=LOG):
-    pipeline = capture_pipeline(report_script(tmp_path, monkeypatch))
-    done = subprocess.run([SH, "-c", pipeline], input=text,
+def run_block(tmp_path, monkeypatch, *, podman: str, journal: str):
+    """The generated capture block, with podman and journalctl stubbed.
+
+    `podman` and `journal` are the shell bodies of each stub, so a test can say
+    "podman has nothing, the journal has everything" -- which is the machine
+    the fallback below exists for.
+
+    THE WHOLE BLOCK, not one line of it. The capture used to be a single
+    `podman logs | sed | sed`, and these tests took that pipeline apart. What it
+    does when podman has nothing is a decision the BLOCK makes, so extracting a
+    line would test a shape rather than a behaviour.
+    """
+    block = capture_block(report_script(tmp_path, monkeypatch))
+    # The `;` is not optional: POSIX sh needs one before the closing brace, and
+    # without it the whole block is a syntax error rather than a failing test.
+    stub = (f"podman() {{ {podman}; }}\n"
+            f"journalctl() {{ {journal}; }}\n"
+            "READY=\n")
+    done = subprocess.run([SH, "-c", stub + block],
                           capture_output=True, text=True, timeout=60)
     assert done.returncode == 0, done.stderr
     return done.stdout
+
+
+def _quoted(text: str) -> str:
+    """A shell stub that prints `text` verbatim."""
+    body = text.replace("'", "'\\''")
+    return f"printf '%s' '{body}'"
+
+
+def run(tmp_path, monkeypatch, text=LOG):
+    """The capture, with the container still present and saying `text`."""
+    return run_block(tmp_path, monkeypatch, podman=_quoted(text),
+                     journal="return 1")
 
 
 # --- nothing that is a password gets out ------------------------------------------
@@ -160,16 +203,124 @@ def test_a_log_with_no_password_passes_through_unchanged(tmp_path, monkeypatch):
                           for line in plain.splitlines())
 
 
+# --- and it must still be there to be read ----------------------------------------
+#
+# PROOF-MYSQL-20260904T195337-B5DB54, a real machine, 2026-09-05 00:27. The
+# container rung was reached for the first time and the report came back:
+#
+#     image_mysql=match (sha256:66aec17cd21a...)
+#     declares_mysql=3306,33060
+#     listening_inside_mysql=none
+#       mysql log: Error: no container with name or ID "mysql" found: no such container
+#     mysql=failed
+#
+# Quadlet runs the container with `--rm`, so when MySQL exited for want of a
+# password podman DELETED it -- and the log went with it. `podman logs` is asked
+# after the wait loop gives up, which is precisely when the container is most
+# likely to be gone. The evidence channel the whole password rule depends on
+# was empty at exactly the moment it mattered.
+#
+# The Kafka path solved this before anyone wrote the container one: it reads
+# `journalctl -u kafka`, because a unit's output goes to the journal and stays
+# there whatever podman does with the container afterwards. Restart=always means
+# the journal holds every attempt.
+
+def run_block(tmp_path, monkeypatch, *, podman: str, journal: str):
+    """The generated capture block, with podman and journalctl stubbed.
+
+    `podman` and `journal` are the shell bodies of each stub, so a test can say
+    "podman has nothing, the journal has everything" -- which is the machine
+    this fix exists for.
+    """
+    block = capture_block(report_script(tmp_path, monkeypatch))
+    # The `;` is not optional: POSIX sh needs one before the closing brace, and
+    # without it the whole block is a syntax error rather than a failing test.
+    stub = (f"podman() {{ {podman}; }}\n"
+            f"journalctl() {{ {journal}; }}\n"
+            "READY=\n")
+    done = subprocess.run([SH, "-c", stub + block],
+                          capture_output=True, text=True, timeout=60)
+    assert done.returncode == 0, done.stderr
+    return done.stdout
+
+
+GONE = 'echo \'Error: no container with name or ID "mysql" found: no such container\' >&2; return 125'
+JOURNAL = ("printf '%s\\n' "
+           "'mysql[1]: Database is uninitialized and password option is not specified' "
+           "'mysql[1]:     You need to specify one of the following as an environment variable:' "
+           "'mysql[1]:     - MYSQL_ROOT_PASSWORD' "
+           "'mysql[1]:     - MYSQL_RANDOM_ROOT_PASSWORD'")
+
+
+def test_the_reason_survives_the_container_being_removed(tmp_path, monkeypatch):
+    """THE DEFECT, measured. Quadlet removes the container when it exits, so the
+    capture asked a container that no longer existed and reported podman's
+    complaint instead of the software's."""
+    out = run_block(tmp_path, monkeypatch, podman=GONE, journal=JOURNAL)
+
+    assert "no such container" not in out, (
+        "the report carries podman's error instead of the reason the software "
+        "would not start")
+    assert "MYSQL_RANDOM_ROOT_PASSWORD" in out, (
+        "the variables the container named are not in the report, so nothing "
+        "can answer it")
+    assert "Database is uninitialized" in out
+
+
+def test_the_journal_is_prefixed_like_any_other_capture(tmp_path, monkeypatch):
+    """`container_env` and `discovery` find a technology's lines by that prefix.
+    A fallback that wrote unprefixed lines would be invisible to both."""
+    out = run_block(tmp_path, monkeypatch, podman=GONE, journal=JOURNAL)
+
+    assert all(line.startswith("  somesoftware log: ")
+               for line in out.splitlines() if line.strip()), out
+
+
+def test_the_journal_is_redacted_too(tmp_path, monkeypatch):
+    """The fallback is a second way out of the machine, and every way out has to
+    be closed: the generated password is printed by the container, and the
+    journal is where the container's output goes."""
+    out = run_block(
+        tmp_path, monkeypatch, podman=GONE,
+        journal="printf '%s\\n' 'mysql[1]: GENERATED ROOT PASSWORD: aB3xY9zQwErTyU1'")
+
+    assert "aB3xY9zQwErTyU1" not in out
+    assert "redacted by the portal" in out
+
+
+def test_a_container_that_is_still_there_is_still_asked_first(tmp_path, monkeypatch):
+    """The container's own log is the better source when it exists: it is what
+    THIS container printed, while the journal holds every restart. The fallback
+    must not displace it."""
+    out = run_block(
+        tmp_path, monkeypatch,
+        podman="printf '%s\\n' 'the container was still here'",
+        journal="printf '%s\\n' 'the journal should not have been read'")
+
+    assert "the container was still here" in out
+    assert "should not have been read" not in out
+
+
+def test_nothing_is_captured_when_the_service_came_up(tmp_path, monkeypatch):
+    """Unchanged: a healthy machine's report carries no log at all."""
+    block = capture_block(report_script(tmp_path, monkeypatch))
+    stub = ("podman() { echo chatter; }\njournalctl() { echo chatter; }\nREADY=1\n")
+    done = subprocess.run([SH, "-c", stub + block], capture_output=True,
+                          text=True, timeout=60)
+
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == ""
+
+
 # --- the capture is still what it was ----------------------------------------------
 
 def test_the_report_still_prefixes_every_line_with_the_technology(tmp_path, monkeypatch):
     """The prefix is how `container_env` and `discovery` tell one technology's
     log from another's on a multi-component machine. A filter inserted before
     it must not displace it."""
-    script = report_script(tmp_path, monkeypatch)
-    line = next(ln for ln in script.splitlines() if "podman logs" in ln)
+    block = capture_block(report_script(tmp_path, monkeypatch))
 
-    assert "log: |'" in line, line
+    assert "log: |'" in block, block
     out = run(tmp_path, monkeypatch, text="hello\n")
     assert out.strip() == "somesoftware log: hello", (
         "a filter inserted into the capture displaced the prefix that says which "

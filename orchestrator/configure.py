@@ -706,10 +706,35 @@ def _report_script(wanted: list[tuple[str, str]], packages: list[str],
         # container NAMING what it needs, and that is evidence the drafter
         # reads to answer it. Redacting both would trade a leak for a
         # technology that can never be built.
+        # AND ASK SOMETHING THAT IS STILL THERE. Quadlet runs the container with
+        # `--rm`, so a container that EXITS is deleted -- and this is asked only
+        # after the wait loop gave up, which is exactly when it has most likely
+        # exited. PROOF-MYSQL-20260904T195337-B5DB54, a real machine, reported:
+        #
+        #     listening_inside_mysql=none
+        #       mysql log: Error: no container with name or ID "mysql" found
+        #     mysql=failed
+        #
+        # MySQL had printed the three variables it needed and podman had thrown
+        # them away with the container. The evidence channel was empty at the
+        # one moment it mattered.
+        #
+        # The journal keeps it. A unit's output goes there and stays whatever
+        # podman does afterwards, and `Restart=always` means it holds every
+        # attempt -- which is how the Kafka path has always read its log. The
+        # container is still asked FIRST, because its own log is what THIS
+        # container printed; the journal is the fallback, not the replacement.
+        checks.append(f"    podman logs --tail 15 {code} > /tmp/{key}.log 2>&1 || true")
+        checks.append(f"    if [ ! -s /tmp/{key}.log ] || "
+                      f"grep -q 'no such container' /tmp/{key}.log; then")
+        checks.append(f"      journalctl -u {code} --no-pager -n 40 "
+                      f"> /tmp/{key}.log 2>/dev/null || true")
+        checks.append("    fi")
+        # ONE FILTER FOR BOTH SOURCES. A fallback that skipped the redaction
+        # would be a second way for the generated password to leave the machine.
         checks.append(
-            f"    podman logs --tail 15 {code} 2>&1 "
-            f"| sed 's|\\([Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]\\)\\( *[:=]\\).*"
-            f"|\\1\\2 [redacted by the portal]|' "
+            f"    sed 's|\\([Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]\\)\\( *[:=]\\).*"
+            f"|\\1\\2 [redacted by the portal]|' /tmp/{key}.log "
             f"| sed 's|^|  {key} log: |'")
         checks.append("  fi")
 
