@@ -118,6 +118,31 @@ def fingerprint(recipe: dict | None) -> str:
         material["repo"] = {f: str(repo.get(f) or "")
                             for f in ("url", "gpg_key", "release_package")}
 
+    # THE CONTAINER IS THE RECIPE, when there is one. Without this branch a
+    # container recipe hashed on `asks` alone, so everything that identifies it
+    # was invisible: the ENVIRONMENT -- which is the whole correction when an
+    # image will not start without one, exactly as `archive.unit.environment`
+    # below already recognises for services -- and the IMAGE and DIGEST, so two
+    # recipes pinning entirely different images hashed the same and a
+    # refutation of one skipped the other.
+    #
+    # Found on 2026-09-04 by a ladder that redrafted `library/mysql` WITH the
+    # MYSQL_RANDOM_ROOT_PASSWORD the machine had asked for, and was told "this
+    # exact recipe was already disproved". It was not the same recipe.
+    #
+    # NOT THE TAG. A tag is a label its publisher can repoint; the digest is
+    # what is actually pulled, and two recipes drafted from different tags of
+    # the same digest install identical bytes. Hashing the tag would spend a
+    # machine to re-learn that.
+    container = recipe.get("container")
+    if isinstance(container, dict):
+        material["container"] = {
+            f: str(container.get(f) or "")
+            for f in ("image", "digest", "platform_digest", "data_dir", "data_mount")
+        }
+        material["container"]["environment"] = json.dumps(
+            container.get("environment") or {}, sort_keys=True, default=str)
+
     archive = recipe.get("archive")
     if isinstance(archive, dict):
         material["archive"] = {f: str(archive.get(f) or "") for f in _ARCHIVE_FIELDS}

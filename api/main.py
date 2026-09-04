@@ -32,6 +32,7 @@ from api import ai_recommend
 from api import ai_triage
 from api import golden
 from api import repo_facts
+from api import container_env
 from api import discovery
 from api import registry
 from api import blueprint_capabilities
@@ -3954,6 +3955,28 @@ def _autobuild_component(session: Session, code: str, target: str) -> dict:
             for body in (entry.get("files") or {}).values())
         return discovery.listening_inside(text, candidate)
 
+    # WHAT A CONTAINER SAID IT NEEDED BEFORE IT WOULD START (C9).
+    #
+    # The same channel as `discover`, reading the same report: the machine
+    # printed the answer in its own log and nothing was asking for it. What
+    # may be supplied is container_env's decision, not this closure's -- a
+    # password the MACHINE generates, never one this portal holds.
+    def container_needs(proof_reference: str, candidate: str) -> dict | None:
+        if not proof_reference:
+            return None
+        reports = _orchestrator_boot_reports(proof_reference, ["oci-service-vm"])
+        if not reports:
+            return None
+        text = "\n".join(
+            str(body)
+            for entry in (reports.get("reports") or [])
+            if isinstance(entry, dict)
+            for body in (entry.get("files") or {}).values())
+        out = container_env.for_report(
+            text, candidate, licence_accepted=ai_blueprint.licence_accepted())
+        return {"environment": out.environment, "detail": out.detail,
+                "needs_a_person": out.needs_a_person}
+
     def ask_repository(recipe):
         """What the repositories say about this recipe, before a machine (C10).
 
@@ -3973,7 +3996,8 @@ def _autobuild_component(session: Session, code: str, target: str) -> dict:
                               ask_repository=ask_repository,
                               search=repo_facts.search_packages,
                               discover=discover, find_image=find_image,
-                              observe_ports=observe_ports)
+                              observe_ports=observe_ports,
+                              container_needs=container_needs)
     session.commit()
     return {"status": result.status, "detail": result.detail[:300]}
 

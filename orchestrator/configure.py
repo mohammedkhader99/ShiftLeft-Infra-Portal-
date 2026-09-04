@@ -694,8 +694,22 @@ def _report_script(wanted: list[tuple[str, str]], packages: list[str],
         # refusing a password, refusing a licence, or simply slow. The container
         # holds the answer and was never asked for it.
         checks.append('  if [ -z "$READY" ]; then')
+        # AND NOT ITS PASSWORD. A container told to generate its own root
+        # password prints it here, once -- which is the whole point of
+        # choosing that over a secret this portal would have to hold. These
+        # lines are then uploaded to object storage and read by the portal,
+        # so without this the one credential nobody was supposed to store
+        # would be stored, in the report of the failure that generated it.
+        #
+        # ONLY THE VALUE. `PASSWORD:` or `PASSWORD=` followed by something is
+        # a credential; a bare `- MYSQL_ROOT_PASSWORD` on its own line is the
+        # container NAMING what it needs, and that is evidence the drafter
+        # reads to answer it. Redacting both would trade a leak for a
+        # technology that can never be built.
         checks.append(
             f"    podman logs --tail 15 {code} 2>&1 "
+            f"| sed 's|\\([Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]\\)\\( *[:=]\\).*"
+            f"|\\1\\2 [redacted by the portal]|' "
             f"| sed 's|^|  {key} log: |'")
         checks.append("  fi")
 

@@ -634,7 +634,7 @@ def ensure(candidate: str, session: Session, *, target, shipped, run_proof,
            shipped_codes: frozenset[str] = frozenset(),
            reachable=None, ask_repository=None, discover=None, find_image=None,
            search=None, stored=None,
-           observe_ports=None) -> AutobuildResult:
+           observe_ports=None, container_needs=None) -> AutobuildResult:
     """Make `candidate` provisionable, and certify it — no human involved.
 
     The reviewer's requirement of 2026-08-21, in full: if the agent cannot find a
@@ -825,6 +825,9 @@ def ensure(candidate: str, session: Session, *, target, shipped, run_proof,
         published_image: dict = {}
         looked_for_an_image = False
         narrowed = False
+        # Asked at most once per run: the machine either starts with what it
+        # asked for or it does not.
+        asked_for_environment = False
         # Asked once per PROOF, not once per run. A single boolean meant that
         # re-running a rung consumed the one question, so the machine it built
         # was never asked what it found — the exact silence this increment
@@ -1066,7 +1069,14 @@ def ensure(candidate: str, session: Session, *, target, shipped, run_proof,
             if not (last.machine_refuted or last.status == "blocked"):
                 return _carry(result.attempts, last)
             if last.machine_refuted:
-                refuted_by_a_machine.append(method)
+                # INSTALL METHODS, NOT MACHINES. The environment retry runs the
+                # container rung a second time, and this counted each machine as
+                # a method: "Tried 2 install methods (container, container)" --
+                # a sentence a requester and an approver read as evidence. The
+                # membership test below (`"container" not in ...`) is unchanged
+                # by de-duplicating.
+                if method not in refuted_by_a_machine:
+                    refuted_by_a_machine.append(method)
                 # ASK THE MACHINE WHAT IT LEARNED — once. Its report is fetched
                 # over the signed channel the API already uses, so nothing here
                 # imports the orchestrator. Asking twice would buy the same kind
@@ -1087,6 +1097,74 @@ def ensure(candidate: str, session: Session, *, target, shipped, run_proof,
                             if found:
                                 published_image = found
                                 methods.append("container")
+                # A CONTAINER THAT WILL NOT START MAY HAVE SAID WHY (C9).
+                #
+                # `library/mysql` exits immediately unless it is told how to
+                # set its root password, and its image declares nothing about
+                # one: measured 2026-09-04, it declares MYSQL_MAJOR,
+                # MYSQL_VERSION, MYSQL_SHELL_VERSION and its ports. The only
+                # source is the log of a machine that tried, which the boot
+                # report captures when a service never comes up.
+                #
+                # ONCE. The second attempt either starts or does not; asking
+                # again would buy the same answer for the price of a machine.
+                #
+                # SAID TWICE ON PURPOSE, and a plant proved the redundancy: with
+                # `asked_for_environment` disabled the ladder still asks exactly
+                # once, because an answer that is worth retrying puts an
+                # `environment` on `published_image` and the last clause below
+                # then closes the door. The flag is kept as the explicit
+                # statement of the rule -- the image clause enforces it as a
+                # side effect of what it carries, which is not the same thing to
+                # read -- so no test can tell the two apart. The bound that IS
+                # tested is the one that matters: how many machines this can buy.
+                # What may be supplied is decided in api/container_env: a
+                # password the MACHINE generates and prints once, never one
+                # this portal chooses, holds, or writes down. Anything else --
+                # a named password, an unaccepted licence -- stops here with a
+                # refusal that says who must supply what and where.
+                if (method == "container" and container_needs is not None
+                        and not asked_for_environment and last.proof_reference
+                        and published_image and not published_image.get("environment")):
+                    asked_for_environment = True
+                    supply = container_needs(last.proof_reference, candidate)
+                    # ANSWERABLE MEANS ANSWERABLE IN FULL. `container_env`
+                    # models an answer that sets SOME variables and is still
+                    # stopped by others -- an operator has accepted the licence,
+                    # so ACCEPT_EULA may be set, while MSSQL_SA_PASSWORD is a
+                    # secret nothing here may choose -- and exposes exactly that
+                    # as `answerable = bool(environment) and not blocked`.
+                    #
+                    # Reading only `environment` retried with the half it could
+                    # set and discarded the refusal naming the rest. The licence
+                    # is already in the first draft whenever the setting is on,
+                    # so that retry redrafts a byte-identical recipe, which the
+                    # memory then refuses as already disproved -- and the
+                    # requester is told nothing they can act on.
+                    if (supply and supply.get("environment")
+                            and not supply.get("needs_a_person")):
+                        published_image = {**published_image,
+                                           "environment": dict(supply["environment"])}
+                        narrowed = False
+                        methods.append("container")
+                        continue
+                    if supply and supply.get("detail"):
+                        # A REFUSAL EXPLAINS AND GUIDES. This is the end of the
+                        # ladder, so what it says is what a person acts on.
+                        #
+                        # FIRST, NOT LAST. `_autobuild_component` returns
+                        # `result.detail[:300]`, and that dict is the whole
+                        # payload of the `autobuild.finished` audit entry --
+                        # the only place this text reaches a person. Appended
+                        # after take_it_back's own long sentence, the operative
+                        # half fell off the end: an operator learnt the
+                        # variable's NAME and not that it goes in
+                        # secrets/container.env.
+                        last.detail = f"{supply['detail']} {last.detail}"
+                        last.attempts.append(Attempt(
+                            len(last.attempts) + 1, "environment", "refused",
+                            supply["detail"][:300]))
+                        return _carry(result.attempts, last)
                 # THE EVIDENCE THE GATE JUDGED ON IS THE EVIDENCE FOR THE NEXT
                 # RUNG. A package that installs but runs nothing is refused
                 # against the vendor's image and its declared ports; that image
