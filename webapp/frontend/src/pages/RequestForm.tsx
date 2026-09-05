@@ -1535,9 +1535,24 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
             <Button onClick={onSubmit} disabled={busy}>
               {isDecommission ? 'Submit decommission' : isRefresh ? 'Submit refresh' : isRestore ? 'Submit restore' : isReduce ? 'Submit reduction' : isClone ? 'Submit clone' : isSandbox ? 'Submit sandbox' : isTemporary ? 'Submit temporary' : isDr ? 'Submit DR request' : 'Submit request'}
             </Button>
+            {/* AND THE SAME TRUTH HERE. The panel on the right already says
+                "Not priced" when the server could not cost a component — this
+                bar printed the raw total beside it and read "0.00 AED/mo",
+                which is the contradiction a person actually sees: the footer
+                sits next to the submit button and follows the page down.
+                Reported on 2026-09-05 for MySQL, whose sizing anchors were
+                missing from the running database, and it is the same defect
+                the comment above the panel describes, in the other half of
+                the screen. A price nobody can compute is not a price of zero. */}
             {cost && !isDecommission && (
               <span style={{ marginLeft: 'auto', fontSize: '0.9rem', color: 'var(--cds-text-secondary)' }}>
-                <strong style={{ color: 'var(--cds-text-primary)' }}>{cost.totals.monthly.toFixed(2)} {cost.currency}</strong>/mo
+                {cost.unpriced?.length ? (
+                  <strong style={{ color: 'var(--cds-text-primary)' }}>Not priced</strong>
+                ) : (
+                  <>
+                    <strong style={{ color: 'var(--cds-text-primary)' }}>{cost.totals.monthly.toFixed(2)} {cost.currency}</strong>/mo
+                  </>
+                )}
               </span>
             )}
           </div>
@@ -1580,7 +1595,17 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
                   ? `${filledComponents.length} — ${filledComponents.map((c) => `${techName(c.technology_code)}${c.size ? ` (${c.size})` : ''}`).join(', ')}`
                   : '—'}
               </SummaryRow>
-              {cost && <SummaryRow label="Est. monthly"><strong>{cost.totals.monthly.toFixed(2)} {cost.currency}</strong></SummaryRow>}
+              {/* Third place the same number is shown, and the third that has
+                  to agree with the server about whether it IS a number. */}
+              {cost && (
+                <SummaryRow label="Est. monthly">
+                  <strong>
+                    {cost.unpriced?.length
+                      ? 'Not priced'
+                      : `${cost.totals.monthly.toFixed(2)} ${cost.currency}`}
+                  </strong>
+                </SummaryRow>
+              )}
               {filledComponents.length > 0 && target && (
                 <SummaryRow label="Delivery">
                   {manualComponents.length === 0 ? (
