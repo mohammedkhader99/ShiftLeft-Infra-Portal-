@@ -1067,6 +1067,30 @@ def ensure(candidate: str, session: Session, *, target, shipped, run_proof,
                         rerun.add(method)
                         methods.insert(0, method)
                         continue
+
+                    # AND WHEN DISCOVERY IS SETTLED, THE VENDOR IS STILL THERE.
+                    #
+                    # A refutation that will not be re-run is the end of what
+                    # THIS method can tell us; it is not the end of the ladder.
+                    # Before the once-per-recipe bound the re-run rebuilt the
+                    # package, the certification gate refused it holding the
+                    # vendor's image, and the ladder climbed on that -- so
+                    # taking the wasted machine away took the climb with it, and
+                    # a settled MySQL ended at "building another one would spend
+                    # a machine to be told the same thing" with no container
+                    # rung ever tried (2026-09-05, a real run, no machine spent).
+                    #
+                    # The refutation being read says it in its own words: "its
+                    # image says it listens on 3306, 33060". Reaching for that
+                    # image costs one registry call and no machine, and `ensure`
+                    # has said "the next install method is tried" since C7.
+                    if not looked_for_an_image and find_image is not None:
+                        looked_for_an_image = True
+                        found = find_image(candidate)
+                        if found:
+                            published_image = found
+                            methods.append("container")
+                        continue
                 continue
             # ONLY A MACHINE'S VERDICT IS A REASON TO TRY ANOTHER RECIPE.
             #

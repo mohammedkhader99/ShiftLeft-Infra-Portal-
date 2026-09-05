@@ -633,6 +633,132 @@ def test_the_rerun_is_not_bought_again_by_the_next_request(db):
         f"On MySQL that was 26 minutes and a real machine, every attempt.")
 
 
+def test_a_settled_refutation_still_reaches_the_vendors_image(db):
+    """THE DEAD END THE BOUND CREATED, found on a real run 2026-09-05.
+
+    MySQL's package rung is refuted three times over, so the bound correctly
+    declines to re-run it -- and the ladder then STOPPED, with:
+
+        mysql was not built by the package method. This exact recipe was
+        already disproved ... so building another one would spend a machine
+        to be told the same thing.
+
+    Before the bound, the re-run rebuilt the client, the certification gate
+    refused it holding the vendor's image, and the ladder climbed on that. Take
+    the wasted machine away and the climb went with it -- while the refutation
+    being read says, in its own words, "its image says it listens on 3306,
+    33060". The evidence was in hand and the ladder stopped anyway.
+
+    A refutation that is settled is a reason to try the NEXT method, never a
+    reason to stop: that is the sentence the ladder has printed since C7."""
+    _remember_the_guess(db, "haproxy")
+    # Refuted twice, so the bound will not re-run it -- the state MySQL was in.
+    recipe_memory.remember(db, "haproxy", "oci",
+                           ab.profile_for_method("haproxy", "package"),
+                           "PROOF-SECOND", "installs but runs nothing")
+    db.commit()
+
+    machine = Publishing(IMAGE, accepts=("container",))
+    result = autobuild.ensure(
+        "haproxy", db, target="oci", shipped=machine.shipped,
+        run_proof=machine.run_proof, publish=machine.publish,
+        certify=lambda m, r: None, withdraw=machine.withdraw,
+        discover=lambda ref, code: None,      # the package installed; no section
+        find_image=lambda code: IMAGE,
+        observe_ports=lambda ref, code: [5672])
+
+    # Twice is correct: a container's first pass publishes no ports and asks the
+    # machine what it bound, and the narrowed recipe is proved again (C8). What
+    # matters here is that the rung was reached at all, and that the settled
+    # package rung was not rebuilt to get there.
+    assert "container" in machine.tried, (
+        f"the ladder stopped at a settled refutation instead of reaching the "
+        f"vendor's image, and spent {machine.tried} doing it")
+    assert machine.tried.count("package") == 0, machine.tried
+    assert result.status == "published", result.detail
+
+
+def test_no_machine_is_spent_reaching_it(db):
+    """And the point of the bound survives: the package rung is NOT rebuilt on
+    the way to the container. One machine, not two."""
+    _remember_the_guess(db, "haproxy")
+    recipe_memory.remember(db, "haproxy", "oci",
+                           ab.profile_for_method("haproxy", "package"),
+                           "PROOF-SECOND", "installs but runs nothing")
+    db.commit()
+
+    machine = Publishing(IMAGE, accepts=("container",))
+    autobuild.ensure(
+        "haproxy", db, target="oci", shipped=machine.shipped,
+        run_proof=machine.run_proof, publish=machine.publish,
+        certify=lambda m, r: None, withdraw=machine.withdraw,
+        discover=lambda ref, code: None, find_image=lambda code: IMAGE,
+        observe_ports=lambda ref, code: [5672])
+
+    assert machine.tried.count("package") == 0, machine.tried
+
+
+def test_a_rung_that_will_be_re_run_does_not_also_queue_the_container(db):
+    """FOUND BY A PLANT, 2026-09-05. Dropping the `continue` after the re-run is
+    queued let the SAME pass fall through and queue the container rung too.
+
+    Both plants and both tests above stayed green, because the only test with a
+    registry to call had a settled refutation and never reached that line.
+
+    It matters because the ladder is ordered by COST. A rung about to be
+    re-run may answer the question outright; queueing a container beside it
+    buys a registry call and a rung on the strength of an answer nobody has
+    waited for -- and the whole point of `continue` is that the cheaper rung
+    goes first."""
+    _remember_the_guess(db, "haproxy")          # ONE refutation: it will re-run
+    asked = []
+
+    machine = NeverAnswers()
+    autobuild.ensure(
+        "haproxy", db, target="oci", shipped=machine.shipped,
+        run_proof=machine.run_proof, publish=machine.publish,
+        certify=lambda m, r: None, withdraw=machine.withdraw,
+        discover=machine.discover,
+        find_image=lambda code: asked.append(code) or IMAGE)
+
+    assert machine.tried == ["package"], (
+        f"the container rung was queued beside the re-run instead of after it: "
+        f"{machine.tried}")
+    assert asked == [], (
+        "the registry was called while a cheaper rung was still unanswered")
+
+
+def test_the_registry_is_not_asked_once_per_remembered_rung(db):
+    """FOUND BY THE SAME PLANT RUN: dropping `not looked_for_an_image` from the
+    fall-through let every remembered rung buy its own registry call.
+
+    `vault` has two rungs before the container, so it is the shape that shows
+    it; `haproxy` has one and never could."""
+    # A DIFFERENT PROOF PER RUNG, which is what a real ladder leaves behind and
+    # is load-bearing here: `ensure` consults any one proof only once, so
+    # seeding both recipes with the same reference made the second rung skip
+    # the branch entirely and the plant walked past this test.
+    for method, references in (("repo", ("PROOF-R1", "PROOF-R2")),
+                               ("package", ("PROOF-P1", "PROOF-P2"))):
+        recipe = ab.profile_for_method("vault", method)
+        for reference in references:                # two each: settled, no re-run
+            recipe_memory.remember(db, "vault", "oci", recipe, reference, "no")
+    db.commit()
+    asked = []
+
+    machine = Machine(accepts=set())
+    autobuild.ensure(
+        "vault", db, target="oci", shipped=machine.shipped,
+        run_proof=machine.run_proof, publish=machine.publish,
+        certify=lambda m, r: None, withdraw=machine.withdraw,
+        discover=lambda ref, code: None,
+        find_image=lambda code: asked.append(code) or IMAGE)
+
+    assert len(asked) <= 1, (
+        f"the registry was asked {len(asked)} times — once per remembered rung, "
+        f"instead of once for the technology")
+
+
 def test_another_technologys_refutations_do_not_bound_this_one(db):
     """FOUND BY A PLANT, 2026-09-05: a counter with its filters removed passed
     every test here, because this database held refutations for nothing else.
