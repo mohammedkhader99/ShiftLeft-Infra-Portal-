@@ -116,7 +116,7 @@ def test_constrain_drops_values_not_in_the_catalog(session):
         "business_criticality": "tier2",
         "business_justification": "x",
         "components": [
-            {"technology_code": "mysql", "size": "medium"},     # not in catalog
+            {"technology_code": "obviously-not-a-technology", "size": "medium"},     # not in catalog
             {"technology_code": "postgres16", "size": "huge"},  # bad size
         ],
     }
@@ -125,9 +125,9 @@ def test_constrain_drops_values_not_in_the_catalog(session):
     assert d["project_code"] is None                 # unknown project dropped
     assert d["cost_centre_code"] == "IMD-1001"       # real one kept
     assert d["environment_name"] == "bad-name"       # coerced to the naming standard
-    assert d["components"] == [{"technology_code": "postgres16", "size": None}]  # bad size nulled, mysql dropped
+    assert d["components"] == [{"technology_code": "postgres16", "size": None}]  # bad size nulled, obviously-not-a-technology dropped
     joined = " ".join(out["warnings"]).lower()
-    assert "mysql" in joined and "nope" in joined
+    assert "obviously-not-a-technology" in joined and "nope" in joined
 
 
 def test_constrain_drops_a_name_it_cannot_coerce(session):
@@ -219,7 +219,7 @@ def test_live_mode_calls_the_sdk_and_constrains_the_result(session, monkeypatch)
         "business_justification": "eGate UAT database.",
         "components": [
             {"technology_code": "postgres16", "size": "large"},
-            {"technology_code": "mysql", "size": "small"},  # not in catalog → dropped
+            {"technology_code": "obviously-not-a-technology", "size": "small"},  # not in catalog → dropped
         ],
     }, captured)
     monkeypatch.setenv("AI_MODE", "live")

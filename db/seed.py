@@ -103,6 +103,10 @@ DELIVERY = {
     # passed. Everything any blueprint builds is listed, and
     # test_the_form_says_how_a_thing_arrives keeps it that way.
     "nginx": ("software", "NGINX — installed on a machine."),
+    "mysql": ("software",
+              "MySQL Community Server on a machine of its own, data on a "
+              "separate block volume. The free edition; MySQL Enterprise "
+              "is a licensed product and is not this."),
     "opensearch": ("software",
                    "Withdrawn after four machines built it and none ever "
                    "served a port: with an admin password set it is still "
@@ -173,6 +177,14 @@ SUBSIDIARIES = [
 
 TECHNOLOGIES = [
     {"code": "postgres16", "name": "PostgreSQL 16", "lifecycle_state": "certified"},
+    # PROVED BEFORE OFFERED, 2026-09-05. Its first proofs certified the
+    # command-line client -- package `mysql`, `services: []`, no port --
+    # and every gate passed; the installed-is-not-running rule exists
+    # because of it. Listed only after PROOF-MYSQL-20260905T003000-E7295F
+    # ran the vendor's own image, was told the root password variable it
+    # needed by the container's own journal, and reported 3306 serving.
+    {"code": "mysql", "name": "MySQL Community Server",
+     "lifecycle_state": "certified"},
     {"code": "redis7", "name": "Redis 7", "lifecycle_state": "certified"},
     {"code": "nginx", "name": "NGINX", "lifecycle_state": "certified"},
     {"code": "k8s", "name": "Kubernetes", "lifecycle_state": "preview"},

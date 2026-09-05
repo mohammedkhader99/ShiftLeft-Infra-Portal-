@@ -120,17 +120,24 @@ def test_comparison_matches_the_authoritative_estimator(session):
 # --- Catalogue-constraining safety net ---------------------------------------
 
 def test_constrain_drops_tech_not_in_the_catalogue(session):
+    """The stand-in is DELIBERATELY not a real product.
+
+    It was `mysql` until 2026-09-05, when MySQL was certified and this test
+    began asserting that a technology IN the catalogue gets dropped. Anything
+    real can be certified one day; only something nothing will ever certify
+    keeps testing what this means to test.
+    """
     catalog = ai_recommend._load_catalog(session)
     raw = [
-        {"technology_code": "mysql", "size": "medium"},      # not in catalogue
+        {"technology_code": "obviously-not-a-technology", "size": "medium"},      # not in catalogue
         {"technology_code": "postgres16", "size": "huge"},   # bad size → medium
         {"technology_code": "java21", "size": "large"},
     ]
     kept, warnings = ai_recommend._constrain_components(raw, catalog)
     assert {"technology_code": "postgres16", "size": "medium"} in kept
     assert {"technology_code": "java21", "size": "large"} in kept
-    assert all(c["technology_code"] != "mysql" for c in kept)
-    assert any("mysql" in w.lower() for w in warnings)
+    assert all(c["technology_code"] != "obviously-not-a-technology" for c in kept)
+    assert any("obviously-not-a-technology" in w.lower() for w in warnings)
 
 
 # --- Endpoint ----------------------------------------------------------------
@@ -210,7 +217,7 @@ def test_live_mode_constrains_and_prices_server_side(session, monkeypatch):
     _inject_fake_anthropic(monkeypatch, {
         "components": [
             {"technology_code": "postgres16", "size": "large"},
-            {"technology_code": "mysql", "size": "small"},  # not in catalogue → dropped
+            {"technology_code": "obviously-not-a-technology", "size": "small"},  # not in catalogue → dropped
         ],
         "rationale": "A managed relational database sized for moderate load.",
     }, captured)
