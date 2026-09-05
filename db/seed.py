@@ -103,6 +103,12 @@ DELIVERY = {
     # passed. Everything any blueprint builds is listed, and
     # test_the_form_says_how_a_thing_arrives keeps it that way.
     "nginx": ("software", "NGINX — installed on a machine."),
+    "oracle-free": ("software",
+                    "Oracle Database Free on a machine of its own, data on a "
+                    "separate block volume, listening on 1521. No licence and "
+                    "no Oracle account needed; Oracle limits it to 2 CPUs, 2 GB "
+                    "SGA and 12 GB of user data. Not 19c Enterprise, which is "
+                    "licensed and listed separately."),
     "mysql": ("software",
               "MySQL Community Server on a machine of its own, data on a "
               "separate block volume. The free edition; MySQL Enterprise "
@@ -195,6 +201,17 @@ TECHNOLOGIES = [
     # api/pricing.TECHNOLOGY_LICENCE). Real per-technology provisioning is still
     # deferred — an apply creates the same placeholder resource, tagged.
     {"code": "oracle-db", "name": "Oracle Database 19c", "lifecycle_state": "certified"},
+    # PROVED BEFORE OFFERED, 2026-09-05, by
+    # PROOF-ORACLE-FREE-20260905T132213-5620BC: the vendor's own image ran
+    # on a real machine and reported 1521 serving. Oracle's image declares
+    # no ports, so that report is the ONLY evidence the listener works --
+    # which is why this waited for a machine rather than a manifest.
+    #
+    # NOT the same product as `oracle-db` above. Free is Oracle's no-licence
+    # edition; 19c Enterprise is licensed, costs 1,800/month in licence
+    # alone, and this portal still cannot build it.
+    {"code": "oracle-free", "name": "Oracle Database Free",
+     "lifecycle_state": "certified"},
     {"code": "mssql", "name": "SQL Server 2022", "lifecycle_state": "certified"},
     {"code": "mongodb", "name": "MongoDB 7", "lifecycle_state": "certified"},
     {"code": "kafka", "name": "Apache Kafka", "lifecycle_state": "certified"},
