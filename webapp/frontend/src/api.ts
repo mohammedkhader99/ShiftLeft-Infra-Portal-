@@ -7,7 +7,10 @@ export type Lookups = {
   subsidiaries: { code: string; name: string }[]
   // `automated_targets` are the targets the orchestrator provisions itself; on any
   // other target the request is governed here and fulfilled by the infra team.
-  technologies: { code: string; name: string; lifecycle_state: string; targets: string[]; automated_targets: string[] }[]
+  // `delivery_model` is how the thing arrives — managed | software | machine |
+  // capability — and the picker groups by it. "" means the catalogue does not
+  // record it, which the form shows under its own heading rather than guessing.
+  technologies: { code: string; name: string; lifecycle_state: string; targets: string[]; automated_targets: string[]; delivery_model?: string }[]
   environments: { name: string; environment_class: string }[]
   // Capabilities, offered separately from components. They have no package, no
   // archive and no cloud resource, so nothing can provision one — the note says

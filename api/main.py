@@ -2222,6 +2222,16 @@ class TechnologyOut(BaseModel):
     # infrastructure team — the form shows that plainly so the catalogue never
     # promises more than the platform delivers (GAP-ANALYSIS.md step 1).
     automated_targets: list[str] = []
+    # HOW THIS ARRIVES, so the form can group the picker instead of showing one
+    # flat list of forty-eight names. Read from the SAME source the grouped
+    # catalogue view and the agent's own classification use -- never computed
+    # here. They were two sources once, and the two disagreed: `postgres16` is
+    # OCI's managed database and the old rule read it as software.
+    #
+    # "" means the catalogue does not record it. The form shows those under
+    # their own heading rather than guessing, which is the rule the grouped view
+    # already keeps.
+    delivery_model: str = ""
 
     @field_validator("targets", mode="before")
     @classmethod
@@ -2251,7 +2261,8 @@ class LookupsResponse(BaseModel):
     platform_services: list[dict] = []
 
 
-def _technology_out(tech: Technology, certified: set | None = None) -> TechnologyOut:
+def _technology_out(tech: Technology, certified: set | None = None,
+                    session: Session | None = None) -> TechnologyOut:
     """A catalogue entry plus the targets where it is genuinely automated, so the
     form can tell the requester which items need the infrastructure team.
 
@@ -2260,6 +2271,11 @@ def _technology_out(tech: Technology, certified: set | None = None) -> Technolog
     """
     out = TechnologyOut.model_validate(tech)
     out.automated_targets = fulfilment.automated_targets(tech, out.targets, certified)
+    # The one source, asked rather than re-derived. See TechnologyOut.
+    if session is not None:
+        from api import ai_blueprint
+
+        out.delivery_model = ai_blueprint.delivery_model(tech.code, session)
     return out
 
 
@@ -2319,7 +2335,7 @@ def lookups(session: Session = Depends(get_session)) -> LookupsResponse:
         # They keep their route: a `platform-service` request asks the
         # infrastructure team directly, with no sizing, no price and no build
         # path to fail at.
-        technologies=[_technology_out(t, fulfilment.certified_pairs(session))
+        technologies=[_technology_out(t, fulfilment.certified_pairs(session), session)
                       for t in _offerable(session)
                       if not _is_capability(t.code, session)],
         # Offered separately, so the form can ask for one without pretending it

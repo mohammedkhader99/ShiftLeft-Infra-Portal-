@@ -103,6 +103,37 @@ DELIVERY = {
     # passed. Everything any blueprint builds is listed, and
     # test_the_form_says_how_a_thing_arrives keeps it that way.
     "nginx": ("software", "NGINX — installed on a machine."),
+    # CLASSIFIED 2026-09-05. These eight were absent, so the grouped catalogue
+    # reported them as `unclassified` -- correctly, since guessing is what the
+    # DELIVERY table exists to stop, but it meant six CERTIFIED technologies
+    # reached the request form with no group at all.
+    "dotnet8": ("software", "The .NET 8 runtime, installed on a machine."),
+    "keycloak": ("software",
+                 "Keycloak identity server on a machine of its own, installed "
+                 "from the vendor's release archive."),
+    "mongodb": ("software",
+                "MongoDB on a machine of its own, from MongoDB's own package "
+                "repository, data on a separate block volume."),
+    "mssql": ("software",
+              "Microsoft SQL Server on a machine of its own, run from "
+              "Microsoft's container image. LICENSED SOFTWARE: the edition an "
+              "unmodified image gives is Developer, which Microsoft does not "
+              "license for production use."),
+    "rabbitmq": ("software",
+                 "RabbitMQ on a machine of its own, run from the vendor's "
+                 "container image, data on a separate block volume."),
+    "vault": ("software",
+              "HashiCorp Vault on a machine of its own, from HashiCorp's own "
+              "package repository."),
+    "oracle-db": ("software",
+                  "Oracle Database 19c Enterprise on a machine of its own. "
+                  "LICENSED: it needs an Oracle account to pull the image and a "
+                  "licence you already hold. The portal cannot yet build it — "
+                  "Oracle Database Free is the edition it can."),
+    "elasticsearch": ("software",
+                      "Elasticsearch on a machine of its own. Its recipe was "
+                      "withdrawn after a proof that built nothing; OpenSearch "
+                      "is the certified alternative."),
     "oracle-free": ("software",
                     "Oracle Database Free on a machine of its own, data on a "
                     "separate block volume, listening on 1521. No licence and "

@@ -777,6 +777,37 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
     ? lookups.technologies.filter((t) => t.targets.includes(target))
     : lookups.technologies
 
+  // HOW EACH THING ARRIVES, which decides the heading it sits under.
+  //
+  // Forty-eight names in one grid asks a requester to tell OCI's managed
+  // PostgreSQL from PostgreSQL installed on a VM by reading two labels that say
+  // "PostgreSQL". Those are different products — one Oracle patches and one you
+  // do — and the catalogue has recorded the difference since S2. The form was
+  // simply never told.
+  //
+  // The order is deliberate: least work for the requester first. A managed
+  // service is run by the cloud; software on a machine is a machine you own with
+  // something installed on it; a machine is bare; a capability is not built at
+  // all — your platform team fulfils it.
+  const GROUPS: { model: string; title: string; blurb: string }[] = [
+    { model: 'managed', title: 'Managed cloud services',
+      blurb: 'The cloud provider runs and patches these. No machine of yours.' },
+    { model: 'software', title: 'Software on a machine',
+      blurb: 'A machine of your own with the software installed and running on it.' },
+    { model: 'machine', title: 'Machines',
+      blurb: 'A bare virtual machine with an operating system and nothing else.' },
+    { model: 'capability', title: 'Capabilities',
+      blurb: 'Fulfilled by the infrastructure team — nothing is provisioned.' },
+    // "" means the catalogue does not RECORD how this arrives. Shown, not
+    // hidden and not guessed at: the grouped catalogue view has always reported
+    // unknowns separately, and the form now does the same.
+    { model: '', title: 'Not yet classified',
+      blurb: 'The catalogue does not record how these are delivered.' },
+  ]
+  const groupedTechs = GROUPS
+    .map((g) => ({ ...g, items: availableTechs.filter((t) => (t.delivery_model || '') === g.model) }))
+    .filter((g) => g.items.length > 0)
+
   // Chosen components the platform does NOT provision automatically — the infra
   // team fulfils these after approval. Say so before the requester submits.
   // Only meaningful once a deployment target is chosen.
@@ -1231,8 +1262,21 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
                     ? `Technologies available on ${TARGETS.find(([v]) => v === target)?.[1] || target}. Pick one or more, then choose a size for each.`
                     : 'Pick a deployment target above to see its technologies, then choose sizes.'}
                 </p>
+                {groupedTechs.map((group) => (
+                <div key={group.model || 'unclassified'} style={{ marginBottom: '1.1rem' }}>
+                  <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.5rem', marginBottom: '0.15rem' }}>
+                    <span style={{ fontSize: '0.72rem', fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--cds-text-secondary)' }}>
+                      {group.title}
+                    </span>
+                    <span style={{ fontSize: '0.72rem', color: 'var(--cds-text-placeholder)' }}>
+                      {group.items.length}
+                    </span>
+                  </div>
+                  <p style={{ fontSize: '0.75rem', color: 'var(--cds-text-secondary)', margin: '0 0 0.45rem' }}>
+                    {group.blurb}
+                  </p>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(9.5rem, 1fr))', gap: '0.5rem' }}>
-                  {availableTechs.map((t) => {
+                  {group.items.map((t) => {
                     const Icon = techIcon(t.code)
                     const sel = components.some((c) => c.technology_code === t.code)
                     return (
@@ -1264,6 +1308,8 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
                     )
                   })}
                 </div>
+                </div>
+                ))}
 
                 {components.length > 0 && (
                   <div style={{ marginTop: '1.25rem', display: 'flex', flexDirection: 'column', gap: '1.1rem' }}>

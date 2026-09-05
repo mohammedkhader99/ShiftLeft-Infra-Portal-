@@ -88,8 +88,7 @@ def test_the_rest_of_the_catalogue_is_recorded(db, code, expected):
     assert ab.delivery_model(code, db) == expected
 
 
-@pytest.mark.parametrize(
-    "code", ["keycloak", "oracle-db", "a-technology-nobody-has-added-yet"])
+@pytest.mark.parametrize("code", ["a-technology-nobody-has-added-yet"])
 def test_software_falls_through_to_the_guess_and_still_works(db, code):
     """An unrecorded technology must keep working — one added tomorrow is
     guessed at rather than known, and `delivery_model` says which.
@@ -100,6 +99,11 @@ def test_software_falls_through_to_the_guess_and_still_works(db, code):
     calling Kafka a managed service previously slipped past). The property here
     is unchanged and still worth holding — it is about technologies nobody has
     classified, and the examples had stopped being examples of that.
+
+    RE-POINTED AGAIN 2026-09-05, and this time that day arrived: `keycloak`
+    and `oracle-db` were the last two real examples, and classifying the
+    final eight left only the invented code -- which is what the closing
+    sentence of this docstring was written for.
 
     Recording them changed no answer, which was measured rather than assumed:
     `software` and `machine` both resolve to `vm-service`, the same verdict the
@@ -199,9 +203,15 @@ def test_the_catalogue_groups_by_how_things_are_delivered(db):
     assert "oci-objectstorage" in codes["managed"]
     assert {"compute-vm", "rhel9", "win2019"} <= codes["machine"]
     assert {"backup", "logging", "monitoring"} <= codes["capability"]
-    # Software is currently unrecorded and must be reported as such rather than
-    # quietly defaulted into a group.
-    assert "keycloak" in {e["code"] for e in body["unclassified"]}
+    # CLASSIFIED 2026-09-05. This asserted `keycloak` was UNCLASSIFIED, which was
+    # right at the time and is the weaker half of the property: the view must
+    # report what it does not know rather than guess at it. What it must ALSO do
+    # is leave nothing unknown once the catalogue records everything -- and six
+    # CERTIFIED technologies were reaching the request form with no group at all.
+    assert "keycloak" in codes["software"]
+    assert body["unclassified"] == [], (
+        f"the form would show these with no group: "
+        f"{[e['code'] for e in body['unclassified']]}")
 
 
 def test_the_grouped_view_says_which_are_guesses(db):
