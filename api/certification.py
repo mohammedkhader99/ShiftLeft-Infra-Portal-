@@ -343,6 +343,22 @@ def retire(session: Session, technology_code: str, target: str, why: str, *,
     the whole reason this exists as one operation instead of two calls a person
     has to remember to pair.
 
+    PASS A CALLABLE, and this asks it AFTER the files are gone. A plain set can
+    only have been computed by the caller BEFORE this function removed anything,
+    and a snapshot of the state before a removal cannot describe the state after
+    it — so for any technology genuinely being built it reported "NOT RETIRED"
+    every single time, and the only way to get a success was to retire something
+    that was not there. Retiring MySQL for a re-proof on 2026-09-05 hit exactly
+    that: the files were gone, the blueprint read `withdrawn`, asking again
+    showed the orchestrator no longer built it, and this said the sweep was
+    about to undo the lot. The tests passed because they injected `set()` — the
+    one answer a real caller never holds at that moment.
+
+    A value is still accepted, and is still worth something in one direction: a
+    technology absent from a snapshot taken BEFORE the removal is certainly
+    absent after it. Present in one, though, settles nothing, and this now says
+    so instead of raising an alarm.
+
     Suspending is not deleting: the proof that earned the certification really
     happened and the history is worth keeping.
     """
@@ -360,13 +376,34 @@ def retire(session: Session, technology_code: str, target: str, why: str, *,
 
     suspended = withdraw_for_missing_recipe(session, technology_code, target, why)
 
-    # DID IT HOLD? Absent means we could not ask, which is not the same as gone.
+    # DID IT HOLD? Asked HERE, after the removal, whenever the caller handed over
+    # the means to ask. Absent means we could not ask, which is not the same as
+    # gone; a bare value means we were told about a moment we did not choose.
+    answered_after = callable(builds)
+    if answered_after:
+        try:
+            builds = builds()
+        except Exception as exc:  # noqa: BLE001 - an unreachable orchestrator is "could not ask"
+            builds, answered_after = None, False
+            _ = exc
+
     if builds is None:
         complete, detail = False, (
             f"Withdrew {len(removed)} file(s) and "
             f"{'suspended' if suspended else 'left'} the certification, but the "
             f"orchestrator could not be asked whether it still builds "
             f"{technology_code}. Check before trusting this.")
+    elif technology_code in builds and not answered_after:
+        # STALE BY CONSTRUCTION, so this is not evidence of failure. Saying
+        # NOT RETIRED here is the false alarm that sent an operator looking for
+        # a sweep that was never coming.
+        complete, detail = False, (
+            f"Withdrew {removed or 'no files'} and "
+            f"{'suspended' if suspended else 'left'} the certification for "
+            f"{technology_code}, but could not verify it: the `builds` list was "
+            f"a value, which the caller must have taken BEFORE this removed "
+            f"anything, so it says nothing about the state now. Pass a callable "
+            f"and it will be asked afterwards.")
     elif technology_code in builds:
         complete, detail = False, (
             f"NOT RETIRED. The orchestrator still reports that it builds "
