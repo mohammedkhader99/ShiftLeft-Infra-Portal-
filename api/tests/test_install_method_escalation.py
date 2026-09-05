@@ -576,6 +576,119 @@ def test_the_rerun_cannot_repeat(db):
         f"the same rung was rebuilt more than once: {machine.tried}")
 
 
+class NeverAnswers(Machine):
+    """A machine whose package INSTALLS, so no report ever carries a discovery
+    section -- for the OLD proof or for the one built seconds ago.
+
+    THE ASSUMPTION THIS BREAKS is written into `Remembering.discover` above:
+    "Any machine built now runs the discovery step, so its report always carries
+    an answer." It does not. configure.py writes that section ONLY for packages
+    that are MISSING -- "a working install stays quiet and costs nothing" -- so
+    a package that installs and is refused for running nothing produces a report
+    with no section at all, every single time.
+
+    MySQL is that shape, and it cost a real machine on every attempt:
+    PROOF-MYSQL-20260904T192226-7E3F14 and PROOF-MYSQL-20260904T224500-93D545
+    are two runs rebuilding the identical command-line-client recipe, 26 minutes
+    apiece, each ending in the refutation the run before it had already recorded.
+    """
+
+    def __init__(self):
+        super().__init__(accepts=set())
+        self.asked: list[str] = []
+
+    def discover(self, reference, code):
+        self.asked.append(reference)
+        return None
+
+
+def _ensure_haproxy(db, machine):
+    return autobuild.ensure(
+        "haproxy", db, target="oci", shipped=machine.shipped,
+        run_proof=machine.run_proof, publish=machine.publish,
+        certify=lambda m, r: None, withdraw=machine.withdraw,
+        discover=machine.discover)
+
+
+def test_the_rerun_is_not_bought_again_by_the_next_request(db):
+    """THE COST DEFECT. `rerun` is a fresh set on every call, so "run the rung
+    once" meant once PER REQUEST, not once per recipe -- and for a package that
+    installs, the re-run can never learn anything new, because the report it
+    produces carries no discovery section either.
+
+    The bound has to outlive the call, and the evidence already does: every
+    re-run records a refutation of its own, so a recipe with more than one
+    refutation has already been re-run once and must not be again."""
+    _remember_the_guess(db, "haproxy")
+
+    first = NeverAnswers()
+    _ensure_haproxy(db, first)
+    assert first.tried.count("package") == 1, (
+        f"the one permitted re-run did not happen: {first.tried}")
+
+    second = NeverAnswers()
+    _ensure_haproxy(db, second)
+    assert second.tried.count("package") == 0, (
+        f"a second request rebuilt the same refuted recipe: {second.tried}. "
+        f"On MySQL that was 26 minutes and a real machine, every attempt.")
+
+
+def test_another_technologys_refutations_do_not_bound_this_one(db):
+    """FOUND BY A PLANT, 2026-09-05: a counter with its filters removed passed
+    every test here, because this database held refutations for nothing else.
+
+    On a real one it holds many. Counting them all would mean the busier the
+    portal gets, the sooner every technology stops being re-run -- a bound that
+    tightens with unrelated history is not a bound, it is a leak."""
+    for other in ("rabbitmq", "vault", "nginx"):
+        for reference in ("PROOF-A", "PROOF-B", "PROOF-C"):
+            recipe_memory.remember(db, other, "oci",
+                                   ab.profile_for_method(other, "package"),
+                                   reference, "not installed")
+    # And the same technology on another cloud, which is a different question.
+    recipe_memory.remember(db, "haproxy", "aws",
+                           ab.profile_for_method("haproxy", "package"),
+                           "PROOF-AWS", "not installed")
+    db.commit()
+    _remember_the_guess(db, "haproxy")
+
+    machine = NeverAnswers()
+    _ensure_haproxy(db, machine)
+
+    assert machine.tried.count("package") == 1, (
+        f"someone else's refutations stopped this rung being re-run: "
+        f"{machine.tried}")
+
+
+def test_a_different_recipe_for_the_same_technology_is_counted_apart(db):
+    """The bound is per RECIPE. Refutations of the package guess say nothing
+    about the vendor-repository recipe, which is a different attempt."""
+    _remember_the_guess(db, "haproxy")
+    other_recipe = {**ab.profile_for_method("haproxy", "package"),
+                    "repo": {"url": "https://example/repo", "gpg_key": "k"}}
+    for reference in ("PROOF-R1", "PROOF-R2", "PROOF-R3"):
+        recipe_memory.remember(db, "haproxy", "oci", other_recipe, reference, "no")
+    db.commit()
+
+    machine = NeverAnswers()
+    _ensure_haproxy(db, machine)
+
+    assert machine.tried.count("package") == 1, machine.tried
+
+
+def test_the_rerun_still_happens_once_for_a_refutation_that_predates_C7(db):
+    """And the migration it exists for is preserved: a refutation recorded
+    before the discovery step shipped gets exactly one machine to answer the
+    question that could not have been put to it."""
+    _remember_the_guess(db, "haproxy")
+
+    machine = NeverAnswers()
+    _ensure_haproxy(db, machine)
+
+    assert machine.asked, "the remembered machine was never consulted at all"
+    assert machine.tried == ["package"], machine.tried
+
+
 # --- the container rung, last on the ladder (C8) -------------------------------
 #
 # THE RABBITMQ STORY, END TO END. REQ-2026-0188/0189/0190 spent three real

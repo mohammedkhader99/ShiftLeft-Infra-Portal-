@@ -35,7 +35,7 @@ import hashlib
 import json
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from api import proof
@@ -243,6 +243,43 @@ def _live_row(session: Session, code: str, target: str,
     if when is not None and (now - when) > timedelta(days=proof.validity_days()):
         return None
     return row
+
+
+def times_refuted(session: Session, code: str, target: str,
+                  recipe: dict | None) -> int:
+    """How many machines have disproved this exact recipe.
+
+    ONE IS THE FIRST VERDICT; MORE THAN ONE MEANS WE HAVE ALREADY PAID TO ASK
+    AGAIN. The ladder re-runs a remembered rung once when the machine that
+    refuted it was never asked what else it found, because every refutation
+    recorded before C7 has a report with no discovery section. That re-run was
+    bounded by a set built fresh on each call, so "once" meant once PER REQUEST.
+
+    For a package that INSTALLS it can never learn anything: configure.py writes
+    the discovery section only for packages that are MISSING, so the re-run's own
+    report has no section either and the next request re-runs it again. MySQL
+    paid for that twice -- PROOF-MYSQL-20260904T192226-7E3F14 and
+    PROOF-MYSQL-20260904T224500-93D545, 26 minutes and a real machine apiece,
+    each ending in the refutation the run before had already recorded.
+
+    The bound has to outlive the call, and the evidence already does: the re-run
+    records a refutation of its own. Counting them is asking the database "have
+    we done this before?" rather than trusting a variable that starts empty.
+
+    Not time-bounded, deliberately, unlike `_live_row`: an expired refutation
+    stops being a reason to SKIP a rung, which frees the ladder to try it
+    properly. It must not also become a reason to buy the same futile re-run
+    again.
+    """
+    digest = fingerprint(recipe)
+    if not digest:
+        return 0
+    return int(session.scalar(
+        select(func.count())
+        .select_from(RecipeRefutation)
+        .where(RecipeRefutation.technology_code == (code or "").strip(),
+               RecipeRefutation.deployment_target == (target or "").strip(),
+               RecipeRefutation.fingerprint == digest)) or 0)
 
 
 def previously_refuted(session: Session, code: str, target: str,

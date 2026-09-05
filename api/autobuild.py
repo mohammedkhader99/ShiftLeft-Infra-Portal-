@@ -1038,10 +1038,32 @@ def ensure(candidate: str, session: Session, *, target, shipped, run_proof,
                                 published_image = found
                                 methods.append("container")
                                 continue
-                    if seen is None and method not in rerun:
-                        # That machine was never asked. Run the rung once so a
-                        # current one can answer; its report will carry a
-                        # discovery section, so this can never repeat.
+                    # ONCE PER RECIPE, NOT ONCE PER REQUEST.
+                    #
+                    # This used to be bounded by `rerun` alone, on the strength
+                    # of "its report will carry a discovery section, so this can
+                    # never repeat". It does not. configure.py writes that
+                    # section ONLY for packages that are MISSING -- "a working
+                    # install stays quiet and costs nothing" -- so a package
+                    # that INSTALLS and is then refused for running nothing
+                    # produces a report with no section, the re-run learns
+                    # exactly what the run before it learned, and `rerun`, built
+                    # fresh on every call, lets the next request buy it again.
+                    #
+                    # MySQL paid twice: PROOF-MYSQL-20260904T192226-7E3F14 and
+                    # PROOF-MYSQL-20260904T224500-93D545 rebuilt the identical
+                    # command-line-client recipe, 26 minutes and a real machine
+                    # apiece, each ending in the refutation already on record.
+                    #
+                    # The bound now outlives the call, and the evidence already
+                    # did: the re-run records a refutation of its own, so a
+                    # recipe refuted more than once has been re-run and must not
+                    # be again. The pre-C7 migration this exists for still gets
+                    # its one machine.
+                    if (seen is None and method not in rerun
+                            and recipe_memory.times_refuted(
+                                session, candidate, target,
+                                _recipe_in(attempt)) < 2):
                         rerun.add(method)
                         methods.insert(0, method)
                         continue
