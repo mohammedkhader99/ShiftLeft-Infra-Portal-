@@ -76,7 +76,13 @@ def test_an_unreadable_verification_is_not_healthy():
     verify = proof_wiring.make_verify(_post_returning(True, "not json at all"), deadline_seconds=0, sleep=lambda s: None)
     healthy, detail = verify("PROOF-X-20260821T090000", {"environment_tier": "Development"})
     assert healthy is False
-    assert "could not be read" in detail
+    # The rule this guards is unchanged: unreadable must never read as healthy.
+    # The WORDING got more specific on 2026-09-06 — "could not be read" blamed
+    # the portal for answers that had in fact arrived and been cut in transit, so
+    # each failure now says which of the two happened. Quoting what actually came
+    # back is the part worth holding.
+    assert "not an object" in detail
+    assert "not json at all" in detail
 
 
 def test_a_broken_resource_is_reported_with_its_own_words():
@@ -429,3 +435,112 @@ def test_the_resource_state_path_still_uses_its_note():
 
     assert healthy is False
     assert "the bucket does not exist" in detail
+
+
+# --- the answer must survive the trip ----------------------------------------
+#
+# FOUND 2026-09-06, after grafana, minio and gitea were each refused in one
+# batch with the identical message "the verification result could not be read".
+# All three machines had reported in full and said something specific -- grafana
+# that its container had died, minio that nothing was listening on 9000. The
+# message was untrue and it named the wrong party.
+#
+# `make_post` returned `response.text[:4000]`. /verify embeds each machine's boot
+# report verbatim, so the object arrived sliced, still opening with `{`, and
+# `json.loads` refused it. The cut only ever reached a FAILING machine: a healthy
+# report is a few `podman logs --tail 15` lines, a broken one carries forty lines
+# of journal. Every green proof therefore parsed, and every red one lost the one
+# thing a boot report exists to carry -- then spent the whole deadline re-reading
+# a body that could not parse on any attempt.
+#
+# These tests cross the seam between the two helpers ON PURPOSE. The suite
+# already held `test_a_broken_machine_reports_in_its_own_words_not_just_broken`,
+# and it passed throughout, because its fixture is a few hundred characters and
+# the real thing is ten thousand. A fixture that does not resemble what the
+# system produces tests the fixture.
+
+
+def _a_real_sized_verify_answer(words: str) -> str:
+    """What the orchestrator actually sends: the verdict AND the machine's whole
+    report, which is what makes it big."""
+    report = "\n".join(
+        f"  grafana log: Sep 06 03:21:39 proofgrafana podman[31210]: container "
+        f"died c498c83d99acf4bbf9d8a8da18f93fa1c496fb37d60d0520a631b21ad32d42f3 "
+        f"(image=docker.io/grafana/grafana, name=grafana) line {n}"
+        for n in range(40))
+    return json.dumps({
+        "checked": 1, "settled": True, "all_ok": False, "broken": ["oci-service-vm"],
+        "resources": [{"kind": "oci-service-vm", "expected": True, "state": "broken",
+                       "problems": [words], "machines": ["proofgrafana"],
+                       "reports": {"PROOF-GRAFANA-oci-service-vm.txt": report}}],
+    })
+
+
+def _wired(text: str):
+    """make_post feeding make_verify, the way run_proof wires them."""
+    class Resp:
+        status_code = 200
+
+    Resp.text = text
+    post = proof_wiring.make_post(lambda body, sig, path: (Resp(), None),
+                                  lambda secret, body: "sig", "secret")
+    return proof_wiring.make_verify(post, deadline_seconds=0, sleep=lambda s: None)
+
+
+def test_a_failing_machines_own_words_survive_a_full_size_answer():
+    """THE DEFECT. Ten thousand characters is not unusual, it is normal for a
+    machine that failed. The verdict was already right; the reason was not."""
+    answer = _a_real_sized_verify_answer("container grafana is not running")
+    assert len(answer) > 4000, "the fixture must be the size the real one is"
+
+    healthy, detail = _wired(answer)("PROOF-GRAFANA-X",
+                                     {"environment_tier": "Development"})
+
+    assert healthy is False
+    assert "container grafana is not running" in detail, (
+        f"the machine's own words were cut off in transit: {detail!r}")
+
+
+def test_an_answer_that_arrived_incomplete_says_so_rather_than_blaming_itself():
+    """"Could not be read" points at the portal and stops the reader looking.
+    An answer that opened as an object and would not parse was CUT, and naming
+    that -- with the length -- is what sends the next person to the right place."""
+    verify = proof_wiring.make_verify(
+        _post_returning(True, '{"checked": 1, "resources": [{"kind": "oci-serv'),
+        deadline_seconds=0, sleep=lambda s: None)
+
+    healthy, detail = verify("PROOF-X", {"environment_tier": "Development"})
+
+    assert healthy is False
+    assert "incomplete" in detail
+    assert "could not be read" not in detail
+
+
+def test_an_answer_too_large_to_read_is_refused_by_name_not_halved():
+    """The bound still exists; what changed is that exceeding it is an event
+    somebody is told about, never a prefix indistinguishable from the whole."""
+    class Resp:
+        status_code = 200
+        text = "{" + "x" * proof_wiring.MAX_ANSWER
+
+    post = proof_wiring.make_post(lambda body, sig, path: (Resp(), None),
+                                  lambda secret, body: "sig", "secret")
+    ok, detail = post("/verify", {"reference": "PROOF-X"})
+
+    assert ok is False
+    assert "more than" in detail
+
+
+def test_free_text_from_the_orchestrator_is_still_bounded():
+    """Only a structured answer is exempt. A stack trace or an HTML error page
+    has no reader that needs it whole, and must not fill the log."""
+    class Resp:
+        status_code = 200
+        text = "not json at all " * 1000
+
+    post = proof_wiring.make_post(lambda body, sig, path: (Resp(), None),
+                                  lambda secret, body: "sig", "secret")
+    ok, detail = post("/plan", {"reference": "PROOF-X"})
+
+    assert ok is True
+    assert len(detail) == 4000

@@ -35,6 +35,13 @@ from api import pricing
 GENERATED_ROOT = paths.generated_dir("GENERATED_ROOT")
 
 
+# How much of one orchestrator answer this channel will read. A boot report runs
+# to ~10KB and a request can carry several machines; a million characters is far
+# past any real answer and still bounded, so a runaway response is refused by
+# name rather than silently halved.
+MAX_ANSWER = 1_000_000
+
+
 def make_post(post_to_orchestrator, sign, secret: str):
     """A signed handoff, in the shape run_proof expects: (ok, detail)."""
     def post(path: str, payload: dict) -> tuple[bool, str]:
@@ -48,10 +55,37 @@ def make_post(post_to_orchestrator, sign, secret: str):
             # The orchestrator's refusal text is the useful part — it names which
             # bound was exceeded (sandbox tier, cost cap, an unproven reference).
             return False, f"{response.status_code}: {response.text[:300]}"
+        # A STRUCTURED ANSWER IS NEVER CUT, and this is why.
+        #
+        # This line read `(response.text or "")[:4000]`. /verify's reply carries
+        # each machine's boot report VERBATIM ("reports": found) -- grafana's was
+        # 10,181 characters on 2026-09-06. A JSON object sliced at 4,000 still
+        # begins with `{`, so make_verify tried to parse it, failed, and reported
+        # "the verification result could not be read": the portal blaming itself
+        # for an answer the machine had already given in full.
+        #
+        # IT BIT ONLY ON FAILURE, which is why it survived this long. A healthy
+        # machine's report is a handful of `podman logs --tail 15` lines and fits
+        # under the cap; a broken one carries forty lines of journal and does
+        # not. So every green proof parsed and every red one lost the machine's
+        # own words -- the single case those words exist for -- and then spent
+        # the whole verification deadline re-reading a body that could never
+        # parse. grafana, minio and gitea were each refused this way in one
+        # batch, with three identical explanations, none of them true.
+        #
+        # Free text still gets a bound; an answer too large to read at all is a
+        # named failure, because a caller must never receive a prefix it cannot
+        # tell apart from the whole.
+        text = response.text or ""
+        if len(text) > MAX_ANSWER:
+            return False, (f"the orchestrator's answer was {len(text)} characters, "
+                           f"more than the {MAX_ANSWER} this channel reads")
+        if text.lstrip()[:1] in ("{", "["):
+            return True, text
         # Generous, because run_proof now READS this: the plan summary decides
         # whether the recipe creates anything at all, and truncating it to 300
         # characters would silently discard the evidence.
-        return True, (response.text or "")[:4000]
+        return True, text[:4000]
     return post
 
 
@@ -188,16 +222,29 @@ def make_verify(post, *, deadline_seconds: int | None = None,
             if not ok:
                 last_problem = f"could not verify: {detail}"
             else:
-                try:
-                    body = json.loads(detail) if detail.strip().startswith("{") else {}
-                except ValueError:
-                    body = {}
+                text = (detail or "").strip()
+                body, unreadable = {}, ""
+                if text.startswith("{"):
+                    try:
+                        body = json.loads(text)
+                    except ValueError:
+                        # An answer that BEGAN as an object and would not parse
+                        # is a different fault from no answer: something cut it
+                        # in transit. Saying so — with its length — points at
+                        # the cut instead of at the machine, which is the
+                        # distinction that cost three technologies a batch.
+                        unreadable = ("the orchestrator's answer began as an object "
+                                      f"and would not parse ({len(text)} characters) "
+                                      "— it arrived incomplete")
+                elif text:
+                    unreadable = ("the orchestrator answered with something that is "
+                                  f"not an object: {text[:120]}")
                 # No news is NOT good news. A verification that returned nothing
                 # readable is unknown, and unknown must not read as healthy —
                 # that inference is what reported four broken machines as
                 # provisioned.
                 if not body:
-                    last_problem = "the verification result could not be read"
+                    last_problem = unreadable or "the verification result could not be read"
                 elif not body.get("checked", 0):
                     # Nothing here CAN report — a bucket, a managed database, or
                     # mock mode. Silence is the complete and correct answer, and
