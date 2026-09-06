@@ -563,6 +563,17 @@ def licence_accepted() -> bool:
             ).strip().lower() in ("1", "true", "yes", "on")
 
 
+def data_mount_for(code: str) -> str:
+    """Where a container's data lives, on the host and inside the container.
+
+    ONE PLACE, because two callers need the same answer: the drafter writes it
+    into the recipe, and `container_command` passes it as the argument to a
+    command the image demanded. Computed twice, they would agree until the day
+    one of them changed.
+    """
+    return f"/var/lib/{code}"
+
+
 def draft_from_image(candidate: str, image: dict, target: str = "oci"):
     """A draft that runs the vendor's own image on the machine (C8).
 
@@ -617,8 +628,8 @@ def draft_from_image(candidate: str, image: dict, target: str = "oci"):
             # ITS OWN BLOCK VOLUME. A container's data outlives the container and
             # often the machine; on the boot volume it is entangled with the
             # operating system and a rebuild takes it along.
-            "data_dir": f"/var/lib/{code}",
-            "data_mount": f"/var/lib/{code}",
+            "data_dir": data_mount_for(code),
+            "data_mount": data_mount_for(code),
             # WHAT THE CONTAINER ITSELF ASKED FOR, and nothing else.
             #
             # `library/mysql` exits without being told how to set its root
@@ -650,6 +661,10 @@ def draft_from_image(candidate: str, image: dict, target: str = "oci"):
             # because the serialisation is not this line's to rely on.
             **({"environment": dict(image["environment"])}
                if image.get("environment") else {}),
+            # WHAT THE IMAGE MUST BE TOLD TO DO, when its own usage screen
+            # said so. `minio/minio` runs a binary that does nothing without
+            # a subcommand; see api/container_command.py.
+            **({"command": str(image["command"])} if image.get("command") else {}),
         },
         # No packages: podman is supplied by the renderer, because what runs a
         # container is its choice of runtime and not a property of RabbitMQ.

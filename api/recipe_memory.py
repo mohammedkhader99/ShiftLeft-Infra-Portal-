@@ -138,7 +138,11 @@ def fingerprint(recipe: dict | None) -> str:
     if isinstance(container, dict):
         material["container"] = {
             f: str(container.get(f) or "")
-            for f in ("image", "digest", "platform_digest", "data_dir", "data_mount")
+            # `command` is here for the same reason `environment` is: it is
+            # the whole correction when an image will not start without one,
+            # and a recipe that gained one is not the recipe that was refuted.
+            for f in ("image", "digest", "platform_digest", "data_dir",
+                      "data_mount", "command")
         }
         material["container"]["environment"] = json.dumps(
             container.get("environment") or {}, sort_keys=True, default=str)

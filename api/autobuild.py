@@ -1171,7 +1171,9 @@ def ensure(candidate: str, session: Session, *, target, shipped, run_proof,
                 # refusal that says who must supply what and where.
                 if (method == "container" and container_needs is not None
                         and not asked_for_environment and last.proof_reference
-                        and published_image and not published_image.get("environment")):
+                        and published_image
+                        and not published_image.get("environment")
+                        and not published_image.get("command")):
                     asked_for_environment = True
                     supply = container_needs(last.proof_reference, candidate)
                     # ANSWERABLE MEANS ANSWERABLE IN FULL. `container_env`
@@ -1187,10 +1189,23 @@ def ensure(candidate: str, session: Session, *, target, shipped, run_proof,
                     # so that retry redrafts a byte-identical recipe, which the
                     # memory then refuses as already disproved -- and the
                     # requester is told nothing they can act on.
-                    if (supply and supply.get("environment")
+                    # AN IMAGE REFUSES TO START IN TWO WAYS, and this one retry
+                    # answers both. `container_env` reads the variable it
+                    # demanded; `container_command` reads the command it demanded
+                    # — minio prints its own usage screen and exits, and no
+                    # variable fixes that. Either is worth one more machine; the
+                    # `needs_a_person` half stops the ladder for both, because a
+                    # password nobody may choose and a choice of commands nobody
+                    # may make are the same kind of stop.
+                    if (supply
+                            and (supply.get("environment") or supply.get("command"))
                             and not supply.get("needs_a_person")):
-                        published_image = {**published_image,
-                                           "environment": dict(supply["environment"])}
+                        published_image = {
+                            **published_image,
+                            **({"environment": dict(supply["environment"])}
+                               if supply.get("environment") else {}),
+                            **({"command": supply["command"]}
+                               if supply.get("command") else {})}
                         narrowed = False
                         methods.append("container")
                         continue

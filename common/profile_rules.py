@@ -241,8 +241,31 @@ DATA_DIR = re.compile(rf"^/var/lib/{_SEGMENT}(?:/{_SEGMENT})*$")
 # change what is mounted rather than where.
 MOUNT_PATH = re.compile(rf"^/{_SEGMENT}(?:/{_SEGMENT})*$")
 
+# The command given to the image, when the image will not run without one.
+#
+# WHY THIS EXISTS. `minio/minio` starts, prints its own usage screen and exits:
+# its CMD is the bare binary, and the binary requires a subcommand. No
+# environment variable fixes that, so without a command the technology cannot be
+# offered at all -- proved on a real machine on 2026-09-06, which reported
+# `container_minio=running` with nothing listening while the log held the help
+# text.
+#
+# BOUNDED THE WAY ENV_VALUE IS, and for the same reason: this is written into a
+# systemd unit file, one directive per line, inside a cloud-init `content: |`
+# block. A newline in the value would start a NEW directive -- `PodmanArgs=
+# --privileged` is two lines away -- so the character set is closed rather than
+# merely escaped. Quotes and backslashes are excluded too: quadlet has its own
+# quoting rules, and a value that survives them is a value that means something
+# different on the machine than it does here.
+#
+# It is NOT a shell. systemd runs `Exec=` without one, so `;` and `|` and `$`
+# would be literal argument text rather than operators; they are excluded
+# anyway, because nothing that legitimately names a command needs them.
+CONTAINER_COMMAND = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9 _./:=,+-]{0,255}$")
+
 CONTAINER_FIELDS = frozenset({"image", "tag", "digest", "data_dir",
-                              "data_mount", "environment", "platform_digest"})
+                              "data_mount", "environment", "platform_digest",
+                              "command"})
 
 
 def report_key(code: str) -> str:
@@ -516,6 +539,15 @@ def container_problems(container: dict) -> list[str]:
         problems.append(
             f"The in-container mount path {data_mount!r} is not acceptable; it "
             f"is half of a `-v host:container` argument.")
+
+    command = container.get("command")
+    if command is not None and (not isinstance(command, str)
+                                or not CONTAINER_COMMAND.match(command)):
+        problems.append(
+            f"The container command {command!r} is not acceptable. It becomes an "
+            f"`Exec=` line in a systemd unit, so it is limited to a command and "
+            f"plain arguments — no newlines, quotes or backslashes, which would "
+            f"end the line and begin a directive nobody validated.")
 
     env = container.get("environment")
     if env is not None:

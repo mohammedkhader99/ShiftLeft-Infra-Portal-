@@ -499,3 +499,61 @@ def test_a_pinned_container_is_excused_it_and_nothing_else_is():
         profile = {"code": "x", "builds_on": "oci/service-vm", "ports": [], **extra}
         assert any("what it actually received" in p
                    for p in profile_rules.profile_problems(profile)), profile
+
+
+# --- the command a container must be given ------------------------------------
+#
+# Added 2026-09-06 for minio, whose image runs a binary that does nothing
+# without a subcommand: it started, printed its own help, and exited five times.
+# See api/container_command.py.
+#
+# THIS FIELD IS THE MOST DANGEROUS ONE IN A CONTAINER PROFILE and is bounded
+# accordingly. It becomes an `Exec=` line in a systemd unit, written inside a
+# cloud-init `content: |` block -- so a newline in the value does not produce a
+# broken command, it produces a NEW DIRECTIVE, and `PodmanArgs=--privileged` is
+# two lines from anywhere.
+
+def test_a_command_is_accepted_when_it_names_a_command_and_plain_arguments():
+    assert profile_rules.container_problems({
+        "image": "docker.io/minio/minio", "digest": "sha256:" + "a" * 64,
+        "command": "server /var/lib/minio"}) == []
+
+
+def test_a_command_carrying_a_newline_is_refused():
+    """THE ONE THAT MATTERS. The next line would be a directive nobody
+    validated, in a file systemd reads as root."""
+    problems = profile_rules.container_problems({
+        "image": "docker.io/minio/minio", "digest": "sha256:" + "a" * 64,
+        "command": "server /var/lib/minio\nPodmanArgs=--privileged"})
+
+    assert problems and any("not acceptable" in p for p in problems)
+
+
+def test_quotes_and_backslashes_are_refused_too():
+    """Quadlet has its own quoting rules. A value that survives them means
+    something different on the machine than it does here."""
+    for bad in ('server "/var/lib/x"', "server /var/lib/x\\", "server $(id)",
+                "server /var/lib/x; rm -rf /"):
+        assert profile_rules.container_problems({
+            "image": "docker.io/minio/minio", "digest": "sha256:" + "a" * 64,
+            "command": bad}), bad
+
+
+def test_a_command_is_optional():
+    """Nearly every image runs its own CMD perfectly well."""
+    assert profile_rules.container_problems({
+        "image": "docker.io/library/valkey", "digest": "sha256:" + "a" * 64}) == []
+
+
+def test_a_command_that_is_not_a_string_is_refused():
+    assert profile_rules.container_problems({
+        "image": "docker.io/library/x", "digest": "sha256:" + "a" * 64,
+        "command": ["server", "/data"]})
+
+
+def test_the_field_is_declared_rather_than_merely_rendered():
+    """The allow-list is the whole security argument: an unrecognised key is
+    REFUSED, so a field the renderer reads must be a field this file knows
+    about. Adding the `Exec=` line without adding the key here would have made
+    every recipe carrying one unpublishable."""
+    assert "command" in profile_rules.CONTAINER_FIELDS

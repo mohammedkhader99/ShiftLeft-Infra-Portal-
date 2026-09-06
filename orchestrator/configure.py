@@ -45,6 +45,34 @@ _log = logging.getLogger(__name__)
 
 GENERATED_PROFILE_DIR = paths.generated_dir("GENERATED_PROFILE_DIR")
 
+# Host ports the MACHINE ITSELF needs, and the port a container gets instead.
+#
+# 22 IS HOW THE PORTAL REACHES THE MACHINE. `gitea/gitea` declares 22 (git over
+# SSH) and 3000, and publishing a container port onto the host 1:1 handed the
+# machine's own sshd port to podman. On 2026-09-06 a real machine answered
+#
+#     Error: cannot listen on the TCP port: listen tcp4 :22: bind: address
+#     already in use
+#
+# and restarted until systemd gave up. The FAILURE was the lucky outcome: had
+# sshd not already held the port, podman would have taken it and cut the portal
+# off from the machine it was building.
+#
+# Remapped, not dropped — the technology genuinely serves on that port inside the
+# container, and a requester still needs to reach it. 20000 + the port keeps the
+# original readable in the mapping (22 -> 20022) and lands well clear of the
+# ephemeral range's usual start.
+#
+# The container side is NEVER changed: the software still binds what it expects,
+# and the health check reads /proc/net/tcp inside the container, so what is
+# published has no bearing on whether the proof passes.
+RESERVED_HOST_PORTS = frozenset({22})
+
+
+def host_port(port: int) -> int:
+    """The host port a container's `port` is published on."""
+    return 20000 + port if port in RESERVED_HOST_PORTS else port
+
 # technology code -> {packages, services, ports}. Deliberately a small, defensible
 # set of services installable from the base repositories; adding one is a data
 # change. `services` are enabled + started after install. `ports` are opened in
@@ -1657,6 +1685,13 @@ def render(components: list[dict], family: str = "", report_url: str = "",
             if svc not in services:
                 services.append(svc)
         for port in prof["ports"]:
+            # THE PORT THE MACHINE ACTUALLY SERVES ON. For nearly everything that
+            # is the declared port itself; for a container whose port collides
+            # with one the machine needs, it is the remapped host port. Opening
+            # the declared port instead would firewall off the port the service
+            # is genuinely published on, and open one nothing listens to — the
+            # firewall and the unit file disagreeing about one fact.
+            port = host_port(int(port))
             if port not in ports:
                 ports.append(port)
 
@@ -1760,13 +1795,40 @@ def render(components: list[dict], family: str = "", report_url: str = "",
             lines.append(f"      # tag at the time of drafting: {spec['tag']}")
         lines.append(f"      ContainerName={code}")
         for port in (profile_for(code, family) or {}).get("ports", []):
-            lines.append(f"      PublishPort={int(port)}:{int(port)}")
+            lines.append(f"      PublishPort={host_port(int(port))}:{int(port)}")
         if spec.get("data_dir") and spec.get("data_mount"):
             # :Z relabels for SELinux, which is enforcing on Oracle Linux. Without
             # it the container is denied access to its own data directory and the
             # service fails for a reason that looks nothing like a mount problem.
+            #
+            # :U CHOWNS IT TO WHOEVER THE IMAGE RUNS AS, and without it any image
+            # that drops privileges cannot write its own data. `data_dir` is a
+            # HOST directory created by cloud-init as root; podman bind-mounts it
+            # verbatim, so it neither copies the image's ownership up (that is
+            # named volumes only) nor changes it. Grafana runs as uid 472 and
+            # said so on a real machine on 2026-09-06:
+            #
+            #     GF_PATHS_DATA='/var/lib/grafana' is not writable.
+            #     mkdir: can't create directory '/var/lib/grafana/plugins':
+            #     Permission denied
+            #
+            # then died five times and hit systemd's start limit. The container
+            # rung had passed its first proof, which published no ports and
+            # mounted nothing; the narrowed recipe added the volume and broke it.
+            # Elasticsearch, Postgres and every other image that runs as a named
+            # user is the same class of failure.
+            #
+            # Safe for a root container: :U chowns to the container's own user,
+            # which for a root image is root, and DATA_DIR confines the source to
+            # /var/lib/<something> — the service's own directory, never a shared
+            # one.
             lines.append(
-                f"      Volume={spec['data_dir']}:{spec['data_mount']}:Z")
+                f"      Volume={spec['data_dir']}:{spec['data_mount']}:Z,U")
+        # THE COMMAND, when the image will not run without one. Validated whole
+        # by profile_rules.CONTAINER_COMMAND — it cannot contain a newline, so it
+        # cannot become a second directive.
+        if spec.get("command"):
+            lines.append(f"      Exec={spec['command']}")
         for env_key, env_value in sorted(environment.items()):
             lines.append(f"      Environment={env_key}={env_value}")
         lines.append("      [Service]")

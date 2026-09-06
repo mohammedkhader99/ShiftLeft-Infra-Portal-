@@ -33,6 +33,7 @@ from api import ai_triage
 from api import golden
 from api import repo_facts
 from api import container_env
+from api import container_command
 from api import discovery
 from api import registry
 from api import blueprint_capabilities
@@ -3990,8 +3991,16 @@ def _autobuild_component(session: Session, code: str, target: str) -> dict:
             for body in (entry.get("files") or {}).values())
         out = container_env.for_report(
             text, candidate, licence_accepted=ai_blueprint.licence_accepted())
-        return {"environment": out.environment, "detail": out.detail,
-                "needs_a_person": out.needs_a_person}
+        # THE OTHER WAY AN IMAGE REFUSES TO START. `container_env` answers "it
+        # wants a variable"; `container_command` answers "it wants to be told
+        # what to do" — minio prints its usage screen and exits. Same report,
+        # same one retry, so a container that needs both is answered once.
+        told = container_command.for_report(
+            text, candidate, data_mount=ai_blueprint.data_mount_for(candidate))
+        return {"environment": out.environment,
+                "command": told.command,
+                "detail": " ".join(d for d in (out.detail, told.detail) if d),
+                "needs_a_person": out.needs_a_person + told.needs_a_person}
 
     def ask_repository(recipe):
         """What the repositories say about this recipe, before a machine (C10).
