@@ -37,10 +37,18 @@ def session(_db):
 
 
 @pytest.fixture()
-def client(_db):
+def client(_db, monkeypatch):
     def override():
         yield _db
     main.app.dependency_overrides[main.get_session] = override
+    # Readiness deliberately opens its OWN session instead of taking the injected
+    # one -- it has to probe the real connection pool for the answer to mean
+    # anything. So point that pool at this test database: left alone it dials the
+    # Postgres named in DATABASE_URL, and the check passes only where one happens
+    # to be running. The 503 test below re-patches this to fail, so both halves
+    # now exercise the same attribute.
+    monkeypatch.setattr(main, "SessionLocal",
+                        sessionmaker(bind=_db.get_bind(), expire_on_commit=False))
     yield TestClient(main.app)
     main.app.dependency_overrides.clear()
 

@@ -14,7 +14,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from api import component_options
-from api.main import app, get_session
+from api.main import app, get_policy_evaluator, get_session
 from api.tests.test_requests import VALID_CREATE
 from db.seed import seed
 from db.session import Base
@@ -41,7 +41,14 @@ def client(db):
     def override_get_session():
         yield db
 
+    # Default: policy allows (real OPA is exercised in Rego tests + live checks).
+    # Without this, the submit gate calls the OPA server at OPA_URL, so a test that
+    # reaches it passes only on a machine that happens to be running one.
+    def allow_everything():
+        return lambda data: {"allow": True, "violations": []}
+
     app.dependency_overrides[get_session] = override_get_session
+    app.dependency_overrides[get_policy_evaluator] = allow_everything
     yield TestClient(app)
     app.dependency_overrides.clear()
 

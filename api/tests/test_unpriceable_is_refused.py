@@ -51,7 +51,7 @@ from fastapi.testclient import TestClient
 from api import pricing
 from api.main import app
 from db.seed import seed
-from api.main import get_session
+from api.main import get_policy_evaluator, get_session
 from db.models import Blueprint
 from db.session import Base
 
@@ -81,7 +81,15 @@ def db_session():
 def client(db_session):
     def override():
         yield db_session
+
+    # Default: policy allows (real OPA is exercised in Rego tests + live checks).
+    # Without this, the submit gate calls the OPA server at OPA_URL, so a test that
+    # reaches it passes only on a machine that happens to be running one.
+    def allow_everything():
+        return lambda data: {"allow": True, "violations": []}
+
     app.dependency_overrides[get_session] = override
+    app.dependency_overrides[get_policy_evaluator] = allow_everything
     yield TestClient(app)
     app.dependency_overrides.clear()
 

@@ -15,7 +15,7 @@ from sqlalchemy.pool import StaticPool
 
 import api.main as main
 from api import validation
-from api.main import app, get_session
+from api.main import app, get_policy_evaluator, get_session
 from db.models import Request
 from db.seed import seed
 from db.session import Base
@@ -50,7 +50,15 @@ def session(_db):
 def client(_db):
     def override():
         yield _db
+
+    # Default: policy allows (real OPA is exercised in Rego tests + live checks).
+    # Without this, the submit gate calls the OPA server at OPA_URL, so a test that
+    # reaches it passes only on a machine that happens to be running one.
+    def allow_everything():
+        return lambda data: {"allow": True, "violations": []}
+
     app.dependency_overrides[get_session] = override
+    app.dependency_overrides[get_policy_evaluator] = allow_everything
     yield TestClient(app)
     app.dependency_overrides.clear()
 
