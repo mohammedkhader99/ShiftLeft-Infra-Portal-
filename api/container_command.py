@@ -69,6 +69,24 @@ _TAKES_ARGS = re.compile(r"\bARGS?\b")
 #: short; a runaway log is not a help screen.
 _MAX_ENTRIES = 24
 
+#: `Sep 07 01:54:12 proofminio20260907t0145359bd01 minio[26377]: ` -- journald's
+#: own prefix, which must come off before anything here is matched.
+#:
+#: THE CAPTURE HAS TWO SHAPES AND ONLY ONE WAS TESTED. configure.py runs
+#: `podman logs` first and falls back to `journalctl -u <code>` when the
+#: container is already gone -- which, for a container that died and was removed,
+#: is the usual case. `podman logs` emits the program's own output bare;
+#: journalctl prefixes every line. The first minio failure was captured the first
+#: way and the fixture was written from it, so every anchored match here passed
+#: in tests and found nothing on the machine that mattered: `offered()` returned
+#: [] against a 12,101-character report with the usage screen plainly in it, and
+#: minio was refused a second time for a fault that had been fixed.
+#:
+#: `container_env` never noticed because it searches for a name ANYWHERE in a
+#: line. Anchored matching is what makes this parser safe -- a heading has to BE
+#: a heading -- and it is exactly what the prefix breaks.
+_JOURNAL = re.compile(r"^[A-Z][a-z]{2} +\d{1,2} \d{2}:\d{2}:\d{2} \S+ [^:]+: ?")
+
 
 @dataclass
 class Command:
@@ -104,7 +122,9 @@ def offered(report: str, code: str) -> tuple[list[str], bool]:
     for line in (report or "").splitlines():
         stripped = line.lstrip()
         if stripped.startswith(marker):
-            said.append(stripped[len(marker):].strip())
+            # Marker off, then journald's prefix if this line came through the
+            # fallback capture. Both shapes reduce to the program's own output.
+            said.append(_JOURNAL.sub("", stripped[len(marker):].strip()).strip())
 
     saw_usage = any(_USAGE.match(t) for t in said)
     takes_args = any(_TAKES_ARGS.search(t) for t in said

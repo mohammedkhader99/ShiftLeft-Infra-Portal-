@@ -171,3 +171,83 @@ def test_a_command_that_would_not_pass_the_rules_is_refused_not_written():
 
     assert out.command == ""
     assert out.blocked is True
+
+
+# --- the capture has two shapes, and only one was tested ----------------------
+#
+# FOUND ON A REAL MACHINE, 2026-09-07, at the cost of a proof. minio was refused
+# a SECOND time for a fault that had already been fixed, because `offered()`
+# returned [] against a 12,101-character report with the usage screen plainly in
+# it.
+#
+# configure.py captures a container's log with `podman logs` and falls back to
+# `journalctl -u <code>` when the container is already gone -- which, for a
+# container that died and was removed, is the usual case, and was the case here.
+# `podman logs` emits the program's own output bare. journalctl prefixes every
+# line with a timestamp, a host, a unit and a pid:
+#
+#   minio log: Sep 07 01:54:12 proofminio20260907t0145359bd01 minio[26377]: USAGE:
+#
+# Every match in this module is ANCHORED -- a heading has to BE a heading, which
+# is what stops ordinary log output being read as a command list -- so the
+# prefix defeated all of them. MINIO_LOG above was written from the FIRST
+# failure, which happened to be captured the other way, so the whole file passed
+# while the parser could not read the thing it exists to read.
+#
+# A fixture that does not resemble what the system produces tests the fixture.
+
+JOURNALD_MINIO_LOG = """\
+os_family=rhel
+technologies=minio
+container_minio=failed
+declares_minio=9000
+listening_inside_minio=none
+  minio log: Sep 07 01:54:12 proofminio20260907t0145359bd01 minio[26377]: NAME:
+  minio log: Sep 07 01:54:12 proofminio20260907t0145359bd01 minio[26377]:   minio - High Performance Object Storage
+  minio log: Sep 07 01:54:12 proofminio20260907t0145359bd01 minio[26377]: USAGE:
+  minio log: Sep 07 01:54:12 proofminio20260907t0145359bd01 minio[26377]:   minio [FLAGS] COMMAND [ARGS...]
+  minio log: Sep 07 01:54:12 proofminio20260907t0145359bd01 minio[26377]: COMMANDS:
+  minio log: Sep 07 01:54:12 proofminio20260907t0145359bd01 minio[26377]:   server  start object storage server
+  minio log: Sep 07 01:54:12 proofminio20260907t0145359bd01 minio[26377]:
+  minio log: Sep 07 01:54:12 proofminio20260907t0145359bd01 minio[26377]: FLAGS:
+  minio log: Sep 07 01:54:12 proofminio20260907t0145359bd01 minio[26377]:   --quiet  disable startup messages
+  minio log: Sep 07 01:54:12 proofminio20260907t0145359bd01 systemd[1]: minio.service: Failed with result 'start-limit-hit'.
+"""
+
+
+def test_a_journald_captured_help_screen_is_read_too():
+    """THE DEFECT. This is the shape a dead container's log actually arrives in,
+    and it is the common case: the container has to die for anyone to look."""
+    names, takes_args = container_command.offered(JOURNALD_MINIO_LOG, "minio")
+
+    assert names == ["server"]
+    assert takes_args is True
+
+
+def test_the_command_is_the_same_whichever_way_the_log_was_captured():
+    """The two captures are the same log. If they disagree, one of them is
+    lying about the machine."""
+    bare = container_command.for_report(MINIO_LOG, "minio",
+                                        data_mount="/var/lib/minio")
+    journal = container_command.for_report(JOURNALD_MINIO_LOG, "minio",
+                                           data_mount="/var/lib/minio")
+
+    assert bare.command == journal.command == "server /var/lib/minio"
+
+
+def test_a_journald_prefix_does_not_turn_log_output_into_a_help_screen():
+    """Stripping the prefix must not weaken the anchoring it defeated. Without
+    a USAGE line this is still ordinary output, prefix or no prefix."""
+    chatty = ("  redis log: Sep 07 01:54:12 host redis[1]: Ready to accept connections\n"
+              "  redis log: Sep 07 01:54:12 host redis[1]: COMMANDS:\n"
+              "  redis log: Sep 07 01:54:12 host redis[1]:   flushall  executed by admin\n")
+
+    assert container_command.offered(chatty, "redis")[0] == []
+
+
+def test_the_unit_lines_around_it_are_not_read_as_commands():
+    """systemd's own lines carry the same prefix and sit in the same capture."""
+    names, _ = container_command.offered(JOURNALD_MINIO_LOG, "minio")
+
+    assert names == ["server"]
+    assert not any("service" in n for n in names)
