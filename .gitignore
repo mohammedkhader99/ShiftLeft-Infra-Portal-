@@ -23,6 +23,21 @@ orchestrator/terraform/*.tfstate.*
 # rows and requester email addresses, so they stay out of git the same as .env.
 backups/
 
+# The same data, in the shapes a move to another machine produces. INSTALL.md §5
+# has you carry the database and the Terraform state across by hand, and the
+# obvious place to drop them is the repository folder itself — which is how both
+# landed at the root here on 2026-09-07, untracked and unignored, one `git add .`
+# away from being committed. A dump holds every request row and requester email
+# address; a tfstate tarball holds the identifiers of real cloud resources.
+*.dump
+*.tgz
+*.tar.gz
+
+# A git bundle is this entire repository — history, branches and all — in one
+# file. Committing one into the repository it came from doubles the repository
+# on every copy, and it is a backup, not source.
+*.bundle
+
 # Microsoft Office lock files, created while a document is open.
 # They are transient and machine-local; committing one confuses the next
 # person to open the file.

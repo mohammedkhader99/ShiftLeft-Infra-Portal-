@@ -222,8 +222,14 @@ resources it has built**.
 On the **old** machine, with the containers running:
 
 ```bash
-# the database, as a portable dump
-docker exec infra-portal-db-1 pg_dump -U <POSTGRES_USER> -d <POSTGRES_DB> -Fc > portal-db.dump
+# The database, as a portable dump. Written INSIDE the container and then copied
+# out, rather than redirected with `>`. PowerShell's `>` re-encodes what passes
+# through it, which silently corrupts a binary `-Fc` dump -- you get a file that
+# looks plausible and fails at restore. This form behaves the same in PowerShell,
+# Git Bash, and on a Mac.
+docker exec infra-portal-db-1 pg_dump -U <POSTGRES_USER> -d <POSTGRES_DB> \
+  -Fc -f /tmp/portal-db.dump
+docker cp infra-portal-db-1:/tmp/portal-db.dump ./portal-db.dump
 
 # the terraform state, as a tar
 docker run --rm -v infra-portal_tfstate:/from -v "$PWD":/to alpine \
@@ -243,8 +249,32 @@ docker run --rm -v infra-portal_tfstate:/to -v "$PWD":/from alpine \
 docker compose start orchestrator
 ```
 
-If instead you want a **fresh start** with no history, skip both: the database
-seeds itself on first boot. You keep the code and lose the record.
+> **⚠ On Windows, run the commands in this section from PowerShell, not Git
+> Bash.** Git Bash rewrites anything shaped like a Unix path before Docker sees
+> it, so `/tmp/portal-db.dump` reaches the container as
+> `C:/Users/.../AppData/Local/Temp/portal-db.dump` and the command fails with a
+> puzzling *"could not open input file"* naming a path you never typed. The
+> `$PWD` in the `-v` mount is rewritten the same way. Both were hit doing
+> exactly this on 2026-09-07. In PowerShell the commands work as written, except
+> that `"$PWD"` becomes `"${PWD}:/from"`.
+
+If instead you want a **fresh start** with no history, skip both -- but the
+database does **not** seed itself, and this guide said for a while that it did.
+First boot creates the empty tables and stops there. Load the catalogue by hand:
+
+```bash
+docker compose exec api python -m db.seed
+```
+
+It prints what it wrote -- on 2026-09-07 that was 48 technologies, 24 rate cards,
+192 sizing anchors, 3 projects, 3 cost centres and 2 environments. `db/seed.py`
+gives that command in its own docstring, and `api/main.py` describes the seed as
+"a script nobody runs on deploy".
+
+Skip it and the portal still starts, still answers `/health`, and still serves a
+front end -- it simply has an empty catalogue. Measured on a fresh clone that
+day: `/api/lookups` returned `technologies: 0`, and the request form offered
+nothing to request. You keep the code and lose the record.
 
 ---
 
@@ -292,7 +322,9 @@ to open a new request, and see technologies listed — MySQL Community Server
 among them, priced at **90.59 AED/month** for Small, not 0.00.
 
 If the database was restored, your existing requests appear under My Requests.
-If it was seeded fresh, the list is empty and that is correct.
+If it was seeded fresh, that list is empty and that is correct -- but the
+**technology** list must not be. An empty catalogue means the seed in §5 was
+skipped, not that something is broken.
 
 ---
 
