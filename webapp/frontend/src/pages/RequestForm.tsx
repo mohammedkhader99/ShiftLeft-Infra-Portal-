@@ -181,11 +181,22 @@ const fmtDate = (d: Date) =>
 const TODAY = fmtDate(new Date())
 
 // A sharp-edged selection card styled with Carbon design tokens (theme-aware).
+//
+// COMPACT SINCE 2026-09-05. These were 9.5rem wide and carried a full-size
+// "automated" pill, so four fitted a row and the pill outweighed the name it
+// described. The catalogue has grown past forty entries and is grouped now, so
+// the tile has to be scannable in bulk rather than readable in isolation.
+//
+// A FIXED HEIGHT is what makes a grid look deliberate: names run to one or two
+// lines, and without it every row sets its own height and the whole block reads
+// as ragged. Two lines is the cap, the full name is always in the tooltip, and
+// nothing is clipped without somewhere to read it.
 const cardStyle = (selected: boolean): CSSProperties => ({
   display: 'flex',
   flexDirection: 'column',
-  gap: '0.3rem',
-  padding: '0.7rem 0.75rem',
+  gap: '0.25rem',
+  padding: '0.45rem 0.5rem',
+  minHeight: '4.15rem',
   textAlign: 'left',
   cursor: 'pointer',
   width: '100%',
@@ -1257,11 +1268,24 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
                 {errors.components && (
                   <p style={{ color: 'var(--cds-text-error)', fontSize: '0.75rem', marginBottom: '0.5rem' }}>{errors.components}</p>
                 )}
-                <p style={{ fontSize: '0.8rem', color: 'var(--cds-text-secondary)', margin: '0 0 0.6rem' }}>
+                <p style={{ fontSize: '0.8rem', color: 'var(--cds-text-secondary)', margin: '0 0 0.35rem' }}>
                   {target
                     ? `Technologies available on ${TARGETS.find(([v]) => v === target)?.[1] || target}. Pick one or more, then choose a size for each.`
                     : 'Pick a deployment target above to see its technologies, then choose sizes.'}
                 </p>
+                {/* THE DOT, GIVEN WORDS ONCE. Each tile used to carry a full
+                    "automated" pill, which cost more width than the name it sat
+                    under and repeated the same two words forty times. Said here
+                    instead, so the tiles can be half the size. */}
+                {target && (
+                  <p style={{ fontSize: '0.72rem', color: 'var(--cds-text-secondary)', margin: '0 0 0.6rem', display: 'flex', alignItems: 'center', gap: '0.35rem', flexWrap: 'wrap' }}>
+                    <span aria-hidden="true" style={{ width: '0.4rem', height: '0.4rem', borderRadius: '50%', background: 'var(--cds-support-success, #24a148)' }} />
+                    <span>the portal builds it</span>
+                    <span style={{ color: 'var(--cds-text-placeholder)' }}>·</span>
+                    <span aria-hidden="true" style={{ width: '0.4rem', height: '0.4rem', borderRadius: '50%', background: 'var(--cds-border-strong, #8d8d8d)' }} />
+                    <span>the infrastructure team fulfils it after approval</span>
+                  </p>
+                )}
                 {groupedTechs.map((group) => (
                 <div key={group.model || 'unclassified'} style={{ marginBottom: '1.1rem' }}>
                   <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.5rem', marginBottom: '0.15rem' }}>
@@ -1275,34 +1299,55 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
                   <p style={{ fontSize: '0.75rem', color: 'var(--cds-text-secondary)', margin: '0 0 0.45rem' }}>
                     {group.blurb}
                   </p>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(9.5rem, 1fr))', gap: '0.5rem' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(6.25rem, 1fr))', gap: '0.4rem' }}>
                   {group.items.map((t) => {
                     const Icon = techIcon(t.code)
                     const sel = components.some((c) => c.technology_code === t.code)
+                    const automated = (t.automated_targets || []).includes(target)
+                    // THE WHOLE TILE CARRIES THE EXPLANATION, because the pill
+                    // that used to is gone and a dot alone explains nothing to
+                    // someone meeting it for the first time.
+                    const explain = t.name + (!target ? '' : automated
+                      ? ' — the portal provisions this automatically.'
+                      : ' — the infrastructure team fulfils this after approval.')
                     return (
-                      <button key={t.code} type="button" aria-pressed={sel} onClick={() => toggleTech(t.code)} style={cardStyle(sel)}>
-                        <Icon size={20} style={{ color: 'var(--cds-icon-primary)' }} />
-                        <span style={{ fontWeight: 500, fontSize: '0.82rem', lineHeight: 1.2 }}>{t.name}</span>
+                      <button key={t.code} type="button" aria-pressed={sel} title={explain}
+                              onClick={() => toggleTech(t.code)} style={cardStyle(sel)}>
+                        <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.25rem' }}>
+                          <Icon size={16} style={{ color: 'var(--cds-icon-primary)', flex: 'none' }} />
+                          {/* HOW IT ARRIVES, in the space a dot takes. A full
+                              "automated" pill outweighed the name it described
+                              and cost more width than the name itself. The
+                              legend above the grid gives it words once. */}
+                          {target && (
+                            <span
+                              aria-hidden="true"
+                              style={{
+                                width: '0.4rem', height: '0.4rem', borderRadius: '50%', flex: 'none',
+                                background: automated
+                                  ? 'var(--cds-support-success, #24a148)'
+                                  : 'var(--cds-border-strong, #8d8d8d)',
+                              }}
+                            />
+                          )}
+                        </span>
+                        <span
+                          style={{
+                            fontWeight: 500, fontSize: '0.72rem', lineHeight: 1.25,
+                            display: '-webkit-box', WebkitLineClamp: 2,
+                            WebkitBoxOrient: 'vertical', overflow: 'hidden',
+                          } as CSSProperties}
+                        >
+                          {t.name}
+                        </span>
                         {t.lifecycle_state !== 'certified' && (
-                          <Tag type={t.lifecycle_state === 'deprecated' ? 'red' : 'purple'} size="sm" style={{ margin: 0 }}>
+                          <span style={{
+                            fontSize: '0.58rem', letterSpacing: '0.04em', textTransform: 'uppercase',
+                            color: t.lifecycle_state === 'deprecated'
+                              ? 'var(--cds-text-error)' : 'var(--cds-text-secondary)',
+                          }}>
                             {t.lifecycle_state}
-                          </Tag>
-                        )}
-                        {/* How it actually gets delivered on the selected target.
-                            Only meaningful once a target is chosen. */}
-                        {target && (
-                          <Tag
-                            type={(t.automated_targets || []).includes(target) ? 'green' : 'gray'}
-                            size="sm"
-                            style={{ margin: 0 }}
-                            title={
-                              (t.automated_targets || []).includes(target)
-                                ? 'The portal provisions this automatically.'
-                                : 'The infrastructure team fulfils this after approval.'
-                            }
-                          >
-                            {(t.automated_targets || []).includes(target) ? 'automated' : 'manual'}
-                          </Tag>
+                          </span>
                         )}
                       </button>
                     )
@@ -1331,7 +1376,7 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
                             const active = presetName(c)
                             return (
                               <>
-                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(8rem, 1fr))', gap: '0.5rem' }}>
+                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(6.5rem, 1fr))', gap: '0.4rem' }}>
                                   {SIZES.map((s) => {
                                     // Server presets when we have them; the static
                                     // table only until the fetch lands, so the card
@@ -1343,10 +1388,29 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
                                     }
                                     const sel = active === s
                                     return (
-                                      <button key={s} type="button" aria-pressed={sel} onClick={() => setSize(c.technology_code, s)} style={cardStyle(sel)}>
-                                        <span style={{ fontWeight: 500, textTransform: 'capitalize', fontSize: '0.85rem' }}>{s}</span>
-                                        <span style={{ fontSize: '0.72rem', color: 'var(--cds-text-secondary)', lineHeight: 1.5 }}>
-                                          {spec.vcpu} vCPU · {spec.memory_gb} GB RAM<br />{spec.storage_gb} GB storage
+                                      <button
+                                        key={s} type="button" aria-pressed={sel}
+                                        title={`${s}: ${spec.vcpu} vCPU, ${spec.memory_gb} GB RAM, ${spec.storage_gb} GB storage`}
+                                        onClick={() => setSize(c.technology_code, s)} style={cardStyle(sel)}
+                                      >
+                                        <span style={{ fontWeight: 500, textTransform: 'capitalize', fontSize: '0.72rem' }}>{s}</span>
+                                        {/* ONE FACT PER LINE, each unwrappable.
+                                            These ran as "N vCPU · N GB RAM" with a
+                                            <br /> before storage, so Xlarge's wider
+                                            numbers wrapped "RAM" onto its own line
+                                            and that tile stood taller than the three
+                                            beside it. Three fixed lines are the same
+                                            height whatever the numbers, which is what
+                                            makes a row of them read as a set.
+                                            Tabular figures keep the digits in column. */}
+                                        <span style={{
+                                          fontSize: '0.66rem', color: 'var(--cds-text-secondary)',
+                                          lineHeight: 1.45, display: 'flex', flexDirection: 'column',
+                                          fontVariantNumeric: 'tabular-nums',
+                                        }}>
+                                          <span style={{ whiteSpace: 'nowrap' }}>{spec.vcpu} vCPU</span>
+                                          <span style={{ whiteSpace: 'nowrap' }}>{spec.memory_gb} GB RAM</span>
+                                          <span style={{ whiteSpace: 'nowrap' }}>{spec.storage_gb} GB storage</span>
                                         </span>
                                       </button>
                                     )
@@ -1355,14 +1419,28 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
 
                                 {/* The detail fields. Every option here came from
                                     the server and is re-checked on submit. */}
+                                {/* ONE ROW. These were minmax(9rem) with a 0.75rem
+                                    gap -- about 38rem for the four a machine
+                                    carries -- so the fourth wrapped onto a line of
+                                    its own and the card grew a half-empty row.
+                                    Narrower columns fit all five (version appears
+                                    for some technologies) inside the form column.
+
+                                    THE OS NAME IS THE ONE THAT SUFFERS: it was
+                                    already truncated at 9rem and is shorter here.
+                                    So the chosen value is repeated in the tooltip,
+                                    where it can be read in full -- narrowing a
+                                    control must not be the same as hiding what it
+                                    says. */}
                                 {opts && (
-                                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(9rem, 1fr))', gap: '0.75rem', marginTop: '0.75rem' }}>
+                                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(6.75rem, 1fr))', gap: '0.5rem', marginTop: '0.6rem' }}>
                                     {['version', 'image', 'vcpu', 'memory_gb', 'storage_gb'].map((field) => {
                                       const spec = opts.fields[field]
                                       if (!spec) return null  // nothing honest to offer
                                       const value = String(
                                         (c as unknown as Record<string, unknown>)[field] ?? '',
                                       )
+                                      const chosen = spec.options.find((o) => o.value === value)
                                       const errKey = `component_${components.findIndex((x) => x.technology_code === c.technology_code)}_${field}`
                                       return (
                                         <Select
@@ -1371,6 +1449,7 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
                                           labelText={spec.label}
                                           size="sm"
                                           value={value}
+                                          title={`${spec.label}: ${chosen?.label ?? (value || 'not set')}`}
                                           invalid={!!errors[errKey]}
                                           invalidText={errors[errKey]}
                                           onChange={(e) => setDetail(c.technology_code, field, e.target.value)}
