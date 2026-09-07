@@ -186,8 +186,27 @@ if (SPA_DIST / "assets").exists():
 
 @app.get("/{full_path:path}")
 def spa(full_path: str):
-    """Serve index.html for every non-API route (client-side routing)."""
+    """Serve index.html for every non-API route (client-side routing).
+
+    NEVER CACHED, and that is the whole point of the header below. This was
+    served with no `Cache-Control` at all -- just an etag and a last-modified --
+    so browsers applied HEURISTIC caching and reused it without asking. On
+    2026-09-05 two changes to the request form were built, deployed, verified
+    present in the container's bundle, and still did not reach the reviewer's
+    screen; the second screenshot came back pixel-identical to the first.
+
+    index.html is the one file that must not be reused. Vite content-hashes the
+    bundle, so new code ships under a new name and ONLY index.html knows that
+    name -- a stale copy pins the browser to a bundle the deployment no longer
+    has. The hashing that makes the assets safe to cache forever is exactly what
+    makes the pointer to them unsafe to cache at all.
+
+    `no-cache` means "revalidate", not "do not store": FileResponse still sends
+    an etag, so an unchanged page costs a 304 and a few bytes rather than a
+    fresh download.
+    """
     index = SPA_DIST / "index.html"
     if index.exists():
-        return FileResponse(index)
+        return FileResponse(
+            index, headers={"Cache-Control": "no-cache, must-revalidate"})
     return JSONResponse({"error": "SPA build not found"}, status_code=404)
