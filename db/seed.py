@@ -144,6 +144,48 @@ DELIVERY = {
               "MySQL Community Server on a machine of its own, data on a "
               "separate block volume. The free edition; MySQL Enterprise "
               "is a licensed product and is not this."),
+
+    # CERTIFIED BY THE BATCH PROVER, 2026-09-05 to 2026-09-07, each on real
+    # machines that built it, reported it serving, and were destroyed.
+    #
+    # WRITTEN DOWN HERE BECAUSE THE LIVE DATABASE IS NOT A RECORD. `--offer`
+    # writes a listing the moment a machine certifies it, which is what makes an
+    # overnight run useful -- but a row that exists only in a running Postgres is
+    # a row a fresh deployment does not have, and the batch prover says so in its
+    # own output every time it runs. Nine of these were live and unseeded.
+    "mariadb": ("software",
+                "MariaDB on a machine of its own, run from the vendor's "
+                "container image, listening on 3306, data on a separate block "
+                "volume."),
+    "valkey": ("software",
+               "Valkey on a machine of its own, run from the vendor's container "
+               "image, listening on 6379. The maintained fork of Redis."),
+    "memcached": ("software",
+                  "Memcached on a machine of its own, run from the official "
+                  "container image, listening on 11211."),
+    "grafana": ("software",
+                "Grafana on a machine of its own, run from the vendor's "
+                "container image, listening on 3000, data on a separate block "
+                "volume."),
+    "prometheus": ("software",
+                   "Prometheus on a machine of its own, run from the vendor's "
+                   "container image, listening on 9090, data on a separate "
+                   "block volume."),
+    "minio": ("software",
+              "MinIO on a machine of its own, run from the vendor's container "
+              "image, listening on 9000, data on a separate block volume. "
+              "S3-compatible object storage you host, as distinct from "
+              "oci-objectstorage, which OCI runs."),
+    "traefik": ("software",
+                "Traefik on a machine of its own, run from the official "
+                "container image, listening on 80."),
+    "haproxy": ("software",
+                "HAProxy on a machine of its own, installed as a package from "
+                "the distribution's own repositories."),
+    "gitea": ("software",
+              "Gitea on a machine of its own, run from the vendor's container "
+              "image, serving HTTP on 3000 and git-over-SSH on 22 -- published "
+              "on host port 20022, because 22 is the machine's own sshd."),
     "opensearch": ("software",
                    "Withdrawn after four machines built it and none ever "
                    "served a port: with an admin password set it is still "

@@ -187,11 +187,17 @@ def catalogue_entry(code: str, name: str, profile: dict, proof_reference: str) -
     ports = [str(p) for p in (profile or {}).get("ports") or []]
     where = container.get("image") or ", ".join(
         (profile or {}).get("rhel", {}).get("packages") or []) or "the machine"
+    # WHAT IT RUNS COMES BEFORE WHAT PROVED IT, because `note` is String(300)
+    # and the tail is what a cut removes. With the image last, memcached's note
+    # ended "Runs docker.io/library/memcache" and prometheus's "quay.io/
+    # prometheus/promet" -- the image name, which is the one fact a reader
+    # cannot reconstruct, truncated mid-word. A proof reference lost to the same
+    # cut is still findable: it is in the audit log and in certification_proof.
     note = (f"{name} on a machine of its own"
             + (f", listening on {', '.join(ports)}" if ports else "")
-            + f". Proved by {proof_reference}: the portal built it, the machine "
-              f"reported it serving, and the machine was destroyed. Runs "
-              f"{where}.")
+            + f". Runs {where}."
+            + f" Proved on a real machine by {proof_reference}: built, verified "
+              f"serving, and destroyed.")
     return {
         "code": code,
         "name": name or code,
@@ -355,7 +361,8 @@ def _offer(code: str, name: str) -> str:  # pragma: no cover - writes the live c
 
     from api.main import SessionLocal, append_audit
     from db.seed import SIZES
-    from db.models import Blueprint, SizingAnchor, Technology, TechnologyDelivery
+    from db.models import (Blueprint, CertificationProof, SizingAnchor, Technology,
+                           TechnologyDelivery)
 
     profile_path = pathlib.Path("/generated/profiles") / f"{code}.json"
     if not profile_path.is_file():
@@ -367,8 +374,27 @@ def _offer(code: str, name: str) -> str:  # pragma: no cover - writes the live c
             return (f"not listed: blueprint is "
                     f"{blueprint.status if blueprint else 'absent'}, not certified")
 
+        # THE PROOF'S REFERENCE, NOT THE SENTENCE ABOUT IT. This passed
+        # `blueprint.notes`, which is a whole certification sentence, into the
+        # slot `catalogue_entry` formats as "Proved by {…}". Every note written
+        # by the first batches therefore read
+        #
+        #   Proved by Certified automatically by proof build PROOF-GITEA-…:
+        #   built, verified healthy and destroyed.: the portal built it, …
+        #
+        # -- doubled, ungrammatical, and long enough that the 300-character
+        # column then cut the image name off the end.
+        #
+        # Read from certification_proof, which is where the reference actually
+        # lives, rather than recovered from prose by pattern.
+        proof = session.scalar(
+            select(CertificationProof)
+            .where(CertificationProof.technology_code == code,
+                   CertificationProof.status == "passed")
+            .order_by(CertificationProof.id.desc()))
         entry = catalogue_entry(code, name, json.loads(profile_path.read_text()),
-                                blueprint.notes or "a passing proof")
+                                (proof.reference if proof is not None
+                                 else "a passing proof"))
         tech = session.scalar(select(Technology).where(Technology.code == code))
         if tech is None:
             tech = Technology(code=code, name=entry["name"],

@@ -184,3 +184,62 @@ def test_the_name_falls_back_to_the_code_rather_than_being_invented():
     its code until a person improves it. Inventing a display name by
     title-casing is the guess this project keeps removing."""
     assert catalogue_entry("nats", "", MARIADB, "P")["name"] == "nats"
+
+
+# --- the note is what a requester reads ---------------------------------------
+#
+# FOUND 2026-09-07, by reading the nine notes the first batches actually wrote.
+# `_offer` passed `blueprint.notes` -- a whole certification SENTENCE -- into the
+# slot catalogue_entry formats as "Proved by {…}", so every note read
+#
+#   Proved by Certified automatically by proof build PROOF-GITEA-…: built,
+#   verified healthy and destroyed.: the portal built it, …
+#
+# doubled and ungrammatical, and long enough that String(300) then cut the image
+# name off the end: memcached's note stopped at "docker.io/library/memcache" and
+# prometheus's at "quay.io/prometheus/promet".
+#
+# Neither half was caught by a test, because the tests passed a short reference
+# ("PROOF-MARIADB-1") that no caller ever supplies.
+
+#: WHAT `_offer` ACTUALLY PASSED -- a whole certification sentence, 114
+#: characters of it, in the slot formatted as "Proved by {…}". Using a tidy
+#: "PROOF-MARIADB-1" here is why every earlier test passed: at that length the
+#: note fits whichever order its parts are in, so nothing was being tested.
+A_SENTENCE_WHERE_A_REFERENCE_BELONGS = (
+    "Certified automatically by proof build "
+    "PROOF-MEMCACHED-20260906T023847-213E21: built, verified healthy and "
+    "destroyed.")
+
+LONG_REFERENCE = "PROOF-MEMCACHED-20260906T023847-213E21"
+
+
+def test_the_image_survives_even_an_absurdly_long_reference():
+    """THE DEFECT, at the size it really arrived. String(300) cuts the TAIL, so
+    whatever is last is what is lost -- and the image name is the one fact a
+    reader cannot reconstruct, while a proof reference is still in the audit log
+    and in certification_proof. memcached's note stopped at
+    "docker.io/library/memcache" and prometheus's at "quay.io/prometheus/promet"."""
+    wordy = {**MARIADB, "container": {**MARIADB["container"],
+                                      "image": "docker.io/library/memcached"}}
+
+    note = catalogue_entry("memcached", "Memcached", wordy,
+                           A_SENTENCE_WHERE_A_REFERENCE_BELONGS)["note"]
+
+    assert len(note) <= 300
+    assert "docker.io/library/memcached." in note, (
+        f"the image name was truncated mid-word: {note!r}")
+
+
+def test_a_realistic_reference_still_leaves_room_for_everything():
+    """Every part a listing needs, at the sizes the real thing produces."""
+    note = catalogue_entry("prometheus", "Prometheus",
+                           {**MARIADB, "ports": [9090],
+                            "container": {"image": "quay.io/prometheus/prometheus"}},
+                           "PROOF-PROMETHEUS-20260906T034643-A4BD50")["note"]
+
+    assert "Prometheus" in note
+    assert "9090" in note
+    assert "quay.io/prometheus/prometheus." in note
+    assert "PROOF-PROMETHEUS-20260906T034643-A4BD50" in note
+    assert len(note) <= 300
