@@ -76,6 +76,27 @@ violations contains msg if {
 	)
 }
 
+# A pair is forbidden if EITHER component names the other.
+#
+# Checked in both directions on purpose: the facts are written by hand, and one
+# side of a pair being missed is a likely mistake. Refusing only when the pair
+# happens to be listed on the side the iteration reached first would make a
+# governance rule depend on which name sorts lower.
+forbidden_pair(one, other) if other in rule_for(one).denied_with
+
+forbidden_pair(one, other) if one in rule_for(other).denied_with
+
+# Whichever side actually carries the rule supplies the sentence, so an
+# asymmetric fact still explains itself.
+pair_reason(one, other) := rule_for(one).reason if {
+	other in rule_for(one).denied_with
+}
+
+pair_reason(one, other) := rule_for(other).reason if {
+	not other in rule_for(one).denied_with
+	one in rule_for(other).denied_with
+}
+
 # METADATA
 # title: Components that may not share a host with each other
 # description: Some pairs must never be co-resident in any environment, whatever the tier — two database engines on one machine competing for the same memory, or a licensing boundary that a shared host would cross.
@@ -87,11 +108,17 @@ violations contains msg if {
 	some host in input.hosts
 	some first in host.components
 	some second in host.components
-	first != second
-	second in rule_for(first).denied_with
+
+	# ONE ORDERING, NOT BOTH. `first != second` walked the pair twice and, since
+	# these facts are written symmetrically, emitted the same refusal in both
+	# directions: a requester consolidating two databases in prod was shown four
+	# near-identical paragraphs where two say everything. Sorting the pair reports
+	# it once, and forbidden_pair above keeps the check itself two-directional.
+	first < second
+	forbidden_pair(first, second)
 	msg := sprintf(
 		"%v and %v may not share a host. %v",
-		[first, second, rule_for(first).reason],
+		[first, second, pair_reason(first, second)],
 	)
 }
 

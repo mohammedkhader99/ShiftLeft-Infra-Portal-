@@ -349,3 +349,77 @@ def test_a_database_on_the_cluster_warns_and_offers_the_managed_alternative(clie
     assert any("Managed where available" in w for w in existing["warnings"])
     # and the alternative the warning names is actually on the screen
     assert any(o["key"] == "managed" for o in got)
+
+
+# --- a requester may change their mind (P.11) ---------------------------------
+#
+# Found by building the wizard step. The constraint that stops a follow-up
+# re-hosting a built environment was being read from THIS request's own last
+# placement, which made the first click in the wizard the only click. Comparing
+# two options is the entire purpose of the screen.
+
+def test_choosing_one_option_does_not_lock_out_the_others(client):
+    """The regression. Resolve 'managed', then ask again: every layout must
+    still be on offer, because nothing has been built."""
+    before = {o["key"] for o in options(client) if o["eligible"]}
+    assert {"managed", "consolidated", "separated"} <= before
+
+    r = client.post("/api/placement/resolve",
+                    json={"reference": "REQ-2026-9001", "option_key": "managed"})
+    assert r.status_code == 200, r.text
+
+    after = {o["key"] for o in options(client) if o["eligible"]}
+    assert after == before, "resolving a placement narrowed the later choices"
+
+
+def test_switching_back_and_forth_is_allowed_and_recorded(client, db):
+    """Each change is a new version, and the history keeps all of them — the
+    requester is free, and the record still says what was chosen when."""
+    for key in ("managed", "consolidated", "managed", "separated"):
+        r = client.post("/api/placement/resolve",
+                        json={"reference": "REQ-2026-9001", "option_key": key})
+        assert r.status_code == 200, f"{key}: {r.text}"
+
+    history = placement_history(db, 1)
+    assert [p.option_key for p in history] == ["managed", "consolidated",
+                                               "managed", "separated"]
+    assert [p.version for p in history] == [1, 2, 3, 4]
+    assert current_placement(db, 1).option_key == "separated"
+
+
+def test_a_provisioned_request_is_held_to_what_was_built(client, db):
+    """The constraint still bites where it was meant to. Once machines exist,
+    how the environment is hosted is a fact and not a preference.
+
+    A database on its own, because that is the only way to get a placement made
+    ENTIRELY of managed hosts. The three-component fixture's managed option also
+    carries a VM for the runtime, so its topology legitimately permits both modes
+    and nothing would be refused — which is correct behaviour and the wrong test.
+    """
+    req = Request(reference="REQ-2026-9003", request_type="create",
+                  requester="tester@example.com", deployment_target="oci",
+                  environment_tier="dev", project_code="EGATE",
+                  cost_centre_code="IMD-1001", environment_name="egate-dev")
+    db.add(req)
+    db.flush()
+    db.add(RequestComponent(request_id=req.id, technology_code="postgres16",
+                            size="medium"))
+    db.commit()
+
+    keys = {o["key"] for o in options(client, "REQ-2026-9003")}
+    assert keys == {"managed", "separated"}, keys
+
+    r = client.post("/api/placement/resolve",
+                    json={"reference": "REQ-2026-9003", "option_key": "managed"})
+    assert r.status_code == 200, r.text
+    req.status = "provisioned"
+    db.commit()
+
+    after = {o["key"]: o for o in options(client, "REQ-2026-9003")}
+    separated = after["separated"]
+    assert separated["eligible"] is False, (
+        "a provisioned managed database still offered a VM layout")
+    assert any("built on managed" in reason for reason in separated["reasons"])
+    assert any("rebuild, not a resize" in reason for reason in separated["reasons"])
+    # and it is refused, not removed — the requester can see why
+    assert "separated" in after

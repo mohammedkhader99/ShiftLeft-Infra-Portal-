@@ -36,6 +36,46 @@ from db.models import RequestPlacement
 # nothing of the machines already there.
 ALWAYS_PERMITTED = frozenset({"managed"})
 
+# Statuses in which nothing has been built yet. Named as the exception, so that
+# an unknown or newly added status is treated as built and stays constrained —
+# forgetting to list a status must not silently drop a governance rule.
+#
+# `apply-failed` is deliberately absent: a failed apply may well have created
+# some resources before it stopped, and re-hosting on top of them is exactly the
+# rebuild this constraint exists to prevent. `manual-fulfil` and `auto-building`
+# are absent for the same reason — both are past approval, and what happens after
+# approval is not something the portal can see.
+NOT_YET_BUILT = frozenset({"draft", "submitted", "planned", "rejected",
+                           "cancelled"})
+
+
+def constraining_placement(session: Session, request_id: int,
+                           status: str) -> RequestPlacement | None:
+    """The placement that constrains what this request may now be placed as.
+
+    NOT simply "the last placement of this request", which is the reading that
+    turned the constraint into a trap: a requester who chose "managed" in the
+    wizard and then wanted to compare it against "consolidated" was told *"this
+    environment was built on managed"* about an environment that did not exist.
+    Nothing had been built. They were choosing, not changing.
+
+    The constraint bites once the environment IS something — because that is the
+    fact it is about. An environment made of virtual machines has no cluster to
+    deploy onto, and offering one when resizing it describes something that
+    cannot happen. Before anything is built there is no such fact, and a draft
+    the requester is still filling in must be revisable.
+
+    A follow-up request against an environment SOMEONE ELSE built is not covered
+    here and is not covered anywhere: `add` and `resize` name their environment
+    by free text (`target_environment`) with no link to the request that built
+    it, so the portal cannot identify that placement. Guessing by name would put
+    a governance constraint on a soft string match. Left undone and recorded
+    rather than approximated.
+    """
+    if (status or "").strip().lower() in NOT_YET_BUILT:
+        return None
+    return current_placement(session, request_id)
+
 
 def current_placement(session: Session, request_id: int) -> RequestPlacement | None:
     """The placement in force for this request, or None if none was ever made.
@@ -148,9 +188,14 @@ def filter_options(options: list, prior: RequestPlacement | None) -> list:
             f"This environment was built on {built_as}. "
             f"{', '.join(sorted(unavailable))} cannot be added to it now — "
             f"changing how an environment is hosted is a rebuild, not a resize.")
+        # clusters and warnings are carried, not dropped. This function predates
+        # both fields (they arrived with Scenario B) and rebuilding the option
+        # without them silently emptied the cluster list and the stateful-workload
+        # advice on exactly the options that most needed explaining.
         out.append(type(option)(
             key=option.key, title=option.title, summary=option.summary,
             hosts=option.hosts, eligible=False,
             reasons=tuple(option.reasons) + (reason,),
+            clusters=option.clusters, warnings=option.warnings,
         ))
     return out

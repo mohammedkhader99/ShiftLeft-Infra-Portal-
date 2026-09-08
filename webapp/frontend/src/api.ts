@@ -1304,3 +1304,127 @@ export async function getAudit(reference: string): Promise<AuditEntry[]> {
   const d = await r.json()
   return (d.entries as AuditEntry[]) || []
 }
+
+// --- Placement (P.11) --------------------------------------------------------
+//
+// WHY THESE TYPES MIRROR THE SERVER SO CLOSELY. The browser renders placement;
+// it never computes it. Every field here is produced by /api/placement/options
+// after the API has asked OPA whether the layout is permitted, summed the shapes
+// and priced them — so the shape of this type is the shape of that answer, not a
+// convenience for the form. ARCHITECTURE.md §14 decision 10: the API is the
+// authority. Nothing below is recalculated in the client, including the deltas.
+
+// One machine (or one managed service, or one cluster) in a proposed layout.
+export type PlacementHost = {
+  id: string
+  host_mode: string
+  components: string[]
+}
+
+// The shape one host must be built at. `resolved: false` means the server
+// declined to size it and `missing` says which components it had no requirement
+// for — an unsized host is never shown as a host of zero.
+export type SizedHost = {
+  host_id: string
+  host_mode: string
+  components: string[]
+  resolved: boolean
+  missing: string[]
+  headroom_percent: number
+  note?: string
+  vcpu: number | null
+  memory_gb: number | null
+  storage_gb: number | null
+  iops: number | null
+}
+
+// A cluster this option could deploy onto, already assessed by the API for
+// entitlement, capacity and quota. Clusters the requester is not entitled to are
+// ABSENT from this list, never present-and-refused: listing one would publish its
+// name, region and size to anyone who opens the form.
+export type PlacementCluster = {
+  id: string
+  name: string
+  region: string
+  allocatable_vcpu: number
+  allocatable_memory_gb: number
+  eligible: boolean
+  reasons: string[]
+}
+
+export type PlacementOption = {
+  key: string
+  title: string
+  summary: string
+  hosts: PlacementHost[]
+  host_count: number
+  eligible: boolean
+  // Why it cannot be chosen. Always populated when `eligible` is false, and
+  // rendering it is the whole point of the step: an option that vanishes is
+  // indistinguishable from a portal that is broken.
+  reasons: string[]
+  clusters: PlacementCluster[]
+  // Advisory, never blocking — a database on Kubernetes is a legitimate choice.
+  warnings: string[]
+  sizing: {
+    hosts: SizedHost[]
+    totals: { vcpu: number; memory_gb: number; storage_gb: number; iops: number }
+    machine_count: number
+    headroom_percent: number
+    resolved: boolean
+  }
+  estimate: {
+    currency: string
+    pricing_source?: string | null
+    machine_count: number
+    licences: { technology_code: string; item: string; monthly: number }[]
+    resolved: boolean
+    totals: { one_time: number; monthly: number; annual: number }
+  }
+  // Lifted to the top level by the API because that is what its own comparison
+  // reads. `resolved: false` means unpriceable, and `monthly_delta` is then null
+  // rather than zero — a price nobody can compute is not the cheapest option.
+  resolved: boolean
+  totals: { one_time: number; monthly: number; annual: number }
+  monthly_delta: number | null
+  cheapest: boolean
+}
+
+export type PlacementOptions = {
+  reference: string
+  environment: string | null
+  deployment_target: string | null
+  options: PlacementOption[]
+}
+
+// Read-only: nothing is persisted, so a requester may explore freely. Needs a
+// saved reference because the API resolves placement against the real request —
+// its components, its environment tier and its target — never against a body the
+// browser composed.
+export async function getPlacementOptions(
+  reference: string,
+): Promise<{ status: number; body: any }> {
+  const r = await fetch('/api/placement/options', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reference }),
+  })
+  return { status: r.status, body: await r.json().catch(() => null) }
+}
+
+// The decision. Persists a versioned placement and writes an audit entry, and
+// the API decides AGAIN before it does — an option shown as available minutes
+// ago can be refused here, which is the correct outcome and not an error in the
+// form. `cluster_id` is re-authorised server-side against the request's scope.
+export async function resolvePlacement(
+  reference: string,
+  option_key: string,
+  cluster_id?: string | null,
+): Promise<{ status: number; body: any }> {
+  const r = await fetch('/api/placement/resolve', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reference, option_key, cluster_id: cluster_id || null }),
+  })
+  return { status: r.status, body: await r.json().catch(() => null) }
+}

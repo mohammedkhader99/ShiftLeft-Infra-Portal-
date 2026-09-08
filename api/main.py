@@ -8268,7 +8268,8 @@ def _placement_options(session: Session, req: Request, evaluate) -> list[dict]:
         facts, environment, target, evaluate,
         clusters=_discover_clusters(session, req))
     options = placement_store.filter_options(
-        options, placement_store.current_placement(session, req.id))
+        options,
+        placement_store.constraining_placement(session, req.id, req.status))
 
     sizes = {c.technology_code: c.size for c in req.components if c.technology_code}
     requirements = load_requirements(session, sizes)

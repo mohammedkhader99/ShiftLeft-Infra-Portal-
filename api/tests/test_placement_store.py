@@ -20,6 +20,7 @@ from sqlalchemy.orm import sessionmaker
 
 from api.placement import ComponentFacts, HOST_MANAGED, HOST_VM, enumerate_options
 from api.placement_store import (
+    constraining_placement,
     current_placement,
     filter_options,
     host_modes_used,
@@ -43,6 +44,11 @@ VM_TOPOLOGY = {
     "environment": "prod", "deployment_target": "oci",
     "hosts": [{"id": "host-1", "host_mode": "vm",
                "components": ["postgres16", "nodejs20"]}],
+}
+MANAGED_TOPOLOGY = {
+    "environment": "dev", "deployment_target": "oci",
+    "hosts": [{"id": "managed-postgres16", "host_mode": "managed",
+               "components": ["postgres16"]}],
 }
 CONTAINER_TOPOLOGY = {
     "environment": "dev", "deployment_target": "oci",
@@ -220,3 +226,88 @@ def test_an_existing_refusal_is_kept_alongside_the_new_one(session):
     assert len(refused.reasons) == 2
     assert "may not share a host" in refused.reasons[0]
     assert "rebuild, not a resize" in refused.reasons[1]
+
+
+# --- the constraint is about a built environment, not a live draft (P.11) -----
+#
+# Putting a screen on this is what found it. The constraint was being read from
+# THIS request's own last placement, so the first click in the wizard became the
+# only click: choosing "managed" and then asking to compare it against
+# "consolidated" was refused with *"this environment was built on managed"* about
+# an environment that did not exist. Nothing had been built.
+
+def test_a_draft_is_not_constrained_by_its_own_earlier_choice(session):
+    """The regression. A requester exploring options is choosing, not changing
+    how a running environment is hosted."""
+    record_placement(session, 1, "managed", MANAGED_TOPOLOGY)
+    assert constraining_placement(session, 1, "draft") is None
+
+
+def test_a_request_awaiting_approval_is_still_revisable(session):
+    """Submitted is not built. The approver has not looked yet, and nothing has
+    been provisioned — changing the layout here is a change to a proposal."""
+    record_placement(session, 1, "managed", MANAGED_TOPOLOGY)
+    for status in ("submitted", "planned", "rejected", "cancelled"):
+        assert constraining_placement(session, 1, status) is None, status
+
+
+def test_a_provisioned_environment_does_constrain(session):
+    """The case the constraint was written for. Machines exist; how they are
+    hosted is now a fact rather than a preference."""
+    placement = record_placement(session, 1, "consolidated", VM_TOPOLOGY)
+    assert constraining_placement(session, 1, "provisioned") == placement
+
+
+def test_an_unrecognised_status_is_treated_as_built(session):
+    """Fail safe. The exception list names what is NOT yet built, so a status
+    nobody remembered to add keeps the constraint instead of silently dropping
+    it — a governance rule must not be lost by omission."""
+    record_placement(session, 1, "consolidated", VM_TOPOLOGY)
+    for status in ("apply-failed", "manual-fulfil", "auto-building",
+                   "some-status-invented-next-year"):
+        assert constraining_placement(session, 1, status) is not None, status
+
+
+def test_a_half_built_environment_constrains(session):
+    """A failed apply may have created resources before it stopped. Re-hosting
+    on top of those is the rebuild this rule exists to prevent, so it is the one
+    case where being generous would be wrong."""
+    record_placement(session, 1, "consolidated", VM_TOPOLOGY)
+    assert constraining_placement(session, 1, "apply-failed") is not None
+
+
+def test_status_matching_ignores_case_and_padding(session):
+    record_placement(session, 1, "managed", MANAGED_TOPOLOGY)
+    assert constraining_placement(session, 1, " Draft ") is None
+
+
+def test_a_request_with_no_placement_is_unconstrained_whatever_its_status(session):
+    assert constraining_placement(session, 99, "provisioned") is None
+
+
+# --- a refusal keeps the cluster list and the advice (P.11) -------------------
+
+def test_a_refused_option_keeps_its_clusters_and_warnings(session):
+    """The second defect. This function predates both fields, and rebuilding the
+    option without them emptied the cluster list and the stateful-workload advice
+    on exactly the options that most needed explaining — the requester was told
+    they could not deploy onto a cluster, with the clusters gone from the page."""
+    prior = record_placement(session, 1, "consolidated", VM_TOPOLOGY)
+
+    class FakeHost:
+        host_mode = "container"
+
+    class FakeCluster:
+        def as_dict(self):
+            return {"id": "c-1", "name": "oke-egate-dev"}
+
+    option = type(enumerate_options(SELECTION)[0])(
+        key="existing-cluster", title="Deploy onto an existing cluster",
+        summary="", hosts=(FakeHost(),),
+        clusters=(FakeCluster(),),
+        warnings=("postgres16 keeps data.",))
+
+    refused = filter_options([option], prior)[0]
+    assert not refused.eligible
+    assert len(refused.clusters) == 1, "the cluster list survived the refusal"
+    assert refused.warnings == ("postgres16 keeps data.",)

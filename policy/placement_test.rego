@@ -89,6 +89,56 @@ test_that_denial_names_both_components if {
 	contains(msg, "mysql")
 }
 
+test_a_forbidden_pair_is_reported_once_not_twice if {
+	# The facts are symmetric, so walking the pair in both directions emitted the
+	# same refusal twice. On the placement screen that is four near-identical
+	# paragraphs for two databases in prod, where two say everything.
+	msgs := violations with input as {
+		"environment": "dev",
+		"hosts": [{"id": "h", "host_mode": "vm", "components": ["postgres16", "mysql"]}],
+	}
+	count([m | some m in msgs; contains(m, "may not share a host.")]) == 1
+}
+
+test_the_pair_is_named_in_a_stable_order if {
+	msgs := violations with input as {
+		"environment": "dev",
+		"hosts": [{"id": "h", "host_mode": "vm", "components": ["postgres16", "mysql"]}],
+	}
+	some msg in msgs
+	startswith(msg, "mysql and postgres16 may not share a host.")
+}
+
+test_the_order_components_are_listed_in_does_not_change_the_answer if {
+	# Sorting the pair must not make the refusal depend on how the resolver
+	# happened to order the components it placed.
+	reversed := violations with input as {
+		"environment": "dev",
+		"hosts": [{"id": "h", "host_mode": "vm", "components": ["mysql", "postgres16"]}],
+	}
+	forward := violations with input as {
+		"environment": "dev",
+		"hosts": [{"id": "h", "host_mode": "vm", "components": ["postgres16", "mysql"]}],
+	}
+	reversed == forward
+}
+
+test_an_asymmetric_fact_is_still_caught if {
+	# Only one side names the other. Checking a single direction would let this
+	# through whenever the unlisted name sorted lower.
+	msgs := violations with input as {
+		"environment": "dev",
+		"hosts": [{"id": "h", "host_mode": "vm", "components": ["aaa-engine", "zzz-engine"]}],
+	}
+		with data.coresidency as {"zzz-engine": {
+			"denied_in_environments": [],
+			"denied_with": ["aaa-engine"],
+			"reason": "Two engines on one machine compete for the same memory.",
+		}}
+	some msg in msgs
+	msg == "aaa-engine and zzz-engine may not share a host. Two engines on one machine compete for the same memory."
+}
+
 test_a_component_with_no_rule_is_placeable if {
 	# A component nobody has written a co-residency rule for must not become
 	# unrequestable the day it is added to the catalogue.

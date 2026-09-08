@@ -337,9 +337,44 @@ pip install -r requirements.txt
 python -m pytest -q
 ```
 
-Expect roughly **3,100 tests passing** and a handful skipped. On a slow or
+Expect roughly **3,400 tests passing** and a handful skipped. On a slow or
 throttled laptop the full suite takes well over an hour; on a normal machine,
 about twenty minutes.
+
+### The policy tests
+
+The Rego rules have their own suite, run by OPA rather than by pytest:
+
+```bash
+docker run --rm -v "$PWD/policy:/policies:ro" openpolicyagent/opa:latest test /policies -v
+```
+
+Expect **39 passing**.
+
+### The placement screen's render check
+
+There is no test runner in the frontend, so the placement step has a plain
+script that server-renders it in every state against real captured API answers.
+`tsc` proves the types line up; this proves the component actually runs — and it
+sits inside the request form, so a crash there takes the whole form down rather
+than just the new step.
+
+It needs Docker, because there is no node on the host:
+
+```bash
+docker build --target build -t placement-render-check ./webapp
+docker run --rm \
+  -v "$PWD/webapp/frontend/tests:/tests:ro" \
+  -v "$PWD/webapp/frontend/src:/frontend/src:ro" \
+  -w /frontend placement-render-check sh -c \
+  'cp /tests/placement-step.render.tsx . && ./node_modules/.bin/esbuild ./placement-step.render.tsx --bundle --platform=node --format=cjs --outfile=/tmp/r.cjs --jsx=automatic --loader:.json=json && node /tmp/r.cjs'
+```
+
+A pass ends with `ALL RENDER CHECKS PASSED`.
+
+**On Windows, run that from PowerShell and not Git Bash.** Git Bash rewrites the
+container paths — `-w /frontend` arrives as `C:/Program Files/Git/frontend` and
+Docker refuses it. This is the same path-mangling trap warned about in §5.
 
 ---
 

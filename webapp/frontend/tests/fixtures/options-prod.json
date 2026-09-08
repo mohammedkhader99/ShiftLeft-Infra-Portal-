@@ -1,0 +1,364 @@
+[
+  {
+    "key": "managed",
+    "title": "Managed where available",
+    "summary": "The cloud runs postgres16. Patching, backups and failover for it stop being yours.",
+    "hosts": [
+      {
+        "id": "managed-postgres16",
+        "host_mode": "managed",
+        "components": [
+          "postgres16"
+        ]
+      },
+      {
+        "id": "host-1",
+        "host_mode": "vm",
+        "components": [
+          "mysql"
+        ]
+      }
+    ],
+    "host_count": 1,
+    "eligible": true,
+    "reasons": [],
+    "clusters": [],
+    "warnings": [],
+    "sizing": {
+      "hosts": [
+        {
+          "host_id": "managed-postgres16",
+          "host_mode": "managed",
+          "components": [
+            "postgres16"
+          ],
+          "resolved": true,
+          "base": null,
+          "headroom_percent": 20,
+          "missing": [],
+          "vcpu": null,
+          "memory_gb": null,
+          "storage_gb": null,
+          "iops": null,
+          "note": "Run by the cloud. No machine is provisioned and nothing is added to the totals."
+        },
+        {
+          "host_id": "host-1",
+          "host_mode": "vm",
+          "components": [
+            "mysql"
+          ],
+          "resolved": false,
+          "base": null,
+          "headroom_percent": 20,
+          "missing": [
+            "mysql"
+          ],
+          "vcpu": null,
+          "memory_gb": null,
+          "storage_gb": null,
+          "iops": null,
+          "note": "Cannot be sized: no requirement is recorded for mysql as vm. Sizing it anyway would build a machine too small for what was asked for."
+        }
+      ],
+      "totals": {
+        "vcpu": 0,
+        "memory_gb": 0,
+        "storage_gb": 0,
+        "iops": 0
+      },
+      "machine_count": 0,
+      "headroom_percent": 20,
+      "resolved": false
+    },
+    "estimate": {
+      "currency": "AED",
+      "pricing_source": "oci-live",
+      "machine_count": 0,
+      "machines": null,
+      "managed": {
+        "currency": "AED",
+        "unpriced": [],
+        "provisional": [],
+        "external_licences": [],
+        "deployment_target": "oci",
+        "known_target": true,
+        "pricing_source": "oci-live",
+        "lines": [
+          {
+            "technology_name": "PostgreSQL 16",
+            "size": "medium",
+            "resolved": true,
+            "provisional": false,
+            "resource_kind": "oci-postgres",
+            "billing_model": "managed-db",
+            "unpriceable": null,
+            "compute_monthly": 446.7,
+            "storage_monthly": 15.92,
+            "resource_monthly": 462.63,
+            "licence_monthly": 0.0,
+            "external_licence": null,
+            "one_time": 0.0,
+            "monthly": 462.63
+          }
+        ],
+        "by_category": {
+          "compute": 446.7,
+          "storage": 15.92,
+          "licence": 0.0,
+          "backup": 0.0,
+          "monitoring": 0.0,
+          "support": 0.0
+        },
+        "totals": {
+          "one_time": 0.0,
+          "monthly": 462.63,
+          "annual": 5551.5
+        }
+      },
+      "licences": [],
+      "resolved": false,
+      "totals": {
+        "one_time": 0.0,
+        "monthly": 462.63,
+        "annual": 5551.56
+      }
+    },
+    "resolved": false,
+    "totals": {
+      "one_time": 0.0,
+      "monthly": 462.63,
+      "annual": 5551.56
+    },
+    "monthly_delta": null,
+    "cheapest": false
+  },
+  {
+    "key": "consolidated",
+    "title": "Consolidated",
+    "summary": "One machine hosts all 2 components. Their resource needs are summed, not maximised.",
+    "hosts": [
+      {
+        "id": "host-1",
+        "host_mode": "vm",
+        "components": [
+          "postgres16",
+          "mysql"
+        ]
+      }
+    ],
+    "host_count": 1,
+    "eligible": false,
+    "reasons": [
+      "mysql and postgres16 may not share a host. A production database shares a host with nothing else. A neighbour on the same machine competes for the page cache and the disk queue, and patching that neighbour takes the database down with it.",
+      "mysql may not share a host in prod. A production database shares a host with nothing else. A neighbour on the same machine competes for the page cache and the disk queue, and patching that neighbour takes the database down with it.",
+      "postgres16 may not share a host in prod. A production database shares a host with nothing else. A neighbour on the same machine competes for the page cache and the disk queue, and patching that neighbour takes the database down with it."
+    ],
+    "clusters": [],
+    "warnings": [],
+    "sizing": {
+      "hosts": [
+        {
+          "host_id": "host-1",
+          "host_mode": "vm",
+          "components": [
+            "postgres16",
+            "mysql"
+          ],
+          "resolved": false,
+          "base": null,
+          "headroom_percent": 20,
+          "missing": [
+            "mysql"
+          ],
+          "vcpu": null,
+          "memory_gb": null,
+          "storage_gb": null,
+          "iops": null,
+          "note": "Cannot be sized: no requirement is recorded for mysql as vm. Sizing it anyway would build a machine too small for what was asked for."
+        }
+      ],
+      "totals": {
+        "vcpu": 0,
+        "memory_gb": 0,
+        "storage_gb": 0,
+        "iops": 0
+      },
+      "machine_count": 0,
+      "headroom_percent": 20,
+      "resolved": false
+    },
+    "estimate": {
+      "currency": "AED",
+      "pricing_source": null,
+      "machine_count": 0,
+      "machines": null,
+      "managed": null,
+      "licences": [
+        {
+          "technology_code": "postgres16",
+          "item": "postgres-licence",
+          "monthly": 0.0
+        }
+      ],
+      "resolved": false,
+      "totals": {
+        "one_time": 0.0,
+        "monthly": 0.0,
+        "annual": 0.0
+      }
+    },
+    "resolved": false,
+    "totals": {
+      "one_time": 0.0,
+      "monthly": 0.0,
+      "annual": 0.0
+    },
+    "monthly_delta": null,
+    "cheapest": false
+  },
+  {
+    "key": "separated",
+    "title": "Separated",
+    "summary": "2 machines, one per component. The most isolated and the most expensive.",
+    "hosts": [
+      {
+        "id": "host-1",
+        "host_mode": "vm",
+        "components": [
+          "postgres16"
+        ]
+      },
+      {
+        "id": "host-2",
+        "host_mode": "vm",
+        "components": [
+          "mysql"
+        ]
+      }
+    ],
+    "host_count": 2,
+    "eligible": true,
+    "reasons": [],
+    "clusters": [],
+    "warnings": [],
+    "sizing": {
+      "hosts": [
+        {
+          "host_id": "host-1",
+          "host_mode": "vm",
+          "components": [
+            "postgres16"
+          ],
+          "resolved": true,
+          "base": {
+            "vcpu": 4,
+            "memory_gb": 16,
+            "storage_gb": 200,
+            "iops": 3000
+          },
+          "headroom_percent": 20,
+          "missing": [],
+          "vcpu": 5,
+          "memory_gb": 20,
+          "storage_gb": 240,
+          "iops": 3600
+        },
+        {
+          "host_id": "host-2",
+          "host_mode": "vm",
+          "components": [
+            "mysql"
+          ],
+          "resolved": false,
+          "base": null,
+          "headroom_percent": 20,
+          "missing": [
+            "mysql"
+          ],
+          "vcpu": null,
+          "memory_gb": null,
+          "storage_gb": null,
+          "iops": null,
+          "note": "Cannot be sized: no requirement is recorded for mysql as vm. Sizing it anyway would build a machine too small for what was asked for."
+        }
+      ],
+      "totals": {
+        "vcpu": 5,
+        "memory_gb": 20,
+        "storage_gb": 240,
+        "iops": 3600
+      },
+      "machine_count": 1,
+      "headroom_percent": 20,
+      "resolved": false
+    },
+    "estimate": {
+      "currency": "AED",
+      "pricing_source": "oci-live",
+      "machine_count": 1,
+      "machines": {
+        "currency": "AED",
+        "unpriced": [],
+        "provisional": [],
+        "external_licences": [],
+        "deployment_target": "oci",
+        "known_target": true,
+        "pricing_source": "oci-live",
+        "lines": [
+          {
+            "technology_name": "Compute Instance (VM)",
+            "size": "medium",
+            "resolved": true,
+            "provisional": false,
+            "resource_kind": "oci-instance",
+            "billing_model": "vm",
+            "unpriceable": null,
+            "compute_monthly": 262.1,
+            "storage_monthly": 19.11,
+            "resource_monthly": 281.2,
+            "licence_monthly": 0.0,
+            "external_licence": null,
+            "one_time": 0.0,
+            "monthly": 281.2
+          }
+        ],
+        "by_category": {
+          "compute": 262.1,
+          "storage": 19.11,
+          "licence": 0.0,
+          "backup": 0.0,
+          "monitoring": 0.0,
+          "support": 0.0
+        },
+        "totals": {
+          "one_time": 0.0,
+          "monthly": 281.2,
+          "annual": 3374.44
+        }
+      },
+      "managed": null,
+      "licences": [
+        {
+          "technology_code": "postgres16",
+          "item": "postgres-licence",
+          "monthly": 0.0
+        }
+      ],
+      "resolved": false,
+      "totals": {
+        "one_time": 0.0,
+        "monthly": 281.2,
+        "annual": 3374.4
+      }
+    },
+    "resolved": false,
+    "totals": {
+      "one_time": 0.0,
+      "monthly": 281.2,
+      "annual": 3374.4
+    },
+    "monthly_delta": null,
+    "cheapest": false
+  }
+]

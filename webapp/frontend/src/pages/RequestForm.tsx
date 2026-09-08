@@ -44,6 +44,8 @@ import {
   recommendWithAI,
   getApprovalInfo,
   getComponentOptions,
+  getPlacementOptions,
+  resolvePlacement,
   type Lookups,
   type Component,
   type ComponentOptions,
@@ -51,7 +53,9 @@ import {
   type RequestRow,
   type ApprovalInfo,
   type AiRecommendation,
+  type PlacementOption,
 } from '../api'
+import PlacementStep from '../components/PlacementStep'
 
 // Detail fields whose value is text, not a number. Everything else is coerced
 // with Number(), which would turn an image OCID into NaN.
@@ -289,6 +293,16 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
 
   const [approvalInfo, setApprovalInfo] = useState<ApprovalInfo | null>(null)
 
+  // PLACEMENT (P.11). `null` means not asked yet, which is not the same as "no
+  // layouts" -- an empty array is the server's answer and gets its own sentence.
+  // The chosen key is held here and resolved server-side at submit: the browser
+  // remembers a preference, it never records a decision.
+  const [placement, setPlacement] = useState<PlacementOption[] | null>(null)
+  const [placementChosen, setPlacementChosen] = useState<string | null>(null)
+  const [placementCluster, setPlacementCluster] = useState<string | null>(null)
+  const [placementBusy, setPlacementBusy] = useState(false)
+  const [placementError, setPlacementError] = useState<string | null>(null)
+
   useEffect(() => {
     getLookups().then(setLookups).catch(() => setLookups(null))
     getMe().then((m) => setEmail(m?.email ?? null))
@@ -391,6 +405,25 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pricedKey])
+
+  // A LAYOUT FOR A STACK THAT NO LONGER EXISTS IS WORSE THAN NO LAYOUT. Adding a
+  // component, changing a size, or switching target or tier changes what the
+  // machines must be and what OPA says about them, so the computed options are
+  // dropped rather than left on screen looking current. Keeping a stale
+  // "consolidated -- 412.00 AED/mo" beside a stack it was never costed for is how
+  // a figure nobody calculated reaches an approver.
+  //
+  // Keyed on the same inputs the API uses: the components, the target and the
+  // environment tier. Not on the justification or the owners, which cannot move
+  // a machine.
+  const placementKey = JSON.stringify([target, envTier, pricedComponents])
+  useEffect(() => {
+    setPlacement(null)
+    setPlacementChosen(null)
+    setPlacementCluster(null)
+    setPlacementError(null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [placementKey])
 
   // Target-aware catalogue (F-CAT): when the deployment target changes, drop any
   // picked components not offered on the new target (so the stack stays valid).
@@ -701,6 +734,37 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
     return saved
   }
 
+  // WHY THIS SAVES A DRAFT FIRST. /api/placement/options resolves the layout
+  // against the stored request -- its components, its tier, its target -- and not
+  // against a body the browser composed, because this decision determines what
+  // gets built and a browser-composed body is an assertion. So there must be a
+  // request to resolve against. It is behind a button rather than an effect for
+  // the same reason the draftRef comment above exists: a form that persisted a
+  // draft as a side effect of typing would leave one behind for every visit
+  // somebody abandoned halfway.
+  async function onWorkOutPlacement() {
+    setPlacementBusy(true)
+    setPlacementError(null)
+    const draft = await persistDraft()
+    if (draft.status !== 200) {
+      setPlacementBusy(false)
+      setPlacementError(
+        draft.body?.detail ||
+          'The draft could not be saved, so there is nothing to work the placement out against.',
+      )
+      return
+    }
+    const { status, body } = await getPlacementOptions(draft.body.reference)
+    setPlacementBusy(false)
+    if (status !== 200) {
+      setPlacementError(body?.detail || `The platform could not answer (HTTP ${status}).`)
+      return
+    }
+    setPlacement((body.options || []) as PlacementOption[])
+    setPlacementChosen(null)
+    setPlacementCluster(null)
+  }
+
   async function onSaveDraft() {
     setBusy(true)
     setResult(null)
@@ -723,6 +787,34 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
       return
     }
     const ref = draft.body.reference
+
+    // THE DECISION IS MADE HERE, BY THE SERVER, AND AGAIN. A layout chosen
+    // minutes ago may no longer be permitted -- the policy can have changed, a
+    // cluster can have filled up -- and /api/placement/resolve re-decides before
+    // it records anything. A refusal at this point is the check working, so it
+    // stops the submit and says what happened rather than submitting a request
+    // whose layout was silently dropped.
+    //
+    // Skipped entirely when nothing was chosen: placement is offered, not
+    // required, and every request raised before this step existed has none.
+    if (placementChosen) {
+      const placed = await resolvePlacement(ref, placementChosen, placementCluster)
+      if (placed.status !== 200) {
+        setBusy(false)
+        setResult({
+          kind: 'error',
+          title: 'That layout is no longer available',
+          subtitle:
+            (placed.body?.detail || 'The platform refused it.') +
+            ' Work out the placement again and choose from what is offered now.',
+        })
+        setPlacement(null)
+        setPlacementChosen(null)
+        setPlacementCluster(null)
+        return
+      }
+    }
+
     const submit = await submitRequest(ref)
     setBusy(false)
     if (submit.status === 200) {
@@ -737,6 +829,13 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
       // raised from this form would overwrite the one just submitted instead of
       // creating its own.
       setDraftRef(null)
+      // And forget the layout with it, for the same reason. The options were
+      // computed for the request that has just gone to an approver; carrying the
+      // choice forward would silently apply a decision made about one request to
+      // a different one.
+      setPlacement(null)
+      setPlacementChosen(null)
+      setPlacementCluster(null)
     } else if (submit.status === 422) {
       const fieldErrors: Record<string, string> = submit.body.errors || {}
       setErrors(fieldErrors)
@@ -773,10 +872,37 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
       : !!(costCentre && target && targetEnv)
   const stackDone = filledComponents.some((c) => c.technology_code && c.size)
   const detailsDone = justification.trim().length >= 20 && !!priority && !!criticality && !!deliveryDate
-  const stepDone = [basicsDone, stackDone, detailsDone]
+  // ONE MONTHLY FIGURE ON THE SCREEN. Once a layout is chosen, the cost that
+  // matters is the placement cost: the per-component estimate priced the same
+  // components in a different arrangement, so both being on screen puts two
+  // different monthly totals in front of the same person. This form has already
+  // been bitten twice by a figure that disagreed with itself -- the footer
+  // reading 0.00 beside a panel reading "Not priced", and a 90.59/month resource
+  // approved at zero -- and this is the same defect with better arithmetic.
+  //
+  // Falls back to the per-component estimate when nothing is chosen, and to
+  // nothing at all when neither can be priced. Never to a zero.
+  const chosenPlacement = placement?.find((o) => o.key === placementChosen) ?? null
+  const placementPriced = !!chosenPlacement?.resolved
+  const shownMonthly = placementPriced
+    ? chosenPlacement!.totals.monthly
+    : cost && !cost.unpriced?.length
+      ? cost.totals.monthly
+      : null
+  const shownCurrency = placementPriced
+    ? chosenPlacement!.estimate.currency
+    : cost?.currency || 'AED'
+
+  // Placement is OFFERED, not required: nothing before this step existed needed
+  // a layout, and demanding one would block every request type that has never
+  // had one. So the step is complete once a layout is chosen, and the marker
+  // resting here while Details is already ticked is a nudge rather than a block.
+  const placementDone = !!placementChosen
+  const stepDone = [basicsDone, stackDone, placementDone, detailsDone]
   const firstIncomplete = stepDone.indexOf(false)
   const currentIndex = firstIncomplete === -1 ? stepDone.length - 1 : firstIncomplete
-  const SECTION_IDS = ['section-basics', 'section-stack', 'section-details']
+  const SECTION_IDS = ['section-basics', 'section-stack', 'section-placement',
+                       'section-details']
   const scrollToSection = (i: number) =>
     document.getElementById(SECTION_IDS[i])?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 
@@ -861,6 +987,7 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
           >
             <ProgressStep label="Basics" complete={basicsDone} />
             <ProgressStep label="Stack" complete={stackDone} />
+            <ProgressStep label="Placement" complete={placementDone} />
             <ProgressStep label="Details" complete={detailsDone} />
           </ProgressIndicator>
         )}
@@ -1526,6 +1653,33 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
               )}
               </div>
 
+              <div id="section-placement">
+                <PlacementStep
+                  options={placement}
+                  chosen={placementChosen}
+                  clusterId={placementCluster}
+                  busy={placementBusy}
+                  error={placementError}
+                  onFetch={onWorkOutPlacement}
+                  onChoose={setPlacementChosen}
+                  onClusterChange={setPlacementCluster}
+                  // The same gate the cost panel uses: a component with no size
+                  // chosen has no requirement row to size a host from, so asking
+                  // now would return every layout unsizeable and read as a
+                  // failure rather than as an unfinished form.
+                  ready={!!target && pricedComponents.length > 0 && !isPlatformService}
+                  notReadyReason={
+                    isPlatformService
+                      ? 'A platform service is fulfilled by the infrastructure team, so there is nothing to place on a machine.'
+                      : !target
+                        ? 'Choose a deployment target first. Where it runs decides what it can run on.'
+                        : filledComponents.length > 0
+                          ? 'Choose a size for each component. The size decides the shape of the machine it needs.'
+                          : 'Add a component first. Placement is about where the components go.'
+                  }
+                />
+              </div>
+
               <div id="section-details" style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
               <FormGroup legendText="Request details">
                 <Stack gap={5}>
@@ -1671,11 +1825,15 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
                 the screen. A price nobody can compute is not a price of zero. */}
             {cost && !isDecommission && (
               <span style={{ marginLeft: 'auto', fontSize: '0.9rem', color: 'var(--cds-text-secondary)' }}>
-                {cost.unpriced?.length ? (
+                {shownMonthly == null ? (
                   <strong style={{ color: 'var(--cds-text-primary)' }}>Not priced</strong>
                 ) : (
                   <>
-                    <strong style={{ color: 'var(--cds-text-primary)' }}>{cost.totals.monthly.toFixed(2)} {cost.currency}</strong>/mo
+                    <strong style={{ color: 'var(--cds-text-primary)' }}>{shownMonthly.toFixed(2)} {shownCurrency}</strong>/mo
+                    {/* Which of the two calculations this is. Without it the
+                        number changes when a layout is chosen and nothing on the
+                        screen says why. */}
+                    {placementPriced && <> after placement</>}
                   </>
                 )}
               </span>
@@ -1723,12 +1881,22 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
               {/* Third place the same number is shown, and the third that has
                   to agree with the server about whether it IS a number. */}
               {cost && (
-                <SummaryRow label="Est. monthly">
+                <SummaryRow label={placementPriced ? 'Monthly, as placed' : 'Est. monthly'}>
                   <strong>
-                    {cost.unpriced?.length
+                    {shownMonthly == null
                       ? 'Not priced'
-                      : `${cost.totals.monthly.toFixed(2)} ${cost.currency}`}
+                      : `${shownMonthly.toFixed(2)} ${shownCurrency}`}
                   </strong>
+                </SummaryRow>
+              )}
+              {placementPriced && (
+                <SummaryRow label="Layout">
+                  {chosenPlacement!.title}
+                  <Tag type="blue" size="sm" style={{ marginLeft: '0.4rem' }}>
+                    {chosenPlacement!.sizing.machine_count === 1
+                      ? '1 machine'
+                      : `${chosenPlacement!.sizing.machine_count} machines`}
+                  </Tag>
                 </SummaryRow>
               )}
               {filledComponents.length > 0 && target && (

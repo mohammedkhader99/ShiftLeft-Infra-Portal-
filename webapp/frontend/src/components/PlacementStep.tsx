@@ -1,0 +1,450 @@
+/**
+ * The placement step: what will run where, what it costs, and why you cannot
+ * have the rest (P.11, F-UX-16 + F-UX-10).
+ *
+ * SILENT FILTERING IS THE DEFECT THIS FILE EXISTS TO AVOID. Every option the
+ * server produced is rendered, including the ones that cannot be chosen, each
+ * with the sentence saying why. An option that quietly disappears is
+ * indistinguishable from a portal that is broken: the requester goes looking for
+ * a choice the documentation promised, does not find it, and raises the ticket
+ * this whole phase exists to prevent. A greyed card with a reason on it costs a
+ * few pixels and answers the question.
+ *
+ * NOTHING HERE DECIDES ANYTHING. Every figure — the shapes, the totals, the
+ * deltas, the refusals — arrives from /api/placement/options, which asked OPA
+ * whether each layout is permitted before pricing it. The component does not
+ * recompute a single number, does not sort by its own idea of cheapest, and does
+ * not hide an option it thinks is a bad idea. ARCHITECTURE.md §14 decision 10:
+ * the API is the authority, and a browser that recalculated any of this would be
+ * a second authority that disagrees with the first under load.
+ *
+ * THE ONE EXCEPTION TO "SHOW EVERYTHING" is a cluster the requester is not
+ * entitled to, and it is the server that applies it: those never arrive here at
+ * all. Listing them as refused would publish their names, regions and sizes to
+ * anyone who can open the form, which is a disclosure and not an explanation.
+ * Capacity and quota are the opposite — those clusters DO arrive, refused, with
+ * the figure that stopped them, because "the cluster is full" is something a
+ * requester can act on.
+ */
+
+import { useState } from 'react'
+import {
+  Button,
+  InlineNotification,
+  RadioButton,
+  RadioButtonGroup,
+  Tag,
+  Tile,
+} from '@carbon/react'
+import type { PlacementCluster, PlacementOption, SizedHost } from '../api'
+
+const HOST_MODE_LABEL: Record<string, string> = {
+  vm: 'virtual machine',
+  container: 'container',
+  managed: 'managed by the cloud',
+}
+
+// "1 machine" reads as a fact; "1 host(s)" reads as a placeholder somebody
+// forgot to finish.
+const plural = (n: number, one: string, many: string) =>
+  `${n} ${n === 1 ? one : many}`
+
+const shape = (host: SizedHost): string => {
+  const parts: string[] = []
+  if (host.vcpu != null) parts.push(`${host.vcpu} vCPU`)
+  if (host.memory_gb != null) parts.push(`${host.memory_gb} GB RAM`)
+  if (host.storage_gb != null) parts.push(`${host.storage_gb} GB storage`)
+  return parts.join(' · ')
+}
+
+/**
+ * One host, and what lands on it.
+ *
+ * A host the server declined to size is shown as unsized WITH the components it
+ * could not size, never as a host of zero. Printing "0 vCPU" for a machine whose
+ * requirement is missing is the same class of lie as pricing it at 0.00, and this
+ * portal has already been bitten once by that: a 90.59/month resource was
+ * approved at zero, twice.
+ */
+function HostLine({ host }: { host: SizedHost }) {
+  const managed = host.host_mode === 'managed'
+  return (
+    <div
+      style={{
+        display: 'flex',
+        gap: '0.5rem',
+        alignItems: 'baseline',
+        padding: '0.3rem 0',
+        borderTop: '1px solid var(--cds-border-subtle)',
+        fontSize: '0.8rem',
+      }}
+    >
+      <Tag type={managed ? 'green' : host.resolved ? 'blue' : 'red'} size="sm" style={{ margin: 0, flex: '0 0 auto' }}>
+        {HOST_MODE_LABEL[host.host_mode] || host.host_mode}
+      </Tag>
+      <div style={{ flex: 1 }}>
+        <div>{host.components.join(', ') || 'nothing placed'}</div>
+        {managed ? (
+          <div style={{ color: 'var(--cds-text-secondary)', fontSize: '0.72rem' }}>
+            {host.note || 'Run by the cloud. No machine is provisioned.'}
+          </div>
+        ) : host.resolved ? (
+          <div style={{ color: 'var(--cds-text-secondary)', fontSize: '0.72rem' }}>
+            {shape(host)}
+            {host.headroom_percent > 0 && (
+              <> — includes {host.headroom_percent}% headroom</>
+            )}
+          </div>
+        ) : (
+          /* NOT "0 vCPU". The server says which components it has no requirement
+             for; showing a shape anyway would put a number on a machine nobody
+             sized and let it reach an approver looking calculated. */
+          <div style={{ color: 'var(--cds-text-error)', fontSize: '0.72rem' }}>
+            {host.note || `Cannot be sized — no requirement recorded for ${host.missing.join(', ')}.`}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/**
+ * The clusters this option could land on.
+ *
+ * Ineligible ones stay on the page with their reason: capacity and quota are
+ * facts about the cluster, and a requester who can read "98 of 100 vCPU used"
+ * knows whether to wait, ask for more, or provision their own. Only the
+ * entitlement boundary is invisible, and it is invisible before it reaches here.
+ */
+function ClusterPicker({
+  clusters,
+  chosen,
+  onChoose,
+  disabled,
+}: {
+  clusters: PlacementCluster[]
+  chosen: string | null
+  onChoose: (id: string) => void
+  disabled: boolean
+}) {
+  const usable = clusters.filter((c) => c.eligible)
+  const refused = clusters.filter((c) => !c.eligible)
+
+  return (
+    <div style={{ marginTop: '0.5rem' }}>
+      {usable.length > 0 && (
+        <RadioButtonGroup
+          legendText="Which cluster?"
+          name="placement-cluster"
+          orientation="vertical"
+          valueSelected={chosen ?? ''}
+          onChange={(value) => onChoose(String(value))}
+        >
+          {usable.map((c) => (
+            <RadioButton
+              key={c.id}
+              value={c.id}
+              disabled={disabled}
+              labelText={`${c.name} — ${c.region} · ${c.allocatable_vcpu} vCPU / ${c.allocatable_memory_gb} GB free`}
+            />
+          ))}
+        </RadioButtonGroup>
+      )}
+      {refused.map((c) => (
+        <div
+          key={c.id}
+          style={{ fontSize: '0.75rem', color: 'var(--cds-text-secondary)', marginTop: '0.35rem' }}
+        >
+          <strong>{c.name}</strong> — {c.reasons.join(' ')}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function OptionCard({
+  option,
+  currency,
+  selected,
+  clusterId,
+  onSelect,
+  onClusterChange,
+  busy,
+}: {
+  option: PlacementOption
+  currency: string
+  selected: boolean
+  clusterId: string | null
+  onSelect: () => void
+  onClusterChange: (id: string) => void
+  busy: boolean
+}) {
+  const choosable = option.eligible && !busy
+  // An option needing a cluster is not a complete choice until one is named. The
+  // server refuses it anyway (400) — this only saves the requester the round
+  // trip and says which click is missing.
+  const needsCluster = option.clusters.length > 0 && option.eligible
+  const priced = option.resolved
+
+  return (
+    <Tile
+      style={{
+        marginBottom: '0.75rem',
+        borderLeft: `3px solid ${
+          selected
+            ? 'var(--cds-border-interactive)'
+            : option.eligible
+              ? 'var(--cds-border-subtle)'
+              : 'var(--cds-support-error)'
+        }`,
+        background: selected ? 'var(--cds-layer-selected)' : 'var(--cds-layer)',
+        opacity: option.eligible ? 1 : 0.85,
+      }}
+    >
+      <div style={{ display: 'flex', gap: '1rem', alignItems: 'flex-start' }}>
+        <div style={{ flex: 1 }}>
+          <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
+            <strong style={{ fontSize: '0.95rem' }}>{option.title}</strong>
+            {option.cheapest && priced && (
+              <Tag type="green" size="sm" style={{ margin: 0 }}>cheapest</Tag>
+            )}
+            {!option.eligible && (
+              <Tag type="red" size="sm" style={{ margin: 0 }}>not available</Tag>
+            )}
+          </div>
+          <p style={{ fontSize: '0.8rem', color: 'var(--cds-text-secondary)', margin: '0.2rem 0 0' }}>
+            {option.summary}
+          </p>
+        </div>
+
+        {/* THE NUMBER, or the honest absence of one. An option the server could
+            not price shows "Not priced" — never 0.00, and never a delta, because
+            a zero would make the unpriceable option look like the bargain of the
+            set. This is the third place in this form to learn that lesson. */}
+        <div style={{ textAlign: 'right', flex: '0 0 auto' }}>
+          {priced ? (
+            <>
+              <div style={{ fontSize: '1.25rem', fontWeight: 300 }}>
+                {option.totals.monthly.toFixed(2)}
+                <span style={{ fontSize: '0.75rem' }}> {currency}/mo</span>
+              </div>
+              {option.monthly_delta != null && option.monthly_delta > 0 && (
+                <div style={{ fontSize: '0.72rem', color: 'var(--cds-text-secondary)' }}>
+                  +{option.monthly_delta.toFixed(2)} vs cheapest
+                </div>
+              )}
+              <div style={{ fontSize: '0.72rem', color: 'var(--cds-text-secondary)' }}>
+                {plural(option.sizing.machine_count, 'machine', 'machines')}
+              </div>
+            </>
+          ) : (
+            <div style={{ fontSize: '0.95rem', fontWeight: 400 }}>Not priced</div>
+          )}
+        </div>
+      </div>
+
+      {/* WHY YOU CANNOT HAVE THIS. The reason is the reason the step exists;
+          rendering the card without it would be the silent filtering this phase
+          keeps refusing, only slower. */}
+      {!option.eligible && option.reasons.length > 0 && (
+        <div style={{ marginTop: '0.5rem' }}>
+          {option.reasons.map((r, i) => (
+            <p
+              key={i}
+              style={{ fontSize: '0.78rem', color: 'var(--cds-text-primary)', margin: '0.2rem 0' }}
+            >
+              {r}
+            </p>
+          ))}
+        </div>
+      )}
+
+      {/* Advisory, never blocking. Running a database on Kubernetes is a
+          legitimate choice; the portal's job is to see it made knowingly. */}
+      {option.warnings.map((w, i) => (
+        <InlineNotification
+          key={i}
+          kind="info"
+          lowContrast
+          hideCloseButton
+          title="Worth knowing"
+          subtitle={w}
+          style={{ maxWidth: 'none', marginTop: '0.5rem', marginBottom: 0 }}
+        />
+      ))}
+
+      {/* WHAT RUNS WHERE. The whole point of the screen, and the thing a
+          component list could never show. */}
+      {option.sizing.hosts.length > 0 && (
+        <div style={{ marginTop: '0.6rem' }}>
+          <div
+            style={{
+              fontSize: '0.68rem',
+              textTransform: 'uppercase',
+              letterSpacing: '0.02em',
+              color: 'var(--cds-text-secondary)',
+            }}
+          >
+            What runs where
+          </div>
+          {option.sizing.hosts.map((h) => (
+            <HostLine key={h.host_id} host={h} />
+          ))}
+        </div>
+      )}
+
+      {option.clusters.length > 0 && (
+        <ClusterPicker
+          clusters={option.clusters}
+          chosen={clusterId}
+          onChoose={onClusterChange}
+          disabled={!choosable}
+        />
+      )}
+
+      {option.eligible && (
+        <div style={{ marginTop: '0.6rem', display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+          <Button
+            size="sm"
+            kind={selected ? 'primary' : 'tertiary'}
+            disabled={!choosable || (needsCluster && !clusterId)}
+            onClick={onSelect}
+          >
+            {selected ? 'Chosen' : 'Choose this'}
+          </Button>
+          {needsCluster && !clusterId && (
+            <span style={{ fontSize: '0.75rem', color: 'var(--cds-text-secondary)' }}>
+              Pick a cluster first.
+            </span>
+          )}
+        </div>
+      )}
+    </Tile>
+  )
+}
+
+export default function PlacementStep({
+  options,
+  chosen,
+  clusterId,
+  onFetch,
+  onChoose,
+  onClusterChange,
+  busy,
+  error,
+  ready,
+  notReadyReason,
+}: {
+  options: PlacementOption[] | null
+  chosen: string | null
+  clusterId: string | null
+  onFetch: () => void
+  onChoose: (key: string) => void
+  onClusterChange: (id: string) => void
+  busy: boolean
+  error: string | null
+  ready: boolean
+  notReadyReason: string
+}) {
+  const [open, setOpen] = useState(true)
+  const currency = options?.[0]?.estimate?.currency || 'AED'
+
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'baseline', flexWrap: 'wrap' }}>
+        <strong style={{ fontSize: '0.95rem' }}>Placement</strong>
+        <span style={{ fontSize: '0.8rem', color: 'var(--cds-text-secondary)' }}>
+          How the stack is laid out — one machine or several, or run by the cloud.
+        </span>
+      </div>
+
+      {!ready ? (
+        <p style={{ fontSize: '0.8rem', color: 'var(--cds-text-secondary)', marginTop: '0.5rem' }}>
+          {notReadyReason}
+        </p>
+      ) : (
+        <>
+          {/* WHY THERE IS A BUTTON HERE AT ALL, rather than options appearing on
+              their own. The API resolves placement against the SAVED request —
+              its components, its environment tier, its target — because a body
+              the browser composed is an assertion and this decision determines
+              what gets built. So asking for options saves the draft first, and
+              a form that wrote a draft to the database as a side effect of
+              typing would leave one behind for every abandoned visit. The
+              requester presses the button, and the button says what it does. */}
+          <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', marginTop: '0.6rem' }}>
+            <Button size="sm" kind={options ? 'ghost' : 'tertiary'} onClick={onFetch} disabled={busy}>
+              {busy ? 'Working it out…' : options ? 'Work it out again' : 'Work out placement'}
+            </Button>
+            <span style={{ fontSize: '0.75rem', color: 'var(--cds-text-secondary)' }}>
+              Saves a draft first, then asks the platform what this could be built as.
+            </span>
+          </div>
+
+          {error && (
+            <InlineNotification
+              kind="error"
+              lowContrast
+              hideCloseButton
+              title="Could not work out the placement"
+              subtitle={error}
+              style={{ maxWidth: 'none', marginTop: '0.6rem' }}
+            />
+          )}
+
+          {options && options.length === 0 && (
+            <p style={{ fontSize: '0.8rem', color: 'var(--cds-text-secondary)', marginTop: '0.6rem' }}>
+              The platform produced no layouts for this stack. Nothing in the
+              selection needs a host — a capability is fulfilled by the
+              infrastructure team, not provisioned onto a machine.
+            </p>
+          )}
+
+          {options && options.length > 0 && (
+            <>
+              <div style={{ marginTop: '0.75rem' }}>
+                {(open ? options : options.filter((o) => o.eligible)).map((o) => (
+                  <OptionCard
+                    key={o.key}
+                    option={o}
+                    currency={currency}
+                    selected={chosen === o.key}
+                    // One cluster id for the step, not one per option: only
+                    // "existing-cluster" ever carries a cluster list, so there is
+                    // nothing for a second one to belong to.
+                    clusterId={clusterId}
+                    onSelect={() => onChoose(o.key)}
+                    onClusterChange={onClusterChange}
+                    busy={busy}
+                  />
+                ))}
+              </div>
+
+              {/* The collapse hides refused options on request — it does not
+                  hide them by default, and it says how many are behind it.
+                  Somebody scanning for the cheapest layout should be able to
+                  quiet the noise; nobody should have to guess it exists. */}
+              {options.some((o) => !o.eligible) && (
+                <Button kind="ghost" size="sm" onClick={() => setOpen((v) => !v)}>
+                  {open
+                    ? `Hide the ${options.filter((o) => !o.eligible).length} unavailable`
+                    : `Show the ${options.filter((o) => !o.eligible).length} unavailable, with reasons`}
+                </Button>
+              )}
+
+              {/* Submitting without choosing stays allowed, and says what then
+                  happens. Blocking it would break every request type that has
+                  never had a placement, and inventing a default here would be
+                  the client deciding. */}
+              <p style={{ fontSize: '0.75rem', color: 'var(--cds-text-secondary)', marginTop: '0.5rem' }}>
+                {chosen
+                  ? 'This layout is recorded when you submit, and the platform decides again at that moment — an option available now can still be refused then, which is the check working.'
+                  : 'You can submit without choosing. The request then carries no layout and the infrastructure team decides how it is built.'}
+              </p>
+            </>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
