@@ -230,3 +230,122 @@ def test_a_component_with_no_recorded_host_mode_is_placed_nowhere(db):
     facts = {f.code: f for f in main._component_facts(db, req)}
 
     assert facts["mystery"].host_modes == frozenset()
+
+
+# --- Scenario B through the endpoint (P.5a) ----------------------------------
+
+def _make_kubernetes_request(db, with_blueprint=True):
+    """A request naming OKE.
+
+    The blueprint row matters: it is what says OKE is a CLUSTER. Blueprints are
+    registered by the catalogue flow rather than by the seed, so a test database
+    has none until one is added — the live database does, which is why the
+    Kubernetes options appear there and would not here.
+    """
+    from db.models import Blueprint, Request as R, RequestComponent as RC
+    if with_blueprint:
+        db.add(Blueprint(technology_code="oci-oke", deployment_target="oci",
+                         blueprint_ref="oci-oke.yaml", resource_kind="oci-oke",
+                         status="certified"))
+    req = R(reference="REQ-2026-9002", request_type="create",
+            requester="tester@example.com", deployment_target="oci",
+            environment_tier="dev", project_code="EGATE",
+            cost_centre_code="IMD-1001", environment_name="egate-k8s")
+    db.add(req)
+    db.flush()
+    # PostgreSQL is in the selection deliberately: it is the case Scenario B
+    # describes, where a stateful workload on a cluster must warn AND be shown
+    # the managed alternative. Without it there is nothing to manage and the
+    # managed option correctly does not appear.
+    for code, size in (("oci-oke", "small"), ("postgres16", "medium"),
+                       ("nodejs20", "small")):
+        db.add(RC(request_id=req.id, technology_code=code, size=size))
+    db.commit()
+    return req
+
+
+def test_selecting_oke_offers_the_cluster_options(client, db):
+    _make_kubernetes_request(db)
+    got = options(client, "REQ-2026-9002")
+
+    assert [o["key"] for o in got] == ["existing-cluster", "new-cluster", "managed"]
+
+
+def test_the_cluster_provider_is_read_from_the_blueprint(db):
+    """Every OKE row in this database still carries the oci-bucket default, so
+    reading Technology.resource_kind would classify a cluster as a bucket."""
+    req = _make_kubernetes_request(db)
+    facts = {f.code: f for f in main._component_facts(db, req)}
+
+    assert facts["oci-oke"].provides_cluster is True
+    assert facts["nodejs20"].provides_cluster is False
+
+
+def test_discovery_being_unbuilt_is_said_plainly_not_reported_as_no_access(client, db):
+    _make_kubernetes_request(db)
+    existing = next(o for o in options(client, "REQ-2026-9002")
+                    if o["key"] == "existing-cluster")
+
+    assert existing["eligible"] is False
+    assert "gap in the portal, not a statement about your access" in existing["reasons"][0]
+
+
+def test_choosing_an_existing_cluster_without_naming_one_is_refused(client, db):
+    _make_kubernetes_request(db)
+    r = client.post("/api/placement/resolve",
+                    json={"reference": "REQ-2026-9002",
+                          "option_key": "existing-cluster"})
+    # Refused because the option itself is ineligible while discovery is unbuilt.
+    assert r.status_code == 409
+
+
+def test_naming_a_cluster_on_an_option_that_does_not_use_one_is_refused(client, db):
+    _make_kubernetes_request(db)
+    r = client.post("/api/placement/resolve",
+                    json={"reference": "REQ-2026-9002",
+                          "option_key": "new-cluster",
+                          "cluster_id": "ocid1.cluster.oc1..anything"})
+    assert r.status_code == 400
+    assert "does not deploy onto one" in r.json()["detail"]
+
+
+def test_provisioning_a_new_cluster_still_works_while_discovery_is_unbuilt(client, db):
+    """The portal must remain usable for Kubernetes requests. A missing adapter
+    removes one option, not the feature."""
+    _make_kubernetes_request(db)
+    r = client.post("/api/placement/resolve",
+                    json={"reference": "REQ-2026-9002", "option_key": "new-cluster"})
+
+    assert r.status_code == 200, r.text
+    assert r.json()["option_key"] == "new-cluster"
+
+
+def test_without_a_blueprint_oke_is_not_recognised_as_a_cluster(db):
+    """A known limitation, recorded rather than hidden.
+
+    The blueprint is the only authority that says a component is a cluster —
+    Technology.resource_kind is documented as wrong for most components, and
+    every OKE row in the live database still carries the oci-bucket default. So
+    a Kubernetes technology with no registered blueprint silently gets the
+    machine-shaped options instead of the cluster ones.
+
+    That cannot happen for anything a requester can actually order, because the
+    certification gate will not offer a technology the platform has no blueprint
+    for. This test exists so the behaviour is known if that ever stops being
+    true.
+    """
+    req = _make_kubernetes_request(db, with_blueprint=False)
+    facts = {f.code: f for f in main._component_facts(db, req)}
+
+    assert facts["oci-oke"].provides_cluster is False
+
+
+def test_a_database_on_the_cluster_warns_and_offers_the_managed_alternative(client, db):
+    _make_kubernetes_request(db)
+    got = options(client, "REQ-2026-9002")
+
+    existing = next(o for o in got if o["key"] == "existing-cluster")
+    assert any("postgres16 keeps data" in w for w in existing["warnings"])
+    assert any("Managed where available" in w for w in existing["warnings"])
+    # and the alternative the warning names is actually on the screen
+    assert any(o["key"] == "managed" for o in got)

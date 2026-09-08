@@ -43,6 +43,8 @@ HOST_MANAGED = "managed"
 MANAGED_OPTION = "managed"
 CONSOLIDATED_OPTION = "consolidated"
 SEPARATED_OPTION = "separated"
+EXISTING_CLUSTER_OPTION = "existing-cluster"
+NEW_CLUSTER_OPTION = "new-cluster"
 
 # The order the requester sees them in. Managed first because it is the option
 # that removes work from them; separated last because it is the most expensive.
@@ -61,9 +63,19 @@ class ComponentFacts:
     code: str
     host_modes: frozenset[str]
     is_host: bool = False
+    # True for OKE/AKS: the component IS a cluster, so workloads land ON it
+    # rather than beside it. Determined from the BLUEPRINT's resource kind, never
+    # from Technology.resource_kind, whose own docstring says it "exists and is
+    # wrong for most components".
+    provides_cluster: bool = False
 
     def supports(self, mode: str) -> bool:
         return mode in self.host_modes
+
+    @property
+    def hosts_others(self) -> bool:
+        """A machine or a cluster: something other components are placed on."""
+        return self.is_host or self.provides_cluster
 
 
 @dataclass(frozen=True)
@@ -87,6 +99,12 @@ class Option:
     hosts: tuple[Host, ...]
     eligible: bool = True
     reasons: tuple[str, ...] = field(default_factory=tuple)
+    # Clusters this option could land on, each already assessed for entitlement,
+    # capacity and quota by api.clusters. Only "existing-cluster" carries any.
+    clusters: tuple = field(default_factory=tuple)
+    # Advisory, never blocking: running a database on Kubernetes is a legitimate
+    # choice, and the portal's job is to see it made knowingly.
+    warnings: tuple[str, ...] = field(default_factory=tuple)
 
     @property
     def host_count(self) -> int:
@@ -102,6 +120,9 @@ class Option:
             "host_count": self.host_count,
             "eligible": self.eligible,
             "reasons": list(self.reasons),
+            "clusters": [c.as_dict() if hasattr(c, "as_dict") else c
+                         for c in self.clusters],
+            "warnings": list(self.warnings),
         }
 
 
@@ -116,7 +137,8 @@ def topology_document(option: Option, environment: str,
 
 
 def _workloads(components: Sequence[ComponentFacts]) -> list[ComponentFacts]:
-    return [c for c in components if not c.is_host]
+    """The components that need placing, as opposed to the things they land on."""
+    return [c for c in components if not c.hosts_others]
 
 
 def _managed_option(components: Sequence[ComponentFacts]) -> Option | None:
@@ -181,13 +203,159 @@ def _separated_option(components: Sequence[ComponentFacts]) -> Option | None:
     )
 
 
-def enumerate_options(components: Sequence[ComponentFacts]) -> list[Option]:
+# Workloads that keep data. On a cluster their storage, failover and backups
+# become the requester's burden rather than the platform's, which is worth
+# saying out loud without refusing the choice.
+STATEFUL = frozenset({"postgres16", "mysql", "mssql", "oracle-free", "mongodb",
+                      "valkey", "opensearch"})
+
+
+def _cluster_warnings(workloads: Sequence[ComponentFacts]) -> tuple[str, ...]:
+    """Advice for putting data-keeping workloads on Kubernetes.
+
+    Never a refusal. Running a database on a cluster is a legitimate choice, and
+    the portal's job is to see it made knowingly rather than by default. Where
+    the same component exists as a managed service that is named, because the
+    alternative is more useful to a requester than the caution.
+    """
+    warnings = []
+    for component in workloads:
+        if component.code not in STATEFUL:
+            continue
+        message = (
+            f"{component.code} keeps data. On Kubernetes its storage, failover "
+            f"and backups become your team's responsibility rather than the "
+            f"platform's.")
+        if component.supports(HOST_MANAGED):
+            message += (
+                f" The cloud's managed {component.code} carries none of that — "
+                f"it is offered as 'Managed where available'.")
+        warnings.append(message)
+    return tuple(warnings)
+
+
+def _existing_cluster_option(components: Sequence[ComponentFacts],
+                             clusters: Sequence | None) -> Option | None:
+    """Land the workloads on a cluster that already exists.
+
+    `clusters` has already been through api.clusters: out-of-scope ones are
+    absent entirely (entitlement is a visibility boundary), and ones that do not
+    fit are present and marked ineligible with the number that stopped them.
+
+    An empty list does NOT mean "hide this option". A requester entitled to no
+    cluster needs to be told that, not left wondering why an option the
+    documentation mentions is missing from their screen.
+    """
+    workloads = _workloads(components)
+    if not workloads:
+        return None
+
+    hosts = (Host(id="existing-cluster", host_mode=HOST_CONTAINER,
+                  components=tuple(c.code for c in workloads)),)
+    if clusters is None:
+        # Discovery is unavailable, which is NOT the same as "you have none" and
+        # must not be reported as it. Telling a requester they are entitled to
+        # nothing, when the truth is that nobody looked, is a lie the portal
+        # would be believed about.
+        return Option(
+            key=EXISTING_CLUSTER_OPTION,
+            title="Deploy onto an existing cluster",
+            summary="Existing clusters cannot be listed at the moment.",
+            hosts=hosts, eligible=False,
+            reasons=("The portal cannot list existing clusters yet, so it "
+                     "cannot tell you which ones you could deploy onto. This is "
+                     "a gap in the portal, not a statement about your access. "
+                     "Provisioning a new cluster is offered below.",),
+            warnings=_cluster_warnings(workloads),
+        )
+
+    usable = [c for c in clusters if getattr(c, "eligible", False)]
+
+    if not clusters:
+        return Option(
+            key=EXISTING_CLUSTER_OPTION,
+            title="Deploy onto an existing cluster",
+            summary="No cluster is available to you.",
+            hosts=hosts, eligible=False,
+            reasons=("You are not entitled to any existing cluster in this "
+                     "project, cost centre and subsidiary. Provisioning a new "
+                     "one is offered below.",),
+            warnings=_cluster_warnings(workloads),
+        )
+
+    if not usable:
+        return Option(
+            key=EXISTING_CLUSTER_OPTION,
+            title="Deploy onto an existing cluster",
+            summary=f"{len(clusters)} cluster(s), none of which can take this.",
+            hosts=hosts, eligible=False,
+            reasons=tuple(
+                f"{c.cluster.name}: {' '.join(c.reasons)}" for c in clusters),
+            clusters=tuple(clusters),
+            warnings=_cluster_warnings(workloads),
+        )
+
+    return Option(
+        key=EXISTING_CLUSTER_OPTION,
+        title="Deploy onto an existing cluster",
+        summary=(f"{len(usable)} of {len(clusters)} cluster(s) can take this "
+                 f"workload. Nothing new is provisioned."),
+        hosts=hosts,
+        clusters=tuple(clusters),
+        warnings=_cluster_warnings(workloads),
+    )
+
+
+def _new_cluster_option(components: Sequence[ComponentFacts]) -> Option | None:
+    """Provision a cluster as part of this request.
+
+    Always offered when a cluster was asked for, including when the requester
+    has no existing cluster — it is the answer in that case, not a fallback.
+    """
+    providers = [c for c in components if c.provides_cluster]
+    if not providers:
+        return None
+
+    workloads = _workloads(components)
+    name = ", ".join(c.code for c in providers)
+    return Option(
+        key=NEW_CLUSTER_OPTION,
+        title="Provision a new cluster",
+        summary=(f"A new {name} cluster, with its node pool sized from the "
+                 f"{len(workloads)} workload(s) placed on it."
+                 if workloads else
+                 f"A new {name} cluster with no workloads placed on it yet."),
+        hosts=(Host(id="new-cluster", host_mode=HOST_CONTAINER,
+                    components=tuple(c.code for c in workloads)),),
+        warnings=_cluster_warnings(workloads),
+    )
+
+
+def enumerate_options(components: Sequence[ComponentFacts],
+                      clusters: Sequence | None = None) -> list[Option]:
     """Every layout worth offering, in the order the requester should see them.
+
+    Which scenario applies is decided by the SELECTION, not by a flag. Asking for
+    OKE or AKS is asking for a cluster, so the cluster options are the answer and
+    "one machine or three" is not a question about it. Everything else gets
+    Scenario A.
+
+    The managed option appears in both, because a stateful workload put on
+    Kubernetes should always be able to see the alternative that removes the
+    operational burden it is about to take on.
 
     No judgement here — an option that policy forbids is still enumerated, so
     that `resolve_options` can return it with the reason attached rather than
     leaving the requester to guess why a choice they expected is missing.
     """
+    if any(c.provides_cluster for c in components):
+        built = [
+            _existing_cluster_option(components, clusters),
+            _new_cluster_option(components),
+            _managed_option(components),
+        ]
+        return [option for option in built if option is not None]
+
     builders = {
         MANAGED_OPTION: _managed_option,
         CONSOLIDATED_OPTION: _consolidated_option,
@@ -202,6 +370,7 @@ def resolve_options(
     environment: str,
     deployment_target: str,
     evaluate: Callable[[dict], dict],
+    clusters: Sequence | None = None,
 ) -> list[Option]:
     """The options for this selection, each marked eligible or refused.
 
@@ -213,7 +382,15 @@ def resolve_options(
     components = list(components)
     resolved: list[Option] = []
 
-    for option in enumerate_options(components):
+    for option in enumerate_options(components, clusters):
+        # An option already refused when it was built — no entitled cluster, say
+        # — is not sent to the policy: it has its reason, and asking whether a
+        # layout nobody can have is permitted would overwrite that reason with a
+        # less useful one.
+        if not option.eligible:
+            resolved.append(option)
+            continue
+
         answer = evaluate(topology_document(option, environment, deployment_target))
         allowed = bool(answer.get("allow"))
         violations = tuple(answer.get("violations", ()))
@@ -228,5 +405,6 @@ def resolve_options(
         resolved.append(Option(
             key=option.key, title=option.title, summary=option.summary,
             hosts=option.hosts, eligible=False, reasons=reasons,
+            clusters=option.clusters, warnings=option.warnings,
         ))
     return resolved

@@ -33,6 +33,7 @@ from api import ai_triage
 from api import golden
 from api import repo_facts
 from api import container_env
+from api import clusters as clusters_mod
 from api import placement as placement_mod
 from api import placement_store
 from api import container_command
@@ -87,7 +88,8 @@ from api.jira import (
 from api.plan_preview import build_plan_preview
 from api import policy
 from api.policy import get_placement_evaluator, PolicyUnavailable, get_policy_evaluator
-from api.pricing import compare_options, estimate_cost, estimate_placement_cost
+from api.pricing import (BILLING_CLUSTER, BILLING_MODEL, compare_options,
+                         estimate_cost, estimate_placement_cost)
 from api import roles as roles_mod
 from api.sizing import load_requirements, resolve_components, size_hosts
 from api.validation import (CREATE_LIKE_TYPES, DEPLOYMENT_TARGETS, normalise_tier,
@@ -8186,6 +8188,18 @@ def _component_facts(session: Session, req: Request) -> list:
             .where(TechnologyDelivery.technology_code.in_(codes))).all()
     }
 
+    # Which components ARE a cluster, read from the blueprint's resource kind.
+    # Never from Technology.resource_kind: resource_kind_for's own docstring says
+    # it "exists and is wrong for most components", and every OKE row in this
+    # database still carries the oci-bucket default.
+    cluster_kinds = {
+        b.technology_code
+        for b in session.scalars(
+            select(Blueprint).where(Blueprint.technology_code.in_(codes),
+                                    Blueprint.deployment_target == target)).all()
+        if BILLING_MODEL.get(b.resource_kind) == BILLING_CLUSTER
+    }
+
     return [
         placement_mod.ComponentFacts(
             code=code,
@@ -8193,9 +8207,49 @@ def _component_facts(session: Session, req: Request) -> list:
             # A `machine` IS the host its neighbours land on, not a workload
             # competing for room on someone else's.
             is_host=delivery.get(code) == "machine",
+            provides_cluster=code in cluster_kinds,
         )
         for code in dict.fromkeys(codes)  # de-duplicated, order preserved
     ]
+
+
+def _placement_need(option: dict) -> clusters_mod.Need:
+    """What the chosen layout would consume on whichever cluster takes it."""
+    totals = option.get("sizing", {}).get("totals", {})
+    return clusters_mod.Need(vcpu=int(totals.get("vcpu") or 0),
+                             memory_gb=int(totals.get("memory_gb") or 0))
+
+
+def _requester_scope(req: Request) -> clusters_mod.RequesterScope:
+    """What this request may see, taken from the request itself.
+
+    Not from the caller's browser, and not from a user-to-project mapping: there
+    is no such mapping in this system (F-IAM-02 is a Must and unbuilt), and
+    inventing one to decide entitlement would rest a security decision on a
+    foundation nobody had reviewed.
+    """
+    return clusters_mod.RequesterScope(
+        project_codes=frozenset(filter(None, [req.project_code])),
+        cost_centre_codes=frozenset(filter(None, [req.cost_centre_code])),
+        subsidiary_codes=frozenset(filter(None, [req.subsidiary])),
+    )
+
+
+def _discover_clusters(session: Session, req: Request):
+    """Clusters this request could deploy onto, or None if we cannot look.
+
+    None and [] mean different things and are reported differently: [] is "you
+    are entitled to none", None is "the portal cannot list them". Telling a
+    requester they have no access when the truth is that nobody looked is a lie
+    they would believe.
+
+    THE LIVE FETCH IS NOT BUILT. Clusters must be read from the cloud and cached
+    briefly, never stored as catalogue rows (P7) — allocatable capacity is the
+    most perishable fact in this whole phase. Until that adapter exists this
+    returns None, and the portal says so plainly rather than implying an
+    entitlement answer it has not computed.
+    """
+    return None
 
 
 def _placement_options(session: Session, req: Request, evaluate) -> list[dict]:
@@ -8210,7 +8264,9 @@ def _placement_options(session: Session, req: Request, evaluate) -> list[dict]:
     environment = (req.environment_tier or "").strip()
     target = (req.deployment_target or "").strip()
 
-    options = placement_mod.resolve_options(facts, environment, target, evaluate)
+    options = placement_mod.resolve_options(
+        facts, environment, target, evaluate,
+        clusters=_discover_clusters(session, req))
     options = placement_store.filter_options(
         options, placement_store.current_placement(session, req.id))
 
@@ -8285,10 +8341,41 @@ def placement_resolve(
             status_code=409,
             detail=" ".join(chosen["reasons"]) or "That placement is not permitted.")
 
+    # A cluster id from the browser is an assertion. Re-resolve it against this
+    # request's scope before anything is written: the list that produced it was
+    # a convenience, and it may be minutes stale.
+    hosts = chosen["hosts"]
+    if body.cluster_id:
+        if chosen["key"] != placement_mod.EXISTING_CLUSTER_OPTION:
+            raise HTTPException(
+                status_code=400,
+                detail=(f"A cluster was named, but '{chosen['key']}' does not "
+                        f"deploy onto one."))
+        available = _discover_clusters(session, req)
+        if available is None:
+            raise HTTPException(
+                status_code=503,
+                detail=("The portal cannot list existing clusters yet, so it "
+                        "cannot verify the one you named. Provision a new "
+                        "cluster instead, or ask for cluster discovery to be "
+                        "enabled."))
+        try:
+            authorised = clusters_mod.authorise_cluster(
+                body.cluster_id, [c.cluster for c in available],
+                _requester_scope(req), _placement_need(chosen))
+        except clusters_mod.ClusterRefused as refused:
+            raise HTTPException(status_code=403, detail=str(refused)) from refused
+        # Name the cluster actually authorised, not the one that was claimed.
+        hosts = [dict(h, id=authorised.cluster.id) for h in hosts]
+    elif chosen["key"] == placement_mod.EXISTING_CLUSTER_OPTION:
+        raise HTTPException(
+            status_code=400,
+            detail="Deploying onto an existing cluster requires naming one.")
+
     topology = {
         "environment": req.environment_tier,
         "deployment_target": req.deployment_target,
-        "hosts": chosen["hosts"],
+        "hosts": hosts,
     }
     placement = placement_store.record_placement(
         session, req.id, chosen["key"], topology,
