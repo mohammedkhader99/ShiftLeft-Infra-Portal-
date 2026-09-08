@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from db.models import (
     TechnologyDelivery,
     TechnologyHostMode,
+    HostModeRequirement,
     CostCentre,
     Environment,
     Project,
@@ -529,6 +530,77 @@ def _host_mode_rows() -> list[dict]:
     ]
 
 
+# Minimum and recommended shape per host mode and size (P.2, F-CAT-18).
+#
+# WHERE THESE NUMBERS COME FROM, AND WHAT THEY ARE NOT.
+#
+# They are a BASELINE, not vendor figures. There is no published number saying
+# PostgreSQL in a container needs n vCPU, and inventing one that looks precise is
+# the failure P7 describes -- eight hard-coded constants describing a cloud's
+# offering were found wrong on 17-18 Aug 2026. So the only difference asserted
+# here is the one that can be defended from first principles:
+#
+#   a VM runs a guest operating system and a container does not.
+#
+# Oracle Linux 9 costs roughly 1 vCPU, 2 GB of memory and 20 GB of disk before
+# the workload starts. Every `vm` minimum below is therefore its `container`
+# minimum plus that overhead, and `recommended` is the shape the existing sizing
+# anchor already resolves that size to.
+#
+# What is deliberately NOT asserted: any difference between technologies. There
+# is no basis for claiming PostgreSQL needs more than Node.js at a given size, so
+# the baseline is per (host mode, size) and applies to every technology offering
+# that mode. When capacity owners have measured figures, they supersede these
+# with a new effective_from row and these stay auditable.
+#
+# IOPS does not vary by host mode: it is a property of the block volume behind
+# the workload, not of what runs on top of it.
+
+OS_OVERHEAD = (1, 2, 20)  # vCPU, memory GB, storage GB for the guest OS
+
+# (host_mode, size) -> (min_vcpu, min_mem_gb, min_storage_gb, min_iops,
+#                       rec_vcpu, rec_mem_gb, rec_storage_gb, rec_iops)
+HOST_MODE_BASELINE = {
+    ("container", "small"):  (1, 2, 20, 500, 2, 4, 50, 1000),
+    ("container", "medium"): (2, 8, 100, 1000, 4, 16, 200, 3000),
+    ("container", "large"):  (4, 32, 250, 3000, 8, 64, 500, 6000),
+    ("container", "xlarge"): (8, 64, 500, 6000, 16, 128, 1000, 12000),
+}
+
+# The vm rows are the container rows plus the guest OS, computed rather than
+# retyped so the two can never drift apart by a typo.
+for _size in ("small", "medium", "large", "xlarge"):
+    _c = HOST_MODE_BASELINE[("container", _size)]
+    HOST_MODE_BASELINE[("vm", _size)] = (
+        _c[0] + OS_OVERHEAD[0], _c[1] + OS_OVERHEAD[1], _c[2] + OS_OVERHEAD[2], _c[3],
+        _c[4], _c[5], _c[6], _c[7],
+    )
+
+
+def _host_mode_requirement_rows() -> list[dict]:
+    """One row per (technology, host mode, size) that actually needs a host.
+
+    Derived from HOST_MODES_SEED rather than listed again, so a technology can
+    never have a host mode with no requirement or a requirement for a mode it
+    does not offer. `managed` is skipped: there is no host to size, and absence
+    is a truer answer than a row of zeros.
+    """
+    rows = []
+    for code, _clouds, mode, _note in HOST_MODES_SEED:
+        if mode == "managed":
+            continue
+        for size in ("small", "medium", "large", "xlarge"):
+            b = HOST_MODE_BASELINE[(mode, size)]
+            rows.append({
+                "technology_code": code, "host_mode": mode, "size": size,
+                "minimum_vcpu": b[0], "minimum_memory_gb": b[1],
+                "minimum_storage_gb": b[2], "minimum_iops": b[3],
+                "recommended_vcpu": b[4], "recommended_memory_gb": b[5],
+                "recommended_storage_gb": b[6], "recommended_iops": b[7],
+            })
+    return rows
+
+
 def _upsert_composite(session: Session, model, key_fields: tuple[str, ...],
                       rows: list[dict]) -> None:
     """Insert each row only if one with the same composite key is absent.
@@ -569,6 +641,11 @@ def seed(session: Session) -> None:
     _upsert_composite(session, TechnologyHostMode,
                       ("technology_code", "cloud", "host_mode"),
                       _host_mode_rows())
+    # The floor and the advice for each of those (P.2). Derived from the same
+    # source, so a host mode can never exist without a requirement.
+    _upsert_composite(session, HostModeRequirement,
+                      ("technology_code", "host_mode", "size"),
+                      _host_mode_requirement_rows())
     session.flush()  # flush new technologies (e.g. compute-vm) BEFORE the update
     # below, so a freshly-inserted compute type is classified too (the app session
     # has autoflush off, so the Core UPDATE wouldn't see the pending insert).

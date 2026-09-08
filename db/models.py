@@ -923,6 +923,76 @@ class TechnologyHostMode(Base):
     note: Mapped[str] = mapped_column(String(300), default="")
 
 
+class HostModeRequirement(Base):
+    """The floor and the advice for a component, per host mode and size (P.2).
+
+    Separate from SizingAnchor rather than an extension of it, because the two
+    answer different questions. The anchor says what "medium" RESOLVES TO. This
+    says what the workload NEEDS — a floor a resolved shape must clear, and a
+    recommendation to show beside it.
+
+    They must not contradict each other, and a test asserts they do not: if the
+    anchor for a size resolves below the minimum for a host mode that size is
+    offered in, the portal offers a choice nothing can build.
+
+    Effective-dated and versioned exactly as SizingAnchor is (F-CAT-07), because
+    these numbers are a starting baseline that capacity owners will correct. A
+    correction is a new row with a later `effective_from`; the superseded one
+    stays readable, so what a request was judged against months ago can still be
+    recovered.
+
+    No rows for `managed`. There is no host to size, and absence is a truer
+    answer than a row of zeros — a zero would sum into a consolidated host as
+    though the managed service were running on it.
+    """
+
+    __tablename__ = "host_mode_requirement"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    technology_code: Mapped[str] = mapped_column(String(48))
+    # vm | container  (never `managed` — see the docstring)
+    host_mode: Mapped[str] = mapped_column(String(16))
+    size: Mapped[str] = mapped_column(String(16))
+
+    # The floor. A resolved shape below any of these cannot run the workload.
+    minimum_vcpu: Mapped[int] = mapped_column()
+    minimum_memory_gb: Mapped[int] = mapped_column()
+    minimum_storage_gb: Mapped[int] = mapped_column()
+    minimum_iops: Mapped[int] = mapped_column()
+
+    # What to advise. Shown beside the floor so a requester sizing by hand can
+    # see both the edge and the comfortable answer.
+    recommended_vcpu: Mapped[int] = mapped_column()
+    recommended_memory_gb: Mapped[int] = mapped_column()
+    recommended_storage_gb: Mapped[int] = mapped_column()
+    recommended_iops: Mapped[int] = mapped_column()
+
+    effective_from: Mapped[date] = mapped_column(Date, default=date(2026, 1, 1))
+    version: Mapped[int] = mapped_column(default=1)
+
+
+def shape_meets_minimum(requirement: "HostModeRequirement",
+                        vcpu: int, memory_gb: int,
+                        storage_gb: int) -> list[str]:
+    """Which minimums a resolved shape fails, as sentences. Empty means it fits.
+
+    Returns every failure rather than the first, because a requester told their
+    machine is too small in one dimension, fixing it, and being told again about
+    the next is the experience F-UX-10 exists to prevent.
+    """
+    shortfalls = []
+    for label, got, floor in (
+        ("vCPU", vcpu, requirement.minimum_vcpu),
+        ("memory", memory_gb, requirement.minimum_memory_gb),
+        ("storage", storage_gb, requirement.minimum_storage_gb),
+    ):
+        if got < floor:
+            shortfalls.append(
+                f"{label}: {got} is below the {floor} minimum for "
+                f"{requirement.technology_code} as {requirement.host_mode}")
+    return shortfalls
+
+
 def requires_host(host_mode: str) -> bool:
     """Does this host mode need a machine sized and paid for?
 
