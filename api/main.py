@@ -33,6 +33,8 @@ from api import ai_triage
 from api import golden
 from api import repo_facts
 from api import container_env
+from api import placement as placement_mod
+from api import placement_store
 from api import container_command
 from api import discovery
 from api import registry
@@ -84,10 +86,10 @@ from api.jira import (
 )
 from api.plan_preview import build_plan_preview
 from api import policy
-from api.policy import PolicyUnavailable, get_policy_evaluator
-from api.pricing import estimate_cost
+from api.policy import get_placement_evaluator, PolicyUnavailable, get_policy_evaluator
+from api.pricing import compare_options, estimate_cost, estimate_placement_cost
 from api import roles as roles_mod
-from api.sizing import resolve_components
+from api.sizing import load_requirements, resolve_components, size_hosts
 from api.validation import (CREATE_LIKE_TYPES, DEPLOYMENT_TARGETS, normalise_tier,
                             validate_submission)
 from common.security import install_rate_limit, install_security_headers
@@ -118,6 +120,8 @@ from db.models import (
     UserRole,
     Subsidiary,
     Technology,
+    TechnologyDelivery,
+    TechnologyHostMode,
     WebhookDelivery,
     WebhookSubscription,
 )
@@ -8126,3 +8130,182 @@ def _start_catalogue_refresh() -> None:
 def _stop_catalogue_refresh() -> None:
     """Signal the cloud-option refresh loop to exit (called on shutdown)."""
     _catalogue_stop.set()
+
+
+# --- Placement (P.9) ---------------------------------------------------------
+#
+# THE API IS THE AUTHORITY (ARCHITECTURE.md 14, decision 10). The BFF shapes what
+# a browser is shown; it cannot be the control, because this API listens on its
+# own port and anything checked only in the BFF is bypassable by whoever can
+# reach it. So every value arriving in a request body here is an ASSERTION - the
+# option key, the cluster id, the components. Each is re-resolved from the stored
+# request and re-authorised before anything is written.
+#
+# Scope comes from the REQUEST, not from the caller's browser. A request already
+# names its project, cost centre and subsidiary, and those decide what is in
+# scope. There is no user-to-project mapping in this system yet (F-IAM-02 is a
+# Must and unbuilt); inventing one here would rest an entitlement decision on a
+# foundation nobody had reviewed.
+
+
+class PlacementOptionsIn(BaseModel):
+    reference: str
+
+
+class PlacementResolveIn(BaseModel):
+    reference: str
+    option_key: str
+    cluster_id: str | None = None
+
+
+def _component_facts(session: Session, req: Request) -> list:
+    """What the catalogue says about this request's components, on its target.
+
+    Read from technology_host_mode (P.1) rather than inferred. A component whose
+    host modes nobody recorded gets none, and the resolver then offers no layout
+    that places it - correct, and visible, rather than a machine built on a guess.
+    """
+    target = (req.deployment_target or "").strip()
+    codes = [c.technology_code for c in req.components if c.technology_code]
+    if not codes:
+        return []
+
+    rows = session.scalars(
+        select(TechnologyHostMode).where(
+            TechnologyHostMode.technology_code.in_(codes),
+            TechnologyHostMode.cloud == target)
+    ).all()
+    modes: dict[str, set[str]] = {}
+    for row in rows:
+        modes.setdefault(row.technology_code, set()).add(row.host_mode)
+
+    delivery = {
+        d.technology_code: d.delivery_model
+        for d in session.scalars(
+            select(TechnologyDelivery)
+            .where(TechnologyDelivery.technology_code.in_(codes))).all()
+    }
+
+    return [
+        placement_mod.ComponentFacts(
+            code=code,
+            host_modes=frozenset(modes.get(code, ())),
+            # A `machine` IS the host its neighbours land on, not a workload
+            # competing for room on someone else's.
+            is_host=delivery.get(code) == "machine",
+        )
+        for code in dict.fromkeys(codes)  # de-duplicated, order preserved
+    ]
+
+
+def _placement_options(session: Session, req: Request, evaluate) -> list[dict]:
+    """Every layout for this request, each judged, sized and priced.
+
+    The order matters. Policy first, so a refused option still carries its
+    reason; then the prior placement, so a follow-up cannot change how an
+    environment is hosted; then sizing and cost, so the requester chooses with
+    the number in front of them.
+    """
+    facts = _component_facts(session, req)
+    environment = (req.environment_tier or "").strip()
+    target = (req.deployment_target or "").strip()
+
+    options = placement_mod.resolve_options(facts, environment, target, evaluate)
+    options = placement_store.filter_options(
+        options, placement_store.current_placement(session, req.id))
+
+    sizes = {c.technology_code: c.size for c in req.components if c.technology_code}
+    requirements = load_requirements(session, sizes)
+
+    priced = []
+    for option in options:
+        sized = size_hosts([h.as_dict() for h in option.hosts], requirements)
+        estimate = estimate_placement_cost(sized, target, session, sizes,
+                                           req.advanced_options)
+        priced.append({
+            **option.as_dict(),
+            "sizing": sized,
+            "estimate": estimate,
+            # Lifted to the top level because that is the shape compare_options
+            # reads, and because the UI wants the headline figure without
+            # digging. Nested only, the comparison silently found nothing
+            # priceable and returned every delta as None.
+            "resolved": estimate["resolved"],
+            "totals": estimate["totals"],
+        })
+    return compare_options(priced)
+
+
+@app.post("/api/placement/options")
+def placement_options(
+    body: PlacementOptionsIn,
+    session: Session = Depends(get_session),
+    evaluate=Depends(get_placement_evaluator),
+    _auth: str = Depends(require_action("create_request")),
+) -> dict:
+    """The layouts this request could be built as, with costs and refusals.
+
+    Read-only. Nothing is persisted, so a requester may explore freely; the
+    decision is made by /api/placement/resolve.
+    """
+    req = _load_request(body.reference, session)
+    return {
+        "reference": req.reference,
+        "environment": req.environment_tier,
+        "deployment_target": req.deployment_target,
+        "options": _placement_options(session, req, evaluate),
+    }
+
+
+@app.post("/api/placement/resolve")
+def placement_resolve(
+    body: PlacementResolveIn,
+    session: Session = Depends(get_session),
+    evaluate=Depends(get_placement_evaluator),
+    requester: str = Depends(require_action("create_request")),
+) -> dict:
+    """Record a chosen placement, after deciding again whether it is allowed.
+
+    The option key selects among layouts the SERVER computed; it never describes
+    one. An option the server did not produce, or produced and refused, cannot be
+    chosen however the request body is written.
+    """
+    req = _load_request(body.reference, session)
+    options = _placement_options(session, req, evaluate)
+
+    chosen = next((o for o in options if o["key"] == body.option_key), None)
+    if chosen is None:
+        available = ", ".join(o["key"] for o in options) or "none"
+        raise HTTPException(
+            status_code=400,
+            detail=(f"'{body.option_key}' is not a placement option for this "
+                    f"request. Available: {available}."))
+    if not chosen["eligible"]:
+        raise HTTPException(
+            status_code=409,
+            detail=" ".join(chosen["reasons"]) or "That placement is not permitted.")
+
+    topology = {
+        "environment": req.environment_tier,
+        "deployment_target": req.deployment_target,
+        "hosts": chosen["hosts"],
+    }
+    placement = placement_store.record_placement(
+        session, req.id, chosen["key"], topology,
+        sizing=chosen["sizing"], estimate=chosen["estimate"], actor=requester)
+
+    append_audit(session, "placement.resolved", reference=req.reference,
+                 actor=requester,
+                 detail={"option": chosen["key"], "version": placement.version,
+                         "machines": chosen["sizing"].get("machine_count"),
+                         "monthly": chosen["estimate"]["totals"]["monthly"]})
+    session.commit()
+
+    return {
+        "reference": req.reference,
+        "version": placement.version,
+        "option_key": placement.option_key,
+        "topology": placement.topology,
+        "sizing": placement.sizing,
+        "estimate": placement.estimate,
+    }

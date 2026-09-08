@@ -645,6 +645,16 @@ def compare_options(priced: list[dict]) -> list[dict]:
     treated as free — a zero would make an unpriceable option look like the
     bargain of the set.
     """
+    # An option claiming to be priced must carry the figure. Without this the
+    # wrong shape produces no deltas at all rather than an error — which is how
+    # a caller nesting `resolved` and `totals` one level down got every option
+    # back marked unpriceable, silently, with a plausible response body.
+    for option in priced:
+        if option.get("resolved") and "totals" not in option:
+            raise ValueError(
+                "a resolved option must carry `totals`; got keys "
+                f"{sorted(option)}")
+
     priceable = [p for p in priced if p.get("resolved")]
     if not priceable:
         return [dict(p, monthly_delta=None, cheapest=False) for p in priced]

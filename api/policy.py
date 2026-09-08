@@ -38,6 +38,38 @@ def evaluate_policy(input_doc: dict) -> dict:
     }
 
 
+PLACEMENT_PATH = "/v1/data/infra/placement"
+
+
+def evaluate_placement(topology: dict) -> dict:
+    """Ask OPA whether a candidate topology may be built (P.3).
+
+    Same contract as `evaluate_policy`, against the placement package: `allow`
+    plus the sentences explaining any refusal. Those sentences are shown to the
+    requester verbatim, so an option is never greyed out without a reason.
+
+    A policy outage raises, exactly as it does for the authz gate. Placement
+    decides how many machines get built and what they cost; "OPA was down so we
+    allowed it" is not a defensible answer to an auditor.
+    """
+    try:
+        response = httpx.post(f"{OPA_URL}{PLACEMENT_PATH}",
+                              json={"input": topology}, timeout=5.0)
+        response.raise_for_status()
+        result = response.json().get("result", {})
+    except Exception as exc:  # noqa: BLE001 — any failure is a hard block
+        raise PolicyUnavailable(str(exc)) from exc
+    return {
+        "allow": bool(result.get("allow")),
+        "violations": sorted(result.get("violations", [])),
+    }
+
+
+def get_placement_evaluator():
+    """FastAPI dependency so tests can override the evaluator without OPA."""
+    return evaluate_placement
+
+
 def get_policy_evaluator():
     """FastAPI dependency so tests can override the evaluator without OPA."""
     return evaluate_policy

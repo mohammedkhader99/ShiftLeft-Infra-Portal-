@@ -226,3 +226,11 @@ def test_the_estimate_names_where_its_prices_came_from(session):
     """An approver seeing a figure should be able to learn whether it came from
     a live rate or a cached one."""
     assert price(CONSOLIDATED, session)["pricing_source"]
+
+
+def test_a_malformed_option_is_refused_rather_than_mis_answered(session):
+    """P.9 nested `resolved` and `totals` one level down, and compare_options
+    answered "nothing is priceable" — no error, a plausible body, every delta
+    None. A wrong shape must fail loudly."""
+    with pytest.raises(ValueError, match="must carry `totals`"):
+        compare_options([{"resolved": True, "estimate": {"totals": {"monthly": 1}}}])
