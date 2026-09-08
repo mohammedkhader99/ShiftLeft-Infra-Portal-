@@ -50,6 +50,31 @@ NEW_CLUSTER_OPTION = "new-cluster"
 # that removes work from them; separated last because it is the most expensive.
 OPTION_ORDER = (MANAGED_OPTION, CONSOLIDATED_OPTION, SEPARATED_OPTION)
 
+# The name each layout goes by, in one place.
+#
+# Only the KEY is persisted with a placement, so anything reading a stored
+# placement back -- the approval ticket, most of all -- has to turn "consolidated"
+# into something a person can judge. Written here rather than wherever it is
+# needed: an approver and a requester describing the same layout differently is
+# the kind of drift nobody notices until the two are read side by side.
+OPTION_TITLES: dict[str, str] = {
+    MANAGED_OPTION: "Managed where available",
+    CONSOLIDATED_OPTION: "Consolidated",
+    SEPARATED_OPTION: "Separated",
+    EXISTING_CLUSTER_OPTION: "Deploy onto an existing cluster",
+    NEW_CLUSTER_OPTION: "Provision a new cluster",
+}
+
+
+def option_title(key: str) -> str:
+    """The human name for a layout key, falling back to the key itself.
+
+    An unknown key is returned as-is rather than replaced with "Unknown": a
+    ticket naming a layout the code no longer recognises is still telling the
+    truth about what was chosen, and hiding it would not make it recognised.
+    """
+    return OPTION_TITLES.get(key, key)
+
 
 @dataclass(frozen=True)
 class ComponentFacts:
@@ -163,7 +188,7 @@ def _managed_option(components: Sequence[ComponentFacts]) -> Option | None:
     names = ", ".join(c.code for c in managed)
     return Option(
         key=MANAGED_OPTION,
-        title="Managed where available",
+        title=OPTION_TITLES[MANAGED_OPTION],
         summary=(f"The cloud runs {names}. Patching, backups and failover for "
                  f"it stop being yours."),
         hosts=tuple(hosts),
@@ -177,7 +202,7 @@ def _consolidated_option(components: Sequence[ComponentFacts]) -> Option | None:
         return None  # nothing to consolidate; it would equal `separated`
     return Option(
         key=CONSOLIDATED_OPTION,
-        title="Consolidated",
+        title=OPTION_TITLES[CONSOLIDATED_OPTION],
         summary=(f"One machine hosts all {len(workloads)} components. Their "
                  f"resource needs are summed, not maximised."),
         hosts=(Host(id="host-1", host_mode=HOST_VM,
@@ -196,7 +221,7 @@ def _separated_option(components: Sequence[ComponentFacts]) -> Option | None:
     )
     return Option(
         key=SEPARATED_OPTION,
-        title="Separated",
+        title=OPTION_TITLES[SEPARATED_OPTION],
         summary=(f"{len(hosts)} machines, one per component. The most isolated "
                  f"and the most expensive."),
         hosts=hosts,
@@ -259,7 +284,7 @@ def _existing_cluster_option(components: Sequence[ComponentFacts],
         # would be believed about.
         return Option(
             key=EXISTING_CLUSTER_OPTION,
-            title="Deploy onto an existing cluster",
+            title=OPTION_TITLES[EXISTING_CLUSTER_OPTION],
             summary="Existing clusters cannot be listed at the moment.",
             hosts=hosts, eligible=False,
             reasons=("The portal cannot list existing clusters yet, so it "
@@ -274,7 +299,7 @@ def _existing_cluster_option(components: Sequence[ComponentFacts],
     if not clusters:
         return Option(
             key=EXISTING_CLUSTER_OPTION,
-            title="Deploy onto an existing cluster",
+            title=OPTION_TITLES[EXISTING_CLUSTER_OPTION],
             summary="No cluster is available to you.",
             hosts=hosts, eligible=False,
             reasons=("You are not entitled to any existing cluster in this "
@@ -286,7 +311,7 @@ def _existing_cluster_option(components: Sequence[ComponentFacts],
     if not usable:
         return Option(
             key=EXISTING_CLUSTER_OPTION,
-            title="Deploy onto an existing cluster",
+            title=OPTION_TITLES[EXISTING_CLUSTER_OPTION],
             summary=f"{len(clusters)} cluster(s), none of which can take this.",
             hosts=hosts, eligible=False,
             reasons=tuple(
@@ -297,7 +322,7 @@ def _existing_cluster_option(components: Sequence[ComponentFacts],
 
     return Option(
         key=EXISTING_CLUSTER_OPTION,
-        title="Deploy onto an existing cluster",
+        title=OPTION_TITLES[EXISTING_CLUSTER_OPTION],
         summary=(f"{len(usable)} of {len(clusters)} cluster(s) can take this "
                  f"workload. Nothing new is provisioned."),
         hosts=hosts,
@@ -320,7 +345,7 @@ def _new_cluster_option(components: Sequence[ComponentFacts]) -> Option | None:
     name = ", ".join(c.code for c in providers)
     return Option(
         key=NEW_CLUSTER_OPTION,
-        title="Provision a new cluster",
+        title=OPTION_TITLES[NEW_CLUSTER_OPTION],
         summary=(f"A new {name} cluster, with its node pool sized from the "
                  f"{len(workloads)} workload(s) placed on it."
                  if workloads else

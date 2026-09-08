@@ -566,6 +566,11 @@ def estimate_placement_cost(
     component_sizes = component_sizes or {}
     hosts = sized.get("hosts", [])
 
+    # ORDER IS LOAD-BEARING. `placement_attachment_rows` rebuilds the approver's
+    # table by walking `hosts` the same way, and the PDF pairs its rows with the
+    # priced lines BY POSITION. Both walks are in host order, machines before
+    # managed; changing either without the other silently puts one machine's
+    # price against another machine's name.
     machines: list[dict] = []
     managed: list[dict] = []
     placed_components: list[str] = []
@@ -619,13 +624,75 @@ def estimate_placement_cost(
                + licence_monthly)
     one_time = total(machine_cost, "one_time") + total(managed_cost, "one_time")
 
+    # EVERYTHING BELOW EXISTS SO THIS CAN REPLACE THE PER-COMPONENT BREAKDOWN
+    # RATHER THAN SIT BESIDE IT (P.12).
+    #
+    # Once a placement is chosen, the per-component estimate priced a different
+    # arrangement of the same components — so it is not a second opinion, it is
+    # the wrong answer. But the approval ticket, the budget guardrail and the
+    # signed handoff all read the SHAPE `estimate_cost` returns, and every field
+    # in that shape is there because an approver was once misled without it: the
+    # licence split, the "not the whole cost" caveat, the foreign-currency
+    # licence note. Swapping in a thinner dict would have silently dropped all
+    # three from the ticket while appearing to work.
+    #
+    # So the placement estimate reports the same facts, derived from what it
+    # actually priced.
+    def merge(field: str) -> list:
+        out: list = []
+        for estimate in (machine_cost, managed_cost):
+            for item in (estimate or {}).get(field) or []:
+                if item not in out:
+                    out.append(item)
+        return out
+
+    # WHAT HAS NO PRICE, named. Components on a host P.6 refused to size are the
+    # real gap and the sub-estimates cannot report them: an unresolved host is
+    # skipped before anything is priced, so without this the components on it
+    # would vanish from the estimate entirely and the total would look complete.
+    # That is the failure mode this project has been bitten by twice — a figure
+    # that is missing a machine is worse than no figure, because someone can
+    # approve it.
+    unpriced: list[str] = []
+    for host in hosts:
+        if host.get("resolved") or host.get("host_mode") == "managed":
+            continue
+        for code in host.get("components") or ():
+            if code not in unpriced:
+                unpriced.append(code)
+    for name in merge("unpriced"):
+        if name not in unpriced:
+            unpriced.append(name)
+
+    by_category = {key: 0.0 for key in
+                   ("compute", "storage", "licence", "backup", "monitoring",
+                    "support")}
+    for estimate in (machine_cost, managed_cost):
+        for key, amount in ((estimate or {}).get("by_category") or {}).items():
+            if key in by_category:
+                by_category[key] += float(amount or 0.0)
+    # Licences priced per component here, not by the sub-estimates.
+    by_category["licence"] += licence_monthly
+    by_category = {key: round(value, 2) for key, value in by_category.items()}
+
     return {
         "currency": (machine_cost or managed_cost or {}).get("currency", "AED"),
         "pricing_source": (machine_cost or managed_cost or {}).get("pricing_source"),
+        "deployment_target": (deployment_target or "").strip() or None,
+        "known_target": bool((machine_cost or managed_cost or {})
+                             .get("known_target", True)),
         "machine_count": sized.get("machine_count", 0),
         "machines": machine_cost,
         "managed": managed_cost,
         "licences": licence_lines,
+        # The per-line detail the cost sheet reads. Machines appear as machines,
+        # because a machine is what is bought — pricing per component is the
+        # mistake the whole of this function exists to correct.
+        "lines": merge("lines"),
+        "unpriced": unpriced,
+        "provisional": merge("provisional"),
+        "external_licences": merge("external_licences"),
+        "by_category": by_category,
         "resolved": bool(sized.get("resolved")) and (
             machine_cost is None or not machine_cost.get("unpriced")),
         "totals": {
@@ -634,6 +701,71 @@ def estimate_placement_cost(
             "annual": round(monthly * 12, 2),
         },
     }
+
+
+def placement_attachment_rows(sizing: dict) -> dict:
+    """The approver's attachments, described as machines rather than components.
+
+    WHY THIS EXISTS. `build_request_pdf` and `build_cost_sheet_xlsx` pair
+    `sizing["components"][i]` with `breakdown["lines"][i]` BY POSITION. That was
+    safe while a component and a priced line were the same thing. Once a
+    placement supplies the cost they are not: the lines price MACHINES, and three
+    components on one host produce one line. Left alone, the PDF would have
+    printed a machine's monthly figure beside a component's name — a per-component
+    price that was never calculated, in the document handed to the person
+    approving the money.
+
+    So the rows are rebuilt to match what was actually priced, in the order it
+    was priced: resolved machines first, then managed components, which is the
+    order `estimate_placement_cost` merges its lines in.
+
+    A host P.6 could not size is included and marked, not dropped. It is a
+    machine that will be built; leaving it out would make the table look like the
+    whole request.
+    """
+    hosts = sizing.get("hosts") or []
+    rows: list[dict] = []
+
+    for host in hosts:
+        if host.get("host_mode") == "managed" or not host.get("resolved"):
+            continue
+        components = ", ".join(host.get("components") or ()) or "nothing"
+        rows.append({
+            "technology_code": "compute-vm",
+            "technology_name": f"{host.get('host_id')}: {components}",
+            "size": host.get("host_mode"),
+            "vcpu": host.get("vcpu"),
+            "memory_gb": host.get("memory_gb"),
+            "storage_gb": host.get("storage_gb"),
+            "resolved": True,
+            "custom_shape": False,
+        })
+
+    for host in hosts:
+        if host.get("host_mode") != "managed":
+            continue
+        for code in host.get("components") or ():
+            rows.append({
+                "technology_code": code,
+                "technology_name": f"{code} (run by the cloud)",
+                "size": None, "vcpu": None, "memory_gb": None,
+                "storage_gb": None, "resolved": True, "custom_shape": False,
+            })
+
+    # Appended last so it cannot shift the positions above, and carrying no
+    # figure of its own — the price it would need is exactly what is missing.
+    for host in hosts:
+        if host.get("resolved") or host.get("host_mode") == "managed":
+            continue
+        components = ", ".join(host.get("components") or ()) or "nothing"
+        rows.append({
+            "technology_code": None,
+            "technology_name": f"{host.get('host_id')}: {components} (SIZE NOT DETERMINED)",
+            "size": host.get("host_mode"), "vcpu": None, "memory_gb": None,
+            "storage_gb": None, "resolved": False, "custom_shape": False,
+        })
+
+    return {"components": rows}
 
 
 def compare_options(priced: list[dict]) -> list[dict]:

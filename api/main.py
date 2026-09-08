@@ -89,7 +89,8 @@ from api.plan_preview import build_plan_preview
 from api import policy
 from api.policy import get_placement_evaluator, PolicyUnavailable, get_policy_evaluator
 from api.pricing import (BILLING_CLUSTER, BILLING_MODEL, compare_options,
-                         estimate_cost, estimate_placement_cost)
+                         estimate_cost, estimate_placement_cost,
+                         placement_attachment_rows)
 from api import roles as roles_mod
 from api.sizing import load_requirements, resolve_components, size_hosts
 from api.validation import (CREATE_LIKE_TYPES, DEPLOYMENT_TARGETS, normalise_tier,
@@ -2726,6 +2727,12 @@ class RequestOut(BaseModel):
     # Active JIT access grants (F-IAM-07) for a provisioned environment — metadata
     # only, never the credential.
     access_grants: list | None = None
+    # The placement in force (P.8): {version, option_key, cluster_id, topology,
+    # sizing, estimate}, else None. Attached by the get endpoint, because a form
+    # resuming a draft (P.11a) must come back with the layout it was saved with —
+    # a request whose topology quietly reverted to nothing would be repriced and
+    # rebuilt as something the requester never chose.
+    placement: dict | None = None
 
     @computed_field
     @property
@@ -3303,6 +3310,34 @@ def submit_request(
 
     # Server-computed estimate (1.6) — needed now for the budget guardrail below.
     breakdown = estimate_cost(components_data, req.deployment_target, session, req.advanced_options)
+
+    # A PLACED REQUEST HAS ONE COST, AND IT IS THE PLACEMENT'S (P.12).
+    #
+    # The per-component estimate above priced a different arrangement of the
+    # same components. Once a layout is chosen it is not a second opinion, it is
+    # the wrong answer — three components on one machine buy one machine's
+    # compute, not three.
+    #
+    # This has to replace the figure rather than sit beside it, because THREE
+    # things downstream read it and they must not disagree:
+    #   - the budget guardrail a few lines below, which decides whether the
+    #     request may be submitted at all;
+    #   - `req.estimate`, stored as the approved figure;
+    #   - the signed handoff, which sends `approved_monthly` to the orchestrator,
+    #     where the actual cost is re-validated against it.
+    # The orchestrator builds the PLACEMENT. Leaving the per-component figure in
+    # `req.estimate` would have it enforce a number nobody was shown, and a
+    # managed layout costing more than the per-component estimate would be
+    # refused at execution for a discrepancy the portal itself created.
+    #
+    # The STORED estimate is used, not a fresh calculation: rates move, and the
+    # figure the requester chose against is the one that should reach the
+    # approver (P.8). It was written seconds earlier, at resolve.
+    placement = placement_store.current_placement(session, req.id)
+    if placement is not None and placement.estimate:
+        breakdown = dict(placement.estimate)
+        breakdown.setdefault("deployment_target", req.deployment_target)
+
     monthly = float(breakdown["totals"]["monthly"])
 
     # A PRICE NOBODY CAN COMPUTE IS NOT A PRICE OF ZERO — SAY SO, DO NOT BLOCK.
@@ -3399,13 +3434,19 @@ def submit_request(
     # real Jira in 2.4). If live Jira creation fails, refuse the submit rather
     # than leaving a submitted request with no approval ticket.
     plan_preview = build_plan_preview(req, session)
-    ticket_body = build_ticket_body(req, breakdown, plan_preview)
+    ticket_body = build_ticket_body(req, breakdown, plan_preview, placement=placement)
     # A one-page request + costing PDF (2.4c) and an Excel cost sheet (6.4) for
     # the approver — never fail a submit over an attachment.
     attachment = None
     extra_attachments: list[tuple[str, bytes]] = []
     try:
-        sizing = resolve_components(components_data, session)
+        # The attachments must describe whatever `breakdown` priced, because both
+        # of them read the per-row cost out of `breakdown["lines"]` BY POSITION.
+        # With a placement those lines are machines, so per-component rows would
+        # put a machine's price against a component's name.
+        sizing = (placement_attachment_rows(placement.sizing or {})
+                  if placement is not None
+                  else resolve_components(components_data, session))
         pdf = build_request_pdf(req, breakdown, sizing)
         attachment = (f"request-{req.reference}.pdf", pdf)
         xlsx = build_cost_sheet_xlsx(req, breakdown, sizing)

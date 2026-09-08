@@ -20,6 +20,7 @@ import httpx
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from api import placement as placement_mod
 from db.models import Approval, Request, Subsidiary
 
 # Cache of template fields (Jira config is stable; fetched once per process).
@@ -298,8 +299,128 @@ def normalize_status(name: str) -> str:
     return "pending"
 
 
-def build_ticket_body(req: Request, estimate: dict, plan_preview: str) -> str:
-    """Assemble the ticket text: configuration + cost + plan preview together."""
+def build_topology_summary(placement) -> list[str]:
+    """What will actually be built, for the person approving it (P.12, F-INT-13).
+
+    A component list says what was asked for. It does not say whether those
+    three components become three machines or one, whether the database is a
+    machine somebody patches or a service the cloud runs, or which cluster the
+    workloads land in — and those are the differences an approver is being asked
+    to judge. Two requests with identical component lists can differ by a factor
+    of three in cost and entirely in operational burden.
+
+    Read from the RECORDED placement (P.8) rather than recomputed. The topology
+    stored beside the estimate is the one the requester chose and the one the
+    orchestrator will build from; deriving it again here could produce a third
+    answer, and an approval ticket that disagrees with the record is worse than
+    one that says nothing.
+
+    Returns [] when nothing was placed, so a request raised before placement
+    existed reads exactly as it always did.
+    """
+    if placement is None:
+        return []
+    sizing = placement.sizing or {}
+    hosts = sizing.get("hosts") or []
+    if not hosts:
+        return []
+
+    lines = ["", "How it will be built:"]
+    chosen = placement_mod.option_title(placement.option_key)
+    stamp = ""
+    if getattr(placement, "created_at", None):
+        stamp = f", chosen {placement.created_at:%Y-%m-%d %H:%M}"
+    lines.append(f"  Layout: {chosen} (version {placement.version}{stamp})")
+
+    machines = [h for h in hosts if h.get("host_mode") != "managed"]
+    managed = [h for h in hosts if h.get("host_mode") == "managed"]
+
+    for host in machines:
+        components = ", ".join(host.get("components") or ()) or "nothing"
+        where = "Container host" if host.get("host_mode") == "container" else "Machine"
+        if host.get("resolved"):
+            shape = []
+            if host.get("vcpu") is not None:
+                shape.append(f"{host['vcpu']} vCPU")
+            if host.get("memory_gb") is not None:
+                shape.append(f"{host['memory_gb']} GB RAM")
+            if host.get("storage_gb") is not None:
+                shape.append(f"{host['storage_gb']} GB disk")
+            headroom = host.get("headroom_percent") or 0
+            suffix = f" (includes {headroom}% headroom)" if headroom else ""
+            lines.append(f"  {where} {host.get('host_id')}: {', '.join(shape)}{suffix}")
+        else:
+            # NOT SILENTLY OMITTED, AND NOT SHOWN AS A SHAPE OF ZERO. This host
+            # is in the topology and will be built; what is missing is the
+            # requirement that says how big. The approver has to see that the
+            # figure below excludes it.
+            lines.append(f"  {where} {host.get('host_id')}: SIZE NOT DETERMINED")
+        lines.append(f"      runs: {components}")
+        if not host.get("resolved") and host.get("missing"):
+            lines.append(
+                f"      No sizing requirement is recorded for "
+                f"{', '.join(host['missing'])}, so this machine is not included "
+                f"in the cost below.")
+
+    for host in managed:
+        components = ", ".join(host.get("components") or ()) or "nothing"
+        lines.append(f"  Run by the cloud: {components}")
+        lines.append("      No machine is provisioned; the cloud patches, backs "
+                     "up and fails it over.")
+
+    # THE COUNT ONLY COUNTS WHAT COULD BE SIZED, so it cannot stand alone.
+    # `machine_count` is incremented per RESOLVED host, so a placement whose
+    # machines all failed to size reported "0 machines are provisioned by this
+    # request" directly beneath a line naming one — a contradiction inside a
+    # single paragraph, on the document somebody signs.
+    count = sizing.get("machine_count", len(machines))
+    unsized = [h for h in machines if not h.get("resolved")]
+    lines.append("")
+    if not machines:
+        lines.append("  No machines are provisioned by this request.")
+    else:
+        lines.append(
+            f"  {count} machine{'s' if count != 1 else ''} "
+            f"{'are' if count != 1 else 'is'} priced below.")
+    if unsized:
+        lines.append(
+            f"  PLUS {len(unsized)} machine{'s' if len(unsized) != 1 else ''} "
+            f"whose size could not be determined. "
+            f"{'They are' if len(unsized) != 1 else 'It is'} part of this "
+            f"request and will be built; the cost below EXCLUDES "
+            f"{'them' if len(unsized) != 1 else 'it'}.")
+
+    # WHICH CLUSTER, when one was named.
+    #
+    # Recognised by the placement's own vocabulary, not by the shape of the id.
+    # An earlier version matched ids beginning "ocid", which is OCI's format and
+    # nobody else's — an AKS or GKE cluster would have passed the test silently
+    # and left the approver reading a ticket that never said where the workload
+    # was going. The resolver stamps the authorised cluster's id over the
+    # placeholder host id, so an id that is no longer the placeholder IS the
+    # cluster, on any cloud.
+    #
+    # An id rather than a name because the id is what the placement records: the
+    # cluster list is fetched live and never stored, so resolving a name here
+    # would be a second lookup that could disagree with what was authorised.
+    if placement.option_key == placement_mod.EXISTING_CLUSTER_OPTION:
+        for host in (placement.topology or {}).get("hosts") or []:
+            host_id = str(host.get("id") or "")
+            if host_id and host_id != placement_mod.EXISTING_CLUSTER_OPTION:
+                lines.append(f"  Cluster: {host_id}")
+
+    return lines
+
+
+def build_ticket_body(req: Request, estimate: dict, plan_preview: str,
+                      placement=None) -> str:
+    """Assemble the ticket text: configuration + cost + plan preview together.
+
+    `placement`, when given, is the RequestPlacement in force. It turns the
+    component list into an architecture — see build_topology_summary — and the
+    cost printed below is then the post-placement one, because that is what the
+    caller passes as `estimate`.
+    """
     is_decommission = req.request_type == "decommission"
     lines = [
         f"Request {req.reference} ({req.request_type})",
@@ -373,15 +494,33 @@ def build_ticket_body(req: Request, estimate: dict, plan_preview: str) -> str:
         lines.append("  Shapes above are the requester's explicit choices and are "
                      "what will be built.")
 
+    # WHAT WAS ASKED FOR, THEN HOW IT WILL BE BUILT, THEN WHAT THAT COSTS. The
+    # order is the argument: an approver cannot judge a figure without knowing
+    # what arrangement produced it, and the same three components consolidated
+    # or separated are different requests wearing the same list.
+    lines.extend(build_topology_summary(placement))
+
     totals = estimate.get("totals", {})
     currency = estimate.get("currency", "AED")
     lines.append("")
+    # NAME THE CALCULATION. Two different figures are derivable from the same
+    # request -- one per component, one from the machines the placement actually
+    # builds -- and they differ, sometimes by a third. An approver reading a bare
+    # "Estimated cost" cannot tell which they are approving, and it is the
+    # post-placement figure the orchestrator is later held to.
+    heading = ("Estimated cost after placement" if placement is not None
+               else "Estimated cost")
     lines.append(
-        f"Estimated cost ({currency}): "
+        f"{heading} ({currency}): "
         f"one-time {totals.get('one_time', 0):.2f}, "
         f"monthly {totals.get('monthly', 0):.2f}, "
         f"annual {totals.get('annual', 0):.2f}"
     )
+    if placement is not None:
+        lines.append(
+            "  Priced from the machines the layout above builds, not per "
+            "component: compute and storage are bought once per machine, and a "
+            "licence is owed per component wherever it runs.")
 
     # WHAT THE FIGURE LEAVES OUT — and it belongs HERE, next to the number.
     #
