@@ -1,0 +1,24 @@
+{
+  "coresidency": {
+    "postgres16": {
+      "denied_in_environments": ["prod", "dr"],
+      "denied_with": ["mysql", "oracle-free", "mssql"],
+      "reason": "A production database shares a host with nothing else. A neighbour on the same machine competes for the page cache and the disk queue, and patching that neighbour takes the database down with it."
+    },
+    "mysql": {
+      "denied_in_environments": ["prod", "dr"],
+      "denied_with": ["postgres16", "oracle-free", "mssql"],
+      "reason": "A production database shares a host with nothing else. A neighbour on the same machine competes for the page cache and the disk queue, and patching that neighbour takes the database down with it."
+    },
+    "mssql": {
+      "denied_in_environments": ["prod", "dr"],
+      "denied_with": ["postgres16", "mysql", "oracle-free"],
+      "reason": "A production database shares a host with nothing else, and a licensed engine sharing a machine can change what that machine costs to licence."
+    },
+    "oracle-free": {
+      "denied_in_environments": ["prod", "dr"],
+      "denied_with": ["postgres16", "mysql", "mssql"],
+      "reason": "A production database shares a host with nothing else, and Oracle Database Free is not licensed for production use at all."
+    }
+  }
+}
