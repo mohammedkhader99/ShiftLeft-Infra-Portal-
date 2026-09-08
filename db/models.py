@@ -879,6 +879,56 @@ class TechnologyDelivery(Base):
     note: Mapped[str] = mapped_column(String(300), default="")
 
 
+class RequestPlacement(Base):
+    """A placement decision for a request, and every one it replaced (P.8).
+
+    Append-only. Changing a placement writes a new row and stamps the previous
+    one's `superseded_at`; nothing is overwritten and nothing is deleted, so
+    "what was this approved as?" stays answerable after somebody changes their
+    mind. That is the same treatment every other privileged decision here gets
+    (ARCHITECTURE.md P4).
+
+    WHY THE ESTIMATE IS STORED BESIDE THE TOPOLOGY. Rates move — OCI's live
+    pricing is fetched hourly — so recomputing a six-week-old request today
+    produces a number nobody ever approved. The figure that reached Jira is part
+    of the record rather than something to derive again later. An audit trail
+    that reconstructs a different answer from the one that was signed off is not
+    an audit trail.
+
+    A NEW TABLE, for the reason TechnologyDelivery and CertificationProof both
+    give: `create_all` adds missing tables and not missing columns, so a
+    placement column on `request` would silently not exist on a database that
+    already has one.
+    """
+
+    __tablename__ = "request_placement"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    request_id: Mapped[int] = mapped_column(ForeignKey("request.id"), index=True)
+    # 1, 2, 3... per request. Not a global sequence: "version 2" should mean
+    # "the second decision on THIS request".
+    version: Mapped[int] = mapped_column(default=1)
+    # managed | consolidated | separated | existing-cluster | new-cluster
+    option_key: Mapped[str] = mapped_column(String(32))
+
+    # The document the policy actually judged, kept verbatim. Structured, never
+    # prose: the orchestrator selects modules from this, and a sentence cannot
+    # be selected from.
+    topology: Mapped[dict] = mapped_column(JSON, default=dict)
+    # What each host was sized to, so the shape can be explained without
+    # re-deriving it from requirements that may since have changed.
+    sizing: Mapped[dict] = mapped_column(JSON, default=dict)
+    # What it cost when it was chosen. See the docstring.
+    estimate: Mapped[dict] = mapped_column(JSON, default=dict)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_by: Mapped[str] = mapped_column(String(120), default="")
+    # Null means this is the placement in force. Reading the highest version
+    # instead would resurrect a withdrawn placement the moment one is superseded
+    # without a replacement.
+    superseded_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
 HOST_VM = "vm"                # a machine the customer owns and patches
 HOST_CONTAINER = "container"  # a workload on a cluster someone else runs
 HOST_MANAGED = "managed"      # the cloud runs it; there is no host to size
