@@ -222,6 +222,96 @@ Sequenced per ARCHITECTURE.md §12 — **build what's hard to retrofit first.** 
 
 ---
 
+## 5a. Phase P — Placement resolution (added 2026-09-08)
+
+Today a requester picks components and the request goes straight to costing. Nothing decides **where** each component runs, and three things are wrong because of it: the estimate cannot know whether three components mean one machine or three; module selection has no topology to select against; and the approver in Jira reads a shopping list rather than an architecture.
+
+This phase inserts one step — **placement resolution** — between component selection and cost, and then wires its consequences through sizing, cost, the Jira payload and the Terraform plan.
+
+**Three findings from the code that shape this phase.** Recorded here because each changes what "the obvious implementation" would have been:
+
+1. **There is no migration tool.** `_ensure_tables()` adds missing *tables* and can never add a column (`api/main.py`, and the same warning five times in `db/models.py`). A new column on `technology` would silently not exist on the restored production database, and every read would return `None` — which is exactly the failure `TechnologyDelivery` was created to end. **Every new fact below is a new table.**
+2. **"Deployment model" already exists** as `technology_delivery.delivery_model` (`managed | software | machine | capability`). Adding a second, overlapping field would recreate the two-sources-of-truth bug that table exists to fix. The new fact is a different question — *where an instance may run*, not *what the thing is* — so it is named **host mode** and P.1 asserts the two agree.
+3. **"Profile" is taken, and dangerously so.** A *technology profile* is JSON that becomes commands root runs at first boot (`common/profile_rules.py`); an adversarial review on 2026-08-22 found three working root escapes in its rules. Reusing "profile" for sizing would put a benign meaning and a remote-code-execution meaning behind one word in the same codebase. Sizing facts here are **requirements**.
+
+---
+
+**P.1 — Host-mode catalogue**
+New table `technology_host_mode` (`technology_code`, `cloud`, `host_mode` ∈ `vm | container | managed`), one row per supported combination — PostgreSQL on OCI has three, Node.js has two, a managed-only service has one. A test asserts every row is consistent with that technology's `delivery_model`, so the two tables can never disagree.
+*Implements:* F-CAT-17.
+*You'll know it works when:* asking the catalogue for PostgreSQL on OCI returns all three host modes, and asking for a managed-only service returns exactly one.
+
+**P.2 — Host-mode resource requirements**
+New table `host_mode_requirement` (`technology_code`, `host_mode`, `size`, minimum and recommended `vcpu` / `memory_gb` / `storage_gb` / `iops`, `effective_from`, `version`) — versioned and effective-dated exactly as `sizing_anchor` is, because the same technology needs a different shape as a container than as a VM guest.
+*Implements:* F-CAT-18, extends F-CAT-07.
+*You'll know it works when:* the same technology and size returns different minimums for `vm` and `container`, and last month's effective-dated row is still retrievable.
+
+**P.3 — Placement policy in Rego**
+New `policy/placement.rego`, package `infra.placement`, returning `allow` plus human-readable `violations` — the same shape `infra.authz` already returns, so the admin Policies page renders it unchanged. Co-residency denials (`denied_with`, `denied_in_environments`) are rules here, not branches in Python: adding a component must never require a code change (ARCHITECTURE.md P5).
+*Implements:* F-GOV-12.
+*You'll know it works when:* `opa test policy/` passes, and a consolidated topology in `prod` is denied with a sentence naming the rule while the same topology in `dev` is allowed.
+
+**P.4 — The resolver: enumerate candidate topologies**
+`api/placement.py` turns (components, cloud, environment tier) into the ordered option set of Scenario A — managed-where-available, consolidated, separated — each carrying its resolved hosts and the components on them. Every option is evaluated against P.3; a denied option is **returned with its reason**, never dropped. Pure function, no I/O.
+*Implements:* F-CAT-17, F-GOV-12.
+*You'll know it works when:* VM + PostgreSQL + Node.js in `dev` returns three options in that order, and the same selection in `prod` returns the consolidated one marked ineligible with the rule that forbade it.
+
+**P.5 — Cluster entitlement resolution (Scenario B)**
+For an OKE/AKS selection, list clusters the caller is actually entitled to — scoped by project, cost centre and subsidiary, then filtered again by their real access — each with region, current allocatable capacity, and whether this request fits. Clusters are **fetched live and cached hourly**, never stored as catalogue rows (ARCHITECTURE.md P7); a cluster that would breach a quota is shown ineligible with the quota named. Stateful workloads on Kubernetes carry a warning and the managed alternative alongside.
+*Implements:* F-IAM-11, uses F-FIN-08.
+*You'll know it works when:* two requesters with different entitlements see different cluster lists, a cluster that would breach a quota appears greyed with the ceiling stated, and PostgreSQL-on-Kubernetes shows both the warning and the managed option.
+
+**P.6 — Sizing from the resolved topology**
+Sizing is recomputed from hosts, not from the component list: co-resident components **sum** their requirements and add a configurable headroom factor. The old per-component path stays for requests raised before placement existed.
+*Implements:* F-CAT-18.
+*You'll know it works when:* three components consolidated onto one host show a summed shape, not the largest of the three, and the headroom factor is visible in the breakdown.
+
+**P.7 — Cost recomputed on every placement change**
+Cost is derived from the resolved hosts and recomputed whenever placement changes, server-side and authoritative (ARCHITECTURE.md P2). Each option carries its delta against the others so the requester chooses with the number in front of them.
+*Implements:* extends existing cost estimation, F-UX-06.
+*You'll know it works when:* switching from separated to consolidated changes the estimate on screen, and the figure that later reaches Jira is the post-placement one.
+
+**P.8 — Persist and version the placement**
+New table `request_placement` (`request_id`, `version`, `topology` as structured JSON, `created_at`, `created_by`, `superseded_at`) — append-only, so a request's placement history is as auditable as everything else privileged (ARCHITECTURE.md P4). A resize or add-component request reads the prior placement and offers only options consistent with it: you cannot offer "deploy to existing cluster" for an environment built on VMs.
+*Implements:* F-CAT-19.
+*You'll know it works when:* changing placement twice leaves two versions with the first superseded, and an add-component request against a VM-built environment is not offered a cluster.
+
+**P.9 — API endpoints, authoritative**
+`POST /api/placement/options` and `POST /api/placement/resolve`. The API — not the BFF — re-resolves every cluster ID and re-runs entitlement, quota and co-residency before it will persist anything. A cluster ID from the browser is an *assertion*, never a fact (ARCHITECTURE.md P1/P2).
+*Implements:* F-IAM-11, F-GOV-12.
+*You'll know it works when:* posting a cluster ID the caller is not entitled to is refused by the API even when the BFF would have shown it, and the refusal names the reason.
+
+**P.10 — BFF wiring**
+The BFF passes the caller's identity through and shapes the response for the browser. It filters for presentation; it is not the control. Tested by calling the API directly with a forged cluster ID and confirming the refusal.
+*Implements:* F-IAM-11.
+*You'll know it works when:* bypassing the BFF entirely cannot place a workload anywhere the requester is not entitled to.
+
+**P.11 — Placement step in the request wizard**
+A new step between components and cost. Every option shows its topology, its cost and its delta; every ineligible option shows the reason it is ineligible. Silent filtering is a defect here — it makes the portal feel broken and generates the tickets this portal exists to prevent.
+*Implements:* F-UX-16, F-UX-10.
+*You'll know it works when:* you can see, in one screen, what will run where, what it costs, and — for anything you cannot choose — the sentence explaining why.
+
+**P.12 — Topology summary in the approval ticket**
+The Jira payload carries a human-readable topology summary — what runs where, on how many hosts, in which cluster — beside the post-placement cost, so the approver judges configuration and cost together rather than a component list.
+*Implements:* F-INT-13.
+*You'll know it works when:* a Jira ticket for a consolidated request reads as an architecture and its cost matches the post-placement estimate.
+
+**P.13 — Terraform module selection from the topology**
+Module selection and variable generation derive from the persisted structured placement. Placement reaches the orchestrator as data, never as prose.
+*Implements:* F-ORC-11.
+*You'll know it works when:* the same components with different placements produce different plans, and the plan can be traced back to the placement version that produced it.
+
+**P.14 — End-to-end integration test**
+Select three components → resolve consolidated → summed sizing → correct cost → correct Jira payload shape, as one test.
+*Implements:* the phase.
+*You'll know it works when:* the test passes from a clean database and fails if any link in that chain is broken.
+
+---
+
+**Out of scope for this phase**, per the task: provisioning execution, Jira workflow changes and approval logic. The phase ends when a resolved, costed, persisted topology is attached to a submitted request.
+
+---
+
 ## 6. The one open decision that affects this plan now
 
 **HTMX vs React for the portal (ARCHITECTURE.md §14.1).** This plan assumes HTMX. If you choose React instead, only the *portal* increments change shape — 0.3, 1.2, 1.3, and 1.5 would build a React app calling the same API — while the API, database, policy, Jira, orchestrator, and every enterprise increment stay identical. So the decision is real but low-blast-radius; it doesn't block starting Phase 0, which is stack-neutral either way.

@@ -168,7 +168,7 @@ Read in this order:
 | Document | Role |
 |---|---|
 | **[CLAUDE.md](CLAUDE.md)** | How we work: the standing rules, one increment at a time |
-| **[ARCHITECTURE.md](ARCHITECTURE.md)** | The design authority — principles, the 126-feature catalogue across 11 domains, technology decisions |
+| **[ARCHITECTURE.md](ARCHITECTURE.md)** | The design authority — principles, the 138-feature catalogue across 11 domains, technology decisions |
 | **[AGENT-DOCTRINE.md](AGENT-DOCTRINE.md)** | How the agent reasons: reuse → discover → compose → build, and what it may never do alone |
 | **[PLAN.md](PLAN.md)** | The build sequence — increments in order, each with an acceptance check |
 | **[INSTALL.md](INSTALL.md)** | Running it, and moving it between machines |

@@ -2,7 +2,7 @@
 ## Shift-Left Infrastructure Provisioning Portal — Governing Architecture
 
 **Owner:** Infrastructure Management Department (IMD)
-**Status:** Draft v2 (July 2026) — integrates the Enterprise Feature Catalogue (126 features, 11 domains). Supersedes the earlier React/Node design for the portal and agent layers, and supersedes the provisional E1–E4 mapping in draft v1.
+**Status:** Draft v2 (July 2026) — integrates the Enterprise Feature Catalogue (138 features, 11 domains). Supersedes the earlier React/Node design for the portal and agent layers, and supersedes the provisional E1–E4 mapping in draft v1.
 **Audience:** Claude Code (implementer) and the IMD reviewer
 **Companion documents:** SCOPE.md (delivery plan) · PROMPT.md (build brief) · FEATURES.md / Enterprise Feature Catalogue (feature source of truth)
 
@@ -182,7 +182,7 @@ OIDC bearer validation against the IdP's JWKS (no mock auth in production) · se
 
 ---
 
-## 10. Feature catalogue (126 features, 11 domains)
+## 10. Feature catalogue (138 features, 11 domains)
 
 The complete feature surface, grouped conceptually into four layers — **experience, governance, execution, insight** — and organised into eleven domains. Priority: **Must** (enterprise baseline) · Should (high value) · Could (differentiating, evidence-led). IDs are the backlog and traceability keys.
 
@@ -199,6 +199,7 @@ The complete feature surface, grouped conceptually into four layers — **experi
 | F-IAM-08 | Service accounts & API tokens | Should | Scoped machine identities for pipeline-initiated requests |
 | F-IAM-09 | Group-based ownership | Must | Ownership on directory groups so it survives staff movement |
 | F-IAM-10 | Step-up authentication | Should | Re-auth/MFA before destructive or high-value actions |
+| F-IAM-11 | Cluster entitlement resolution | Must | Existing clusters a requester may deploy onto, scoped by project, cost centre and subsidiary and filtered again by real access. Re-resolved and re-authorised by the API; a cluster ID from the browser is an assertion, never a fact |
 
 ### 10.2 Request Experience & Intake (UX)
 | ID | Feature | Priority | Purpose |
@@ -218,6 +219,7 @@ The complete feature surface, grouped conceptually into four layers — **experi
 | F-UX-13 | Collaboration on requests | Could | Comments, mentions, shareable links |
 | F-UX-14 | Theming & dark mode | Could | Org branding + dark theme |
 | F-UX-15 | My Environments dashboard | Must | Owned environments with health, cost, expiry, actions |
+| F-UX-16 | Placement step with stated refusals | Must | Topology options with their costs and deltas, and for every ineligible option the sentence explaining why. Silent filtering makes the portal feel broken and generates the tickets it exists to prevent |
 
 ### 10.3 Catalogue, Standards & Blueprints (CAT)
 | ID | Feature | Priority | Purpose |
@@ -237,6 +239,9 @@ The complete feature surface, grouped conceptually into four layers — **experi
 | F-CAT-14 | Certification runner | Must | Prove a blueprint by building it on real infrastructure, certify it on that evidence, and expire the certification on a clock |
 | F-CAT-15 | Auto-decertification on evidence | Must | A failed proof, or repeated request failures, withdraws a certification without waiting for a human |
 | F-CAT-16 | AI blueprint drafter | Must | The agent drafts blueprints and technology profiles for what it cannot yet build — recommend-only, proof-gated, and never its own approver |
+| F-CAT-17 | Host-mode catalogue | Must | Which host modes (`vm`, `container`, `managed`) each component supports, per cloud. A different question from `delivery_model`, which says what the thing *is*; this says where an instance may *run* |
+| F-CAT-18 | Host-mode resource requirements | Must | Minimum and recommended vCPU/memory/storage/IOPS per host mode, versioned and effective-dated. The same technology needs a different shape as a container than as a VM guest |
+| F-CAT-19 | Persisted, versioned placement | Must | The resolved topology stored against the request as structured JSON, append-only. A resize or add-component request reads the prior placement and may only offer options consistent with it |
 
 > **F-CAT-13 to F-CAT-16** come from `PROPOSAL-self-certifying-catalogue.md`,
 > which was accepted and built (increments C0–C6e). They were referenced in
@@ -279,6 +284,7 @@ The complete feature surface, grouped conceptually into four layers — **experi
 | F-GOV-09 | Compliance control mapping | Should | Features/evidence mapped to audited control frameworks |
 | F-GOV-10 | Auditor evidence pack | Must | One-click export of a request's full decision/approval/execution evidence |
 | F-GOV-11 | Policy simulation | Could | Test a policy change against historical requests first |
+| F-GOV-12 | Co-residency & placement policy | Must | What may share a host with what, and where that is forbidden by environment tier — expressed in Rego so adding a component never requires a code change (P5) |
 
 ### 10.6 Environment Lifecycle Management (LCM)
 | ID | Feature | Priority | Purpose |
@@ -309,6 +315,7 @@ The complete feature surface, grouped conceptually into four layers — **experi
 | F-ORC-08 | Target capability matrix | Must | Unsupported combinations fail at request time, not mid-apply |
 | F-ORC-09 | Cost re-validation gate | Must | Re-price from the actual plan; halt if variance exceeds threshold |
 | F-ORC-10 | In-flight approval checkpoints | Should | Human checkpoints inside long-running workflows |
+| F-ORC-11 | Topology-driven module selection | Must | Terraform module selection and variable generation derived from the persisted placement. Placement reaches the orchestrator as structured data, never as prose |
 
 ### 10.8 Integration & Extensibility (INT)
 | ID | Feature | Priority | Purpose |
@@ -325,6 +332,7 @@ The complete feature surface, grouped conceptually into four layers — **experi
 | F-INT-10 | Outbound webhooks | Should | Subscribable webhooks for other teams |
 | F-INT-11 | Adapter SDK | Should | Defined interface to add technologies/clouds/pricing as plug-ins |
 | F-INT-12 | SIEM forwarding | Must | Security events forwarded to the SIEM in a standard format |
+| F-INT-13 | Topology summary in the approval ticket | Must | What runs where, on how many hosts, in which cluster — beside the post-placement cost, so the approver judges configuration and cost together rather than a component list |
 
 ### 10.9 Reporting, Analytics & Intelligence (RPT)
 | ID | Feature | Priority | Purpose |
