@@ -261,6 +261,11 @@ For an OKE/AKS selection, list clusters the caller is actually entitled to — s
 *Implements:* F-IAM-11, uses F-FIN-08.
 *You'll know it works when:* two requesters with different entitlements see different cluster lists, a cluster that would breach a quota appears greyed with the ceiling stated, and PostgreSQL-on-Kubernetes shows both the warning and the managed option.
 
+**P.5a — Enumerate the cluster options (Scenario B) — added 2026-09-08**
+A gap in this plan, found while building P.10. P.4 enumerates only Scenario A; nothing enumerates "deploy onto an existing cluster" or "provision a new one", so P.5 built the entitlement machinery for a caller that did not exist and `api/clusters.py` was reachable only from its own tests. A selection naming OKE or AKS gets the two cluster options, plus the managed alternative where a stateful workload has one, plus the warning that storage, failover and backups become the requester's burden. A cluster provider is identified by its BLUEPRINT's resource kind billing as a cluster — `Technology.resource_kind` is documented as "wrong for most components" and must not be used.
+*Implements:* F-IAM-11, F-CAT-17.
+*You'll know it works when:* selecting OKE offers both cluster options; a requester with no entitled clusters sees "deploy onto an existing cluster" refused with that reason rather than missing; and PostgreSQL on a cluster carries both the warning and the managed alternative.
+
 **P.6 — Sizing from the resolved topology**
 Sizing is recomputed from hosts, not from the component list: co-resident components **sum** their requirements and add a configurable headroom factor. The old per-component path stays for requests raised before placement existed.
 *Implements:* F-CAT-18.
