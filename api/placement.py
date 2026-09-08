@@ -1,0 +1,232 @@
+"""Which host topologies a selection could run on, and which of them are allowed.
+
+WHAT THIS SOLVES. A requester picks "VM with OS", "PostgreSQL" and "Node.js" and
+the request goes straight to costing. Nothing has decided whether that is one
+machine or three — so the estimate cannot be right, the Terraform plan has no
+topology to select modules against, and the approver in Jira reads a shopping
+list rather than an architecture.
+
+This module turns a selection into the ordered options of Scenario A:
+
+    1. managed where available   the cloud runs what it can; you patch less
+    2. consolidated              one machine carries everything
+    3. separated                 one machine each
+
+WHY IT DECIDES NOTHING. It enumerates and asks; it never judges. Whether an
+option is permitted is answered by OPA (`infra.placement`, P.3), because the
+policy is the authority and app code that reimplements a rule is a second
+authority that will one day disagree with the first.
+
+WHY A DENIED OPTION IS STILL RETURNED. It comes back marked ineligible with the
+policy's own sentence attached, never dropped. An option that vanishes without
+explanation makes the portal look broken and produces the support ticket the
+portal exists to prevent — so "why can't I pick that one?" is answered on the
+screen where the question is asked.
+
+NO I/O. Everything this needs arrives as arguments, including the policy
+evaluator. That keeps it testable without a database or a running OPA, and it
+keeps the catalogue lookups in one place (the API layer) rather than scattered
+through the enumeration.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Iterable, Sequence
+from dataclasses import dataclass, field
+
+# Host modes, mirroring db.models. Repeated as literals rather than imported so
+# this module stays free of the database layer and can be reasoned about alone.
+HOST_VM = "vm"
+HOST_CONTAINER = "container"
+HOST_MANAGED = "managed"
+
+MANAGED_OPTION = "managed"
+CONSOLIDATED_OPTION = "consolidated"
+SEPARATED_OPTION = "separated"
+
+# The order the requester sees them in. Managed first because it is the option
+# that removes work from them; separated last because it is the most expensive.
+OPTION_ORDER = (MANAGED_OPTION, CONSOLIDATED_OPTION, SEPARATED_OPTION)
+
+
+@dataclass(frozen=True)
+class ComponentFacts:
+    """What the catalogue knows about one selected component, on one cloud.
+
+    `is_host` marks a component that IS a machine rather than something placed
+    on one — "VM with OS" is the host its neighbours land on, not a workload
+    competing for space on someone else's.
+    """
+
+    code: str
+    host_modes: frozenset[str]
+    is_host: bool = False
+
+    def supports(self, mode: str) -> bool:
+        return mode in self.host_modes
+
+
+@dataclass(frozen=True)
+class Host:
+    id: str
+    host_mode: str
+    components: tuple[str, ...]
+
+    def as_dict(self) -> dict:
+        return {"id": self.id, "host_mode": self.host_mode,
+                "components": list(self.components)}
+
+
+@dataclass(frozen=True)
+class Option:
+    """One way the selection could be laid out, and whether it is permitted."""
+
+    key: str
+    title: str
+    summary: str
+    hosts: tuple[Host, ...]
+    eligible: bool = True
+    reasons: tuple[str, ...] = field(default_factory=tuple)
+
+    @property
+    def host_count(self) -> int:
+        """Machines this option would provision. A managed service is not one."""
+        return sum(1 for h in self.hosts if h.host_mode != HOST_MANAGED)
+
+    def as_dict(self) -> dict:
+        return {
+            "key": self.key,
+            "title": self.title,
+            "summary": self.summary,
+            "hosts": [h.as_dict() for h in self.hosts],
+            "host_count": self.host_count,
+            "eligible": self.eligible,
+            "reasons": list(self.reasons),
+        }
+
+
+def topology_document(option: Option, environment: str,
+                      deployment_target: str) -> dict:
+    """The shape `infra.placement` expects as its input."""
+    return {
+        "environment": environment,
+        "deployment_target": deployment_target,
+        "hosts": [h.as_dict() for h in option.hosts],
+    }
+
+
+def _workloads(components: Sequence[ComponentFacts]) -> list[ComponentFacts]:
+    return [c for c in components if not c.is_host]
+
+
+def _managed_option(components: Sequence[ComponentFacts]) -> Option | None:
+    """Everything the cloud can run, run by the cloud; the rest on one machine.
+
+    Returns None when nothing in the selection is available as a managed
+    service. Offering an option identical to the consolidated one, under a name
+    promising less operational burden, would be a lie told twice.
+    """
+    workloads = _workloads(components)
+    managed = [c for c in workloads if c.supports(HOST_MANAGED)]
+    if not managed:
+        return None
+
+    remaining = [c for c in workloads if not c.supports(HOST_MANAGED)]
+    hosts = [Host(id=f"managed-{c.code}", host_mode=HOST_MANAGED,
+                  components=(c.code,)) for c in managed]
+    if remaining:
+        hosts.append(Host(id="host-1", host_mode=HOST_VM,
+                          components=tuple(c.code for c in remaining)))
+
+    names = ", ".join(c.code for c in managed)
+    return Option(
+        key=MANAGED_OPTION,
+        title="Managed where available",
+        summary=(f"The cloud runs {names}. Patching, backups and failover for "
+                 f"it stop being yours."),
+        hosts=tuple(hosts),
+    )
+
+
+def _consolidated_option(components: Sequence[ComponentFacts]) -> Option | None:
+    """One machine carrying everything that needs one."""
+    workloads = _workloads(components)
+    if len(workloads) < 2:
+        return None  # nothing to consolidate; it would equal `separated`
+    return Option(
+        key=CONSOLIDATED_OPTION,
+        title="Consolidated",
+        summary=(f"One machine hosts all {len(workloads)} components. Their "
+                 f"resource needs are summed, not maximised."),
+        hosts=(Host(id="host-1", host_mode=HOST_VM,
+                    components=tuple(c.code for c in workloads)),),
+    )
+
+
+def _separated_option(components: Sequence[ComponentFacts]) -> Option | None:
+    """A machine each."""
+    workloads = _workloads(components)
+    if not workloads:
+        return None
+    hosts = tuple(
+        Host(id=f"host-{i}", host_mode=HOST_VM, components=(c.code,))
+        for i, c in enumerate(workloads, start=1)
+    )
+    return Option(
+        key=SEPARATED_OPTION,
+        title="Separated",
+        summary=(f"{len(hosts)} machines, one per component. The most isolated "
+                 f"and the most expensive."),
+        hosts=hosts,
+    )
+
+
+def enumerate_options(components: Sequence[ComponentFacts]) -> list[Option]:
+    """Every layout worth offering, in the order the requester should see them.
+
+    No judgement here — an option that policy forbids is still enumerated, so
+    that `resolve_options` can return it with the reason attached rather than
+    leaving the requester to guess why a choice they expected is missing.
+    """
+    builders = {
+        MANAGED_OPTION: _managed_option,
+        CONSOLIDATED_OPTION: _consolidated_option,
+        SEPARATED_OPTION: _separated_option,
+    }
+    built = [builders[key](components) for key in OPTION_ORDER]
+    return [option for option in built if option is not None]
+
+
+def resolve_options(
+    components: Iterable[ComponentFacts],
+    environment: str,
+    deployment_target: str,
+    evaluate: Callable[[dict], dict],
+) -> list[Option]:
+    """The options for this selection, each marked eligible or refused.
+
+    `evaluate` is given a topology document and returns OPA's answer —
+    `{"allow": bool, "violations": [str, ...]}`. Injected rather than imported
+    so this stays testable without a running OPA, and so the caller decides what
+    a policy outage means; here it can only mean "refused", never "allowed".
+    """
+    components = list(components)
+    resolved: list[Option] = []
+
+    for option in enumerate_options(components):
+        answer = evaluate(topology_document(option, environment, deployment_target))
+        allowed = bool(answer.get("allow"))
+        violations = tuple(answer.get("violations", ()))
+        if allowed:
+            resolved.append(option)
+            continue
+        # A refusal with no sentence is the failure mode this module exists to
+        # prevent, so supply one rather than render an empty "unavailable".
+        reasons = violations or (
+            "This layout is not permitted here, and the policy gave no reason. "
+            "Report this: a refusal without an explanation is a defect.",)
+        resolved.append(Option(
+            key=option.key, title=option.title, summary=option.summary,
+            hosts=option.hosts, eligible=False, reasons=reasons,
+        ))
+    return resolved
