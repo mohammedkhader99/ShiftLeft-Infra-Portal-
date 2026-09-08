@@ -879,6 +879,102 @@ class TechnologyDelivery(Base):
     note: Mapped[str] = mapped_column(String(300), default="")
 
 
+HOST_VM = "vm"                # a machine the customer owns and patches
+HOST_CONTAINER = "container"  # a workload on a cluster someone else runs
+HOST_MANAGED = "managed"      # the cloud runs it; there is no host to size
+HOST_MODES = (HOST_VM, HOST_CONTAINER, HOST_MANAGED)
+
+
+class TechnologyHostMode(Base):
+    """Where an instance of a catalogue entry may actually RUN, per cloud (P.1).
+
+    NOT a second copy of `delivery_model`, and the distinction is the reason
+    this table exists rather than a column on TechnologyDelivery. Those two
+    answer different questions:
+
+        delivery_model  what the thing IS      postgres16 -> managed
+        host_mode       where it may RUN       postgres16 -> managed, vm, container
+
+    PostgreSQL is a managed service AND software you can install AND a container
+    image. One value cannot carry that, and adding a second value to a table
+    whose docstring is about a naming convention doing a domain model's job
+    would be the same mistake twice.
+
+    A NEW TABLE rather than columns on `technology`, for the reason
+    TechnologyDelivery and CertificationProof both give: `create_all` adds
+    missing tables and NOT missing columns, so a new column would silently not
+    exist on a database that already has these tables, and every read would
+    return None.
+
+    Composite key: one row per (technology, cloud, host mode) that is real.
+    Absence means "not offered", which is why `oci-oke` has a row for `oci` and
+    for nothing else.
+    """
+
+    __tablename__ = "technology_host_mode"
+
+    technology_code: Mapped[str] = mapped_column(String(48), primary_key=True)
+    # A deployment target code: onprem | azure | oci | aws | gcp.
+    cloud: Mapped[str] = mapped_column(String(16), primary_key=True)
+    # vm | container | managed
+    host_mode: Mapped[str] = mapped_column(String(16), primary_key=True)
+    # Why, in a sentence — shown beside an option so a requester choosing
+    # between them is told what changes, not merely offered a radio button.
+    note: Mapped[str] = mapped_column(String(300), default="")
+
+
+def requires_host(host_mode: str) -> bool:
+    """Does this host mode need a machine sized and paid for?
+
+    Derived, never stored. The task that introduced placement asked for a
+    `requiresHost` boolean on every catalogue item; it is a function of the host
+    mode and nothing else, and storing it would create a second source of truth
+    that can disagree with the first.
+    """
+    return host_mode != HOST_MANAGED
+
+
+def host_modes_disagree_with_delivery(delivery_model: str,
+                                      host_modes: set[str]) -> str | None:
+    """None if the two tables agree, else a sentence saying how they do not.
+
+    Both describe the same catalogue entry from different angles, so they can
+    drift apart silently — a technology gaining a `managed` host mode without
+    anyone revisiting its delivery model, and the portal then offering a cloud
+    service the rest of the system believes is software you install.
+
+    Judged on the UNION across clouds, not per cloud: managed PostgreSQL exists
+    on OCI and not on-premises, and that is correct rather than contradictory.
+    """
+    if delivery_model == DELIVERY_CAPABILITY:
+        if host_modes:
+            return (f"delivery_model 'capability' is an outcome nobody installs, "
+                    f"so it can have no host modes; found {sorted(host_modes)}")
+        return None
+
+    if not host_modes:
+        return f"delivery_model {delivery_model!r} needs at least one host mode"
+
+    unknown = host_modes - set(HOST_MODES)
+    if unknown:
+        return f"unknown host mode(s) {sorted(unknown)}"
+
+    if delivery_model == DELIVERY_MACHINE:
+        if host_modes != {HOST_VM}:
+            return (f"delivery_model 'machine' IS the host, so its only host mode "
+                    f"is 'vm'; found {sorted(host_modes)}")
+    elif delivery_model == DELIVERY_MANAGED:
+        if HOST_MANAGED not in host_modes:
+            return ("delivery_model 'managed' means the cloud runs it somewhere, "
+                    f"so 'managed' must be among its host modes; found "
+                    f"{sorted(host_modes)}")
+    elif delivery_model == DELIVERY_SOFTWARE:
+        if HOST_MANAGED in host_modes:
+            return ("host mode 'managed' means a cloud service, but delivery_model "
+                    "says 'software'; one of the two is wrong")
+    return None
+
+
 class MarketplaceListing(Base):
     """A Marketplace image a PERSON chose, and the authority they chose it under.
 

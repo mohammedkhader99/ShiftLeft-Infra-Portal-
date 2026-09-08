@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from db.models import (
     TechnologyDelivery,
+    TechnologyHostMode,
     CostCentre,
     Environment,
     Project,
@@ -482,6 +483,66 @@ RATE_CARDS = [
 ]
 
 
+# Where each catalogue entry may RUN, per cloud (P.1, F-CAT-17). Not a copy of
+# DELIVERY above: that says what a thing IS, this says where an instance of it
+# may run. PostgreSQL is all three at once, which is exactly why one column
+# could never carry it.
+#
+# Absence means "not offered". `managed` appears for postgres16 on OCI only,
+# because that is the one the portal has a Terraform module and a proof build
+# for — advertising managed PostgreSQL on three more clouds would be claiming a
+# capability nothing has demonstrated, which is what P8 exists to stop.
+ALL_CLOUDS = ("onprem", "azure", "oci", "aws", "gcp")
+
+HOST_MODES_SEED = [
+    # (technology_code, clouds, host_mode, note shown beside the option)
+    ("compute-vm", ALL_CLOUDS, "vm",
+     "The machine itself — the host other components are placed on."),
+
+    ("nodejs20", ALL_CLOUDS, "vm",
+     "Installed on a machine you own and patch."),
+    ("nodejs20", ALL_CLOUDS, "container",
+     "An image on a cluster someone else runs. No operating system to patch."),
+
+    ("postgres16", ALL_CLOUDS, "vm",
+     "PostgreSQL installed on a machine you own. Patching and backups are yours."),
+    ("postgres16", ALL_CLOUDS, "container",
+     "Stateful on Kubernetes. It works, but storage, failover and backups become "
+     "your operational burden rather than the platform's."),
+    ("postgres16", ("oci",), "managed",
+     "OCI Database with PostgreSQL — Oracle patches it and takes the backups. "
+     "OCI only: it is the one the portal has a module and a proof build for."),
+
+    ("oci-oke", ("oci",), "managed",
+     "A managed Kubernetes control plane. OCI only."),
+    ("azure-aks", ("azure",), "managed",
+     "A managed Kubernetes control plane. Azure only."),
+]
+
+
+def _host_mode_rows() -> list[dict]:
+    """Expand HOST_MODES_SEED into one row per (technology, cloud, host mode)."""
+    return [
+        {"technology_code": code, "cloud": cloud, "host_mode": mode, "note": note}
+        for code, clouds, mode, note in HOST_MODES_SEED
+        for cloud in clouds
+    ]
+
+
+def _upsert_composite(session: Session, model, key_fields: tuple[str, ...],
+                      rows: list[dict]) -> None:
+    """Insert each row only if one with the same composite key is absent.
+
+    `_upsert_by` matches on a single field. TechnologyHostMode is keyed on three,
+    and matching on only the first would treat every host mode of a technology as
+    the same row and seed exactly one of them.
+    """
+    for row in rows:
+        conditions = [getattr(model, f) == row[f] for f in key_fields]
+        if session.scalar(select(model).where(*conditions)) is None:
+            session.add(model(**row))
+
+
 def _upsert_by(session: Session, model, match_field: str, rows: list[dict]) -> None:
     """Insert each row only if a row with the same match_field isn't present."""
     for row in rows:
@@ -503,6 +564,11 @@ def seed(session: Session) -> None:
     _upsert_by(session, TechnologyDelivery, "technology_code",
                [{"technology_code": code, "delivery_model": model, "note": note}
                 for code, (model, note) in DELIVERY.items()])
+    # Where each of those may run (P.1). Composite key, so a technology with
+    # three host modes gets three rows rather than one.
+    _upsert_composite(session, TechnologyHostMode,
+                      ("technology_code", "cloud", "host_mode"),
+                      _host_mode_rows())
     session.flush()  # flush new technologies (e.g. compute-vm) BEFORE the update
     # below, so a freshly-inserted compute type is classified too (the app session
     # has autoflush off, so the Core UPDATE wouldn't see the pending insert).
