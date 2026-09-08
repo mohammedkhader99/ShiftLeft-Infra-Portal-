@@ -520,3 +520,142 @@ def estimate_cost(
             "annual": round(monthly_total * 12, 2),
         },
     }
+
+
+# --- Cost from a resolved placement (P.7) ------------------------------------
+#
+# `estimate_cost` prices COMPONENTS. Once placement exists that is the wrong
+# unit, and wrong in a way that makes the cheaper option look dearer:
+#
+#   Compute and storage are bought ONCE PER MACHINE. Three components on one
+#   host is one machine's compute, not three. Pricing per component charges
+#   consolidation as though it were separation and hides the saving it exists
+#   to offer.
+#
+#   A setup fee is what it costs to stand a machine up, so it too is per host.
+#   Charging it per component would bill three setups for the one machine a
+#   consolidated option builds — making the option the portal recommends look
+#   worse the more it saves. This differs from the pre-placement path, where a
+#   component and a machine were the same thing and the distinction could not
+#   arise.
+#
+#   A LICENCE is per component wherever it runs. Two licensed engines on one
+#   host need two licences; moving them apart changes nothing about that. So
+#   licences are added per component and compute is not.
+#
+#   A managed service is priced by its own rate, not as a machine — the cloud's
+#   OCPU charge, not a VM that nobody provisions.
+
+def estimate_placement_cost(
+    sized: dict,
+    deployment_target: str,
+    session: Session,
+    component_sizes: dict[str, str] | None = None,
+    advanced: dict | None = None,
+) -> dict:
+    """Price a topology from P.6's sized hosts.
+
+    `sized` is what `api.sizing.size_hosts` returned. Machines are priced from
+    each host's summed shape; managed components are priced through the ordinary
+    per-component path so they keep their own billing model; licences are added
+    once per licensed component.
+
+    An unresolved host makes the whole estimate unresolved. A number that is
+    missing a machine is worse than no number, because somebody can approve it.
+    """
+    component_sizes = component_sizes or {}
+    hosts = sized.get("hosts", [])
+
+    machines: list[dict] = []
+    managed: list[dict] = []
+    placed_components: list[str] = []
+
+    for host in hosts:
+        placed_components.extend(host.get("components") or ())
+        if host.get("host_mode") == "managed":
+            for code in host.get("components") or ():
+                managed.append({"technology_code": code,
+                                "size": component_sizes.get(code)})
+            continue
+        if not host.get("resolved"):
+            continue
+        # One machine, at the shape P.6 resolved for it. The explicit vCPU /
+        # memory / storage override the size anchor, which is what makes a
+        # summed host price as the machine it will actually be.
+        machines.append({
+            "technology_code": "compute-vm",
+            "size": component_sizes.get((host.get("components") or [None])[0]),
+            "vcpu": host.get("vcpu"),
+            "memory_gb": host.get("memory_gb"),
+            "storage_gb": host.get("storage_gb"),
+        })
+
+    machine_cost = (estimate_cost(machines, deployment_target, session, advanced)
+                    if machines else None)
+    managed_cost = (estimate_cost(managed, deployment_target, session, advanced)
+                    if managed else None)
+
+    # Licences for everything on a machine. The managed estimate already carries
+    # licences for what it priced, so those are not added again.
+    licence_rates = _rates(session, "licence")
+    managed_codes = {c["technology_code"] for c in managed}
+    licence_monthly = 0.0
+    licence_lines: list[dict] = []
+    for code in placed_components:
+        if code in managed_codes:
+            continue
+        item = TECHNOLOGY_LICENCE.get(code)
+        if not item:
+            continue
+        amount = licence_rates.get(item, 0.0)
+        licence_monthly += amount
+        licence_lines.append({"technology_code": code, "item": item,
+                              "monthly": amount})
+
+    def total(estimate: dict | None, field: str) -> float:
+        return float(estimate["totals"][field]) if estimate else 0.0
+
+    monthly = (total(machine_cost, "monthly") + total(managed_cost, "monthly")
+               + licence_monthly)
+    one_time = total(machine_cost, "one_time") + total(managed_cost, "one_time")
+
+    return {
+        "currency": (machine_cost or managed_cost or {}).get("currency", "AED"),
+        "pricing_source": (machine_cost or managed_cost or {}).get("pricing_source"),
+        "machine_count": sized.get("machine_count", 0),
+        "machines": machine_cost,
+        "managed": managed_cost,
+        "licences": licence_lines,
+        "resolved": bool(sized.get("resolved")) and (
+            machine_cost is None or not machine_cost.get("unpriced")),
+        "totals": {
+            "one_time": round(one_time, 2),
+            "monthly": round(monthly, 2),
+            "annual": round(monthly * 12, 2),
+        },
+    }
+
+
+def compare_options(priced: list[dict]) -> list[dict]:
+    """Attach each option's monthly delta against the cheapest priceable one.
+
+    The delta is the point: "consolidated" and "separated" mean nothing to a
+    requester until one of them carries a number saying what choosing it costs.
+    Options that could not be priced are left out of the comparison rather than
+    treated as free — a zero would make an unpriceable option look like the
+    bargain of the set.
+    """
+    priceable = [p for p in priced if p.get("resolved")]
+    if not priceable:
+        return [dict(p, monthly_delta=None, cheapest=False) for p in priced]
+
+    baseline = min(p["totals"]["monthly"] for p in priceable)
+    out = []
+    for option in priced:
+        if not option.get("resolved"):
+            out.append(dict(option, monthly_delta=None, cheapest=False))
+            continue
+        delta = round(option["totals"]["monthly"] - baseline, 2)
+        out.append(dict(option, monthly_delta=delta,
+                        cheapest=(delta == 0)))
+    return out
