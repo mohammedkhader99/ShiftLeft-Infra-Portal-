@@ -192,6 +192,18 @@ ALLOWLIST: dict[str, dict] = {
                 "help": "'mock' is the free offline path; 'live' calls Claude (needs ANTHROPIC_API_KEY in .env)."},
     "AI_MODEL": {"label": "AI model", "type": "str", "default": "claude-opus-5", "group": "AI",
                  "help": "The Claude model used in live mode, e.g. claude-opus-5 or claude-haiku-4-5."},
+
+    # Placement
+    "PLACEMENT_HEADROOM_PERCENT": {"label": "Host headroom (%)", "type": "int",
+                                   "default": "20", "min": 0, "max": 100,
+                                   "group": "Placement",
+                                   "help": ("Spare capacity added to a machine "
+                                            "on top of what its components ask "
+                                            "for. Components placed together "
+                                            "peak at different moments and a "
+                                            "host sized to the exact sum has "
+                                            "nowhere to absorb that. Set to 0 "
+                                            "to size to the bare sum.")},
 }
 
 # Shown read-only in the Admin panel so admins can see the posture, but managed in
