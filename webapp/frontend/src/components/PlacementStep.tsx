@@ -36,7 +36,23 @@ import {
   Tag,
   Tile,
 } from '@carbon/react'
-import type { PlacementCluster, PlacementOption, SizedHost } from '../api'
+import type {
+  PlacementCluster,
+  PlacementOption,
+  RecordedPlacement,
+  SizedHost,
+} from '../api'
+
+// The option keys, spelled the way the resolver spells them, for naming a layout
+// that was RECORDED rather than one that was just computed. A recorded placement
+// carries its key and its topology, not the title the option set gave it.
+const OPTION_LABEL: Record<string, string> = {
+  managed: 'Managed by the cloud',
+  consolidated: 'Consolidated onto one machine',
+  separated: 'A machine per component',
+  'existing-cluster': 'Deployed onto an existing cluster',
+  'new-cluster': 'On a new cluster',
+}
 
 const HOST_MODE_LABEL: Record<string, string> = {
   vm: 'virtual machine',
@@ -327,6 +343,7 @@ export default function PlacementStep({
   options,
   chosen,
   clusterId,
+  recorded = null,
   onFetch,
   onChoose,
   onClusterChange,
@@ -338,6 +355,10 @@ export default function PlacementStep({
   options: PlacementOption[] | null
   chosen: string | null
   clusterId: string | null
+  // The layout already recorded against this request (P.8), shown when a saved
+  // draft is resumed and the options have not been worked out again. Null for a
+  // new request, which is every other way into this step.
+  recorded?: RecordedPlacement | null
   onFetch: () => void
   onChoose: (key: string) => void
   onClusterChange: (id: string) => void
@@ -390,6 +411,39 @@ export default function PlacementStep({
               subtitle={error}
               style={{ maxWidth: 'none', marginTop: '0.6rem' }}
             />
+          )}
+
+          {/* A RESUMED DRAFT SHOWS THE LAYOUT IT WAS SAVED WITH. Without this
+              the step would come back empty while `chosen` quietly held the
+              recorded option underneath it — a decision in force, driving what
+              gets built, with nothing on screen saying so. An invisible choice
+              is worse than no choice.
+
+              The figure is the one RECORDED with the decision, not a fresh
+              calculation. Rates move (P.8), and the number the requester chose
+              against is the number to show them again; "Work it out again"
+              re-prices against today. */}
+          {!options && recorded && (
+            <Tile style={{ marginTop: '0.6rem', padding: '0.75rem' }}>
+              <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'baseline', flexWrap: 'wrap' }}>
+                <strong style={{ fontSize: '0.85rem' }}>
+                  {OPTION_LABEL[recorded.option_key] || recorded.option_key}
+                </strong>
+                <Tag type="blue" size="sm">saved with this draft</Tag>
+                {recorded.version > 1 && (
+                  <span style={{ fontSize: '0.75rem', color: 'var(--cds-text-secondary)' }}>
+                    version {recorded.version}
+                  </span>
+                )}
+              </div>
+              <p style={{ fontSize: '0.8rem', color: 'var(--cds-text-secondary)', margin: '0.35rem 0 0' }}>
+                {plural(recorded.topology?.hosts?.length ?? 0, 'host', 'hosts')}
+                {recorded.estimate?.totals?.monthly != null && recorded.estimate?.resolved !== false
+                  ? ` · ${recorded.estimate.totals.monthly.toFixed(2)} ${recorded.estimate.currency || 'AED'}/month when it was chosen`
+                  : ' · not priced'}
+                . Work it out again to change it or to re-price it against today's rates.
+              </p>
+            </Tile>
           )}
 
           {options && options.length === 0 && (

@@ -21,7 +21,7 @@ import {
   Accordion,
   AccordionItem,
 } from '@carbon/react'
-import { WarningAltFilled, Renew, UserFollow, Search, Pause, Play, Close } from '@carbon/icons-react'
+import { WarningAltFilled, Renew, UserFollow, Search, Pause, Play, Close, Edit } from '@carbon/icons-react'
 import { getMe, getRequests, getAudit, renewRequest, cancelRequest, transferOwner, checkDrift, reconcileState, triageFailure, actuate, setRequestShutdown, createBackup, grantAccess, revokeAccess, setOwnerGroup, type RequestRow, type ShutdownPolicy, getBootReport, type BootReport, getAutobuildProgress, type AutobuildProgress, getQueuePosition, type QueuePosition } from '../api'
 import { workflowSteps, fmtWhen, type WFStep } from '../workflow'
 
@@ -739,6 +739,35 @@ export default function MyRequests({ route }: { route: string }) {
                   </TableExpandRow>
                   <TableExpandedRow colSpan={estate ? 8 : 7}>
                     <div style={{ padding: '1rem 0.5rem' }}>
+                      {/* THE WAY BACK INTO A SAVED DRAFT (P.11a, F-UX-01).
+                          Drafts have always been listed here — this page asks
+                          for every one of your requests and applies no status
+                          filter — but nothing could open one, so the form's
+                          promise that "you can resume it later" was answered by
+                          a row you could read and not reopen.
+
+                          Only your own: the API refuses a draft save against
+                          somebody else's request, so offering the button on an
+                          estate view of another person's draft would offer a
+                          door that does not open. */}
+                      {r.status === 'draft' && (!estate || r.requester === me?.email) && (
+                        <div style={{ marginBottom: '1.25rem' }}>
+                          <Button
+                            size="sm"
+                            kind="tertiary"
+                            renderIcon={Edit}
+                            onClick={() => { window.location.hash = `#/request/resume/${r.reference}` }}
+                          >
+                            Resume this draft
+                          </Button>
+                          <p style={{ fontSize: '0.8rem', color: 'var(--cds-text-secondary)', margin: '0.4rem 0 0' }}>
+                            Opens it in the request form with everything you
+                            saved — including the layout, if you chose one.
+                            Saving again updates this draft rather than making
+                            another.
+                          </p>
+                        </div>
+                      )}
                       {r.status_detail && (
                         <InlineNotification
                           kind={r.status.endsWith('failed') || /blocked|not found|failed/i.test(r.status_detail) ? 'error' : 'warning'}

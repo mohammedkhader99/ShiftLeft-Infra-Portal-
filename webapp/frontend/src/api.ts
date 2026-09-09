@@ -160,6 +160,92 @@ export async function saveDraft(
   return { status: r.status, body: await r.json().catch(() => ({})) }
 }
 
+// The layout recorded against a request (P.8), as the API reports it.
+//
+// `cluster_id` IS NAMED BY THE API, not dug out of `topology.hosts` here. Only
+// `existing-cluster` deploys onto a cluster, and a browser that knew which
+// option key means "the host id is really a cluster id" would be a second place
+// holding that rule — and the two would drift, which is what nearly every defect
+// on this form has turned out to be.
+export type RecordedPlacement = {
+  version: number
+  option_key: string
+  cluster_id: string | null
+  topology: {
+    environment?: string | null
+    deployment_target?: string | null
+    hosts?: PlacementHost[]
+  }
+  sizing: { machine_count?: number; resolved?: boolean }
+  estimate: {
+    currency?: string
+    resolved?: boolean
+    totals?: { one_time: number; monthly: number; annual: number }
+  }
+  created_at: string | null
+}
+
+// A request read back in full, which is what resuming a saved draft needs
+// (F-UX-01). Deliberately NOT `RequestRow & {...}`: the list endpoint sends a
+// summary — its components carry a code and a size and nothing else — and
+// pretending the two shapes are one would let the form read a field the list
+// never sends and find undefined at run time.
+export type SavedRequest = {
+  reference: string
+  status: string
+  requester: string
+  request_type?: string | null
+  project_code?: string | null
+  cost_centre_code?: string | null
+  subsidiary?: string | null
+  deployment_target?: string | null
+  environment_name?: string | null
+  target_environment?: string | null
+  environment_tier?: string | null
+  source_reference?: string | null
+  refresh_from_reference?: string | null
+  restore_backup_id?: number | null
+  data_classification?: string | null
+  business_justification?: string | null
+  priority?: string | null
+  business_criticality?: string | null
+  required_delivery_date?: string | null
+  expires_on?: string | null
+  application_owner?: string | null
+  business_owner?: string | null
+  technical_owner?: string | null
+  environment_owner?: string | null
+  owner_group?: string | null
+  advanced_options?: Record<string, unknown> | null
+  // NOT `Component[]`. A draft may be saved half-filled — that is the whole
+  // point of a draft — so the API's component rows carry a nullable code, and
+  // the form drops the empty ones as it loads them.
+  components: {
+    technology_code: string | null
+    size: string | null
+    version?: string | null
+    image?: string | null
+    vcpu?: number | null
+    memory_gb?: number | null
+    storage_gb?: number | null
+  }[]
+  placement?: RecordedPlacement | null
+}
+
+// Read one request back by its reference, so a saved draft can be reopened in
+// the form it was typed into (F-UX-01).
+//
+// THE SAME ENDPOINT THE REQUEST VIEW USES, deliberately. A second "get my draft"
+// endpoint would be a second answer to "what is on this request", and the day
+// they disagree the form would resume something the rest of the portal does not
+// show. This one already attaches the recorded placement.
+export async function getDraft(
+  reference: string,
+): Promise<{ status: number; body: any }> {
+  const r = await fetch(`/api/requests/${encodeURIComponent(reference)}`)
+  return { status: r.status, body: await r.json().catch(() => ({})) }
+}
+
 export async function submitRequest(
   reference: string,
 ): Promise<{ status: number; body: any }> {

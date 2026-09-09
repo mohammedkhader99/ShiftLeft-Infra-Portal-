@@ -2761,6 +2761,31 @@ def save_draft(
     """
     if body.reference:
         req = _load_request(body.reference, session)
+        # A REFERENCE IS NOT A PERMISSION. The dependency above authorises the
+        # ROLE — may this person raise requests at all — and says nothing about
+        # whose request this one is, so anyone who could raise a request could
+        # overwrite anybody else's by naming its reference. That was survivable
+        # only while references never left the page that minted them; resuming a
+        # draft (P.11a) puts them in the URL, in the requests table and in front
+        # of people, which is exactly when a guess starts being worth making.
+        if (req.requester or "").strip().lower() != requester.strip().lower():
+            raise HTTPException(
+                status_code=403,
+                detail=(f"{req.reference} belongs to {req.requester or 'someone else'}. "
+                        "You can only edit your own drafts."))
+        # AND ONLY WHILE IT IS STILL A DRAFT. `req.status = "draft"` below is
+        # unconditional, so saving against a submitted reference pulled a request
+        # back out of the approval it was waiting for — silently, and while its
+        # Jira ticket went on existing. The portal would then disagree with Jira
+        # about whether the request had ever been sent, which is precisely the
+        # authority split §4 exists to prevent: the approval is Jira's to hold,
+        # and nothing here may quietly un-ask for it.
+        if req.status != "draft":
+            raise HTTPException(
+                status_code=409,
+                detail=(f"{req.reference} was already submitted and is now "
+                        f"'{req.status}', so it can no longer be edited as a draft. "
+                        "Raise a new request instead."))
     else:
         # Readable sequential reference (REQ-2026-0001). Not tied to the row id,
         # so it can be assigned before insert (reference is NOT NULL).
@@ -3089,7 +3114,49 @@ def get_request(reference: str, session: Session = Depends(get_session)) -> Requ
     out.backups = _backups_out(session, req)
     out.access_grants = _access_out(session, req)
     out.resources = _resources_out(session, reference)
+    out.placement = _placement_out(session, req)
     return out
+
+
+def _placement_out(session: Session, req: Request) -> dict | None:
+    """The layout in force for this request, for the form that resumes it (P.11a).
+
+    WHY A DRAFT MUST CARRY ITS PLACEMENT BACK. Placement is not a preference the
+    requester can re-express by clicking around again — it decides how many
+    machines get built, what they cost, and which modules the orchestrator
+    selects (P.8). A resumed draft that came back without it would look complete
+    while having silently forgotten the one decision on it that determines what
+    gets built, and the next save would submit an arrangement nobody chose.
+
+    THE CLUSTER ID IS NAMED HERE RATHER THAN DUG OUT OF THE TOPOLOGY BY THE
+    BROWSER. Only `existing-cluster` deploys onto a cluster, and its id lives on
+    the hosts because that is the document the orchestrator selects modules from.
+    A browser that knew to read `topology.hosts[0].id` for one option key and not
+    for the others would be a second place holding that rule, and the two would
+    drift — which is what nearly every defect found on this form has turned out
+    to be.
+
+    Read-only, and it re-decides nothing. What comes back is what was recorded,
+    including its price: rates move, and the figure the requester chose against
+    is the one to show them again. /api/placement/resolve is still the only thing
+    that decides, and it re-decides at submit.
+    """
+    placement = placement_store.current_placement(session, req.id)
+    if placement is None:
+        return None
+    cluster_id = None
+    if placement.option_key == placement_mod.EXISTING_CLUSTER_OPTION:
+        hosts = (placement.topology or {}).get("hosts") or []
+        cluster_id = next((h.get("id") for h in hosts if h.get("id")), None)
+    return {
+        "version": placement.version,
+        "option_key": placement.option_key,
+        "cluster_id": cluster_id,
+        "topology": placement.topology or {},
+        "sizing": placement.sizing or {},
+        "estimate": placement.estimate or {},
+        "created_at": placement.created_at.isoformat() if placement.created_at else None,
+    }
 
 
 def _resources_out(session: Session, reference: str) -> list | None:
@@ -5166,14 +5233,14 @@ def _placement_handoff(session: Session, req: Request) -> dict | None:
 
     PLACEMENT REACHES THE ORCHESTRATOR AS DATA, NEVER AS PROSE. The layout
     decides how many machines get built and how big each one is, so it travels
-    as a structured list of hosts inside the signed payload â€” not as a sentence
+    as a structured list of hosts inside the signed payload — not as a sentence
     in the ticket for somebody to read and act on, and not as a key the other end
     has to interpret.
 
     EACH HOST CARRIES ITS OWN RESOURCE KIND, resolved here. The orchestrator must
     not re-derive it: the blueprint table is a catalogue fact and this side owns
     the catalogue (ARCHITECTURE.md P7). Deriving it at the far end would also put
-    two answers in the system that could disagree â€” and the far end is the one
+    two answers in the system that could disagree — and the far end is the one
     holding the credentials.
 
     Returns None when nothing was placed, which is every request raised before
@@ -5222,7 +5289,7 @@ def _placement_handoff(session: Session, req: Request) -> dict | None:
             "host_mode": host.get("host_mode"),
             "components": components,
             # The kind whose module builds this host. A host carrying several
-            # components resolves to the first that has one â€” they are co-resident
+            # components resolves to the first that has one — they are co-resident
             # on ONE machine, so one module builds it.
             "resource_kind": kinds[0] if kinds else None,
             "resolved": bool(host.get("resolved")),

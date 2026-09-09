@@ -44,6 +44,7 @@ import {
   recommendWithAI,
   getApprovalInfo,
   getComponentOptions,
+  getDraft,
   getPlacementOptions,
   resolvePlacement,
   type Lookups,
@@ -54,6 +55,8 @@ import {
   type ApprovalInfo,
   type AiRecommendation,
   type PlacementOption,
+  type RecordedPlacement,
+  type SavedRequest,
 } from '../api'
 import PlacementStep from '../components/PlacementStep'
 
@@ -73,6 +76,32 @@ const ENV_TIERS: [string, string][] = [
   ['prod', 'Production'],
   ['dr', 'Disaster Recovery'],
 ]
+// WHAT THE SERVER STORES A TIER AS, BACK INTO WHAT THIS FORM OFFERS (P.11a).
+//
+// The vocabulary changed on 16 Aug 2026 and this dropdown did not follow it. The
+// API accepts the old spellings and stores the canonical name — `normalise_tier`
+// in api/validation.py, which is deliberately liberal so existing integrations
+// keep working — so a draft saved as 'uat' comes back as 'UAT', which matches no
+// option above. Without this, resuming a draft put a value in the tier control
+// that it could not display: the requester's tier would look blank and the next
+// save would send whatever they picked instead.
+//
+// A TRANSLATION ON THE WAY IN, NOT A SECOND VOCABULARY. Nothing here decides
+// what a tier is; the server still normalises whatever this form sends, and an
+// unrecognised value is passed through untouched rather than guessed at.
+//
+// The folding is lossy at the source and cannot be undone here: the server maps
+// BOTH 'sit' and 'preprod' onto tiers that no longer distinguish them, so a
+// resumed 'preprod' draft correctly reads as UAT — that is the tier the request
+// actually has now.
+const TIER_FROM_STORED: Record<string, string> = {
+  Development: 'dev',
+  Test: 'test',
+  'Pre-Test': 'sit',
+  UAT: 'uat',
+  Production: 'prod',
+}
+
 const TARGETS: [string, string][] = [
   ['onprem', 'On-premises'],
   ['azure', 'Microsoft Azure'],
@@ -211,7 +240,15 @@ const cardStyle = (selected: boolean): CSSProperties => ({
   boxShadow: selected ? 'inset 0 0 0 1px var(--cds-border-interactive)' : 'none',
 })
 
-export default function RequestForm({ initialType = 'create' }: { initialType?: string }) {
+export default function RequestForm({
+  initialType = 'create',
+  resumeRef = null,
+}: {
+  initialType?: string
+  // The reference of a saved draft to reopen, from #/request/resume/<ref>.
+  // Null for a new request, which is every other route into this form.
+  resumeRef?: string | null
+}) {
   const [lookups, setLookups] = useState<Lookups | null>(null)
   const [email, setEmail] = useState<string | null>(null)
   // The request type is chosen in the left nav (New request menu) and passed in.
@@ -273,6 +310,20 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
   const [draftRef, setDraftRef] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
+  // RESUMING A SAVED DRAFT (P.11a, F-UX-01). `resuming` is true only while the
+  // fetch is in flight; `resumeError` holds the sentence explaining why a draft
+  // could not be reopened, which is a thing that must be SAID rather than left
+  // as an empty form the requester mistakes for their own work having vanished.
+  const [resuming, setResuming] = useState(!!resumeRef)
+  const [resumeError, setResumeError] = useState<string | null>(null)
+  const [resumed, setResumed] = useState<string | null>(null)
+  // The layout this draft was saved with, held separately from the computed
+  // options: it is what the server RECORDED, not something worked out again
+  // here. Applied to the chosen-option state by an effect below — see the
+  // comment there for why it cannot simply be set during the load.
+  const [resumedPlacement, setResumedPlacement] = useState<RecordedPlacement | null>(null)
+  const [pendingPlacement, setPendingPlacement] = useState<RecordedPlacement | null>(null)
+
   // AI request drafting (F-RPT-06): a plain-English description pre-fills the
   // form. The AI recommends a draft only; the user reviews, edits, and submits.
   const [aiText, setAiText] = useState('')
@@ -308,6 +359,143 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
     getMe().then((m) => setEmail(m?.email ?? null))
     getApprovalInfo().then(setApprovalInfo).catch(() => setApprovalInfo(null))
   }, [])
+
+  // REOPEN A SAVED DRAFT (P.11a, F-UX-01).
+  //
+  // WHAT WAS WRONG. This form told people "Draft saved as REQ-2026-0001 — you
+  // can resume it later" and then had no way to resume anything: the reference
+  // lived in `draftRef` and nowhere else, so leaving the page lost the contents
+  // of a draft that was sitting in the database the whole time. The promise was
+  // true of the row and false of the portal.
+  //
+  // THE IDENTITY IS FETCHED ALONGSIDE THE DRAFT rather than read from `email`,
+  // which the effect above is still filling in. Reading a half-loaded identity
+  // would decide whose draft this is against `null` and get it wrong on a slow
+  // connection — and getting it wrong in the lenient direction is opening
+  // somebody else's request in an editable form.
+  //
+  // THIS CHECK IS COURTESY, NOT SECURITY. The API refuses a draft save against a
+  // request that is not the caller's; this exists so the refusal arrives before
+  // the typing rather than after it.
+  useEffect(() => {
+    if (!resumeRef) return
+    let cancelled = false
+    setResuming(true)
+    setResumeError(null)
+    Promise.all([getDraft(resumeRef), getMe()])
+      .then(([{ status, body }, me]) => {
+        if (cancelled) return
+        setResuming(false)
+        if (status === 404) {
+          setResumeError(`There is no request called ${resumeRef}.`)
+          return
+        }
+        if (status !== 200) {
+          setResumeError(body?.detail || `The draft could not be opened (HTTP ${status}).`)
+          return
+        }
+        const saved = body as SavedRequest
+        if (me?.email && saved.requester && me.email.toLowerCase() !== saved.requester.toLowerCase()) {
+          setResumeError(
+            `${saved.reference} belongs to ${saved.requester}. You can only resume your own drafts.`,
+          )
+          return
+        }
+        // A SUBMITTED REQUEST IS NOT A DRAFT, and opening one in an editable
+        // form would invite an edit the API will refuse — after the typing.
+        // Said plainly here instead.
+        if (saved.status !== 'draft') {
+          setResumeError(
+            `${saved.reference} was already submitted and is now '${saved.status}', so it can ` +
+              'no longer be edited. Raise a new request instead.',
+          )
+          return
+        }
+        applySaved(saved)
+      })
+      .catch(() => {
+        if (cancelled) return
+        setResuming(false)
+        setResumeError('The draft could not be opened. Check your connection and try again.')
+      })
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resumeRef])
+
+  // Put a saved request back into the form it was typed into.
+  //
+  // `draftRef` IS SET FIRST AND DELIBERATELY. Every later save sends it, so the
+  // server UPDATES this draft instead of minting another; without it, resuming a
+  // draft and saving would leave two rows where the requester believes there is
+  // one, which is the same duplication `draftRef` was added to stop.
+  function applySaved(d: SavedRequest) {
+    setDraftRef(d.reference)
+    setResumed(d.reference)
+    if (d.request_type) setRequestType(d.request_type)
+    setProjectCode(d.project_code || '')
+    setCostCentre(d.cost_centre_code || '')
+    setSubsidiary(d.subsidiary || '')
+    setTarget(d.deployment_target || '')
+    setEnvName(d.environment_name || '')
+    setEnvTier(d.environment_tier ? TIER_FROM_STORED[d.environment_tier] ?? d.environment_tier : '')
+    setTargetEnv(d.target_environment || '')
+    setClassification(d.data_classification || '')
+    setJustification(d.business_justification || '')
+    setPriority(d.priority || '')
+    setCriticality(d.business_criticality || '')
+    setDeliveryDate(d.required_delivery_date || '')
+    setExpiresOn(d.expires_on || '')
+    setAppOwner(d.application_owner || '')
+    setBizOwner(d.business_owner || '')
+    setTechOwner(d.technical_owner || '')
+    setEnvOwner(d.environment_owner || '')
+    setOwnerGroup(d.owner_group || '')
+    setSourceRef(d.source_reference || '')
+    setRefreshFrom(d.refresh_from_reference || '')
+    setRestoreBackupId(d.restore_backup_id != null ? String(d.restore_backup_id) : '')
+
+    // Only the values this form can actually render. `advanced_options` is a
+    // free-form JSON bag on the server, so a number or a nested object could
+    // come back into a control that expects a string or a checkbox.
+    const adv: Record<string, string | boolean> = {}
+    for (const [k, v] of Object.entries(d.advanced_options || {}))
+      if (typeof v === 'string' || typeof v === 'boolean') adv[k] = v
+    setAdvanced(adv)
+
+    const saved = (d.components || []).filter((c) => c.technology_code)
+    setComponents(
+      saved.map((c) => ({
+        technology_code: c.technology_code as string,
+        size: c.size,
+        version: c.version ?? undefined,
+        image: c.image ?? undefined,
+        vcpu: c.vcpu ?? undefined,
+        memory_gb: c.memory_gb ?? undefined,
+        storage_gb: c.storage_gb ?? undefined,
+      })),
+    )
+    // Decommission and reduce do not hold their choice in `components` — they
+    // derive it from the environment being operated on — so the same saved rows
+    // have to be read back into the state each of those screens actually reads.
+    // Restoring only `components` would reopen a decommission draft with nothing
+    // ticked, which reads as "you selected nothing" rather than "we lost it".
+    setSelected(
+      new Set(
+        saved.map((c) => compKey({ technology_code: c.technology_code as string, size: c.size ?? '' })),
+      ),
+    )
+    setReduceSizes(
+      Object.fromEntries(saved.filter((c) => c.size).map((c) => [c.technology_code as string, c.size as string])),
+    )
+
+    // Handed to the effect below rather than applied here — see the comment on
+    // it. Setting the chosen layout at this point would be undone in the same
+    // render by the rule that drops a layout when the stack changes, and loading
+    // a draft changes the stack, the target and the tier all at once.
+    setPendingPlacement(d.placement ?? null)
+  }
 
   const isCreate = requestType === 'create'
   const isClone = requestType === 'clone'
@@ -422,8 +610,41 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
     setPlacementChosen(null)
     setPlacementCluster(null)
     setPlacementError(null)
+    // The layout a resumed draft came back with goes too, and for exactly the
+    // same reason: it was recorded against the stack that was saved, so once
+    // that stack changes it describes an arrangement of components this request
+    // no longer has. The row in the database is untouched -- /api/placement/
+    // resolve supersedes it if a new layout is chosen -- but it stops being
+    // shown as though it still described this form.
+    setResumedPlacement(null)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [placementKey])
+
+  // PUTTING BACK THE LAYOUT A RESUMED DRAFT WAS SAVED WITH (P.11a).
+  //
+  // WHY THIS IS A SEPARATE EFFECT, AND WHY IT IS DECLARED HERE RATHER THAN
+  // ANYWHERE ELSE. The effect immediately above drops the chosen layout whenever
+  // the stack, the target or the tier changes -- and loading a draft changes all
+  // three in one go. Setting the choice while loading would therefore be undone
+  // microseconds later by a rule written about a requester editing the form, and
+  // the draft would resume having silently forgotten its own placement: exactly
+  // the defect this increment exists to fix, reintroduced one layer down.
+  //
+  // React runs effects in the order they are declared, so in the render where
+  // both fire, the drop runs first and this puts back what the SERVER recorded.
+  // Moving this above the drop would break it silently -- no type error, no
+  // warning, just a layout that vanishes on load.
+  //
+  // It is consumed once. Nothing here re-decides anything: the choice is still
+  // re-resolved by the API at submit, which is where a layout that has since
+  // become impermissible is refused.
+  useEffect(() => {
+    if (!pendingPlacement) return
+    setResumedPlacement(pendingPlacement)
+    setPlacementChosen(pendingPlacement.option_key)
+    setPlacementCluster(pendingPlacement.cluster_id ?? null)
+    setPendingPlacement(null)
+  }, [pendingPlacement])
 
   // Target-aware catalogue (F-CAT): when the deployment target changes, drop any
   // picked components not offered on the new target (so the stack stays valid).
@@ -957,6 +1178,40 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
   return (
     <div style={{ display: 'flex', gap: '2rem', flexWrap: 'wrap' }}>
       <div style={{ flex: '1 1 30rem', maxWidth: '40rem' }}>
+        {/* RESUMING SAYS SO, IN ALL THREE OF ITS STATES (P.11a). An empty form
+            is what a requester sees whether their draft is still loading, could
+            not be opened, or never existed — three very different facts that
+            look identical unless the page names which one happened. */}
+        {resuming && (
+          <InlineNotification
+            kind="info"
+            lowContrast
+            hideCloseButton
+            title={`Opening ${resumeRef}…`}
+            subtitle="Fetching what you saved."
+            style={{ marginBottom: '1rem', maxWidth: 'none' }}
+          />
+        )}
+        {resumeError && (
+          <InlineNotification
+            kind="error"
+            lowContrast
+            hideCloseButton
+            title="That draft could not be opened"
+            subtitle={resumeError}
+            style={{ marginBottom: '1rem', maxWidth: 'none' }}
+          />
+        )}
+        {resumed && !resumeError && (
+          <InlineNotification
+            kind="success"
+            lowContrast
+            title={`Resumed ${resumed}`}
+            subtitle="Saving again updates this draft — it does not create another."
+            onCloseButtonClick={() => setResumed(null)}
+            style={{ marginBottom: '1rem', maxWidth: 'none' }}
+          />
+        )}
         {result && (
           <InlineNotification
             kind={result.kind}
@@ -1658,6 +1913,10 @@ export default function RequestForm({ initialType = 'create' }: { initialType?: 
                   options={placement}
                   chosen={placementChosen}
                   clusterId={placementCluster}
+                  // What this draft was SAVED with, so a resumed request shows
+                  // its layout instead of an empty step with a choice held
+                  // invisibly behind it. Dropped the moment the stack changes.
+                  recorded={resumedPlacement}
                   busy={placementBusy}
                   error={placementError}
                   onFetch={onWorkOutPlacement}

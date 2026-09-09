@@ -71,6 +71,21 @@ function parseRequestType(route: string): string {
   return m ? m[1] : 'create'
 }
 
+// #/request/resume/REQ-2026-0001 — reopen a saved draft (F-UX-01).
+//
+// A DRAFT NEEDED AN ADDRESS BEFORE IT COULD BE RESUMED. The form used to hold
+// its reference in React state and nowhere else, so "Draft saved as
+// REQ-2026-0001 — you can resume it later" was true of the database and false of
+// the portal: navigating away lost the only route back to it.
+//
+// The reference is a name to look up, never a permission. Anything typed here is
+// handed to the API, which decides whose request it is — see the ownership check
+// on /api/requests/draft.
+function parseResumeRef(route: string): string | null {
+  const m = route.match(/^#\/request\/resume\/([A-Za-z0-9._-]+)/)
+  return m ? m[1] : null
+}
+
 function useHashRoute() {
   const [route, setRoute] = useState(window.location.hash || '#/request/new')
   useEffect(() => {
@@ -142,8 +157,14 @@ export default function App() {
     page = <Admin />
   } else {
     const t = parseRequestType(route)
-    title = `New request · ${RT_LABEL[t]}`
-    page = <RequestForm initialType={t} />
+    const resumeRef = parseResumeRef(route)
+    title = resumeRef ? `Resume draft · ${resumeRef}` : `New request · ${RT_LABEL[t]}`
+    // KEYED, so switching between a new request and a resumed one REMOUNTS the
+    // form. Without the key React reuses the instance, and every field the
+    // resumed draft does not set would keep whatever the previous request had
+    // been typed into — a half-written justification carried silently onto
+    // somebody's saved draft.
+    page = <RequestForm key={resumeRef ?? `new:${t}`} initialType={t} resumeRef={resumeRef} />
   }
 
   return (

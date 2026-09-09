@@ -78,6 +78,41 @@ for (const [label, options] of cases) {
     ['not ready', { ready: false }],
     ['the request failed', { error: 'The platform could not answer.' }],
     ['working on it', { busy: true }],
+    // A RESUMED DRAFT (P.11a): no options computed, but a layout already
+    // recorded against the request. This state exists to stop the step coming
+    // back empty while `chosen` quietly holds a decision underneath it — so a
+    // render that produced nothing here would be the exact defect, passing.
+    ['resumed, layout recorded', {
+      options: null,
+      chosen: 'consolidated',
+      recorded: {
+        version: 2,
+        option_key: 'consolidated',
+        cluster_id: null,
+        topology: { environment: 'UAT', deployment_target: 'oci',
+                    hosts: [{ id: 'host-1', host_mode: 'vm', components: ['postgres16', 'nodejs20'] }] },
+        sizing: { machine_count: 1, resolved: true },
+        estimate: { currency: 'AED', resolved: true,
+                    totals: { one_time: 0, monthly: 412.5, annual: 4950 } },
+        created_at: '2026-09-09T06:00:00',
+      },
+    }],
+    // The same, unpriced. `resolved: false` means the server declined to price
+    // it, and a layout showing 0.00 AED because nobody could price it is the
+    // figure-that-disagrees-with-itself this form has already been bitten by.
+    ['resumed, layout recorded but unpriced', {
+      options: null,
+      chosen: 'separated',
+      recorded: {
+        version: 1,
+        option_key: 'separated',
+        cluster_id: null,
+        topology: { environment: 'Development', deployment_target: 'oci', hosts: [] },
+        sizing: { machine_count: 0, resolved: false },
+        estimate: { currency: 'AED', resolved: false },
+        created_at: null,
+      },
+    }],
   ]
   for (const [what, props] of states) {
     try {
