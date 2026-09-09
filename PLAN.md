@@ -337,6 +337,13 @@ Module selection and variable generation derive from the persisted structured pl
 Select three components → resolve consolidated → summed sizing → correct cost → correct Jira payload shape, as one test.
 *Implements:* the phase.
 *You'll know it works when:* the test passes from a clean database and fails if any link in that chain is broken.
+*Built 2026-09-09.* `api/tests/test_placement_end_to_end.py`. One test walks the whole chain on a freshly seeded database: three components → the three layouts → consolidated resolved at version 1 → one host summed to 6/20/250 and, with 20% headroom rounded up, built at **8 vCPU / 24 GB / 300 GB** → a cost derived from that shape and stored as the approved figure → a ticket reading *"Layout: Consolidated … 8 vCPU, 24 GB RAM, 300 GB disk … 1 machine is priced below"* at the same figure → the layout inside the signed handoff → one Terraform workspace at 4 OCPUs. The same three components resolved as *separated* build two machines at 5/20/240 and 3/5/60, in two workspaces.
+*"And fails if any link is broken" is asserted, not assumed.* Six links are severed in turn — each replaced with a plausible EMPTY answer rather than an exception, because that is how these failures have actually presented — and the chain test must notice. A cut the chain still passes is not a passing test; it is a link the file does not really check.
+*That clause immediately earned itself.* Two of the six cuts were ineffective and reported as caught: `api/main.py` does `from api.sizing import load_requirements`, so it holds its own binding and patching `api.sizing` replaces a name nobody reads. The two links written that way were the two carrying the NUMBERS — sizing and cost — so the chain test was claiming to check the arithmetic and checking nothing. Every link is now severed at its point of use. This is the same class of mistake the phase kept finding in the code, found this time in the test written to catch it.
+
+---
+
+**Phase P is complete** (2026-09-08 – 2026-09-09, 15 increments). Eight defects were found in code that already had passing tests, every one of them exposed by a new CONSUMER reading an existing output rather than by review: P.11 found two, P.12 three, P.13 three. The pattern is worth carrying forward — a component with green tests and no caller is not finished, and the increment that first reads its output is where the cost of that lands.
 
 ---
 
