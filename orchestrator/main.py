@@ -20,6 +20,7 @@ from fastapi import FastAPI, HTTPException, Request
 
 from common import proof_rules
 from common.signing import verify
+from orchestrator import cluster_discovery
 from orchestrator import golden_image
 from orchestrator import marketplace
 from orchestrator import (
@@ -279,6 +280,33 @@ async def catalogue_oci_options(request: Request) -> dict:
         # differently — so answer 200 with the reason rather than erroring.
         return {"ok": False, "reason": str(exc), "mode": cloud_catalogue.mode(),
                 "shapes": [], "images": []}
+
+
+@app.post("/catalogue/clusters")
+async def catalogue_clusters(request: Request) -> dict:
+    """Kubernetes clusters in the tenancy, with their node pool capacity.
+
+    Read-only and signature-only, like /catalogue/oci-options: every call
+    underneath is a list_*, so this endpoint cannot create, change or destroy
+    anything and needs no execution gate. What crosses the boundary is cluster
+    OCIDs, names, versions and sizes — a cluster OCID identifies a resource, it
+    is not a credential.
+
+    A tenancy that cannot be READ answers 200 with the reason and an empty list,
+    the same shape /catalogue/oci-options uses, because a reachable orchestrator
+    that cannot see the tenancy is a different thing from an unreachable one and
+    the caller has to be able to tell them apart. "You have no clusters" is a
+    statement about the requester; "we could not look" is a statement about the
+    portal.
+    """
+    body = await request.body()
+    if not verify(WEBHOOK_SECRET, body, request.headers.get("X-Signature", "")):
+        raise HTTPException(status_code=401, detail="Invalid webhook signature.")
+    try:
+        return {"ok": True, **cluster_discovery.fetch()}
+    except cluster_discovery.ClusterDiscoveryUnavailable as exc:
+        return {"ok": False, "reason": str(exc), "mode": cluster_discovery.mode(),
+                "clusters": [], "count": 0}
 
 
 @app.post("/catalogue/versions")

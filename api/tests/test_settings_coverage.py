@@ -85,6 +85,11 @@ _GATE_ENV = {
     # catalogue_shapes_allowed (a count, not the list) /
     # catalogue_image_filter_set.
     "OCI_CATALOGUE_MODE", "OCI_SHAPE_ALLOWLIST", "OCI_IMAGE_FILTER",
+    # Cluster discovery. Its OWN switch rather than OCI_CATALOGUE_MODE: listing
+    # clusters is a different permission from listing shapes, and an operator
+    # turning one on should not silently turn the other on with it. Reported by
+    # the orchestrator's posture the same way, as a mode rather than a value.
+    "OCI_CLUSTER_DISCOVERY_MODE",
     # Reported as boot_report_configured (set-or-not; the value is a credential).
     "OCI_BOOT_REPORT_PAR_URL",
     # Kafka: reported as kafka_source_set — the value is a

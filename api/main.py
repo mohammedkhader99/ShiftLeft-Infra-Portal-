@@ -8433,6 +8433,58 @@ def _requester_scope(req: Request) -> clusters_mod.RequesterScope:
     )
 
 
+# The discovered clusters, and when they were read. Held in memory rather than
+# in the database ON PURPOSE (ARCHITECTURE.md P7): a cluster's capacity changes
+# as pods are scheduled, so a row would be a number that was true once. A short
+# cache because listing costs a round trip per placement screen; a SHORT one
+# because the figure goes stale.
+_CLUSTER_CACHE: dict[str, object] = {"at": None, "clusters": None}
+_CLUSTER_CACHE_SECONDS = 300
+
+
+def _orchestrator_clusters() -> dict | None:
+    """Ask the orchestrator which clusters exist.
+
+    Same signed channel and same reasoning as _orchestrator_cloud_options:
+    listing clusters needs OCI credentials and this process holds none. Read-only
+    at the far end — the endpoint calls list_* and nothing else.
+    """
+    payload = {"issued_at": datetime.now(timezone.utc).isoformat(),
+               "operation": "clusters"}
+    raw = json.dumps(payload, sort_keys=True).encode()
+    response, _error = _post_to_orchestrator(
+        raw, sign(WEBHOOK_SECRET, raw), path="/catalogue/clusters")
+    if response is None or response.status_code != 200:
+        return None
+    try:
+        return response.json()
+    except ValueError:
+        return None
+
+
+def _discovered_clusters() -> list[dict] | None:
+    """The cached cluster list, refreshed when it is older than the window.
+
+    None means the orchestrator could not be reached or could not read the
+    tenancy. It is NOT an empty list, and the difference is the whole point:
+    telling a requester they are entitled to nothing when the truth is that
+    nobody looked is a lie they would believe.
+
+    A stale entry is never served in place of a failed read for the same reason —
+    the caller would have no way to tell a current answer from an old one.
+    """
+    now = datetime.now(timezone.utc)
+    at = _CLUSTER_CACHE.get("at")
+    if at is not None and (now - at).total_seconds() < _CLUSTER_CACHE_SECONDS:
+        return _CLUSTER_CACHE.get("clusters")  # type: ignore[return-value]
+
+    answer = _orchestrator_clusters()
+    clusters = (answer.get("clusters") or []) if (answer and answer.get("ok")) else None
+    _CLUSTER_CACHE["at"] = now
+    _CLUSTER_CACHE["clusters"] = clusters
+    return clusters
+
+
 def _discover_clusters(session: Session, req: Request):
     """Clusters this request could deploy onto, or None if we cannot look.
 
@@ -8441,13 +8493,42 @@ def _discover_clusters(session: Session, req: Request):
     requester they have no access when the truth is that nobody looked is a lie
     they would believe.
 
-    THE LIVE FETCH IS NOT BUILT. Clusters must be read from the cloud and cached
-    briefly, never stored as catalogue rows (P7) — allocatable capacity is the
-    most perishable fact in this whole phase. Until that adapter exists this
-    returns None, and the portal says so plainly rather than implying an
-    entitlement answer it has not computed.
+    WHAT THE CAPACITY FIGURES ARE. Node pool totals, not allocatable capacity —
+    reading allocatable needs the Kubernetes API, which nothing here can reach
+    (see orchestrator/cluster_discovery.py). A fit judged against them is
+    OPTIMISTIC, which is the honest direction to be wrong in while the option
+    that would consume it is refused anyway.
+
+    DORMANT BY DESIGN TODAY. Both cluster options are refused because nothing in
+    this system deploys a workload into a cluster, so this list changes no
+    outcome — it tells a requester what they would be entitled to, beside the
+    reason they cannot use it. Built now so that the day a deployment path exists
+    the entitlement answer is already arriving.
     """
-    return None
+    discovered = _discovered_clusters()
+    if discovered is None:
+        return None
+
+    # AN UNTAGGED CLUSTER IS NOT DECLARED SHARED, and the difference is
+    # deliberate rather than incidental. `RequesterScope.covers` treats a scope
+    # of None as "shared infrastructure, visible to all" — which is right for a
+    # cluster somebody chose to leave unscoped. A cluster DISCOVERED in the
+    # tenancy with no portal tags chose nothing: it is simply untagged, and
+    # handing it to every requester would be granting access nobody decided to
+    # grant. So a missing tag becomes "" rather than None, which matches no
+    # scope and keeps it invisible until somebody tags it.
+    need = clusters_mod.Need(vcpu=0, memory_gb=0)
+    return clusters_mod.assess_clusters(
+        [clusters_mod.Cluster(
+            id=str(c.get("id") or ""),
+            name=str(c.get("name") or ""),
+            region=str(c.get("region") or ""),
+            project_code=str(c.get("project_code") or ""),
+            cost_centre_code=str(c.get("cost_centre_code") or ""),
+            allocatable_vcpu=int(c.get("capacity_vcpu") or 0),
+            allocatable_memory_gb=int(c.get("capacity_memory_gb") or 0))
+         for c in discovered],
+        _requester_scope(req), need)
 
 
 def _placement_options(session: Session, req: Request, evaluate) -> list[dict]:
