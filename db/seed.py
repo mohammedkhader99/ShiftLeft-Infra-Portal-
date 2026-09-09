@@ -15,6 +15,12 @@ from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from db.models import (
+    DELIVERY_CAPABILITY,
+    DELIVERY_MACHINE,
+    DELIVERY_MANAGED,
+    DELIVERY_SOFTWARE,
+    HOST_MANAGED,
+    HOST_VM,
     TechnologyDelivery,
     TechnologyHostMode,
     HostModeRequirement,
@@ -494,8 +500,13 @@ RATE_CARDS = [
 # for — advertising managed PostgreSQL on three more clouds would be claiming a
 # capability nothing has demonstrated, which is what P8 exists to stop.
 ALL_CLOUDS = ("onprem", "azure", "oci", "aws", "gcp")
+# The column default, read from the model so the two cannot disagree.
+DEFAULT_TARGETS = Technology.__table__.columns["targets"].default.arg
 
-HOST_MODES_SEED = [
+# Host modes that carry a hand-written note, because the note says something a
+# rule cannot: which cloud has the managed form and why, or what the operational
+# burden actually shifts to. Everything else is DERIVED below.
+HOST_MODES_EXPLICIT = [
     # (technology_code, clouds, host_mode, note shown beside the option)
     ("compute-vm", ALL_CLOUDS, "vm",
      "The machine itself — the host other components are placed on."),
@@ -519,6 +530,83 @@ HOST_MODES_SEED = [
     ("azure-aks", ("azure",), "managed",
      "A managed Kubernetes control plane. Azure only."),
 ]
+
+# The note a derived row carries. Per delivery model, because that is the only
+# thing a rule knows — and saying less is better than saying something specific
+# that nobody checked.
+_DERIVED_NOTE = {
+    DELIVERY_MACHINE: "The machine itself — the host other components are placed on.",
+    DELIVERY_SOFTWARE: "Installed on a machine you own and patch.",
+    DELIVERY_MANAGED: "Run by the cloud. No machine is provisioned and nothing "
+                      "here is yours to patch.",
+}
+
+# The host mode each delivery model implies. This is not a second opinion about
+# the catalogue — it is the SAME fact seen from the other side, which is exactly
+# what `host_modes_disagree_with_delivery` checks, so deriving one from the other
+# means the two tables cannot drift apart at all.
+_MODE_FOR_DELIVERY = {
+    DELIVERY_MACHINE: HOST_VM,      # it IS the host
+    DELIVERY_SOFTWARE: HOST_VM,     # it is installed on one
+    DELIVERY_MANAGED: HOST_MANAGED,  # the cloud runs it
+    # DELIVERY_CAPABILITY is absent deliberately: an outcome nobody installs has
+    # nothing to place and no shape to size, and a row of zeros would be a worse
+    # answer than an absence.
+}
+
+
+def _derived_host_modes() -> list[tuple]:
+    """A host mode for every technology the explicit list does not name.
+
+    WHY THIS IS DERIVED AND NOT LISTED. 48 of the catalogue's 56 technologies had
+    no host mode at all, so P.2's requirement rows covered three of them and the
+    placement step told anyone choosing OpenSearch, Kafka, MySQL or twenty others
+    that it "cannot be sized". A hand-written list would have closed that today
+    and reopened it the next time somebody added a technology — the same gap, with
+    a longer list in front of it.
+
+    NO NEW NUMBERS ARE INTRODUCED HERE. The shapes still come from
+    HOST_MODE_BASELINE, which is per (host mode, size) and deliberately asserts no
+    difference between technologies; see its comment for why claiming PostgreSQL
+    needs more than Node.js at a given size would be inventing a fact. What is
+    added is which technologies HAVE a host mode, which is a statement about the
+    catalogue rather than about capacity.
+
+    CONTAINER IS NOT DERIVED FOR ANYTHING. Every certified blueprint in this
+    system builds a machine — `oci-service-vm`, `oci-instance`, `oci-apache`,
+    `oci-kafka`, `oci-postgres` — and there is no blueprint that deploys a
+    workload into a cluster. Declaring `container` for a technology would put an
+    option on the screen that resolves, prices, reaches an approver and then fails
+    at provisioning, which is the exact failure this phase exists to end. It is a
+    claim to make when something can build it.
+
+    A managed service is offered only on the clouds the catalogue says it runs on
+    — `targets` on the technology row, which the cloud-specific entries declare
+    explicitly. Offering managed PostgreSQL on-premises would be an option nothing
+    could build, and `test_host_modes_are_only_offered_on_clouds_the_technology
+    _supports` fails on it.
+    """
+    named = {(code, mode) for code, _clouds, mode, _note in HOST_MODES_EXPLICIT}
+    targets = {entry["code"]: tuple(entry.get("targets", DEFAULT_TARGETS).split(","))
+               for entry in TECHNOLOGIES}
+
+    rows = []
+    for code, (delivery, _note) in DELIVERY.items():
+        mode = _MODE_FOR_DELIVERY.get(delivery)
+        if mode is None or (code, mode) in named:
+            continue
+        clouds = targets.get(code)
+        if not clouds:
+            # In DELIVERY but not in TECHNOLOGIES. Skipped rather than defaulted:
+            # a host mode for a technology the catalogue does not offer is a row
+            # nothing can ever use, and the delivery table's own comment says
+            # guessing is what it exists to stop.
+            continue
+        rows.append((code, clouds, mode, _DERIVED_NOTE[delivery]))
+    return sorted(rows)
+
+
+HOST_MODES_SEED = HOST_MODES_EXPLICIT + _derived_host_modes()
 
 
 def _host_mode_rows() -> list[dict]:

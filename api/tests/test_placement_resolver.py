@@ -211,3 +211,81 @@ def test_dr_is_refused_exactly_as_prod_is(environment):
         (ROOT / "policy" / "coresidency.json").read_text(encoding="utf-8")
     )["coresidency"]
     assert environment in facts["postgres16"]["denied_in_environments"]
+
+
+# --- a cloud service has no machine ------------------------------------------
+#
+# Added when the catalogue learned that its 17 cloud services are `managed`
+# (previously they had no host mode at all). Before that, sizing correctly found
+# no requirement row for an object store on a VM and the option came back
+# "not priced" — so a layout that CANNOT EXIST was reported in the words used for
+# a layout whose numbers are merely missing. One is answered by adding data and
+# the other by choosing something else, so they need different sentences.
+
+BUCKET = ComponentFacts(code="oci-objectstorage",
+                        host_modes=frozenset({HOST_MANAGED}))
+NGINX = ComponentFacts(code="nginx", host_modes=frozenset({HOST_VM}))
+
+
+def test_consolidating_a_cloud_service_onto_a_machine_is_refused():
+    options = {o.key: o for o in enumerate_options([VM, BUCKET, NGINX])}
+    consolidated = options[CONSOLIDATED_OPTION]
+
+    assert consolidated.eligible is False
+    assert "run by the cloud" in consolidated.reasons[0]
+    assert "cannot be installed on a machine" in consolidated.reasons[0]
+
+
+def test_separating_does_not_give_a_cloud_service_a_machine_either():
+    options = {o.key: o for o in enumerate_options([VM, BUCKET, NGINX])}
+    assert options[SEPARATED_OPTION].eligible is False
+
+
+def test_the_refusal_names_the_option_that_does_work():
+    """A refusal that does not say what to do instead is half an answer."""
+    options = {o.key: o for o in enumerate_options([VM, BUCKET, NGINX])}
+    reason = options[CONSOLIDATED_OPTION].reasons[0]
+
+    assert "Managed where available" in reason
+    assert MANAGED_OPTION in options, "and it had better be on the screen"
+
+
+def test_the_cloud_service_is_still_listed_on_the_refused_option():
+    """Refused, not quietly emptied. Dropping it and consolidating the rest would
+    build an environment missing a component the requester asked for, and the
+    option would look like it had worked."""
+    options = {o.key: o for o in enumerate_options([VM, BUCKET, NGINX])}
+    placed = [c for h in options[CONSOLIDATED_OPTION].hosts for c in h.components]
+
+    assert "oci-objectstorage" in placed
+    assert "nginx" in placed
+
+
+def test_a_component_that_can_run_either_way_is_not_refused():
+    """The distinction is "managed and nothing else". PostgreSQL offers a managed
+    form AND installs on a machine, so consolidating it is a real choice."""
+    both = ComponentFacts(code="postgres16",
+                          host_modes=frozenset({HOST_VM, HOST_MANAGED}))
+    options = {o.key: o for o in enumerate_options([VM, both, NGINX])}
+
+    assert options[CONSOLIDATED_OPTION].eligible is True
+
+
+def test_the_managed_option_places_the_cloud_service_off_the_machine():
+    options = {o.key: o for o in enumerate_options([VM, BUCKET, NGINX])}
+    managed = options[MANAGED_OPTION]
+
+    assert managed.eligible is True
+    by_mode = {h.host_mode: h.components for h in managed.hosts}
+    assert by_mode[HOST_MANAGED] == ("oci-objectstorage",)
+    assert by_mode[HOST_VM] == ("nginx",)
+
+
+def test_two_cloud_services_are_both_named_in_the_refusal():
+    other = ComponentFacts(code="oci-functions",
+                           host_modes=frozenset({HOST_MANAGED}))
+    options = {o.key: o for o in enumerate_options([VM, BUCKET, other, NGINX])}
+    reason = options[CONSOLIDATED_OPTION].reasons[0]
+
+    assert "oci-objectstorage" in reason and "oci-functions" in reason
+    assert " are run by the cloud" in reason, "plural, because there are two"

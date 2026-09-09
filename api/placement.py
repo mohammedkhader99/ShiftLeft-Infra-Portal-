@@ -195,18 +195,54 @@ def _managed_option(components: Sequence[ComponentFacts]) -> Option | None:
     )
 
 
+def _cloud_only(workloads: Sequence[ComponentFacts]) -> list[ComponentFacts]:
+    """Components the cloud runs and nobody can install on a machine.
+
+    A component whose ONLY host mode is `managed` has no software to put on a
+    host — an object store, a serverless function, a cloud database. There is no
+    shape for it because there is no machine.
+    """
+    return [c for c in workloads if c.host_modes == frozenset({HOST_MANAGED})]
+
+
+def _on_a_machine_refusal(cloud_only: Sequence[ComponentFacts]) -> str:
+    """Why a machine-shaped layout cannot hold these.
+
+    NOT "it could not be priced", which is what the requester saw before the
+    catalogue knew these were cloud services: sizing correctly found no
+    requirement row and the option came back unpriced, so a layout that CANNOT
+    EXIST was reported in the words used for a layout whose numbers are merely
+    missing. The two need different sentences, because one is answered by adding
+    data and the other by choosing something else.
+    """
+    names = ", ".join(c.code for c in cloud_only)
+    is_are = "is" if len(cloud_only) == 1 else "are"
+    return (f"{names} {is_are} run by the cloud, so {'it' if len(cloud_only) == 1 else 'they'} "
+            f"cannot be installed on a machine. 'Managed where available' places "
+            f"{'it' if len(cloud_only) == 1 else 'them'} correctly and puts the rest "
+            f"on their own host.")
+
+
 def _consolidated_option(components: Sequence[ComponentFacts]) -> Option | None:
     """One machine carrying everything that needs one."""
     workloads = _workloads(components)
     if len(workloads) < 2:
         return None  # nothing to consolidate; it would equal `separated`
+    # REFUSED, not quietly emptied. Dropping the cloud services and consolidating
+    # the rest would build an environment missing components the requester asked
+    # for, and the option would look like it had worked.
+    cloud_only = _cloud_only(workloads)
     return Option(
         key=CONSOLIDATED_OPTION,
         title=OPTION_TITLES[CONSOLIDATED_OPTION],
-        summary=(f"One machine hosts all {len(workloads)} components. Their "
+        summary=("One machine cannot host a cloud service."
+                 if cloud_only else
+                 f"One machine hosts all {len(workloads)} components. Their "
                  f"resource needs are summed, not maximised."),
         hosts=(Host(id="host-1", host_mode=HOST_VM,
                     components=tuple(c.code for c in workloads)),),
+        eligible=not cloud_only,
+        reasons=(_on_a_machine_refusal(cloud_only),) if cloud_only else (),
     )
 
 
@@ -219,12 +255,17 @@ def _separated_option(components: Sequence[ComponentFacts]) -> Option | None:
         Host(id=f"host-{i}", host_mode=HOST_VM, components=(c.code,))
         for i, c in enumerate(workloads, start=1)
     )
+    cloud_only = _cloud_only(workloads)
     return Option(
         key=SEPARATED_OPTION,
         title=OPTION_TITLES[SEPARATED_OPTION],
-        summary=(f"{len(hosts)} machines, one per component. The most isolated "
+        summary=("A machine each, but a cloud service has no machine."
+                 if cloud_only else
+                 f"{len(hosts)} machines, one per component. The most isolated "
                  f"and the most expensive."),
         hosts=hosts,
+        eligible=not cloud_only,
+        reasons=(_on_a_machine_refusal(cloud_only),) if cloud_only else (),
     )
 
 
