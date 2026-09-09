@@ -453,6 +453,48 @@ def _cloud_vars(cloud: str, name: str, tags: dict, resource_kind: str, sizing: d
     return base
 
 
+# A PLACEMENT CAN PUT TWO MACHINES ON ONE RESOURCE KIND, and before placement
+# existed nothing could. "Separated" builds three machines that are all
+# `oci-instance`; one workspace per kind would have collapsed them into a single
+# VM and quietly built something other than what was approved.
+#
+# So a workspace is named `<kind>` while a kind has one host — which is every
+# request built before this, unchanged — and `<kind>__<host id>` when a placement
+# gives it more.
+#
+# THE KIND STAYS AT THE FRONT ON PURPOSE. `existing_workspaces` reads the
+# directory names off disk, and destroy deliberately sweeps up workspaces the
+# portal did NOT name, precisely so a stack whose kinds changed since it was
+# built cannot leave a resource running and billing. That sweep has nothing but
+# the directory name to go on, so the name has to carry the kind — otherwise
+# teardown reaches `_module_dir`, `_timeout_for` and `_cloud_vars` with a string
+# none of them recognise, and falls back: no manifest vars, and a ten-minute
+# timeout on a cluster that takes twenty to delete.
+WORKSPACE_SEPARATOR = "__"
+
+
+def workspace_name(resource_kind: str, host_id: str = "", shared: bool = False) -> str:
+    """The workspace a host's Terraform lives in.
+
+    `shared` says this kind carries more than one host, and is the only thing
+    that adds a suffix — a request with one machine per kind keeps the directory
+    name it has always had, and its state stays exactly where it is.
+    """
+    if not shared or not host_id:
+        return resource_kind
+    return f"{resource_kind}{WORKSPACE_SEPARATOR}{host_id}"
+
+
+def kind_of_workspace(name: str) -> str:
+    """The resource kind a workspace directory belongs to.
+
+    Destroy and drift find workspaces by listing the directory, so this is the
+    only route back from a name on disk to the manifest that describes how to
+    tear it down.
+    """
+    return (name or "").split(WORKSPACE_SEPARATOR, 1)[0]
+
+
 def workspace_path(reference: str, resource_kind: str = "") -> Path:
     """Where this request's Terraform state for one resource kind lives.
 
@@ -490,7 +532,8 @@ def existing_workspaces(reference: str) -> dict[str, Path]:
     return found
 
 
-def _workdir(reference: str, cloud: str = "oci", resource_kind: str = "") -> Path:
+def _workdir(reference: str, cloud: str = "oci", resource_kind: str = "",
+             workspace: str = "") -> Path:
     """Per-request working dir on the persistent volume, seeded with the module.
 
     A workdir only ever holds one module (a request's cloud and kind are fixed).
@@ -501,7 +544,8 @@ def _workdir(reference: str, cloud: str = "oci", resource_kind: str = "") -> Pat
     still copied as *.tf only: its directory now contains the per-blueprint
     subfolders, which must not be dragged into every workspace.
     """
-    workdir = workspace_path(reference, resource_kind)
+    # The module comes from the kind; the directory may be per host.
+    workdir = workspace_path(reference, workspace or resource_kind)
     workdir.mkdir(parents=True, exist_ok=True)
     source = _module_dir(cloud, resource_kind)
     legacy = source in (MODULE_DIR, MODULE_DIR / "aws")
@@ -577,11 +621,12 @@ def _summary(stdout: str, pattern: str, fallback: str) -> str:
 
 
 def terraform_plan(reference: str, name: str, tags: dict,
-                   resource_kind: str = "oci-bucket", sizing: dict | None = None) -> dict:
+                   resource_kind: str = "oci-bucket", sizing: dict | None = None,
+                   workspace: str = "") -> dict:
     """Init + plan in the request's workspace, saving the plan. Creates nothing."""
     cloud = _cloud_of(resource_kind)
     _require_cloud(cloud, resource_kind)
-    workdir = _workdir(reference, cloud, resource_kind)
+    workdir = _workdir(reference, cloud, resource_kind, workspace)
     tmo = _timeout_for(resource_kind)
     _write_tfvars(workdir, _cloud_vars(cloud, name, tags, resource_kind, sizing))
 
@@ -614,13 +659,14 @@ def _scan_saved_plan(workdir: Path, classification: str | None) -> dict:
 
 
 def terraform_apply(reference: str, name: str, tags: dict,
-                    resource_kind: str = "oci-bucket", sizing: dict | None = None) -> dict:
+                    resource_kind: str = "oci-bucket", sizing: dict | None = None,
+                    workspace: str = "") -> dict:
     """Apply the EXACT saved plan for this request. CREATES the resource."""
     if provision_mode() != "apply":
         raise ProvisionError("apply is not enabled (PROVISION_MODE is not 'apply')")
     cloud = _cloud_of(resource_kind)
     _require_cloud(cloud, resource_kind)
-    workdir = _workdir(reference, cloud, resource_kind)
+    workdir = _workdir(reference, cloud, resource_kind, workspace)
     tmo = _timeout_for(resource_kind)
     if not (workdir / PLAN_FILE).exists():
         raise ProvisionError("no saved plan for this request — approve (plan) it first")
@@ -649,14 +695,15 @@ def terraform_apply(reference: str, name: str, tags: dict,
 
 
 def terraform_drift(reference: str, name: str, tags: dict,
-                    resource_kind: str = "oci-bucket", sizing: dict | None = None) -> dict:
+                    resource_kind: str = "oci-bucket", sizing: dict | None = None,
+                    workspace: str = "") -> dict:
     """Re-plan a provisioned request's existing workspace and detect drift from
     the applied state (F-LCM-09). Read-only — a plan creates nothing, so the
     spend gates don't apply (creating=False): you must still be able to inspect an
     existing resource after the switch that created it has been turned off."""
     cloud = _cloud_of(resource_kind)
     _require_cloud(cloud, resource_kind, creating=False)
-    workdir = _workdir(reference, cloud, resource_kind)
+    workdir = _workdir(reference, cloud, resource_kind, workspace)
     tmo = _timeout_for(resource_kind)
     _write_tfvars(workdir, _cloud_vars(cloud, name, tags, resource_kind, sizing))
 
@@ -677,14 +724,15 @@ def terraform_drift(reference: str, name: str, tags: dict,
 
 
 def terraform_destroy(reference: str, name: str, tags: dict,
-                      resource_kind: str = "oci-bucket", sizing: dict | None = None) -> dict:
+                      resource_kind: str = "oci-bucket", sizing: dict | None = None,
+                      workspace: str = "") -> dict:
     """Destroy the resources for this request from its own state.
 
     creating=False: tearing down must never be blocked by the switch that gated
     creation, or an expensive resource becomes stuck (see _require_cloud)."""
     cloud = _cloud_of(resource_kind)
     _require_cloud(cloud, resource_kind, creating=False)
-    workdir = _workdir(reference, cloud, resource_kind)
+    workdir = _workdir(reference, cloud, resource_kind, workspace)
     tmo = _timeout_for(resource_kind)
     _write_tfvars(workdir, _cloud_vars(cloud, name, tags, resource_kind, sizing))
 

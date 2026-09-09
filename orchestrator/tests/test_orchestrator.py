@@ -307,10 +307,14 @@ def test_bucket_and_tags_uses_derived_name():
 def _destroy_sweeping(monkeypatch, built, asked):
     monkeypatch.setattr(orch.provisioner, "provision_mode", lambda: "apply")
     monkeypatch.setattr(orch.provisioner, "existing_workspaces", lambda ref: list(built))
+    # `**k` because destroy now names the workspace explicitly: a placement can
+    # put two machines on one resource kind, so the directory is no longer
+    # derivable from the kind alone. A stub whose signature is narrower than the
+    # function it stands in for fails on the call rather than on the behaviour.
     monkeypatch.setattr(
         orch.provisioner, "terraform_destroy",
-        lambda ref, b, t, *a: {"summary": "Destroy complete! Resources: 3 destroyed.",
-                               "output": "..."})
+        lambda ref, b, t, *a, **k: {"summary": "Destroy complete! Resources: 3 destroyed.",
+                                    "output": "..."})
     body = _body(resource_kinds=list(asked))
     return client.post("/destroy", content=body, headers=_signed(body))
 

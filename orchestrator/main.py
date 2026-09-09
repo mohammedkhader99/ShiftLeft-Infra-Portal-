@@ -10,6 +10,7 @@ re-checks OPA + cost before acting (§4). PROVISION_MODE gates real work:
 """
 
 import json
+import math
 import logging
 import os
 import re
@@ -506,6 +507,141 @@ def _resource_kinds(payload: dict) -> list[str]:
     return [_resource_kind(payload)]
 
 
+def _placement_units(payload: dict) -> list[dict] | None:
+    """One unit of work per machine the placement says to build (P.13, F-ORC-11).
+
+    THE UNIT OF WORK USED TO BE A RESOURCE KIND, and that was right until a
+    placement could put two machines on one kind. "Separated" builds three
+    machines that are all `oci-instance`; one workspace per kind collapses them
+    into a single VM, and the portal would then build something other than what
+    was approved while reporting success — the failure this whole phase exists to
+    end, arriving one layer further down.
+
+    Each unit carries its own shape, taken from the placement rather than from
+    `_instance_sizing`. That is the other half of the change: sizing from the
+    largest component is correct when a machine holds one component and wrong
+    when it holds three, because three co-resident components need the SUM.
+
+    A managed host builds no machine and produces no unit — the cloud runs it,
+    and the placement records it so the topology stays complete.
+
+    A host the portal could not size produces no unit either, and this is a
+    REFUSAL rather than a default: building a machine at a guessed shape, for a
+    request priced without it, is exactly the silent substitution the portal is
+    supposed to make impossible. `_refuse_unsized_hosts` turns it into an error
+    the requester sees.
+
+    Returns None when the payload carries no placement, and every caller then
+    behaves exactly as it did before this existed.
+    """
+    placement = payload.get("placement")
+    if not isinstance(placement, dict):
+        return None
+    hosts = placement.get("hosts")
+    if not isinstance(hosts, list) or not hosts:
+        return None
+
+    machines = [h for h in hosts
+                if h.get("host_mode") != "managed" and h.get("resolved")]
+
+    # How many machines share each kind. Only a kind with more than one needs its
+    # workspaces distinguished, so a request with one machine per kind keeps the
+    # directory names — and therefore the Terraform state — it already has.
+    counts: dict[str, int] = {}
+    for host in machines:
+        kind = host.get("resource_kind") or ""
+        counts[kind] = counts.get(kind, 0) + 1
+
+    units = []
+    for host in machines:
+        kind = host.get("resource_kind") or ""
+        if not kind:
+            # Nothing certified says what this host builds. Left out here and
+            # refused by the caller: guessing a module is how a request for
+            # Python 3.12 once received an empty bucket.
+            continue
+        host_id = str(host.get("id") or "")
+        units.append({
+            "kind": kind,
+            "host_id": host_id,
+            "workspace": provisioner.workspace_name(
+                kind, host_id, shared=counts.get(kind, 0) > 1),
+            "components": list(host.get("components") or ()),
+            "shape": {"vcpu": host.get("vcpu"),
+                      "memory_gb": host.get("memory_gb"),
+                      "storage_gb": host.get("storage_gb")},
+        })
+    return units or None
+
+
+def _refuse_unsized_hosts(payload: dict) -> None:
+    """Stop a build the portal could not size or could not map to a module.
+
+    Both are the same failure wearing different clothes: the plan would be for
+    something other than what was approved. A machine with no recorded
+    requirement was excluded from the cost the approver signed, and a host with
+    no certified blueprint has no module that builds it — so proceeding means
+    provisioning at a shape or from a recipe nobody agreed to.
+    """
+    placement = payload.get("placement")
+    if not isinstance(placement, dict):
+        return
+    unsized, unmapped = [], []
+    for host in placement.get("hosts") or []:
+        if host.get("host_mode") == "managed":
+            continue
+        if not host.get("resolved"):
+            unsized.append(str(host.get("id") or "?"))
+        elif not host.get("resource_kind"):
+            unmapped.append(str(host.get("id") or "?"))
+    if unsized:
+        raise HTTPException(
+            status_code=400,
+            detail=(f"Placement version {placement.get('version')} has "
+                    f"{len(unsized)} machine(s) with no resolved size "
+                    f"({', '.join(unsized)}). They were excluded from the "
+                    f"approved cost, so building them would provision something "
+                    f"nobody approved."))
+    if unmapped:
+        raise HTTPException(
+            status_code=400,
+            detail=(f"Placement version {placement.get('version')} has "
+                    f"{len(unmapped)} machine(s) no certified blueprint builds "
+                    f"({', '.join(unmapped)}). Nothing says what to build, so "
+                    f"nothing is built."))
+
+
+def _placement_spec(payload: dict, unit: dict) -> dict:
+    """One machine's Terraform inputs, sized by the placement.
+
+    Starts from the ordinary spec so everything else a module needs — the image,
+    the subnet, the first-boot configuration — is derived exactly as before, then
+    overrides the shape with the one the placement resolved and priced.
+
+    OCPUs rather than vCPUs, because that is what OCI's flex shapes take and what
+    the module's variable is named.
+
+    ROUNDED UP, and this is not a detail. `_instance_sizing` uses round(), which
+    is safe there only by accident: every sizing anchor in the catalogue has an
+    even vCPU count, so round() and ceil() agree. Placement shapes do not — P.6
+    adds headroom and deliberately rounds UP, because "a machine that needs 4.8
+    vCPU gets 5, never 4 — rounding a requirement down is how headroom becomes a
+    shortfall". A 4 vCPU requirement plus 20% is 5, and round(5/2) is 2 in
+    Python, which is 4 vCPUs: the headroom would be spent undoing itself and the
+    machine built smaller than the figure the approver was shown.
+    """
+    spec = _compute_spec(payload, unit["kind"])
+    shape = unit.get("shape") or {}
+    vcpu, memory = shape.get("vcpu"), shape.get("memory_gb")
+    if vcpu:
+        spec = {**spec, "ocpus": max(1, math.ceil(int(vcpu) / 2))}
+    if memory:
+        spec = {**spec, "memory_gb": int(memory)}
+    if shape.get("storage_gb"):
+        spec = {**spec, "boot_volume_gb": int(shape["storage_gb"])}
+    return spec
+
+
 def _resource_list(payload: dict, base_name: str) -> list[dict]:
     """The request's resources as {kind, name} — the shape the cloud-state layer
     describes and actuates.
@@ -553,6 +689,32 @@ def _resource_name(base: str, kind: str, reference: str, primary: str) -> str:
     if kind == primary and "" in provisioner.existing_workspaces(reference):
         return base
     suffix = kind.split("-", 1)[1] if "-" in kind else kind
+    return _fit_name(f"{base}-{suffix}", base, suffix, reference, kind)
+
+
+def _workspace_resource_name(base: str, workspace: str, reference: str,
+                             primary: str) -> str:
+    """This machine's name, derived from the workspace it lives in.
+
+    KEYED ON THE WORKSPACE BECAUSE THAT IS WHAT BOTH SIDES HAVE. Planning knows
+    the placement; destroy and drift find workspaces by listing the directory and
+    have nothing else. Deriving the name from the resource KIND on the way down
+    and from the placement on the way up would give a machine one name when it was
+    built and a different one when it was torn down — so both go through here.
+
+    The existing rule when a kind builds one machine, so nothing already running
+    is renamed: Terraform reads a rename as a change to live infrastructure, and
+    for a compute instance it can force replacement, destroying and rebuilding a
+    working machine.
+
+    When a placement puts SEVERAL machines on one kind they cannot all take that
+    name, so the host id in the workspace distinguishes them. Only the machines
+    that need it are affected; the single-machine case is byte-identical.
+    """
+    kind = provisioner.kind_of_workspace(workspace)
+    if workspace == kind:
+        return _resource_name(base, kind, reference, primary)
+    suffix = workspace[len(kind) + len(provisioner.WORKSPACE_SEPARATOR):] or kind
     return _fit_name(f"{base}-{suffix}", base, suffix, reference, kind)
 
 
@@ -1037,15 +1199,38 @@ async def provision(request: Request) -> dict:
     if mode in ("plan", "apply"):
         # Every resource in the stack is planned. A failure on any one fails the
         # whole handoff: a stack that is half-plannable must not look ready.
+        #
+        # WHAT COUNTS AS "EVERY RESOURCE" IS THE PLACEMENT'S ANSWER when there is
+        # one — one machine per host, at the shape the placement resolved — and
+        # the kind list otherwise. Two requests with identical components and
+        # different placements therefore produce different plans, which is the
+        # whole point of carrying the layout down here.
+        _refuse_unsized_hosts(payload)
+        units = _placement_units(payload)
         plans = []
-        for kind in kinds:
-            try:
-                plans.append((kind, provisioner.terraform_plan(
-                    reference, _resource_name(name, kind, reference, rkind), tags, kind,
-                    _compute_spec(payload, kind))))
-            except provisioner.ProvisionError as exc:
-                raise HTTPException(status_code=400,
-                                    detail=f"Terraform plan failed for {kind}: {exc}")
+        if units is not None:
+            for unit in units:
+                label = unit["workspace"]
+                try:
+                    plans.append((label, provisioner.terraform_plan(
+                        reference,
+                        _workspace_resource_name(name, unit["workspace"],
+                                                 reference, rkind),
+                        tags, unit["kind"], _placement_spec(payload, unit),
+                        workspace=unit["workspace"])))
+                except provisioner.ProvisionError as exc:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Terraform plan failed for {label}: {exc}")
+        else:
+            for kind in kinds:
+                try:
+                    plans.append((kind, provisioner.terraform_plan(
+                        reference, _resource_name(name, kind, reference, rkind), tags, kind,
+                        _compute_spec(payload, kind))))
+                except provisioner.ProvisionError as exc:
+                    raise HTTPException(status_code=400,
+                                        detail=f"Terraform plan failed for {kind}: {exc}")
         scan = _merge_scans([p["scan"] for _k, p in plans if p.get("scan")])
         # IaC scan gate (F-SEC-03/04): block on HIGH findings only when enforced;
         # otherwise the findings are reported in the response and audited by the API.
@@ -1060,6 +1245,22 @@ async def provision(request: Request) -> dict:
             "verified": verified, "plan_summary": summary,
             "plan_output": "\n\n".join(p["output"] for _k, p in plans),
             "scan": scan, "resource_kinds": kinds,
+            # WHICH PLACEMENT PRODUCED THIS PLAN. Without it a plan is an
+            # orphan: the requester can change their mind, each change is a new
+            # version, and "why does this build three machines?" has no answer
+            # that can be checked against the record.
+            # `.get`, NOT a subscript. A bare payload["placement"] would be a
+            # key every handoff has to carry — including a certification proof,
+            # which has no placement — and a missing one would then be a 500
+            # rather than a clean refusal. test_the_handoff_carries_every_key_the
+            # _orchestrator_requires enforces exactly that, having been written
+            # after a valid proof returned KeyError: 'idempotency_key' in
+            # production. The guard above makes it unreachable today; the guard
+            # is not the contract.
+            **({"placement_version": (payload.get("placement") or {}).get("version"),
+                "placement_option": (payload.get("placement") or {}).get("option_key"),
+                "workspaces": [k for k, _p in plans]}
+               if units is not None else {}),
             "message": f"Terraform plan for {reference}: {summary} — nothing created.",
         }
 
@@ -1278,10 +1479,14 @@ async def drift(request: Request) -> dict:
 
     changes, summaries = [], []
     for kind in checked:
+        # `kind` here is a DIRECTORY NAME read off disk, which a placement may
+        # have suffixed with a host id. The module, the timeout and the manifest
+        # vars all key off the real kind, so recover it.
+        real = provisioner.kind_of_workspace(kind)
         try:
             result = provisioner.terraform_drift(
-                reference, _resource_name(name, kind, reference, rkind), tags, kind,
-                _compute_spec(payload, kind))
+                reference, _workspace_resource_name(name, kind, reference, rkind),
+                tags, real, _compute_spec(payload, real), workspace=kind)
         except provisioner.ProvisionError as exc:
             raise HTTPException(status_code=400, detail=f"Drift check failed for {kind}: {exc}")
         changes.extend(result.get("changes") or [])
@@ -1699,10 +1904,16 @@ async def destroy(request: Request) -> dict:
 
     summaries = []
     for kind in targets:
+        # A DIRECTORY NAME, not necessarily a resource kind — see the drift loop.
+        # Getting this wrong is worse here than anywhere else: a destroy that
+        # reaches `_timeout_for` with an unrecognised kind gets the ten-minute
+        # default, and a cluster that takes twenty minutes to delete would time
+        # out mid-teardown with the resources still live and still billing.
+        real = provisioner.kind_of_workspace(kind)
         try:
             result = provisioner.terraform_destroy(
-                reference, _resource_name(name, kind, reference, rkind), tags, kind,
-                _compute_spec(payload, kind))
+                reference, _workspace_resource_name(name, kind, reference, rkind),
+                tags, real, _compute_spec(payload, real), workspace=kind)
         except provisioner.ProvisionError as exc:
             raise HTTPException(
                 status_code=400,

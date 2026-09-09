@@ -5161,6 +5161,86 @@ def _golden_images_for(req: Request) -> dict[str, str]:
         return {}
 
 
+def _placement_handoff(session: Session, req: Request) -> dict | None:
+    """The recorded placement, shaped for the orchestrator (P.13, F-ORC-11).
+
+    PLACEMENT REACHES THE ORCHESTRATOR AS DATA, NEVER AS PROSE. The layout
+    decides how many machines get built and how big each one is, so it travels
+    as a structured list of hosts inside the signed payload â€” not as a sentence
+    in the ticket for somebody to read and act on, and not as a key the other end
+    has to interpret.
+
+    EACH HOST CARRIES ITS OWN RESOURCE KIND, resolved here. The orchestrator must
+    not re-derive it: the blueprint table is a catalogue fact and this side owns
+    the catalogue (ARCHITECTURE.md P7). Deriving it at the far end would also put
+    two answers in the system that could disagree â€” and the far end is the one
+    holding the credentials.
+
+    Returns None when nothing was placed, which is every request raised before
+    placement existed. The orchestrator then behaves exactly as it always has.
+    """
+    placement = placement_store.current_placement(session, req.id)
+    if placement is None:
+        return None
+    sized = (placement.sizing or {}).get("hosts") or []
+    if not sized:
+        return None
+
+    # Which cloud resource each technology builds. One query, so a host carrying
+    # three components can be answered without three round trips.
+    target = (req.deployment_target or "").strip().lower()
+    codes = [c.technology_code for c in req.components if c.technology_code]
+    kind_of: dict[str, str] = {}
+    if codes:
+        for blueprint in session.scalars(
+            select(Blueprint).where(
+                Blueprint.status == "certified",
+                Blueprint.deployment_target == target,
+                Blueprint.technology_code.in_(codes),
+                Blueprint.resource_kind != "",
+            )
+        ).all():
+            kind_of[blueprint.technology_code] = blueprint.resource_kind
+
+    # THE AUTHORISED CLUSTER ID LIVES IN THE TOPOLOGY, NOT THE SIZING. P.9 stamps
+    # it over the placeholder host id after sizing has already been computed, so
+    # the two lists carry different ids for the same host and only the topology's
+    # is the one entitlement actually approved. They are built from the same
+    # option in the same order, which is what makes pairing by position sound;
+    # a length mismatch means that stopped being true, so fall back to the
+    # sizing's own id rather than pair the wrong ones together.
+    topology_hosts = (placement.topology or {}).get("hosts") or []
+    paired = len(topology_hosts) == len(sized)
+
+    hosts = []
+    for index, host in enumerate(sized):
+        components = list(host.get("components") or ())
+        kinds = [kind_of[c] for c in components if c in kind_of]
+        hosts.append({
+            "id": (topology_hosts[index].get("id") if paired
+                   else host.get("host_id")),
+            "host_mode": host.get("host_mode"),
+            "components": components,
+            # The kind whose module builds this host. A host carrying several
+            # components resolves to the first that has one â€” they are co-resident
+            # on ONE machine, so one module builds it.
+            "resource_kind": kinds[0] if kinds else None,
+            "resolved": bool(host.get("resolved")),
+            "vcpu": host.get("vcpu"),
+            "memory_gb": host.get("memory_gb"),
+            "storage_gb": host.get("storage_gb"),
+        })
+
+    return {
+        # THE VERSION IS THE POINT OF THE RECORD. A plan has to be traceable back
+        # to the placement that produced it, and a requester may change their mind
+        # more than once before submitting.
+        "version": placement.version,
+        "option_key": placement.option_key,
+        "hosts": hosts,
+    }
+
+
 def _handoff_payload(req: Request, *, ttl_expiry: str | None = None,
                      action: str | None = None,
                      resource_kinds: list[str] | None = None,
@@ -5197,6 +5277,16 @@ def _handoff_payload(req: Request, *, ttl_expiry: str | None = None,
         # component of a stack. Only the portal knows which this is.
         "partial_destroy": bool(partial_destroy),
     }
+
+    # HOW MANY MACHINES, AND HOW BIG EACH ONE IS (P.13). Inside the signed body,
+    # so the layout cannot be altered between the approval and the build. Omitted
+    # entirely when nothing was placed, which is how every request raised before
+    # placement existed keeps the payload it has always had.
+    session = Session.object_session(req)
+    if session is not None:
+        placement = _placement_handoff(session, req)
+        if placement is not None:
+            payload["placement"] = placement
     # A PROVEN IMAGE, when this machine's technology has one. Omitted entirely
     # when it does not, so an orchestrator that has never heard of golden images
     # sees the payload it has always seen.
