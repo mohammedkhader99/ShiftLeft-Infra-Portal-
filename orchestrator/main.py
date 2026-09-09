@@ -862,7 +862,22 @@ def _instance_sizing(payload: dict) -> dict:
     for c in payload.get("policy_input", {}).get("components", []):
         vcpu, mem = _component_shape(c)
         if mem and (best is None or mem > best[1]):
-            best = (max(1, round(vcpu / 2)), mem)  # 1 OCPU ~ 2 vCPUs on x86 flex
+            # CEIL, NOT ROUND, and the difference only shows on an odd count.
+            # Python's round() is banker's rounding: round(5/2) is 2, which is
+            # 4 vCPUs — a requester who asks for 5 gets 4, silently, and the
+            # machine is smaller than the one they were priced for.
+            #
+            # This was safe for as long as it went unnoticed because every sizing
+            # anchor in the catalogue is even (2, 4, 8, 16), so round and ceil
+            # agree on all of them, and no request in this database has ever
+            # carried an odd explicit vCPU. It was a trap waiting for the first
+            # person to type 5 into the component detail form, which the form
+            # allows.
+            #
+            # The placement path already rounds up, for the sharper reason that
+            # P.6 adds headroom and rounds THAT up: rounding back down here would
+            # spend the headroom undoing itself. Both paths now agree.
+            best = (max(1, math.ceil(vcpu / 2)), mem)  # 1 OCPU ~ 2 vCPUs on x86 flex
     if best is None:
         best = (1, 8)  # nothing recognisable — a safe default, not a floor
     return {"ocpus": best[0], "memory_gb": best[1]}
