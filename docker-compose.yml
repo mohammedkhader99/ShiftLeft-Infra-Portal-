@@ -434,6 +434,13 @@ services:
       OCI_CATALOGUE_MODE: ${OCI_CATALOGUE_MODE:-mock}
       OCI_SHAPE_ALLOWLIST: ${OCI_SHAPE_ALLOWLIST:-}
       OCI_IMAGE_FILTER: ${OCI_IMAGE_FILTER:-}
+      # Listing the tenancy's Kubernetes clusters, for the placement step's
+      # entitlement answer. Its OWN switch rather than riding on
+      # OCI_CATALOGUE_MODE: listing clusters is a different permission from
+      # listing shapes, and an operator turning one on should not silently turn
+      # the other on with it. Defaults to mock, so an unconfigured portal reads
+      # no tenancy.
+      OCI_CLUSTER_DISCOVERY_MODE: ${OCI_CLUSTER_DISCOVERY_MODE:-mock}
       # Where a machine PUTs evidence about itself at the end of first boot. A
       # write-only pre-authenticated request; unset means machines are not asked
       # to report and nothing about a boot changes.
