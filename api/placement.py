@@ -195,6 +195,44 @@ def _managed_option(components: Sequence[ComponentFacts]) -> Option | None:
     )
 
 
+# NOTHING IN THIS SYSTEM DEPLOYS A WORKLOAD INTO A CLUSTER, and the reason is a
+# network route rather than missing code.
+#
+# The OKE blueprint builds a cluster whose Kubernetes API endpoint is private
+# (`is_public_ip_enabled = false`) in a VCN where every subnet is private — its
+# own bastion cannot take a public IP, and the module's output says to fetch the
+# kubeconfig from the bastion by hand. The orchestrator runs in a container on an
+# office machine with no ssh, no kubectl and no route into that VCN. Terraform's
+# kubernetes provider has to reach the API server at plan time, so no module in
+# this repository can deploy into one from here.
+#
+# For a cluster the SAME request builds there is a second, independent blocker:
+# Terraform configures a provider before it creates resources, so a kubernetes
+# provider cannot be pointed at a cluster the same apply is in the middle of
+# creating. That needs two stages with separate state, whatever the network does.
+#
+# SO THE CLUSTER OPTIONS ARE REFUSED, NOT HIDDEN. They were offered, sized,
+# priced and shown to approvers, and P.13's unit mechanism would have built a
+# MACHINE from the workload's own VM blueprint and no cluster at all — a
+# requester asking for Kubernetes receiving one VM, reported as success. That is
+# the failure this phase exists to end, so the option now says what is true.
+#
+# A requester who wants a cluster still gets one: placement is optional (P.11),
+# and an OKE request without a placement provisions the cluster exactly as every
+# one has to date. What is withdrawn is the claim that the portal will also put
+# the workloads on it.
+CLUSTER_DEPLOYMENT_UNAVAILABLE = (
+    "The portal can provision a cluster, but it cannot deploy workloads into "
+    "one: the Kubernetes API endpoint is private and the orchestrator has no "
+    "route to it. Ask for the cluster on its own and deploy {names} into it "
+    "yourself, or choose a layout that builds machines.")
+
+
+def _no_deployment_path(workloads: Sequence[ComponentFacts]) -> str:
+    names = ", ".join(c.code for c in workloads) or "your workloads"
+    return CLUSTER_DEPLOYMENT_UNAVAILABLE.format(names=names)
+
+
 def _cloud_only(workloads: Sequence[ComponentFacts]) -> list[ComponentFacts]:
     """Components the cloud runs and nobody can install on a machine.
 
@@ -302,72 +340,40 @@ def _cluster_warnings(workloads: Sequence[ComponentFacts]) -> tuple[str, ...]:
 
 def _existing_cluster_option(components: Sequence[ComponentFacts],
                              clusters: Sequence | None) -> Option | None:
-    """Land the workloads on a cluster that already exists.
+    """Land the workloads on a cluster that already exists — which nothing can do.
 
-    `clusters` has already been through api.clusters: out-of-scope ones are
-    absent entirely (entitlement is a visibility boundary), and ones that do not
-    fit are present and marked ineligible with the number that stopped them.
+    REFUSED BEFORE ENTITLEMENT IS CONSULTED, and the order is the point. Whether
+    this requester may use a particular cluster does not matter while nothing can
+    deploy to any cluster at all; answering the narrower question first would put
+    two refusals on the screen and bury the one that decides it.
 
-    An empty list does NOT mean "hide this option". A requester entitled to no
-    cluster needs to be told that, not left wondering why an option the
-    documentation mentions is missing from their screen.
+    Still returned rather than hidden, and still carrying whatever `api.clusters`
+    found, so a requester sees both what they would be entitled to and why it
+    cannot be used. An option that vanishes is indistinguishable from a portal
+    that is broken.
+
+    WHAT THIS DOES NOT MEAN. The entitlement, capacity and quota logic in
+    `api.clusters` is not wrong and is not removed — it is DORMANT. P.5a built it
+    a caller; this takes the caller away again for a reason that has nothing to do
+    with entitlement, and `test_the_entitlement_machinery_is_intact_and_dormant`
+    exists so it is not mistaken for dead code and deleted.
     """
     workloads = _workloads(components)
     if not workloads:
         return None
 
-    hosts = (Host(id="existing-cluster", host_mode=HOST_CONTAINER,
-                  components=tuple(c.code for c in workloads)),)
-    if clusters is None:
-        # Discovery is unavailable, which is NOT the same as "you have none" and
-        # must not be reported as it. Telling a requester they are entitled to
-        # nothing, when the truth is that nobody looked, is a lie the portal
-        # would be believed about.
-        return Option(
-            key=EXISTING_CLUSTER_OPTION,
-            title=OPTION_TITLES[EXISTING_CLUSTER_OPTION],
-            summary="Existing clusters cannot be listed at the moment.",
-            hosts=hosts, eligible=False,
-            reasons=("The portal cannot list existing clusters yet, so it "
-                     "cannot tell you which ones you could deploy onto. This is "
-                     "a gap in the portal, not a statement about your access. "
-                     "Provisioning a new cluster is offered below.",),
-            warnings=_cluster_warnings(workloads),
-        )
-
-    usable = [c for c in clusters if getattr(c, "eligible", False)]
-
-    if not clusters:
-        return Option(
-            key=EXISTING_CLUSTER_OPTION,
-            title=OPTION_TITLES[EXISTING_CLUSTER_OPTION],
-            summary="No cluster is available to you.",
-            hosts=hosts, eligible=False,
-            reasons=("You are not entitled to any existing cluster in this "
-                     "project, cost centre and subsidiary. Provisioning a new "
-                     "one is offered below.",),
-            warnings=_cluster_warnings(workloads),
-        )
-
-    if not usable:
-        return Option(
-            key=EXISTING_CLUSTER_OPTION,
-            title=OPTION_TITLES[EXISTING_CLUSTER_OPTION],
-            summary=f"{len(clusters)} cluster(s), none of which can take this.",
-            hosts=hosts, eligible=False,
-            reasons=tuple(
-                f"{c.cluster.name}: {' '.join(c.reasons)}" for c in clusters),
-            clusters=tuple(clusters),
-            warnings=_cluster_warnings(workloads),
-        )
-
     return Option(
         key=EXISTING_CLUSTER_OPTION,
         title=OPTION_TITLES[EXISTING_CLUSTER_OPTION],
-        summary=(f"{len(usable)} of {len(clusters)} cluster(s) can take this "
-                 f"workload. Nothing new is provisioned."),
-        hosts=hosts,
-        clusters=tuple(clusters),
+        summary="The portal cannot deploy into a cluster.",
+        hosts=(Host(id="existing-cluster", host_mode=HOST_CONTAINER,
+                    components=tuple(c.code for c in workloads)),),
+        eligible=False,
+        reasons=(_no_deployment_path(workloads),),
+        # Whatever discovery found, if it found anything. None means nobody
+        # looked, which is still not the same as "you have none" — but neither
+        # answer changes this option's availability now.
+        clusters=tuple(clusters or ()),
         warnings=_cluster_warnings(workloads),
     )
 
@@ -384,15 +390,28 @@ def _new_cluster_option(components: Sequence[ComponentFacts]) -> Option | None:
 
     workloads = _workloads(components)
     name = ", ".join(c.code for c in providers)
+
+    # A cluster with nothing to deploy onto it is a cluster this portal CAN
+    # build, so that case stays available and says so. It is the workloads that
+    # have no path, not the cluster.
+    if not workloads:
+        return Option(
+            key=NEW_CLUSTER_OPTION,
+            title=OPTION_TITLES[NEW_CLUSTER_OPTION],
+            summary=(f"A new {name} cluster on its own. Nothing is deployed "
+                     f"into it — that is yours to do."),
+            hosts=(Host(id="new-cluster", host_mode=HOST_MANAGED,
+                        components=tuple(c.code for c in providers)),),
+        )
+
     return Option(
         key=NEW_CLUSTER_OPTION,
         title=OPTION_TITLES[NEW_CLUSTER_OPTION],
-        summary=(f"A new {name} cluster, with its node pool sized from the "
-                 f"{len(workloads)} workload(s) placed on it."
-                 if workloads else
-                 f"A new {name} cluster with no workloads placed on it yet."),
+        summary="The portal cannot deploy into a cluster it builds.",
         hosts=(Host(id="new-cluster", host_mode=HOST_CONTAINER,
                     components=tuple(c.code for c in workloads)),),
+        eligible=False,
+        reasons=(_no_deployment_path(workloads),),
         warnings=_cluster_warnings(workloads),
     )
 

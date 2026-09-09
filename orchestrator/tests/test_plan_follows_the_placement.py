@@ -367,3 +367,83 @@ def test_the_name_survives_a_round_trip_through_the_directory_name(tmp_path, mon
         from_disk = provisioner.workspace_path("REQ-P", unit["workspace"]).name
         assert omain._workspace_resource_name("egate", from_disk, "REQ-P",
                                               "oci-instance") == planned
+
+
+# --- a container host is not a machine ----------------------------------------
+#
+# FOUND BY ASKING WHAT SCENARIO B WOULD ACTUALLY BUILD, and it was worse than the
+# false promise it was traced for. A workload placed on a cluster resolves to its
+# OWN blueprint's resource kind — `oci-service-vm` for Node.js — so the machine
+# filter accepted a container host and `_placement_spec` sized it. "Provision a
+# Kubernetes cluster and run Node.js on it" would have built one virtual machine
+# with Node.js on it and NO CLUSTER, because the cluster provider is excluded from
+# the workloads and so had no host of its own. Reported as success.
+#
+# P.13's unit mechanism introduced that. Before it, the kind list would at least
+# have built the cluster alongside a spurious VM.
+
+ON_A_CLUSTER = placed(
+    [{"id": "new-cluster", "host_mode": "container",
+      "components": ["nodejs20"], "resource_kind": "oci-service-vm",
+      "resolved": True, "vcpu": 3, "memory_gb": 5, "storage_gb": 60}],
+    option="new-cluster")
+
+
+def test_a_container_host_produces_no_machine():
+    assert omain._placement_units(ON_A_CLUSTER) is None
+
+
+def test_a_container_host_stops_the_handoff():
+    """Refused rather than skipped. Skipping would build the rest of the request
+    and leave the workload silently absent, which is the same shape of failure in
+    a quieter form."""
+    import pytest
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as raised:
+        omain._refuse_unsized_hosts(ON_A_CLUSTER)
+
+    assert raised.value.status_code == 400
+    assert "deploys into a cluster" in raised.value.detail
+    assert "new-cluster" in raised.value.detail
+
+
+def test_the_refusal_says_a_machine_would_have_been_built_instead():
+    """The reason names the actual consequence, because "unsupported" would not
+    tell the reader that the alternative was silently wrong rather than absent."""
+    import pytest
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as raised:
+        omain._refuse_unsized_hosts(ON_A_CLUSTER)
+    assert "machines instead of the cluster" in raised.value.detail
+
+
+def test_a_cluster_beside_machines_still_refuses_the_whole_handoff():
+    """Half a build is not a build. A mixed layout must not quietly provision its
+    machine half and drop the cluster half."""
+    import pytest
+    from fastapi import HTTPException
+
+    mixed = placed([
+        {"id": "new-cluster", "host_mode": "container", "components": ["nodejs20"],
+         "resource_kind": "oci-service-vm", "resolved": True,
+         "vcpu": 3, "memory_gb": 5, "storage_gb": 60},
+        host("host-1", ["postgres16"], 5, 20, 240),
+    ], option="new-cluster")
+
+    with pytest.raises(HTTPException):
+        omain._refuse_unsized_hosts(mixed)
+    assert omain._placement_units(mixed) is not None, (
+        "the machine half is still recognised; the REFUSAL is what stops it")
+
+
+def test_a_managed_host_is_still_not_confused_with_a_container_one():
+    """Both produce no machine, for different reasons: the cloud runs a managed
+    service, and nothing can reach a cluster. Only one of them is an error."""
+    managed_only = placed([
+        host("managed-postgres16", ["postgres16"], None, None, None,
+             kind="oci-postgres", mode="managed")], option="managed")
+
+    omain._refuse_unsized_hosts(managed_only)  # must not raise
+    assert omain._placement_units(managed_only) is None

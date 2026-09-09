@@ -281,13 +281,25 @@ def test_the_cluster_provider_is_read_from_the_blueprint(db):
     assert facts["nodejs20"].provides_cluster is False
 
 
-def test_discovery_being_unbuilt_is_said_plainly_not_reported_as_no_access(client, db):
+def test_the_refusal_reaching_the_browser_is_the_deployment_one(client, db):
+    """It used to be the discovery gap, which was the truthful answer while
+    deploying into a cluster was assumed possible. It is not: the Kubernetes API
+    endpoint is private and the orchestrator has no route to it, so which clusters
+    a requester may use does not decide anything yet.
+
+    The end-to-end assertion, because the reason has to survive the API, the
+    filter and the JSON — not merely be correct in the resolver.
+    """
     _make_kubernetes_request(db)
     existing = next(o for o in options(client, "REQ-2026-9002")
                     if o["key"] == "existing-cluster")
 
     assert existing["eligible"] is False
-    assert "gap in the portal, not a statement about your access" in existing["reasons"][0]
+    assert len(existing["reasons"]) == 1
+    assert "cannot deploy workloads into" in existing["reasons"][0]
+    assert "not a statement about your access" not in existing["reasons"][0]
+    # And it says what does work instead.
+    assert "Ask for the cluster on its own" in existing["reasons"][0]
 
 
 def test_choosing_an_existing_cluster_without_naming_one_is_refused(client, db):
@@ -300,24 +312,46 @@ def test_choosing_an_existing_cluster_without_naming_one_is_refused(client, db):
 
 
 def test_naming_a_cluster_on_an_option_that_does_not_use_one_is_refused(client, db):
+    """Asserted against `managed`, because the cluster options are now refused
+    outright and a resolve never reaches the cluster-id check on them — the 409
+    would pass this test for the wrong reason."""
     _make_kubernetes_request(db)
     r = client.post("/api/placement/resolve",
                     json={"reference": "REQ-2026-9002",
-                          "option_key": "new-cluster",
+                          "option_key": "managed",
                           "cluster_id": "ocid1.cluster.oc1..anything"})
     assert r.status_code == 400
     assert "does not deploy onto one" in r.json()["detail"]
 
 
-def test_provisioning_a_new_cluster_still_works_while_discovery_is_unbuilt(client, db):
-    """The portal must remain usable for Kubernetes requests. A missing adapter
-    removes one option, not the feature."""
+def test_a_cluster_option_cannot_be_resolved_at_all(client, db):
+    """Nothing deploys into a cluster, so neither option can be chosen however
+    the request body is written — the same property P.9 defends for a
+    policy-refused layout."""
     _make_kubernetes_request(db)
-    r = client.post("/api/placement/resolve",
-                    json={"reference": "REQ-2026-9002", "option_key": "new-cluster"})
+    for key in ("existing-cluster", "new-cluster"):
+        r = client.post("/api/placement/resolve",
+                        json={"reference": "REQ-2026-9002", "option_key": key})
+        assert r.status_code == 409, f"{key}: {r.text}"
+        assert "cannot deploy workloads into" in r.json()["detail"], key
 
-    assert r.status_code == 200, r.text
-    assert r.json()["option_key"] == "new-cluster"
+
+def test_a_kubernetes_request_is_still_usable_without_placement(client, db):
+    """THE PORTAL MUST REMAIN USABLE FOR KUBERNETES REQUESTS, and it is: placement
+    is optional (P.11), so an OKE request that never opens the placement step
+    provisions the cluster exactly as every one has to date. What is withdrawn is
+    the claim that the portal would also deploy the workloads onto it.
+
+    Asserted by submitting without resolving anything.
+    """
+    _make_kubernetes_request(db)
+    r = client.post("/api/requests/REQ-2026-9002/submit")
+    # Whatever the submission validation says, it must not be blocked by
+    # placement — nothing was placed.
+    assert r.status_code in (200, 422), r.text
+    if r.status_code == 422:
+        assert "placement" not in r.text.lower()
+
 
 
 def test_without_a_blueprint_oke_is_not_recognised_as_a_cluster(db):

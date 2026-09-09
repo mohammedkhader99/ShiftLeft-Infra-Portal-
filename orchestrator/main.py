@@ -541,8 +541,20 @@ def _placement_units(payload: dict) -> list[dict] | None:
     if not isinstance(hosts, list) or not hosts:
         return None
 
+    # A CONTAINER HOST IS NOT A MACHINE, and treating it as one built the wrong
+    # thing entirely. A workload placed on a cluster resolves to its own
+    # blueprint's resource kind — `oci-service-vm` for Node.js — so this filter
+    # turned "provision a Kubernetes cluster and run Node.js on it" into one
+    # virtual machine with Node.js on it and NO CLUSTER, and reported success.
+    #
+    # Refused in `_refuse_unsized_hosts` rather than skipped, because skipping
+    # would build the rest of the request and leave the workload silently absent.
+    # Nothing in this system deploys into a cluster (private API endpoint, no
+    # route from here), so a container host arriving at this layer means an
+    # option was offered that should not have been.
     machines = [h for h in hosts
-                if h.get("host_mode") != "managed" and h.get("resolved")]
+                if h.get("host_mode") not in ("managed", "container")
+                and h.get("resolved")]
 
     # How many machines share each kind. Only a kind with more than one needs its
     # workspaces distinguished, so a request with one machine per kind keeps the
@@ -586,14 +598,30 @@ def _refuse_unsized_hosts(payload: dict) -> None:
     placement = payload.get("placement")
     if not isinstance(placement, dict):
         return
-    unsized, unmapped = [], []
+    unsized, unmapped, on_a_cluster = [], [], []
     for host in placement.get("hosts") or []:
         if host.get("host_mode") == "managed":
             continue
-        if not host.get("resolved"):
+        if host.get("host_mode") == "container":
+            on_a_cluster.append(str(host.get("id") or "?"))
+        elif not host.get("resolved"):
             unsized.append(str(host.get("id") or "?"))
         elif not host.get("resource_kind"):
             unmapped.append(str(host.get("id") or "?"))
+
+    # THE ONE THAT WOULD HAVE BUILT THE WRONG THING. Checked first because its
+    # failure is not a missing number or a missing module — it is a layout that
+    # resolves to a machine when a cluster was asked for.
+    if on_a_cluster:
+        raise HTTPException(
+            status_code=400,
+            detail=(f"Placement version {placement.get('version')} puts "
+                    f"{len(on_a_cluster)} workload group(s) on a cluster "
+                    f"({', '.join(on_a_cluster)}). Nothing in this system "
+                    f"deploys into a cluster — the Kubernetes API endpoint is "
+                    f"private and the orchestrator has no route to it — so "
+                    f"building this would provision machines instead of the "
+                    f"cluster that was asked for."))
     if unsized:
         raise HTTPException(
             status_code=400,
