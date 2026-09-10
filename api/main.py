@@ -8370,6 +8370,10 @@ class PlacementResolveIn(BaseModel):
     reference: str
     option_key: str
     cluster_id: str | None = None
+    # A layout the requester arranged in the diagram. Present only for the
+    # `custom` key: every other key selects among layouts the server enumerated,
+    # and a body that carried both would be describing one and naming another.
+    hosts: list[ProposedHostIn] | None = None
 
 
 def _component_facts(session: Session, req: Request) -> list:
@@ -8677,6 +8681,94 @@ def _refuse_proposed_topology(facts: list, hosts: list[ProposedHostIn]) -> list[
     return reasons
 
 
+# The key a layout the requester arranged goes by. Not an enumerated option, so
+# it can never collide with one: `resolve` branches on this exact string and
+# every other value still means "pick one the server produced".
+CUSTOM_PLACEMENT_KEY = "custom"
+
+
+def _judge_custom_layout(session: Session, req: Request,
+                         hosts: list[ProposedHostIn], evaluate) -> dict:
+    """Validate, size and price a layout the requester arranged.
+
+    One function, called by BOTH /evaluate and /resolve, so what the diagram was
+    told while dragging and what gets recorded on submit cannot come from two
+    different pieces of reasoning. The alternative — a slightly different check
+    on the write path — is how a layout passes on screen and is refused on save,
+    or worse, the other way round.
+    """
+    facts = _component_facts(session, req)
+    environment = (req.environment_tier or "").strip()
+    target = (req.deployment_target or "").strip()
+
+    shaped = [{"id": h.id, "host_mode": h.host_mode, "components": list(h.components)}
+              for h in hosts]
+    reasons = _refuse_proposed_topology(facts, hosts)
+
+    # POLICY IS ASKED ONLY OF A COHERENT LAYOUT. Sending one that places a
+    # component nobody requested would get an answer about a topology that
+    # cannot exist, and the reply would read as a policy verdict rather than as
+    # the malformed proposal it is.
+    if not reasons:
+        answer = evaluate({"environment": environment,
+                           "deployment_target": target, "hosts": shaped})
+        if not answer.get("allow"):
+            reasons.extend(answer.get("violations", ()))
+
+    sizes = {c.technology_code: c.size for c in req.components if c.technology_code}
+    sized = size_hosts(shaped, load_requirements(session, sizes))
+    estimate = estimate_placement_cost(sized, target, session, sizes,
+                                       req.advanced_options)
+
+    return {
+        "key": CUSTOM_PLACEMENT_KEY,
+        "title": "Your layout",
+        "summary": ("A layout you arranged." if not reasons
+                    else "This arrangement cannot be built."),
+        "hosts": shaped,
+        "host_count": sum(1 for h in shaped if h["host_mode"] != "managed"),
+        "eligible": not reasons,
+        "reasons": reasons,
+        "clusters": [],
+        "warnings": [],
+        "sizing": sized,
+        "estimate": estimate,
+        "resolved": estimate["resolved"],
+        "totals": estimate["totals"],
+    }
+
+
+def _record_placement(session: Session, req: Request, chosen: dict,
+                      requester: str) -> dict:
+    """Write the decision and its audit entry. Shared by both resolve paths, so
+    a custom layout is recorded, versioned and audited exactly as an offered one
+    is — there is no second, quieter way into the record."""
+    topology = {
+        "environment": req.environment_tier,
+        "deployment_target": req.deployment_target,
+        "hosts": chosen["hosts"],
+    }
+    placement = placement_store.record_placement(
+        session, req.id, chosen["key"], topology,
+        sizing=chosen["sizing"], estimate=chosen["estimate"], actor=requester)
+
+    append_audit(session, "placement.resolved", reference=req.reference,
+                 actor=requester,
+                 detail={"option": chosen["key"], "version": placement.version,
+                         "machines": chosen["sizing"].get("machine_count"),
+                         "monthly": chosen["estimate"]["totals"]["monthly"]})
+    session.commit()
+
+    return {
+        "reference": req.reference,
+        "version": placement.version,
+        "option_key": placement.option_key,
+        "topology": placement.topology,
+        "sizing": placement.sizing,
+        "estimate": placement.estimate,
+    }
+
+
 @app.post("/api/placement/evaluate")
 def placement_evaluate(
     body: PlacementEvaluateIn,
@@ -8696,28 +8788,7 @@ def placement_evaluate(
     /api/placement/resolve, which re-derives it again at the moment it matters.
     """
     req = _load_request(body.reference, session)
-    facts = _component_facts(session, req)
-    environment = (req.environment_tier or "").strip()
-    target = (req.deployment_target or "").strip()
-
-    hosts = [{"id": h.id, "host_mode": h.host_mode, "components": list(h.components)}
-             for h in body.hosts]
-    reasons = _refuse_proposed_topology(facts, body.hosts)
-
-    # POLICY IS ASKED ONLY OF A COHERENT LAYOUT. Sending one that places a
-    # component nobody requested would get an answer about a topology that
-    # cannot exist, and the reply would read as a policy verdict rather than as
-    # the malformed proposal it is.
-    if not reasons:
-        answer = evaluate({"environment": environment,
-                           "deployment_target": target, "hosts": hosts})
-        if not answer.get("allow"):
-            reasons.extend(answer.get("violations", ()))
-
-    sizes = {c.technology_code: c.size for c in req.components if c.technology_code}
-    sized = size_hosts(hosts, load_requirements(session, sizes))
-    estimate = estimate_placement_cost(sized, target, session, sizes,
-                                       req.advanced_options)
+    judged = _judge_custom_layout(session, req, body.hosts, evaluate)
 
     # WHAT IT COSTS AGAINST WHAT THE PLATFORM WOULD HAVE CHOSEN. A requester
     # rearranging a topology is trading something for something; without the
@@ -8725,19 +8796,11 @@ def placement_evaluate(
     enumerated = _placement_options(session, req, evaluate)
     priceable = [o["totals"]["monthly"] for o in enumerated if o.get("resolved")]
     cheapest = min(priceable) if priceable else None
-    monthly = estimate["totals"]["monthly"] if estimate["resolved"] else None
+    monthly = judged["totals"]["monthly"] if judged["resolved"] else None
 
     return {
         "reference": req.reference,
-        "key": "custom",
-        "title": "Your layout",
-        "eligible": not reasons,
-        "reasons": reasons,
-        "hosts": hosts,
-        "sizing": sized,
-        "estimate": estimate,
-        "resolved": estimate["resolved"],
-        "totals": estimate["totals"],
+        **judged,
         "cheapest_offered": cheapest,
         "monthly_delta": (None if monthly is None or cheapest is None
                           else round(monthly - cheapest, 2)),
@@ -8779,6 +8842,30 @@ def placement_resolve(
     chosen however the request body is written.
     """
     req = _load_request(body.reference, session)
+
+    # A LAYOUT THE REQUESTER ARRANGED IS RE-JUDGED HERE, NOT TRUSTED FROM THE
+    # SCREEN THAT DREW IT.
+    #
+    # The diagram evaluated it while they were dragging, and that answer is a
+    # convenience: minutes may have passed, the policy may have changed, and the
+    # browser is not the authority on any of it. So the same validation and the
+    # same policy evaluation run again at the moment something is written —
+    # exactly as an enumerated option is re-decided rather than trusted from the
+    # list it was picked from.
+    if body.option_key == CUSTOM_PLACEMENT_KEY:
+        if not body.hosts:
+            raise HTTPException(
+                status_code=400,
+                detail=("A custom layout has to say what goes where. Arrange the "
+                        "topology and choose it, or pick one of the offered "
+                        "layouts."))
+        chosen = _judge_custom_layout(session, req, body.hosts, evaluate)
+        if not chosen["eligible"]:
+            raise HTTPException(
+                status_code=409,
+                detail=" ".join(chosen["reasons"]) or "That layout is not permitted.")
+        return _record_placement(session, req, chosen, requester)
+
     options = _placement_options(session, req, evaluate)
 
     chosen = next((o for o in options if o["key"] == body.option_key), None)

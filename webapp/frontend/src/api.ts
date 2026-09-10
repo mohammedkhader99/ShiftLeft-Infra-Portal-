@@ -1506,11 +1506,66 @@ export async function resolvePlacement(
   reference: string,
   option_key: string,
   cluster_id?: string | null,
+  // Only for the `custom` key — a layout the requester arranged. The server
+  // re-judges it here rather than trusting what the diagram was told while they
+  // were dragging: minutes may have passed and the policy may have changed.
+  hosts?: ProposedHost[] | null,
 ): Promise<{ status: number; body: any }> {
   const r = await fetch('/api/placement/resolve', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ reference, option_key, cluster_id: cluster_id || null }),
+    body: JSON.stringify({
+      reference, option_key,
+      cluster_id: cluster_id || null,
+      ...(hosts ? { hosts } : {}),
+    }),
+  })
+  return { status: r.status, body: await r.json().catch(() => null) }
+}
+
+// --- A layout the requester arranged (D.1 / D.3) -----------------------------
+//
+// The browser proposes; the server judges. Every shape, figure and refusal below
+// is re-derived server-side with the same OPA evaluation, sizing and pricing the
+// offered options get — a layout dragged into place cannot be cheaper on screen
+// than it will be in the bill, and cannot place a component the request never
+// asked for.
+
+export type ProposedHost = {
+  id: string
+  host_mode: string
+  components: string[]
+}
+
+export type EvaluatedLayout = {
+  reference: string
+  key: string
+  title: string
+  eligible: boolean
+  // Why it cannot be built. Each sentence names the component or host it is
+  // about, which is what lets the diagram put it beside the block that was moved
+  // rather than in a banner at the top.
+  reasons: string[]
+  hosts: ProposedHost[]
+  sizing: PlacementOption['sizing']
+  estimate: PlacementOption['estimate']
+  resolved: boolean
+  totals: { one_time: number; monthly: number; annual: number }
+  // What the platform's own cheapest layout costs, so a rearrangement is a trade
+  // with a number on it rather than just a trade.
+  cheapest_offered: number | null
+  monthly_delta: number | null
+}
+
+/** Judge and price a layout without recording it. Safe to call on every change. */
+export async function evaluateLayout(
+  reference: string,
+  hosts: ProposedHost[],
+): Promise<{ status: number; body: any }> {
+  const r = await fetch('/api/placement/evaluate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reference, hosts }),
   })
   return { status: r.status, body: await r.json().catch(() => null) }
 }

@@ -331,3 +331,99 @@ def test_an_unknown_request_is_404(client):
     r = client.post("/api/placement/evaluate",
                     json={"reference": "REQ-NOPE", "hosts": []})
     assert r.status_code == 404
+
+
+# --- choosing the layout you arranged (D.3) -----------------------------------
+#
+# /evaluate answers while the requester drags. This is the write, and the point
+# of separating them is that the second one re-judges: minutes may have passed,
+# the policy may have changed, and the browser was never the authority. An
+# enumerated option is re-decided rather than trusted from the list it was picked
+# from, and a custom layout gets exactly the same treatment.
+
+def resolve_custom(client, reference, hosts):
+    return client.post("/api/placement/resolve",
+                       json={"reference": reference, "option_key": "custom",
+                             "hosts": hosts})
+
+
+def test_a_layout_you_arranged_can_be_chosen(client, reference, db):
+    from api.placement_store import current_placement
+    from db.models import Request
+    from sqlalchemy import select
+
+    r = resolve_custom(client, reference, APART)
+    assert r.status_code == 200, r.text
+    assert r.json()["option_key"] == "custom"
+
+    req = db.scalar(select(Request).where(Request.reference == reference))
+    recorded = current_placement(db, req.id)
+    assert recorded is not None
+    assert recorded.sizing["machine_count"] == 2
+
+
+def test_it_is_recorded_and_audited_like_any_other_decision(client, reference, db):
+    """No second, quieter way into the record. A custom layout is versioned and
+    audited exactly as an offered one is."""
+    from db.models import AuditLog
+    from sqlalchemy import select
+
+    resolve_custom(client, reference, TOGETHER)
+    events = [a.event for a in db.scalars(select(AuditLog)).all()]
+    assert "placement.resolved" in events
+
+
+def test_the_same_judgement_decides_the_drawing_and_the_record(client, reference):
+    """Both paths call one function. A slightly different check on the write path
+    is how a layout passes on screen and is refused on save — or worse, the
+    other way round."""
+    shown = evaluate(client, reference, APART)
+    written = resolve_custom(client, reference, APART)
+
+    assert shown["eligible"] is True
+    assert written.status_code == 200
+    assert written.json()["estimate"]["totals"]["monthly"] == pytest.approx(
+        shown["totals"]["monthly"])
+
+
+def test_an_arrangement_the_policy_refuses_cannot_be_recorded(db, reference, client):
+    """The re-judgement doing its job. The diagram may have shown this as fine
+    before the rule changed."""
+    main.app.dependency_overrides[main.get_placement_evaluator] = lambda: refuse_databases_sharing
+
+    r = resolve_custom(client, reference, TOGETHER)
+    assert r.status_code == 409
+    assert "may not share a host in prod" in r.json()["detail"]
+
+
+def test_a_smuggled_component_cannot_be_recorded_either(client, reference, db):
+    """THE SECURITY PROPERTY, ON THE WRITE PATH. /evaluate refusing it is not
+    enough — nothing forces a browser to call /evaluate first."""
+    from api.placement_store import placement_history
+    from db.models import Request
+    from sqlalchemy import select
+
+    r = resolve_custom(client, reference, [
+        {"id": "host-1", "host_mode": "vm",
+         "components": ["postgres16", "nodejs20", "oracle-db"]}])
+
+    assert r.status_code == 409
+    assert "did not ask for" in r.json()["detail"]
+    req = db.scalar(select(Request).where(Request.reference == reference))
+    assert placement_history(db, req.id) == [], "a refused layout was still written"
+
+
+def test_choosing_custom_without_a_layout_is_refused(client, reference):
+    r = client.post("/api/placement/resolve",
+                    json={"reference": reference, "option_key": "custom"})
+    assert r.status_code == 400
+    assert "has to say what goes where" in r.json()["detail"]
+
+
+def test_an_offered_option_still_resolves_by_key_alone(client, reference):
+    """The existing contract is untouched: every key other than `custom` still
+    selects among layouts the server produced, and needs no hosts."""
+    r = client.post("/api/placement/resolve",
+                    json={"reference": reference, "option_key": "consolidated"})
+    assert r.status_code == 200, r.text
+    assert r.json()["option_key"] == "consolidated"

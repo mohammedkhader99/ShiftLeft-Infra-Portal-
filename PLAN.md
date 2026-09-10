@@ -468,17 +468,42 @@ as the malformed proposal it is.
 cheapest layout costs, which means a full enumeration per call. Fine for a button;
 worth revisiting when every drag triggers one.
 
-**D.2 — The topology as a diagram, read-only** — not started
-A view of the layout on request: hosts as lanes, components as blocks, managed
-services distinct from machines, each host carrying its shape and its cost.
-Useful before any dragging — it answers "what will actually be built".
+**D.2 — The topology as a diagram, read-only** — ✅ built 2026-09-10
+`TopologyDiagram.tsx`, on request per option ("View as diagram"). Hosts drawn as
+boxes with their mode, id and shape; components as blocks on them.
+*Drawn in DOM elements rather than SVG, deliberately:* D.3 makes this surface
+draggable, and drop targets, keyboard focus and live re-evaluation are all things
+the DOM gives for free. An SVG version would look identical and be thrown away.
+*The honesty rules carry over from the option cards*, because a picture makes it
+easier to imply something untrue, not harder: an unsized host is drawn AS
+unsized rather than as a box of zeros; a managed service is drawn dashed and says
+no machine is provisioned; a refused layout is still drawn, with the reason,
+because seeing the arrangement you cannot have is how somebody works out what to
+change.
 
-**D.3 — Drag and drop** — not started
-Move a component between hosts, add or remove a machine, re-evaluate through D.1
-on every change, and show the new cost and any refusal live. A refused
-arrangement must show why WITHOUT snapping the component back and discarding what
-the requester was trying to express. Needs a keyboard path to stay accessible;
-Carbon has patterns for it.
+**D.3 — Arrange it yourself** — ✅ built 2026-09-10
+`TopologyEditor.tsx`. Drag a component onto another machine, add a machine,
+remove an empty one; every change re-evaluates through D.1 and re-prices, with
+the delta against the platform's own cheapest layout.
+*A refused arrangement is KEPT ON SCREEN.* This is the decision the component is
+built around and the obvious implementation gets it wrong: snapping the block
+back is what most drag-and-drop does, and here it would erase an intention the
+requester was expressing — "these two belong together" — and say nothing they can
+act on. The arrangement stays as they left it, each reason sits BESIDE the block
+it names rather than in a banner they have to map back onto what they just did,
+and Undo is there for when the answer is to put it back.
+*Dragging is not the only way in.* Every block carries a "Move to" menu, so the
+feature works by keyboard and with a screen reader. A capability reachable only
+by dragging a mouse is one some colleagues do not have.
+*Choosing it is a write, and it is re-judged.* `/api/placement/resolve` accepts
+the `custom` key with the arranged hosts and runs the SAME validation and policy
+evaluation `/evaluate` ran — one function, called by both, because a slightly
+different check on the write path is how a layout passes on screen and is refused
+on save, or worse the other way round. A smuggled component is refused there too:
+nothing forces a browser to call `/evaluate` first.
+*The arrangement is dropped when the stack changes*, because it describes
+components the request may no longer contain — the server would rightly refuse
+it, after the requester had already pressed submit.
 
 ---
 

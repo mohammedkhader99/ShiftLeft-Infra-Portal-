@@ -39,10 +39,12 @@ import {
 import type {
   PlacementCluster,
   PlacementOption,
+  ProposedHost,
   RecordedPlacement,
   SizedHost,
 } from '../api'
 import TopologyDiagram from './TopologyDiagram'
+import TopologyEditor from './TopologyEditor'
 
 // The option keys, spelled the way the resolver spells them, for naming a layout
 // that was RECORDED rather than one that was just computed. A recorded placement
@@ -189,6 +191,7 @@ function OptionCard({
   busy,
   environment,
   deploymentTarget,
+  onArrange,
 }: {
   option: PlacementOption
   currency: string
@@ -199,6 +202,7 @@ function OptionCard({
   busy: boolean
   environment?: string | null
   deploymentTarget?: string | null
+  onArrange?: (option: PlacementOption) => void
 }) {
   // ON REQUEST, not by default. The list of options is for comparing; the
   // diagram is for understanding ONE of them, and drawing all of them at once
@@ -321,14 +325,25 @@ function OptionCard({
             >
               What runs where
             </div>
-            <Button
-              kind="ghost"
-              size="sm"
-              aria-expanded={showTopology}
-              onClick={() => setShowTopology((v) => !v)}
-            >
-              {showTopology ? 'Hide diagram' : 'View as diagram'}
-            </Button>
+            <span style={{ display: 'flex', gap: '0.25rem' }}>
+              <Button
+                kind="ghost"
+                size="sm"
+                aria-expanded={showTopology}
+                onClick={() => setShowTopology((v) => !v)}
+              >
+                {showTopology ? 'Hide diagram' : 'View as diagram'}
+              </Button>
+              {/* Only where there is something to rearrange. One machine with
+                  one thing on it has no arrangement to change, and offering the
+                  control anyway would be a button that does nothing. */}
+              {onArrange && option.sizing.hosts.length + option.sizing.hosts
+                .reduce((n, h) => n + h.components.length, 0) > 2 && (
+                <Button kind="ghost" size="sm" onClick={() => onArrange(option)}>
+                  Arrange it yourself
+                </Button>
+              )}
+            </span>
           </div>
 
           {showTopology ? (
@@ -389,6 +404,8 @@ export default function PlacementStep({
   notReadyReason,
   environment = null,
   deploymentTarget = null,
+  reference = null,
+  onArranged,
 }: {
   options: PlacementOption[] | null
   chosen: string | null
@@ -408,8 +425,18 @@ export default function PlacementStep({
   // the first thing anyone asks of a topology.
   environment?: string | null
   deploymentTarget?: string | null
+  // The saved draft the layout is judged against. Rearranging needs one, because
+  // the server evaluates against the stored request rather than a body the
+  // browser composed.
+  reference?: string | null
+  // A layout the requester arranged, chosen. Held here and sent at submit, the
+  // same way an offered option's key is.
+  onArranged?: (hosts: ProposedHost[] | null) => void
 }) {
   const [open, setOpen] = useState(true)
+  // Which layout is being adapted, if any. One at a time: two editors would be
+  // two arrangements, and only one of them can be chosen.
+  const [arranging, setArranging] = useState<PlacementOption | null>(null)
   const currency = options?.[0]?.estimate?.currency || 'AED'
 
   return (
@@ -496,6 +523,20 @@ export default function PlacementStep({
             </p>
           )}
 
+          {arranging && reference && (
+            <TopologyEditor
+              reference={reference}
+              option={arranging}
+              environment={environment}
+              deploymentTarget={deploymentTarget}
+              onClose={() => setArranging(null)}
+              onUse={(hosts) => {
+                onArranged?.(hosts)
+                setArranging(null)
+              }}
+            />
+          )}
+
           {options && options.length > 0 && (
             <>
               <div style={{ marginTop: '0.75rem' }}>
@@ -514,6 +555,7 @@ export default function PlacementStep({
                     busy={busy}
                     environment={environment}
                     deploymentTarget={deploymentTarget}
+                    onArrange={reference ? setArranging : undefined}
                   />
                 ))}
               </div>

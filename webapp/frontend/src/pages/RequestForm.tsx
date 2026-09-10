@@ -55,6 +55,7 @@ import {
   type ApprovalInfo,
   type AiRecommendation,
   type PlacementOption,
+  type ProposedHost,
   type RecordedPlacement,
   type SavedRequest,
 } from '../api'
@@ -353,6 +354,10 @@ export default function RequestForm({
   const [placementCluster, setPlacementCluster] = useState<string | null>(null)
   const [placementBusy, setPlacementBusy] = useState(false)
   const [placementError, setPlacementError] = useState<string | null>(null)
+  // A layout the requester arranged in the diagram, if they did. Held as hosts
+  // rather than a key, because the server has no key for something it did not
+  // enumerate — it re-judges the arrangement itself at submit.
+  const [arrangedHosts, setArrangedHosts] = useState<ProposedHost[] | null>(null)
 
   useEffect(() => {
     getLookups().then(setLookups).catch(() => setLookups(null))
@@ -610,6 +615,10 @@ export default function RequestForm({
     setPlacementChosen(null)
     setPlacementCluster(null)
     setPlacementError(null)
+    // The arrangement described the OLD components. Keeping it would send the
+    // server a layout placing things the request no longer asks for, which it
+    // would rightly refuse — after the requester had already pressed submit.
+    setArrangedHosts(null)
     // The layout a resumed draft came back with goes too, and for exactly the
     // same reason: it was recorded against the stack that was saved, so once
     // that stack changes it describes an arrangement of components this request
@@ -1019,7 +1028,8 @@ export default function RequestForm({
     // Skipped entirely when nothing was chosen: placement is offered, not
     // required, and every request raised before this step existed has none.
     if (placementChosen) {
-      const placed = await resolvePlacement(ref, placementChosen, placementCluster)
+      const placed = await resolvePlacement(ref, placementChosen, placementCluster,
+                                            arrangedHosts)
       if (placed.status !== 200) {
         setBusy(false)
         setResult({
@@ -1922,6 +1932,11 @@ export default function RequestForm({
                   onFetch={onWorkOutPlacement}
                   onChoose={setPlacementChosen}
                   onClusterChange={setPlacementCluster}
+                  reference={draftRef}
+                  onArranged={(hosts) => {
+                    setArrangedHosts(hosts)
+                    setPlacementChosen(hosts ? 'custom' : null)
+                  }}
                   // The same gate the cost panel uses: a component with no size
                   // chosen has no requirement row to size a host from, so asking
                   // now would return every layout unsizeable and read as a
