@@ -21,6 +21,24 @@ for _var in ("AUTH_MODE", "AZURE_PRICING_MODE", "OCI_PRICING_MODE", "JIRA_MODE",
     os.environ[_var] = "mock"
 os.environ["USE_MOCK"] = "true"
 
+# THE SUITE OWNS ITS OWN DATABASE. Without this, db/session.py falls back to
+# postgresql://...@localhost:5432 and the app's startup `create_all` tries to
+# reach it on every TestClient — in a suite that overrides `get_session` with
+# SQLite everywhere, so the connection is never actually used for anything.
+#
+# It "worked" only because something else on this machine happened to be
+# listening on 5432 and rejected the credentials immediately. The day that
+# container stopped, the refusal went from instant to two seconds per address
+# family, and every TestClient startup began costing four seconds — turning a
+# forty-second file into one that looked hung. Nothing about the tests changed;
+# an unrelated service went away.
+#
+# In-memory SQLite makes the startup path succeed instantly and depend on
+# nothing outside the process, which is what a test suite's own database should
+# do. Individual tests still build their own engines; this is only for the
+# module-level `engine` that `_ensure_tables` touches.
+os.environ.setdefault("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+
 # Pin config that tests assert on, so a developer's .env (real Jira workflow
 # names, extra fields, etc.) can't leak in via load_dotenv and break them.
 os.environ["JIRA_APPROVED_STATUSES"] = "Approved,Done"
