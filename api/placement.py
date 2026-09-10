@@ -32,7 +32,7 @@ through the enumeration.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 # Host modes, mirroring db.models. Repeated as literals rather than imported so
 # this module stays free of the database layer and can be reasoned about alone.
@@ -164,6 +164,40 @@ def topology_document(option: Option, environment: str,
 def _workloads(components: Sequence[ComponentFacts]) -> list[ComponentFacts]:
     """The components that need placing, as opposed to the things they land on."""
     return [c for c in components if not c.hosts_others]
+
+
+def resolved_facts(components: Sequence[ComponentFacts]) -> list[ComponentFacts]:
+    """The components as every BUILDABLE layout treats them.
+
+    A cluster is only hosting something if the portal can put something on it,
+    and it cannot: nothing here deploys a workload into a cluster. So for the
+    purpose of every layout that can actually be built, a cluster provider is
+    what the catalogue already calls it — a managed service the requester asked
+    for — and it is placed like one.
+
+    That is what guarantees there is always somewhere for everything to go. The
+    cluster options are still enumerated beside these, refused and with the
+    reason, so the requester learns why Kubernetes is not on offer; they are
+    just no longer the ONLY answer, which left "OKE and a Node.js app" with two
+    refusals and nothing to choose.
+
+    PUBLIC, AND SHARED WITH THE VALIDATOR ON PURPOSE. `enumerate_options` decides
+    what a layout contains and `placeable_components` decides what a PROPOSED
+    layout is allowed to contain. Two copies of this rule would drift, and the
+    failure would be silent in the worst direction: a proposal judged against a
+    different set of components than the one the resolver placed.
+    """
+    return [replace(c, provides_cluster=False) if c.provides_cluster else c
+            for c in components]
+
+
+def placeable_components(components: Sequence[ComponentFacts]) -> list[ComponentFacts]:
+    """Exactly the components any valid layout must place, once each.
+
+    A machine is excluded because it IS the host: "VM with OS" is what the others
+    land on, not a workload competing for room on someone else's.
+    """
+    return _workloads(resolved_facts(components))
 
 
 def _managed_option(components: Sequence[ComponentFacts]) -> Option | None:
@@ -433,13 +467,51 @@ def enumerate_options(components: Sequence[ComponentFacts],
     that `resolve_options` can return it with the reason attached rather than
     leaving the requester to guess why a choice they expected is missing.
     """
-    if any(c.provides_cluster for c in components):
-        built = [
-            _existing_cluster_option(components, clusters),
-            _new_cluster_option(components),
-            _managed_option(components),
-        ]
-        return [option for option in built if option is not None]
+    # A CLUSTER ONLY CHANGES THE QUESTION IF SOMETHING CAN ACTUALLY RUN ON IT.
+    #
+    # The cluster options place every workload on a `container` host, and until
+    # now they did that without asking whether the component runs as one. Apache
+    # and SQL Server are `vm` in this catalogue — they have no container image the
+    # portal builds — so "OKE and Apache" offered two layouts that put Apache on
+    # Kubernetes, both of which then reported "cannot be sized: no requirement is
+    # recorded for apache as container". That is the resolver proposing a layout
+    # the catalogue already says is impossible, and then blaming the sizing table
+    # for not having a number for it.
+    #
+    # Worse, it left the requester with nothing: the cluster branch returns ONLY
+    # cluster options, so Apache — which does need a machine — had nowhere to go.
+    #
+    # So when no workload can be containerised, the cluster provider is not
+    # hosting anything. It is an ordinary managed service the requester asked
+    # for, which is exactly what the catalogue calls it, and the normal machine
+    # layouts apply to everything else. "OKE and SQL Server" then resolves the way
+    # it should: the cloud runs the cluster, the database gets a machine, and the
+    # option is priced rather than refused.
+    # THE CLUSTER OPTIONS ARE SHOWN, AND THEY ARE NOT THE ONLY ANSWER.
+    #
+    # They are refused — nothing deploys into a cluster from here — so making
+    # them the whole reply left a Kubernetes request with two refusals and
+    # nothing to choose. That is the screen this was reported for. They are
+    # enumerated FIRST because the requester asked for a cluster and the reason
+    # they cannot have workloads on it belongs at the top; then the layouts that
+    # actually build follow underneath.
+    #
+    # Only offered when something could have gone on the cluster. Apache and SQL
+    # Server are `vm` in this catalogue, so "OKE and SQL Server" is not a
+    # thwarted Kubernetes deployment — it is a cluster and a database, and there
+    # is nothing to explain.
+    cluster_options: list[Option] = []
+    if any(c.provides_cluster for c in components) and any(
+            c.supports(HOST_CONTAINER) for c in _workloads(components)):
+        cluster_options = [option for option in
+                           (_existing_cluster_option(components, clusters),
+                            _new_cluster_option(components))
+                           if option is not None]
+
+    # A cluster provider is placed as the managed service it is — see
+    # `resolved_facts`, which the proposal validator shares so the two cannot
+    # disagree about what a layout is supposed to contain.
+    components = resolved_facts(components)
 
     builders = {
         MANAGED_OPTION: _managed_option,
@@ -447,7 +519,7 @@ def enumerate_options(components: Sequence[ComponentFacts],
         SEPARATED_OPTION: _separated_option,
     }
     built = [builders[key](components) for key in OPTION_ORDER]
-    return [option for option in built if option is not None]
+    return cluster_options + [option for option in built if option is not None]
 
 
 def resolve_options(

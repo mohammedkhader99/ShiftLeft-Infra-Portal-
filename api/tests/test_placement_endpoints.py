@@ -264,11 +264,22 @@ def _make_kubernetes_request(db, with_blueprint=True):
     return req
 
 
-def test_selecting_oke_offers_the_cluster_options(client, db):
+def test_selecting_oke_offers_the_cluster_options_and_a_layout_that_builds(client, db):
+    """End to end, through the API. The cluster options lead — the requester
+    asked for a cluster and the reason they cannot put workloads on it belongs
+    at the top — and at least one layout underneath can actually be chosen.
+
+    An earlier version asserted the reply was EXACTLY the cluster options plus
+    managed. That was the shape that produced a screen of "not available" with
+    nothing to pick.
+    """
     _make_kubernetes_request(db)
     got = options(client, "REQ-2026-9002")
+    keys = [o["key"] for o in got]
 
-    assert [o["key"] for o in got] == ["existing-cluster", "new-cluster", "managed"]
+    assert keys[:2] == ["existing-cluster", "new-cluster"]
+    assert "managed" in keys
+    assert any(o["eligible"] for o in got), "nothing on this screen can be chosen"
 
 
 def test_the_cluster_provider_is_read_from_the_blueprint(db):

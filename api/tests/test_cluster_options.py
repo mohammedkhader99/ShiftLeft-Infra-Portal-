@@ -90,12 +90,15 @@ def options_for(components, clusters=()):
 
 # --- the selection decides which scenario applies ----------------------------
 
-def test_asking_for_a_cluster_offers_the_cluster_options():
-    """Still OFFERED — refused, but on the screen with the reason. An option that
-    vanishes is indistinguishable from a portal that is broken."""
+def test_asking_for_a_cluster_offers_the_cluster_options_first():
+    """Still OFFERED — refused, but on the screen with the reason, and FIRST:
+    the requester asked for a cluster, so why they cannot put workloads on it
+    belongs at the top. The layouts that actually build follow underneath."""
     keys = list(options_for(KUBERNETES_SELECTION,
                             assess_clusters([MINE], SCOPE, SMALL)))
-    assert keys == [EXISTING_CLUSTER_OPTION, NEW_CLUSTER_OPTION, MANAGED_OPTION]
+
+    assert keys[:2] == [EXISTING_CLUSTER_OPTION, NEW_CLUSTER_OPTION]
+    assert MANAGED_OPTION in keys
 
 
 def test_neither_cluster_option_can_be_chosen():
@@ -119,21 +122,62 @@ def test_the_refusal_says_what_to_do_instead():
 def test_a_cluster_on_its_own_is_still_available():
     """THE PART THAT STILL WORKS, and the reason the options are not simply
     removed. oci-oke is certified and builds a cluster; it is the workloads that
-    have no deployment path, not the cluster."""
-    just_the_cluster = options_for([OKE], ())[NEW_CLUSTER_OPTION]
+    have no deployment path, not the cluster.
 
-    assert just_the_cluster.eligible is True
-    assert "Nothing is deployed into it" in just_the_cluster.summary
-    assert just_the_cluster.hosts[0].components == ("oci-oke",)
-    assert just_the_cluster.hosts[0].host_mode == HOST_MANAGED, (
+    It arrives as the MANAGED option rather than as "provision a new cluster",
+    because with nothing to deploy onto it a cluster is exactly what the
+    catalogue calls it — a managed service — and placing it that way is what
+    guarantees the requester always has a layout that builds."""
+    managed = options_for([OKE], ())[MANAGED_OPTION]
+
+    assert managed.eligible is True
+    assert managed.hosts[0].components == ("oci-oke",)
+    assert managed.hosts[0].host_mode == HOST_MANAGED, (
         "a managed control plane, which is what the catalogue already calls it")
 
 
-def test_a_cluster_request_is_not_asked_whether_to_consolidate():
-    """'One machine or three' is not a question about a Kubernetes request."""
+def test_a_kubernetes_request_always_has_something_it_can_choose():
+    """THE COMPLAINT THIS CAME FROM. Every cluster option is refused, so making
+    them the whole reply left a Kubernetes request with nothing to choose — a
+    screen of "not available" that taught the requester nothing and built
+    nothing."""
+    for selection in (KUBERNETES_SELECTION, [OKE], [OKE, NODEJS]):
+        options = enumerate_options(selection, ())
+        assert any(o.eligible for o in options), (
+            f"nothing buildable for {[c.code for c in selection]}")
+
+
+def test_the_cluster_refusal_is_still_on_the_page_beside_it():
+    """Usable is not the same as silent. A requester who asked for Kubernetes
+    still has to learn why their workload is not going on it."""
+    options = options_for(KUBERNETES_SELECTION, ())
+
+    assert EXISTING_CLUSTER_OPTION in options
+    assert "cannot deploy workloads into" in options[EXISTING_CLUSTER_OPTION].reasons[0]
+    assert options[MANAGED_OPTION].eligible, "and the working layout is there too"
+
+
+def test_a_selection_that_could_never_use_a_cluster_is_not_told_about_one():
+    """SQL Server is `vm` in this catalogue, so "OKE and SQL Server" is not a
+    thwarted Kubernetes deployment — it is a cluster and a database. Explaining
+    a deployment nobody was attempting is noise."""
+    mssql = ComponentFacts(code="mssql", host_modes=frozenset({HOST_VM}))
+    keys = options_for([OKE, mssql], ())
+
+    assert EXISTING_CLUSTER_OPTION not in keys
+    assert NEW_CLUSTER_OPTION not in keys
+    assert keys[MANAGED_OPTION].eligible
+
+
+def test_a_cluster_request_is_asked_whether_to_consolidate_after_all():
+    """REVERSED DELIBERATELY. "One machine or three" was not a question about a
+    Kubernetes request while the workloads were going on Kubernetes. They are
+    not: nothing deploys into a cluster, so they are going on machines, and how
+    many machines is exactly the question."""
     keys = options_for(KUBERNETES_SELECTION, assess_clusters([MINE], SCOPE, SMALL))
-    assert CONSOLIDATED_OPTION not in keys
-    assert SEPARATED_OPTION not in keys
+
+    assert CONSOLIDATED_OPTION in keys
+    assert SEPARATED_OPTION in keys
 
 
 def test_a_selection_without_a_cluster_is_unchanged():
@@ -143,13 +187,21 @@ def test_a_selection_without_a_cluster_is_unchanged():
     assert keys == [MANAGED_OPTION, CONSOLIDATED_OPTION, SEPARATED_OPTION]
 
 
-def test_the_cluster_itself_is_not_placed_on_itself():
-    """OKE is the thing workloads land on, like a VM. Treating it as a workload
-    would place a cluster inside a cluster and size it twice."""
+def test_the_cluster_is_never_placed_inside_a_cluster():
+    """The invariant, restated for what it always meant. OKE appearing on a
+    MANAGED host is correct — that is the cloud running it, and it is how the
+    buildable layouts provision the cluster at all. Placing it on a container
+    host would be a cluster inside a cluster; placing it on a machine is the
+    refusal `_cloud_only` exists for."""
     for option in enumerate_options(KUBERNETES_SELECTION,
-                                    assess_clusters([MINE], SCOPE, SMALL)).__iter__():
-        placed = [c for h in option.hosts for c in h.components]
-        assert "oci-oke" not in placed
+                                    assess_clusters([MINE], SCOPE, SMALL)):
+        for host in option.hosts:
+            if "oci-oke" in host.components:
+                assert host.host_mode != HOST_CONTAINER, option.key
+                if host.host_mode == HOST_VM:
+                    assert not option.eligible, (
+                        f"{option.key} offers to install a managed cluster on a "
+                        f"machine")
 
 
 # --- the empty case, which is where hiding is most tempting ------------------

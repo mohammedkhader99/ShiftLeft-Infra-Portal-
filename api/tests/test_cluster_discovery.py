@@ -209,13 +209,17 @@ def test_finding_clusters_does_not_make_the_option_available(monkeypatch):
     """The whole point of building this while it is dormant. Discovery answers
     "which clusters could you use"; the option is refused for a different reason
     entirely, and finding clusters must not quietly override it."""
-    from api.placement import (EXISTING_CLUSTER_OPTION, HOST_MANAGED, HOST_VM,
-                               ComponentFacts, enumerate_options)
+    from api.placement import (EXISTING_CLUSTER_OPTION, HOST_CONTAINER,
+                               HOST_MANAGED, HOST_VM, ComponentFacts,
+                               enumerate_options)
     from api.clusters import Cluster, Need, RequesterScope, assess_clusters
 
     oke = ComponentFacts(code="oci-oke", host_modes=frozenset({HOST_MANAGED}),
                          provides_cluster=True)
-    app = ComponentFacts(code="nodejs20", host_modes=frozenset({HOST_VM}))
+    # Containerisable, or the cluster options are not enumerated at all and this
+    # would assert against an option that was never offered.
+    app = ComponentFacts(code="nodejs20",
+                         host_modes=frozenset({HOST_VM, HOST_CONTAINER}))
     found = assess_clusters(
         [Cluster(id="c-1", name="oke-egate-dev", region="me-dubai-1",
                  project_code="EGATE", allocatable_vcpu=64,

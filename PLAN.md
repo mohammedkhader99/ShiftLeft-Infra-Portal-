@@ -413,6 +413,75 @@ Select three components → resolve consolidated → summed sizing → correct c
 
 ---
 
+## 5b. Phase D — The topology a requester can see and change (added 2026-09-10)
+
+Raised from a screen. A request for OKE plus Apache produced two options, both
+refused, both reporting *"cannot be sized: no requirement is recorded for apache
+as container"* — and nothing the requester could choose. The question asked of it
+was "what is the purpose of this functionality?", which is the right question to
+ask of a screen that answers nothing.
+
+**The defect underneath.** The cluster options placed EVERY workload on a
+`container` host without asking whether the component runs as one. Apache and SQL
+Server are `vm` in this catalogue, so the resolver was proposing a layout the
+catalogue already says is impossible, and then reporting the missing sizing row
+as though the data were at fault. Worse, the cluster branch returned ONLY cluster
+options, so Apache — which does need a machine — had nowhere to go.
+
+**Fixed 2026-09-10.** A cluster is only hosting something if the portal can put
+something on it, and it cannot. So a cluster provider is placed as the managed
+service the catalogue already calls it, every selection has a layout that
+BUILDS, and the cluster options appear first, refused, with the reason — present
+because a requester who asked for Kubernetes must learn why their workload is not
+going on it, but no longer the whole reply.
+
+    OKE alone       managed: oci-oke run by the cloud                    priced
+    OKE + MS SQL    managed: oci-oke by the cloud, mssql on a machine    priced
+    OKE + Node.js   the two cluster refusals, then the same managed      priced
+
+*One earlier decision reversed deliberately.* P.5a asserted that "one machine or
+three" is not a question about a Kubernetes request. That held while the
+workloads were going on Kubernetes. They are not — so they are going on machines,
+and how many machines is exactly the question. The test now says the opposite,
+with the reasoning.
+
+**D.1 — Evaluate a layout the requester arranged** — ✅ built 2026-09-10
+`POST /api/placement/evaluate`. The browser proposes hosts-and-components; the
+server judges it with the same OPA evaluation, sizing and pricing the enumerated
+options get, and persists nothing.
+*Implements:* extends F-UX-16, F-GOV-12.
+*The property that makes it safe:* a layout may REARRANGE what was requested and
+may never CHANGE it. A body placing `oracle-db` into a request for PostgreSQL is
+refused, because everything downstream — sizing, cost, the approval ticket,
+Terraform — would faithfully build what the body said. P.9's rule that a request
+body cannot describe a placement into existence was written before there was any
+way to want this; both hold because the arrangement comes from the browser and
+every fact about whether it is buildable is re-derived server-side.
+*Also refused:* a component on a host mode it does not support, a component
+placed twice or not at all, an empty host, two hosts sharing an id. Every
+complaint comes back rather than the first, so a requester who moved two things
+is told about both.
+*A malformed layout is never sent to the policy* — asking OPA about a topology
+that cannot exist returns a verdict that reads as a policy decision rather than
+as the malformed proposal it is.
+*One thing to watch in D.3:* the response also carries what the platform's own
+cheapest layout costs, which means a full enumeration per call. Fine for a button;
+worth revisiting when every drag triggers one.
+
+**D.2 — The topology as a diagram, read-only** — not started
+A view of the layout on request: hosts as lanes, components as blocks, managed
+services distinct from machines, each host carrying its shape and its cost.
+Useful before any dragging — it answers "what will actually be built".
+
+**D.3 — Drag and drop** — not started
+Move a component between hosts, add or remove a machine, re-evaluate through D.1
+on every change, and show the new cost and any refusal live. A refused
+arrangement must show why WITHOUT snapping the component back and discarding what
+the requester was trying to express. Needs a keyboard path to stay accessible;
+Carbon has patterns for it.
+
+---
+
 ## 6. The one open decision that affects this plan now
 
 **HTMX vs React for the portal (ARCHITECTURE.md §14.1).** This plan assumes HTMX. If you choose React instead, only the *portal* increments change shape — 0.3, 1.2, 1.3, and 1.5 would build a React app calling the same API — while the API, database, policy, Jira, orchestrator, and every enterprise increment stay identical. So the decision is real but low-blast-radius; it doesn't block starting Phase 0, which is stack-neutral either way.

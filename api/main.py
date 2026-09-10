@@ -128,6 +128,7 @@ from db.models import (
     WebhookDelivery,
     WebhookSubscription,
 )
+from db.models import HOST_MODES
 from db.session import SessionLocal
 
 load_dotenv()
@@ -8352,6 +8353,19 @@ class PlacementOptionsIn(BaseModel):
     reference: str
 
 
+class ProposedHostIn(BaseModel):
+    """One host in a layout the requester arranged themselves."""
+
+    id: str
+    host_mode: str
+    components: list[str] = []
+
+
+class PlacementEvaluateIn(BaseModel):
+    reference: str
+    hosts: list[ProposedHostIn] = []
+
+
 class PlacementResolveIn(BaseModel):
     reference: str
     option_key: str
@@ -8570,6 +8584,164 @@ def _placement_options(session: Session, req: Request, evaluate) -> list[dict]:
             "totals": estimate["totals"],
         })
     return compare_options(priced)
+
+
+def _refuse_proposed_topology(facts: list, hosts: list[ProposedHostIn]) -> list[str]:
+    """Everything wrong with a layout the browser arranged, or [] if nothing is.
+
+    THE BROWSER MAY PROPOSE; IT MAY NOT DECIDE. Dragging a component from one
+    machine to another is a real thing to want, and P.9's rule — that a request
+    body cannot describe a placement into existence — was written before there
+    was any way to want it. This is how both hold: the arrangement comes from the
+    browser, and every fact about whether it is buildable is re-derived here.
+
+    Returns EVERY complaint rather than the first. A requester who moves two
+    components and is told about one of them fixes it, resubmits, and is told
+    about the other.
+
+    The checks, in the order they matter:
+
+    1. THE COMPONENT SET IS THE REQUEST'S. This is the security-relevant one. An
+       unchecked proposal could place `oracle-db` into a request for nginx, and
+       everything downstream — sizing, cost, the approval ticket, Terraform —
+       would faithfully build what the body asked for. A layout may rearrange
+       what was requested; it may never change it.
+
+    2. EACH COMPONENT SUPPORTS ITS HOST MODE. The catalogue says SQL Server has
+       no container form, so dropping it on a cluster describes something nobody
+       can build. Refused here rather than left for the sizing table to fail on,
+       which is what made the old screen read as a data problem.
+
+    3. THE SHAPE IS SANE. A host with no components is a machine nobody asked for
+       that would still be built and billed; a duplicate host id makes two
+       machines indistinguishable in the topology and the state.
+
+    Co-residency, environment rules and everything else policy owns are NOT
+    checked here — they belong to OPA, and the caller runs the same evaluation
+    the enumerated options get.
+    """
+    by_code = {f.code: f for f in facts}
+    expected = {c.code for c in placement_mod.placeable_components(facts)}
+
+    placed: list[str] = []
+    reasons: list[str] = []
+    seen_ids: set[str] = set()
+
+    for host in hosts:
+        host_id = (host.id or "").strip()
+        if not host_id:
+            reasons.append("Every host needs an id.")
+        elif host_id in seen_ids:
+            reasons.append(f"Two hosts share the id '{host_id}'. Each machine "
+                           f"needs its own, or they cannot be told apart once "
+                           f"they are built.")
+        seen_ids.add(host_id)
+
+        mode = (host.host_mode or "").strip()
+        if mode not in HOST_MODES:
+            reasons.append(f"'{mode}' is not a host mode. Use one of "
+                           f"{', '.join(sorted(HOST_MODES))}.")
+
+        if not host.components:
+            reasons.append(f"Host '{host_id}' carries nothing. It would be built "
+                           f"and billed for nothing.")
+
+        for code in host.components:
+            placed.append(code)
+            fact = by_code.get(code)
+            if fact is None:
+                continue  # reported below, against the whole set
+            if mode in HOST_MODES and not fact.supports(mode):
+                offered = ", ".join(sorted(fact.host_modes)) or "nothing"
+                reasons.append(
+                    f"{code} cannot run as {mode}. The catalogue offers it as "
+                    f"{offered}.")
+
+    extra = [c for c in dict.fromkeys(placed) if c not in expected]
+    missing = sorted(expected - set(placed))
+    duplicated = sorted({c for c in placed if placed.count(c) > 1})
+
+    if extra:
+        reasons.append(
+            f"This layout places {', '.join(extra)}, which this request did not "
+            f"ask for. A layout may rearrange what was requested; it cannot "
+            f"change it.")
+    if missing:
+        reasons.append(
+            f"This layout places nothing for {', '.join(missing)}. Every "
+            f"component in the request needs somewhere to run.")
+    if duplicated:
+        reasons.append(
+            f"{', '.join(duplicated)} appears on more than one host. A component "
+            f"is built once.")
+    return reasons
+
+
+@app.post("/api/placement/evaluate")
+def placement_evaluate(
+    body: PlacementEvaluateIn,
+    session: Session = Depends(get_session),
+    evaluate=Depends(get_placement_evaluator),
+    _auth: str = Depends(require_action("create_request")),
+) -> dict:
+    """Judge a layout the requester arranged, and price it. Persists nothing.
+
+    The counterpart to /api/placement/options: that one offers the layouts the
+    platform thought of, this one answers for the layout the requester thought
+    of. Both go through the same policy evaluation, the same sizing and the same
+    pricing, so a custom arrangement cannot be cheaper on screen than it will be
+    in the bill.
+
+    Read-only by construction — nothing here writes. A layout is recorded only by
+    /api/placement/resolve, which re-derives it again at the moment it matters.
+    """
+    req = _load_request(body.reference, session)
+    facts = _component_facts(session, req)
+    environment = (req.environment_tier or "").strip()
+    target = (req.deployment_target or "").strip()
+
+    hosts = [{"id": h.id, "host_mode": h.host_mode, "components": list(h.components)}
+             for h in body.hosts]
+    reasons = _refuse_proposed_topology(facts, body.hosts)
+
+    # POLICY IS ASKED ONLY OF A COHERENT LAYOUT. Sending one that places a
+    # component nobody requested would get an answer about a topology that
+    # cannot exist, and the reply would read as a policy verdict rather than as
+    # the malformed proposal it is.
+    if not reasons:
+        answer = evaluate({"environment": environment,
+                           "deployment_target": target, "hosts": hosts})
+        if not answer.get("allow"):
+            reasons.extend(answer.get("violations", ()))
+
+    sizes = {c.technology_code: c.size for c in req.components if c.technology_code}
+    sized = size_hosts(hosts, load_requirements(session, sizes))
+    estimate = estimate_placement_cost(sized, target, session, sizes,
+                                       req.advanced_options)
+
+    # WHAT IT COSTS AGAINST WHAT THE PLATFORM WOULD HAVE CHOSEN. A requester
+    # rearranging a topology is trading something for something; without the
+    # comparison they are only trading.
+    enumerated = _placement_options(session, req, evaluate)
+    priceable = [o["totals"]["monthly"] for o in enumerated if o.get("resolved")]
+    cheapest = min(priceable) if priceable else None
+    monthly = estimate["totals"]["monthly"] if estimate["resolved"] else None
+
+    return {
+        "reference": req.reference,
+        "key": "custom",
+        "title": "Your layout",
+        "eligible": not reasons,
+        "reasons": reasons,
+        "hosts": hosts,
+        "sizing": sized,
+        "estimate": estimate,
+        "resolved": estimate["resolved"],
+        "totals": estimate["totals"],
+        "cheapest_offered": cheapest,
+        "monthly_delta": (None if monthly is None or cheapest is None
+                          else round(monthly - cheapest, 2)),
+    }
 
 
 @app.post("/api/placement/options")
