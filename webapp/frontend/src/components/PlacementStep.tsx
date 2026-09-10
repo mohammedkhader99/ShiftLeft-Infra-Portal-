@@ -42,6 +42,7 @@ import type {
   RecordedPlacement,
   SizedHost,
 } from '../api'
+import TopologyDiagram from './TopologyDiagram'
 
 // The option keys, spelled the way the resolver spells them, for naming a layout
 // that was RECORDED rather than one that was just computed. A recorded placement
@@ -186,6 +187,8 @@ function OptionCard({
   onSelect,
   onClusterChange,
   busy,
+  environment,
+  deploymentTarget,
 }: {
   option: PlacementOption
   currency: string
@@ -194,7 +197,14 @@ function OptionCard({
   onSelect: () => void
   onClusterChange: (id: string) => void
   busy: boolean
+  environment?: string | null
+  deploymentTarget?: string | null
 }) {
+  // ON REQUEST, not by default. The list of options is for comparing; the
+  // diagram is for understanding ONE of them, and drawing all of them at once
+  // would turn a scannable list into a wall the requester has to read through to
+  // find the figures they were comparing.
+  const [showTopology, setShowTopology] = useState(false)
   const choosable = option.eligible && !busy
   // An option needing a cluster is not a complete choice until one is named. The
   // server refuses it anyway (400) — this only saves the requester the round
@@ -295,17 +305,43 @@ function OptionCard({
         <div style={{ marginTop: '0.6rem' }}>
           <div
             style={{
-              fontSize: '0.68rem',
-              textTransform: 'uppercase',
-              letterSpacing: '0.02em',
-              color: 'var(--cds-text-secondary)',
+              display: 'flex',
+              alignItems: 'baseline',
+              justifyContent: 'space-between',
+              gap: '0.75rem',
             }}
           >
-            What runs where
+            <div
+              style={{
+                fontSize: '0.68rem',
+                textTransform: 'uppercase',
+                letterSpacing: '0.02em',
+                color: 'var(--cds-text-secondary)',
+              }}
+            >
+              What runs where
+            </div>
+            <Button
+              kind="ghost"
+              size="sm"
+              aria-expanded={showTopology}
+              onClick={() => setShowTopology((v) => !v)}
+            >
+              {showTopology ? 'Hide diagram' : 'View as diagram'}
+            </Button>
           </div>
-          {option.sizing.hosts.map((h) => (
-            <HostLine key={h.host_id} host={h} />
-          ))}
+
+          {showTopology ? (
+            <TopologyDiagram
+              option={option}
+              environment={environment}
+              deploymentTarget={deploymentTarget}
+            />
+          ) : (
+            option.sizing.hosts.map((h) => (
+              <HostLine key={h.host_id} host={h} />
+            ))
+          )}
         </div>
       )}
 
@@ -351,6 +387,8 @@ export default function PlacementStep({
   error,
   ready,
   notReadyReason,
+  environment = null,
+  deploymentTarget = null,
 }: {
   options: PlacementOption[] | null
   chosen: string | null
@@ -366,6 +404,10 @@ export default function PlacementStep({
   error: string | null
   ready: boolean
   notReadyReason: string
+  // Shown on the diagram so a picture of "what gets built" says WHERE, which is
+  // the first thing anyone asks of a topology.
+  environment?: string | null
+  deploymentTarget?: string | null
 }) {
   const [open, setOpen] = useState(true)
   const currency = options?.[0]?.estimate?.currency || 'AED'
@@ -470,6 +512,8 @@ export default function PlacementStep({
                     onSelect={() => onChoose(o.key)}
                     onClusterChange={onClusterChange}
                     busy={busy}
+                    environment={environment}
+                    deploymentTarget={deploymentTarget}
                   />
                 ))}
               </div>

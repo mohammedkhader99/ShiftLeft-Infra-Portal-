@@ -37,6 +37,7 @@
 import { renderToString } from 'react-dom/server'
 import { createElement as h } from 'react'
 import PlacementStep from './src/components/PlacementStep'
+import TopologyDiagram from './src/components/TopologyDiagram'
 
 import prodOptions from './tests/fixtures/options-prod.json'
 import clusterOptions from './tests/fixtures/options-cluster.json'
@@ -167,6 +168,89 @@ for (const [label, options] of cases) {
     console.log(`FAIL  ${label}: an unpriced option did not say "Not priced"`)
     failures++
   }
+}
+
+// --- the topology diagram (D.2) ---------------------------------------------
+//
+// The diagram only appears once someone presses "View as diagram", so rendering
+// the step never reaches it — it has to be rendered directly. Worth the extra
+// few lines: a PICTURE makes it easier to imply something untrue, not harder,
+// and the properties below are the ones a drawing could quietly break.
+for (const [label, options] of cases) {
+  for (const option of options as any[]) {
+    let html = ''
+    try {
+      html = renderToString(
+        h(TopologyDiagram as any, {
+          option,
+          environment: 'Development',
+          deploymentTarget: 'oci',
+        }),
+      )
+    } catch (e: any) {
+      console.log(`FAIL  diagram ${label} / ${option.key}: ${e?.message || e}`)
+      failures++
+      continue
+    }
+
+    if (html.length < 40) {
+      console.log(`FAIL  diagram ${label} / ${option.key}: rendered almost nothing`)
+      failures++
+      continue
+    }
+
+    // A host with no determined size must never be drawn as a box of zeros.
+    if (/0\s*vCPU/.test(html)) {
+      console.log(`FAIL  diagram ${label} / ${option.key}: an unsized host drawn as zero`)
+      failures++
+    }
+    const unsized = (option.sizing?.hosts ?? []).filter(
+      (host: any) => host.host_mode !== 'managed' && !host.resolved,
+    )
+    if (unsized.length && !html.includes('Size not determined')) {
+      console.log(`FAIL  diagram ${label} / ${option.key}: an unsized host was not marked`)
+      failures++
+    }
+
+    // A managed service is drawn as something the cloud runs. Whether somebody
+    // patches it at 2am is the difference the diagram most needs to show.
+    const managed = (option.sizing?.hosts ?? []).filter(
+      (host: any) => host.host_mode === 'managed',
+    )
+    if (managed.length && !html.includes('No machine is provisioned')) {
+      console.log(`FAIL  diagram ${label} / ${option.key}: a managed host drawn as a machine`)
+      failures++
+    }
+
+    // Every component on a host is drawn. A block silently missing from the
+    // picture is an environment silently missing a component.
+    for (const host of option.sizing?.hosts ?? []) {
+      for (const code of host.components ?? []) {
+        if (!html.includes(code)) {
+          console.log(`FAIL  diagram ${label} / ${option.key}: ${code} is not on the diagram`)
+          failures++
+        }
+      }
+    }
+
+    // A refused layout is still drawn, with the reason under it — seeing the
+    // arrangement you cannot have is how somebody works out what to change.
+    if (!option.eligible) {
+      for (const reason of option.reasons ?? []) {
+        if (!html.includes(reason.slice(0, 40))) {
+          console.log(`FAIL  diagram ${label} / ${option.key}: refusal missing from the drawing`)
+          failures++
+        }
+      }
+    }
+
+    // And it never invents a figure the option does not carry.
+    if (!option.resolved && !html.includes('Not priced')) {
+      console.log(`FAIL  diagram ${label} / ${option.key}: unpriced layout showed a total`)
+      failures++
+    }
+  }
+  console.log(`ok    diagram ${label}: ${(options as any[]).length} layout(s) drawn`)
 }
 
 console.log(failures === 0 ? '\nALL RENDER CHECKS PASSED' : `\n${failures} FAILURE(S)`)

@@ -1926,6 +1926,8 @@ export default function RequestForm({
                   // chosen has no requirement row to size a host from, so asking
                   // now would return every layout unsizeable and read as a
                   // failure rather than as an unfinished form.
+                  environment={envTier}
+                  deploymentTarget={target}
                   ready={!!target && pricedComponents.length > 0 && !isPlatformService}
                   notReadyReason={
                     isPlatformService
