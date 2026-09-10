@@ -8788,23 +8788,20 @@ def placement_evaluate(
     /api/placement/resolve, which re-derives it again at the moment it matters.
     """
     req = _load_request(body.reference, session)
-    judged = _judge_custom_layout(session, req, body.hosts, evaluate)
 
-    # WHAT IT COSTS AGAINST WHAT THE PLATFORM WOULD HAVE CHOSEN. A requester
-    # rearranging a topology is trading something for something; without the
-    # comparison they are only trading.
-    enumerated = _placement_options(session, req, evaluate)
-    priceable = [o["totals"]["monthly"] for o in enumerated if o.get("resolved")]
-    cheapest = min(priceable) if priceable else None
-    monthly = judged["totals"]["monthly"] if judged["resolved"] else None
-
-    return {
-        "reference": req.reference,
-        **judged,
-        "cheapest_offered": cheapest,
-        "monthly_delta": (None if monthly is None or cheapest is None
-                          else round(monthly - cheapest, 2)),
-    }
+    # ONE JUDGEMENT PER CALL, MEASURED. This endpoint used to also enumerate
+    # every offered layout — judging and pricing each — so it could return what
+    # the platform's own cheapest one costs. Against the live database that
+    # comparison took ~750ms while the judgement itself took ~245ms: three
+    # quarters of every drag spent recomputing figures that cannot change while
+    # the components do not, to produce one line of text.
+    #
+    # The browser already has those figures from /api/placement/options, and
+    # comparing two numbers the server produced is presentation rather than
+    # authority — it recomputes no price and decides nothing. So the delta is
+    # worked out there and this stays what its name says: judge THIS layout.
+    return {"reference": req.reference,
+            **_judge_custom_layout(session, req, body.hosts, evaluate)}
 
 
 @app.post("/api/placement/options")

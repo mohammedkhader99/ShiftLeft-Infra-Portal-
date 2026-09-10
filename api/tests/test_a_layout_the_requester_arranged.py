@@ -142,14 +142,31 @@ def test_moving_them_apart_changes_the_price(client, reference):
     assert together["totals"]["monthly"] != apart["totals"]["monthly"]
 
 
-def test_it_says_what_the_platform_would_have_charged(client, reference):
-    """A requester rearranging a topology is trading something for something.
-    Without the comparison they are only trading."""
-    answer = evaluate(client, reference, APART)
+def test_one_call_judges_one_layout_and_nothing_else(client, reference):
+    """MEASURED, THEN FIXED. This endpoint also used to enumerate every offered
+    layout — judging and pricing each — so it could return what the platform's
+    cheapest one costs. Against the live database that comparison took ~750ms
+    while judging the arrangement took ~245ms: three quarters of every drag spent
+    recomputing figures that cannot change while the components do not, to
+    produce one line of text.
 
-    assert answer["cheapest_offered"] > 0
-    assert answer["monthly_delta"] == pytest.approx(
-        round(answer["totals"]["monthly"] - answer["cheapest_offered"], 2))
+    The browser already has those figures from /api/placement/options, so it
+    works the delta out there. Asserted by counting policy calls, because the
+    enumeration is invisible in the response and would creep back unnoticed.
+    """
+    asked = []
+
+    def record(topology):
+        asked.append(topology)
+        return {"allow": True, "violations": []}
+
+    main.app.dependency_overrides[main.get_placement_evaluator] = lambda: record
+    evaluate(client, reference, APART)
+
+    assert len(asked) == 1, (
+        f"one drag asked the policy {len(asked)} times; it judges ONE layout")
+    assert "cheapest_offered" not in evaluate(client, reference, APART), (
+        "the server is computing a comparison the browser already has")
 
 
 def test_nothing_is_persisted(client, reference, db):
@@ -312,11 +329,11 @@ def test_a_malformed_layout_is_not_sent_to_the_policy(client, reference):
     evaluate(client, reference, [{"id": "h", "host_mode": "vm",
                                   "components": ["oracle-db"]}])
 
-    # NOT "the policy was never asked". It is asked several times, and rightly:
-    # the response also carries what the platform's own layouts cost, and each of
-    # those is evaluated exactly as /options evaluates it. The property is
-    # narrower and is the one that matters — the IMPOSSIBLE layout is not among
-    # the things asked about.
+    # Now that the endpoint judges ONE layout, a malformed one means the policy
+    # is not asked at all — which is the strongest form of the property. It was
+    # asked several times when this call also enumerated the offered layouts;
+    # the assertion below is written against the component rather than the count
+    # so it keeps meaning the same thing either way.
     proposed = [c for topology in asked
                 for host in topology.get("hosts", [])
                 for c in host.get("components", [])]
@@ -324,7 +341,6 @@ def test_a_malformed_layout_is_not_sent_to_the_policy(client, reference):
         "the policy was asked about a layout placing a component nobody "
         "requested; its verdict would read as a policy decision rather than as "
         "the malformed proposal it is")
-    assert asked, "the enumerated options are still evaluated"
 
 
 def test_an_unknown_request_is_404(client):

@@ -529,6 +529,15 @@ export default function PlacementStep({
               option={arranging}
               environment={environment}
               deploymentTarget={deploymentTarget}
+              cheapestOffered={
+                options
+                  ?.filter((o) => o.resolved)
+                  .reduce<number | null>(
+                    (least, o) =>
+                      least == null || o.totals.monthly < least ? o.totals.monthly : least,
+                    null,
+                  ) ?? null
+              }
               onClose={() => setArranging(null)}
               onUse={(hosts) => {
                 onArranged?.(hosts)

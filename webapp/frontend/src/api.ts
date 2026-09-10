@@ -1551,10 +1551,6 @@ export type EvaluatedLayout = {
   estimate: PlacementOption['estimate']
   resolved: boolean
   totals: { one_time: number; monthly: number; annual: number }
-  // What the platform's own cheapest layout costs, so a rearrangement is a trade
-  // with a number on it rather than just a trade.
-  cheapest_offered: number | null
-  monthly_delta: number | null
 }
 
 /** Judge and price a layout without recording it. Safe to call on every change. */

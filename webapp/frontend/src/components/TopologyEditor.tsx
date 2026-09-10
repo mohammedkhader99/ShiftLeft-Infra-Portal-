@@ -81,6 +81,7 @@ export default function TopologyEditor({
   option,
   environment,
   deploymentTarget,
+  cheapestOffered = null,
   onUse,
   onClose,
 }: {
@@ -88,6 +89,11 @@ export default function TopologyEditor({
   option: PlacementOption
   environment?: string | null
   deploymentTarget?: string | null
+  // What the platform's own cheapest layout costs. Passed in from the option
+  // list rather than fetched per drag: the figure cannot change while the
+  // components do not, and asking the server for it each time cost three times
+  // as long as judging the arrangement itself.
+  cheapestOffered?: number | null
   /** Choose this arrangement. The server re-judges it before recording. */
   onUse: (hosts: ProposedHost[]) => void
   onClose: () => void
@@ -161,6 +167,13 @@ export default function TopologyEditor({
     setMoved(null)
   }
 
+  // Arithmetic over two figures the SERVER produced. Not a price the browser
+  // computed — it compares, it does not calculate.
+  const delta =
+    judged?.resolved && cheapestOffered != null
+      ? Math.round((judged.totals.monthly - cheapestOffered) * 100) / 100
+      : null
+
   const reasons = judged?.reasons ?? []
   const allCodes = hosts.flatMap((h) => h.components)
   const currency = judged?.estimate?.currency || option.estimate?.currency || 'AED'
@@ -223,10 +236,10 @@ export default function TopologyEditor({
           ) : judged?.resolved ? (
             <>
               <strong>{judged.totals.monthly.toFixed(2)}</strong> {currency}/mo
-              {judged.monthly_delta != null && judged.monthly_delta !== 0 && (
+              {delta != null && delta !== 0 && (
                 <span style={{ color: 'var(--cds-text-secondary)' }}>
-                  {' '}({judged.monthly_delta > 0 ? '+' : ''}
-                  {judged.monthly_delta.toFixed(2)} vs the cheapest offered)
+                  {' '}({delta > 0 ? '+' : ''}
+                  {delta.toFixed(2)} vs the cheapest offered)
                 </span>
               )}
             </>
