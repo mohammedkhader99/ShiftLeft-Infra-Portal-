@@ -557,14 +557,38 @@ becomes another's — `common/tests/test_one_client_per_process.py` holds that.
 that dispatches on URL across both OPA and the API, so converting only the OPA
 calls would have meant stubbing in two places to answer one question.
 
-**H.2 — the suite reaches the public internet. NOT DONE; needs a decision.**
+**H.2 — the suite reached the public internet.** *Done 2026-09-11.*
 `api/registry.py` resolves images against a real container registry over
-`urllib`, with an 8-second timeout and no mock mode pinned in `conftest.py`.
-`test_asking_creates_nothing` makes four such asks and takes 68.9s — the single
-slowest test in the suite, and H.1 does nothing for it. This is the same shape
-as the `DATABASE_URL` and `OPA_URL` defaults: a test suite quietly depending on
-something outside the process, where the timing is decided by the network rather
-than by the tests. Worth its own increment.
+`urllib` with an 8-second timeout, and nothing pinned it because there was
+nothing to pin: it was the one adapter in the portal with no mode.
+`test_asking_creates_nothing` made four such asks and took 68.9s — the single
+slowest test in the suite, and H.1 did nothing for it. It is now **2.45s**.
+
+*I called this a decision and it was not one.* The judgement I offered was
+"pin a mock and lose the proof that we can really resolve an image". The
+convention was already written down, in `test_vault_live.py`: "These tests mock
+the HTTP layer so the suite stays offline; the real proof is a separate,
+documented verification." Every other adapter follows it. The registry was the
+exception, not the precedent.
+*`REGISTRY_MODE` is `live` by default*, unlike every other mode, because
+production must ask a real registry — the entire point of the module is that
+nobody hard-codes what an image is. A mock default would quietly turn every
+deployment into "no published image".
+*The guard sits at the transport, and tests that replace the transport opt back
+in.* First attempt put it at the top of `_get`, which refused eight tests that
+substitute the socket precisely so they can exercise the real `_get` — the file
+says so in a comment. They now set `REGISTRY_MODE=live` themselves, which is
+honest: the code path under test is the live one, against a fake socket.
+
+**The blind spot, closed rather than patched.** `conftest.py` pinned six modes
+while the code read seventeen. The ten missing ones default to `mock`, so
+nothing failed — until the day somebody's `.env` set one to `live`, which has
+now happened twice (`CLOUD_STATE_MODE` on 2026-08-25, and this). All seventeen
+are pinned, and `api/tests/test_the_suite_stays_offline.py` scans the source for
+every `*_MODE` the code reads and asserts each is pinned in the environment the
+tests actually run in. It keeps no list of its own — a second list is what
+drifted — and it asserts the scan finds something, because a source-reading
+check that stops looking goes green on the day it breaks.
 
 **The lesson, again.** *A check that validates what it looks at cannot see what
 it doesn't.* `conftest.py` pins auth, Jira, pricing, provisioning, cloud state

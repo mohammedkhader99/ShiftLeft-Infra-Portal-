@@ -104,6 +104,40 @@ _MANIFEST_TYPES = ", ".join((
 _AGENT = "emaratech-infra-portal/1.0"
 
 
+class RegistryOffline(RuntimeError):
+    """Raised in place of a network call when REGISTRY_MODE is not `live`.
+
+    Callers already treat an unreachable registry and an absent image as the
+    same answer — "no" — so this needs no new handling anywhere. It exists so
+    that the reason is READABLE when somebody goes looking, instead of a
+    connection timeout that looks like a network fault.
+    """
+
+
+def mode() -> str:
+    """`live` asks a real registry; anything else asks nothing at all.
+
+    EVERY OTHER ADAPTER IN THIS PORTAL HAS ONE OF THESE and the test suite pins
+    them all to mock in conftest.py — auth, Jira, both pricing adapters,
+    provisioning, cloud state, roles. The registry never got one, so the suite
+    has always reached the public internet without anything saying so.
+
+    It showed up as a timing mystery rather than a failure.
+    `test_asking_creates_nothing` makes four lookups and took 68.9 seconds of an
+    18-minute run; the run before it took 1h44m and the one before that 9
+    minutes, with an identical pass count each time. Nothing about the tests
+    changed between them. What changed was the network.
+
+    The convention this restores is written down in test_vault_live.py: "These
+    tests mock the HTTP layer so the suite stays offline; the real proof is a
+    separate, documented verification."
+
+    LIVE BY DEFAULT, because production must ask a real registry — the whole
+    point of the module is that nobody hard-codes what an image is.
+    """
+    return (os.getenv("REGISTRY_MODE", "live") or "live").strip().lower()
+
+
 def timeout_seconds() -> float:
     try:
         return max(2.0, float(os.getenv("REGISTRY_TIMEOUT_SECONDS", "8")))
@@ -139,6 +173,8 @@ def candidates(code: str) -> list[str]:
 
 
 def _get(url: str, headers: dict, want_headers: bool = False):
+    if mode() != "live":
+        raise RegistryOffline(f"REGISTRY_MODE={mode()}: not asking {url}")
     request = urllib.request.Request(url, headers={"User-Agent": _AGENT, **headers})
     with urllib.request.urlopen(request, timeout=timeout_seconds()) as response:
         if want_headers:
@@ -511,6 +547,8 @@ def search(code: str, *, fetch=None, fetch_catalogue=None) -> list[str]:
 
     try:
         if fetch is None:
+            if mode() != "live":
+                raise RegistryOffline(f"REGISTRY_MODE={mode()}: not searching for {code}")
             import json
             import urllib.request
 

@@ -174,6 +174,9 @@ def test_oracles_auth_realm_is_actually_requested(monkeypatch):
         asked.append(url)
         raise RuntimeError("stop here — the request is the assertion")
 
+    # Its own transport is installed below, so the offline guard would be
+    # refusing a call that never leaves the process. See test_registry_client.
+    monkeypatch.setenv("REGISTRY_MODE", "live")
     monkeypatch.setattr(registry.urllib.request, "urlopen", urlopen)
 
     registry._token("container-registry.oracle.com", "database/free")

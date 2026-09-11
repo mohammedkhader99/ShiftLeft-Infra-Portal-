@@ -221,6 +221,16 @@ READ_ONLY_ENV: dict[str, str] = {
     # never a refused request — so raising it cannot rescue anything, and
     # lowering it only makes the answer arrive less often.
     "REGISTRY_TIMEOUT_SECONDS": "Container registry lookup timeout (seconds)",
+    # Whether that lookup happens at all. `live` asks a real registry; anything
+    # else asks nothing and every technology comes back as "no published image".
+    #
+    # READ-ONLY, AND THE ONLY MODE IN THE PORTAL THAT DEFAULTS TO `live`. The
+    # point of the registry module is that nobody hard-codes what an image is,
+    # so a deployment quietly running it in mock would answer "no container rung
+    # available" for everything, correctly-shaped and wrong. That is a
+    # deploy-time decision, not a switch to flick from a console while requests
+    # are in flight. The test suite pins it to mock so the suite stays offline.
+    "REGISTRY_MODE": "Container registry lookups (live | mock)",
     "AUTH_MODE": "Sign-in mode",
     "USE_MOCK": "Master mock switch",
     "PROVISION_MODE": "Provisioning mode",

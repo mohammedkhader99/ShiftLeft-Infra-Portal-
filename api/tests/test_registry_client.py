@@ -84,6 +84,13 @@ class FakeRegistry:
 @pytest.fixture()
 def fake(monkeypatch):
     def install(reg):
+        # THE TRANSPORT IS REPLACED, SO THE MODULE MAY PROCEED. conftest pins
+        # REGISTRY_MODE=mock so the suite never reaches a real registry; these
+        # tests have already put a fake socket in its place, and the code path
+        # under test IS the live one — that is the whole point of stubbing here
+        # rather than at `_get`. Saying so explicitly is what tells the guard
+        # apart from an accidental network call.
+        monkeypatch.setenv("REGISTRY_MODE", "live")
         monkeypatch.setattr(registry.urllib.request, "urlopen", reg.urlopen)
         return reg
     return install

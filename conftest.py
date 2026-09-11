@@ -16,8 +16,37 @@ import os
 # asserting on a mock adapter while the live one raised for want of credentials
 # — the exact leak the block above exists to prevent, missing one name because
 # nobody had ever set it.
-for _var in ("AUTH_MODE", "AZURE_PRICING_MODE", "OCI_PRICING_MODE", "JIRA_MODE",
-             "PROVISION_MODE", "CLOUD_STATE_MODE"):
+# REGISTRY_MODE joined this list on 2026-09-11, having never been on it. Every
+# other adapter was pinned here and the registry was not, so the suite reached a
+# public container registry over the internet with an 8-second timeout per ask —
+# `test_asking_creates_nothing` alone took 68.9s of an 18-minute run, and the
+# same suite has taken 9 minutes, 18 minutes and 1h44m with an identical pass
+# count, decided by the network rather than by anything under test.
+#
+# THE SAME BLIND SPOT AS THE TWO ABOVE IT. This block reads as though it covers
+# everything; it covers what somebody thought of. CLOUD_STATE_MODE was missing
+# until the day it was first set to live, DATABASE_URL until the day the
+# database container stopped, and this until somebody timed the suite.
+# EVERY MODE THE CODE READS, not the ones somebody remembered. This list held
+# six names while the code read seventeen, and the gap was invisible: each
+# missing one defaults to "mock" anyway, so nothing fails until the day a
+# developer's .env sets that one to live.
+#
+# That day has happened twice. CLOUD_STATE_MODE joined on 2026-08-25, the first
+# time it appeared in a real .env — four tests failed at once, asserting on a
+# mock adapter while the live one raised for want of credentials.
+# REGISTRY_MODE joined on 2026-09-11, and that one had no safe default to hide
+# behind: it is `live` by design, because production must ask a real registry.
+# So the suite had always reached a public container registry over the internet,
+# 8 seconds per ask, and said nothing about it.
+#
+# test_the_suite_stays_offline.py now checks this list against what the code
+# actually reads, so the next one cannot be missed quietly.
+for _var in ("AUTH_MODE", "AWS_PRICING_MODE", "AZURE_PRICING_MODE",
+             "BACKUP_MODE", "CLOUD_STATE_MODE", "DNS_MODE", "GCP_PRICING_MODE",
+             "JIRA_MODE", "OCI_CATALOGUE_MODE", "OCI_CLUSTER_DISCOVERY_MODE",
+             "OCI_PRICING_MODE", "PROVISION_MODE", "REDUCE_MODE",
+             "REFRESH_MODE", "REGISTRY_MODE", "RESTORE_MODE", "VAULT_MODE"):
     os.environ[_var] = "mock"
 os.environ["USE_MOCK"] = "true"
 
