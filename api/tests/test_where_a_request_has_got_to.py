@@ -154,10 +154,20 @@ def test_the_time_shown_is_the_first_one_not_the_retry(session, client):
 
     assert len(rows) == 2, "two attempts were recorded"
     assert got["provision"]["state"] == "failed"
+    # THE PROPERTY IS THE EQUALITY. The time shown is the first entry's.
     assert moment(got["provision"]["at"]) == moment(at["apply.failed"])
     assert moment(got["provision"]["at"]) == moment(rows[0].created_at.isoformat())
-    assert moment(got["provision"]["at"]) != moment(rows[1].created_at.isoformat()), (
-        "the first attempt, not the retry")
+
+    # AND THE INEQUALITY ONLY MEANS ANYTHING WHEN THE CLOCK TICKED BETWEEN THEM.
+    #
+    # This asserted it unconditionally and failed roughly one run in three:
+    # `append_audit` stamps `datetime.now()`, and two entries written
+    # microseconds apart can land on the same timestamp, so the assertion was
+    # comparing a value with itself. A flaky test is worse than no test — it
+    # trains people to re-run rather than look.
+    if rows[0].created_at != rows[1].created_at:
+        assert moment(got["provision"]["at"]) != moment(rows[1].created_at.isoformat()), (
+            "the first attempt, not the retry")
 
 
 # --- failure, refusal and the things that never happened ---------------------

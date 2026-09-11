@@ -1456,6 +1456,29 @@ export async function getRequestProgress(
   return { status: r.status, body: await r.json().catch(() => null) }
 }
 
+/**
+ * "2 machines", "3 containers", "1 machine and 3 containers", "nothing".
+ *
+ * One sentence in one place because this is said on the placement card, in the
+ * request summary and on the Jira ticket an approver signs — and three copies
+ * of it is how a screen comes to describe one layout two ways. Counting a pod
+ * as a machine is what it used to do.
+ */
+export function whatGetsBuilt(sizing: {
+  machine_count?: number
+  container_count?: number
+}): string {
+  const machines = sizing.machine_count ?? 0
+  const containers = sizing.container_count ?? 0
+  const parts = [
+    machines ? `${machines} machine${machines === 1 ? '' : 's'}` : '',
+    containers ? `${containers} container${containers === 1 ? '' : 's'}` : '',
+  ].filter(Boolean)
+  // Not "0 machines": a layout the cloud runs entirely provisions none, and a
+  // zero reads as a failure to work something out rather than as the answer.
+  return parts.join(' and ') || 'no machines'
+}
+
 export type PlacementCluster = {
   id: string
   name: string
@@ -1488,7 +1511,11 @@ export type PlacementOption = {
   sizing: {
     hosts: SizedHost[]
     totals: { vcpu: number; memory_gb: number; storage_gb: number; iops: number }
+    // Machines PROVISIONED. A container is not one — it runs on a cluster, and
+    // nothing is created for it to sit on — so the two are counted apart and
+    // `whatGetsBuilt` says both.
     machine_count: number
+    container_count?: number
     headroom_percent: number
     resolved: boolean
   }

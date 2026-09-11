@@ -147,8 +147,20 @@ class Option:
 
     @property
     def host_count(self) -> int:
-        """Machines this option would provision. A managed service is not one."""
-        return sum(1 for h in self.hosts if h.host_mode != HOST_MANAGED)
+        """Machines this option would provision.
+
+        A managed service is not one, and neither is a container: a pod runs on
+        a cluster, and nothing is created for it to sit on. This counted both
+        and reported "2 machines" for two pods -- see `container_count` in
+        api.sizing, which this has to agree with or the same layout is described
+        two ways on one screen.
+        """
+        return sum(1 for h in self.hosts if h.host_mode == HOST_VM)
+
+    @property
+    def container_count(self) -> int:
+        """Workloads this option would run as containers."""
+        return sum(1 for h in self.hosts if h.host_mode == HOST_CONTAINER)
 
     @property
     def route(self) -> str:
@@ -169,6 +181,7 @@ class Option:
             "summary": self.summary,
             "hosts": [h.as_dict() for h in self.hosts],
             "host_count": self.host_count,
+            "container_count": self.container_count,
             "eligible": self.eligible,
             "reasons": list(self.reasons),
             "clusters": [c.as_dict() if hasattr(c, "as_dict") else c

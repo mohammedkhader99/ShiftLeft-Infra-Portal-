@@ -373,15 +373,43 @@ def build_topology_summary(placement) -> list[str]:
     # machines all failed to size reported "0 machines are provisioned by this
     # request" directly beneath a line naming one — a contradiction inside a
     # single paragraph, on the document somebody signs.
-    count = sizing.get("machine_count", len(machines))
+    # A POD IS NOT A MACHINE, AND THE SENTENCE HAS TO SAY BOTH.
+    #
+    # This read `machine_count` alone, which counted container hosts as
+    # machines: three pods on a cluster were announced as "3 machines are priced
+    # below". Counting them correctly and changing nothing else would have been
+    # worse -- "0 machines are priced below" printed directly above three priced
+    # pods, which is the contradiction the paragraph above this already fought
+    # once, on the document somebody signs.
+    machine_n = sizing.get("machine_count", len(machines))
+    container_n = sizing.get("container_count", 0)
     unsized = [h for h in machines if not h.get("resolved")]
+
+    def _priced(n: int, noun: str) -> str:
+        return f"{n} {noun}{'s' if n != 1 else ''}"
+
+    priced = [_priced(machine_n, "machine") if machine_n else "",
+              _priced(container_n, "container") if container_n else ""]
+    priced = [p for p in priced if p]
+
     lines.append("")
     if not machines:
         lines.append("  No machines are provisioned by this request.")
+    elif not priced:
+        # Everything in the topology failed to size. The `unsized` line below
+        # says what and why; claiming "0 are priced" and stopping would leave an
+        # approver with a paragraph that mentions no infrastructure at all.
+        lines.append("  Nothing below could be priced.")
     else:
+        total = machine_n + container_n
         lines.append(
-            f"  {count} machine{'s' if count != 1 else ''} "
-            f"{'are' if count != 1 else 'is'} priced below.")
+            f"  {' and '.join(priced)} "
+            f"{'are' if total != 1 else 'is'} priced below.")
+        if container_n:
+            lines.append(
+                "      A container runs on the Kubernetes cluster above it. No "
+                "machine is provisioned for it, and its shape is what it is "
+                "allowed to consume there.")
     if unsized:
         lines.append(
             f"  PLUS {len(unsized)} machine{'s' if len(unsized) != 1 else ''} "

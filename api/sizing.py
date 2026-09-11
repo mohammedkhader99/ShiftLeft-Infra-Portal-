@@ -176,7 +176,13 @@ def size_hosts(hosts: list[dict], requirements: dict[tuple[str, str], dict],
     percent = headroom_percent() if percent is None else max(0, min(100, percent))
     sized: list[dict] = []
     totals = dict.fromkeys(SHAPE_FIELDS, 0)
+    # COUNTED APART, BECAUSE THEY ARE DIFFERENT THINGS. A machine is
+    # provisioned; a container runs on a cluster that already exists or is being
+    # built beside it, and no machine is created for it. Counting a pod as a
+    # machine put "3 machines are priced below" on the document an approver
+    # signs, for three pods.
     machines = 0
+    containers = 0
 
     for host in hosts:
         components = list(host.get("components") or ())
@@ -226,13 +232,20 @@ def size_hosts(hosts: list[dict], requirements: dict[tuple[str, str], dict],
         for field in SHAPE_FIELDS:
             row[field] = _with_headroom(base[field], percent)
             totals[field] += row[field]
-        machines += 1
+        if mode == "container":
+            containers += 1
+        else:
+            machines += 1
         sized.append(row)
 
     return {
         "hosts": sized,
         "totals": totals,
+        # Machines PROVISIONED. A container is not one, and neither is a managed
+        # service -- both still contribute their shape to `totals`, because both
+        # consume capacity somebody pays for.
         "machine_count": machines,
+        "container_count": containers,
         "headroom_percent": percent,
         "resolved": all(h["resolved"] for h in sized),
     }

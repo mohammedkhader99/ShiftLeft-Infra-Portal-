@@ -36,6 +36,7 @@ import {
   Tag,
   Tile,
 } from '@carbon/react'
+import { whatGetsBuilt } from '../api'
 import type {
   PlacementCluster,
   PlacementOption,
@@ -265,7 +266,7 @@ function OptionCard({
                 </div>
               )}
               <div style={{ fontSize: '0.72rem', color: 'var(--cds-text-secondary)' }}>
-                {plural(option.sizing.machine_count, 'machine', 'machines')}
+                {whatGetsBuilt(option.sizing)}
               </div>
             </>
           ) : (

@@ -58,6 +58,7 @@ import {
   type ProposedHost,
   type RecordedPlacement,
   type SavedRequest,
+  whatGetsBuilt,
 } from '../api'
 import PlacementStep from '../components/PlacementStep'
 
@@ -2169,9 +2170,7 @@ export default function RequestForm({
                 <SummaryRow label="Layout">
                   {chosenPlacement!.title}
                   <Tag type="blue" size="sm" style={{ marginLeft: '0.4rem' }}>
-                    {chosenPlacement!.sizing.machine_count === 1
-                      ? '1 machine'
-                      : `${chosenPlacement!.sizing.machine_count} machines`}
+                    {whatGetsBuilt(chosenPlacement!.sizing)}
                   </Tag>
                 </SummaryRow>
               )}

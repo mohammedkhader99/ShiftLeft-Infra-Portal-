@@ -894,18 +894,37 @@ topology is drawn the same shape either way. Sizing and price are unchanged in
 substance: same components, same per-component shapes, summed the same way.
 Each is simply asked for on its own, which is what the cluster would do.
 
-**`machine_count` counts pods as machines. NOT FIXED; needs a decision.**
+**U.5 — a pod stops being counted as a machine.** *Done 2026-09-11.*
 `api/sizing.py` does `machines += 1` for every non-managed host, so a cluster
 with two workloads now reports "2 machines" where it reported "1". Neither is
 right — the portal provisions no machine for a pod; the cluster is a managed
 service — but this change made the existing conflation louder rather than
 introducing it.
 
-It is display and reporting only: pricing copies the figure and computes nothing
-from it. But it reaches the Jira ticket as "N machines are priced below", on the
-document somebody signs, so changing what "machine" means there is an
-approver-facing decision rather than a tidy-up. `Option.host_count` counts the
-same way and would have to agree.
+*Counted apart in all four places that say it.* `api/sizing.py` counts only `vm`
+hosts as machines and reports `container_count` beside it; `Option.host_count`
+agrees, or the same layout would be described two ways on one screen. Both still
+contribute their shape to `totals`, because both consume capacity somebody pays
+for.
+*The delicate one was the document an approver signs.* Counting correctly and
+changing nothing else would have printed "0 machines are priced below" directly
+above three priced pods — the exact contradiction that paragraph in `api/jira.py`
+already fought once. It now reads "2 containers are priced below", or "1 machine
+and 1 container are priced below", with a line saying no machine is provisioned
+for a container. A machine-only layout reads EXACTLY as it always did, and a
+test pins that: the wording change must not leak into the layouts every request
+has used until now.
+*One sentence, one place.* `whatGetsBuilt` in `api.ts` is used by the placement
+card and the request summary rather than two copies drifting apart.
+
+**A flaky test of my own, found by the suite rather than by luck.**
+`test_the_time_shown_is_the_first_one_not_the_retry`, written earlier the same
+day and shipped in `a5439fb`, failed about one run in three: `append_audit`
+stamps `datetime.now()`, and two entries written microseconds apart can land on
+the same timestamp, so the assertion compared a value with itself. The equality
+— the time shown is the FIRST entry's — is the real property and always held;
+the inequality now runs only when the clock actually ticked. A flaky test is
+worse than no test, because it teaches people to re-run rather than look.
 
 **Still to come.** Nothing in Phase U. The open items are §6's network route,
 the nine half-created catalogue rows above, and H.4.

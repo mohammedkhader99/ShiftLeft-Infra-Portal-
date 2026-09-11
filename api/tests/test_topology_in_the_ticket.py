@@ -565,3 +565,77 @@ def test_an_unplaced_request_still_gets_per_component_rows(db):
     assert len(rows) == len(COMPONENTS)
     assert [r["technology_code"] for r in rows] == [
         c["technology_code"] for c in COMPONENTS]
+
+
+# --- a pod is not a machine, on the document somebody signs -------------------
+
+
+def _summary(machine_count: int, container_count: int, hosts: list[dict]) -> str:
+    """The ticket lines for a recorded placement, without raising a request.
+
+    `build_topology_summary` reads only `option_key`, `version` and `sizing`, so
+    the wording can be tested directly. The end-to-end tests above cover the
+    path that produces one.
+    """
+    from types import SimpleNamespace
+
+    from api import jira
+
+    placement = SimpleNamespace(
+        option_key="new-cluster", version=1, created_at=None,
+        sizing={"machine_count": machine_count,
+                "container_count": container_count, "hosts": hosts})
+    return "\n".join(jira.build_topology_summary(placement))
+
+
+def _pod(host_id: str, component: str) -> dict:
+    return {"host_id": host_id, "host_mode": "container", "components": [component],
+            "resolved": True, "vcpu": 4, "memory_gb": 16, "storage_gb": 200,
+            "headroom_percent": 20}
+
+
+def test_the_ticket_counts_pods_as_containers_not_machines():
+    """It said "3 machines are priced below" for three pods on a cluster.
+
+    Counting them correctly and changing nothing else would have been worse:
+    "0 machines are priced below" printed directly above three priced pods,
+    which is the contradiction this file already fought once.
+    """
+    text = _summary(0, 2, [
+        {"host_id": "new-cluster", "host_mode": "managed",
+         "components": ["oci-oke"], "resolved": True},
+        _pod("cluster-postgres16", "postgres16"),
+        _pod("cluster-vault", "vault"),
+    ])
+
+    assert "2 containers are priced below" in text, text
+    assert "machines are priced" not in text, "a pod is not a machine"
+    assert "No machine is provisioned for it" in text, "and it says why"
+
+
+def test_machines_and_containers_are_both_named_when_both_are_built():
+    text = _summary(1, 1, [
+        {"host_id": "host-1", "host_mode": "vm", "components": ["nginx"],
+         "resolved": True, "vcpu": 2, "memory_gb": 4, "storage_gb": 50,
+         "headroom_percent": 20},
+        _pod("cluster-vault", "vault"),
+    ])
+
+    # A compound subject takes a plural verb, however small the numbers.
+    assert "1 machine and 1 container are priced below" in text, text
+
+
+def test_a_machine_only_layout_reads_exactly_as_it_always_did():
+    """The wording changed for clusters. It must not have changed for the
+    layouts every request has used until now."""
+    text = _summary(2, 0, [
+        {"host_id": "host-1", "host_mode": "vm", "components": ["nginx"],
+         "resolved": True, "vcpu": 2, "memory_gb": 4, "storage_gb": 50,
+         "headroom_percent": 20},
+        {"host_id": "host-2", "host_mode": "vm", "components": ["postgres16"],
+         "resolved": True, "vcpu": 4, "memory_gb": 16, "storage_gb": 200,
+         "headroom_percent": 20},
+    ])
+
+    assert "2 machines are priced below" in text, text
+    assert "container" not in text.lower(), "nothing about containers on a VM layout"
