@@ -355,15 +355,59 @@ def test_with_it_on_a_cluster_layout_can_be_chosen(offered):
 
 
 def test_a_new_cluster_carries_the_cluster_and_the_workloads_separately(offered):
-    """Two hosts, not one. The cluster is a managed service the cloud runs; the
-    workloads are containers that land on it. One combined container host would
-    price the control plane as a workload and lose the cluster from the picture
-    the requester is shown."""
+    """The cluster is a managed service the cloud runs; the workloads are
+    containers that land on it. One combined container host would price the
+    control plane as a workload and lose the cluster from the picture."""
     new = options_for(KUBERNETES_SELECTION, ())[NEW_CLUSTER_OPTION]
-    by_mode = {h.host_mode: h for h in new.hosts}
+    managed = [h for h in new.hosts if h.host_mode == HOST_MANAGED]
+    containers = [h for h in new.hosts if h.host_mode == HOST_CONTAINER]
 
-    assert by_mode[HOST_MANAGED].components == ("oci-oke",)
-    assert set(by_mode[HOST_CONTAINER].components) == {"postgres16", "nodejs20"}
+    assert [h.components for h in managed] == [("oci-oke",)]
+    assert {c for h in containers for c in h.components} == {"postgres16", "nodejs20"}
+
+
+def test_each_workload_gets_its_own_container_host(offered):
+    """A POD IS NOT A SHARED MACHINE, and modelling it as one had a real cost.
+
+    OPA refuses two databases on a host — page cache, disk queue, and one patch
+    taking both down — and it is right about a machine. On Kubernetes they run
+    in separate pods with separate limits, so a requester asking for OKE with
+    Oracle and PostgreSQL was told "oracle-free and postgres16 may not share a
+    host": true of the topology the portal had drawn, and not of the one they
+    asked for.
+    """
+    for key in (EXISTING_CLUSTER_OPTION, NEW_CLUSTER_OPTION):
+        option = options_for(KUBERNETES_SELECTION,
+                             assess_clusters([MINE], SCOPE, SMALL))[key]
+        containers = [h for h in option.hosts if h.host_mode == HOST_CONTAINER]
+
+        assert len(containers) == 2, f"{key}: {[h.id for h in containers]}"
+        assert all(len(h.components) == 1 for h in containers), key
+        assert {h.id for h in containers} == {"cluster-postgres16", "cluster-nodejs20"}, key
+
+
+def test_two_databases_on_a_cluster_are_no_longer_refused_for_sharing(offered):
+    """The defect this fixes, end to end through the real policy shape: two
+    databases in one cluster are two pods, and nothing is shared."""
+    oracle = ComponentFacts(code="oracle-free",
+                            host_modes=frozenset({HOST_VM, HOST_CONTAINER}))
+    selection = [OKE, POSTGRES, oracle]
+
+    for key in (EXISTING_CLUSTER_OPTION, NEW_CLUSTER_OPTION):
+        option = options_for(selection, assess_clusters([MINE], SCOPE, SMALL))[key]
+        shared = [h for h in option.hosts if len(h.components) > 1]
+
+        assert not shared, f"{key} puts {shared} on one host"
+
+
+def test_the_cluster_itself_is_never_on_a_container_host(offered):
+    """One host per workload must not quietly turn the control plane into a
+    workload: a cluster inside a cluster."""
+    for option in enumerate_options(KUBERNETES_SELECTION,
+                                    assess_clusters([MINE], SCOPE, SMALL)):
+        for host in option.hosts:
+            if "oci-oke" in host.components:
+                assert host.host_mode != HOST_CONTAINER, option.key
 
 
 def test_the_cluster_is_still_never_placed_inside_a_cluster(offered):

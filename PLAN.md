@@ -878,6 +878,35 @@ test asserts that asking three times moves nothing.
 where the behaviour lived inside a component and "does it work?" could only be
 answered by opening the page.
 
+**U.4 — a pod is not a shared machine.** *Done 2026-09-11.*
+Found by walking a real request rather than a fixture. REQ-2026-0306 — OKE with
+Vault, Oracle and PostgreSQL — had its Kubernetes route refused: "oracle-free
+and postgres16 may not share a host."
+
+*The policy rule is right and was not touched.* Two databases on a machine
+compete for page cache and disk queue, and one patch takes both down. What was
+wrong was the shape being judged: the cluster layout put EVERY workload on one
+container host, so the rule fired against a topology that does not exist. On
+Kubernetes they are separate pods with separate limits.
+*`_cluster_hosts` now emits one container host per workload* — `cluster-postgres16`,
+`cluster-oracle-free` — used by both cluster layouts, refused or not, so the
+topology is drawn the same shape either way. Sizing and price are unchanged in
+substance: same components, same per-component shapes, summed the same way.
+Each is simply asked for on its own, which is what the cluster would do.
+
+**`machine_count` counts pods as machines. NOT FIXED; needs a decision.**
+`api/sizing.py` does `machines += 1` for every non-managed host, so a cluster
+with two workloads now reports "2 machines" where it reported "1". Neither is
+right — the portal provisions no machine for a pod; the cluster is a managed
+service — but this change made the existing conflation louder rather than
+introducing it.
+
+It is display and reporting only: pricing copies the figure and computes nothing
+from it. But it reaches the Jira ticket as "N machines are priced below", on the
+document somebody signs, so changing what "machine" means there is an
+approver-facing decision rather than a tidy-up. `Option.host_count` counts the
+same way and would have to agree.
+
 **Still to come.** Nothing in Phase U. The open items are §6's network route,
 the nine half-created catalogue rows above, and H.4.
 

@@ -424,6 +424,28 @@ def _cluster_warnings(workloads: Sequence[ComponentFacts]) -> tuple[str, ...]:
     return tuple(warnings)
 
 
+def _cluster_hosts(workloads: Sequence[ComponentFacts]) -> tuple[Host, ...]:
+    """One container host per workload, not one host carrying all of them.
+
+    A POD IS NOT A SHARED MACHINE, and modelling it as one had a real cost. OPA
+    refuses two databases on a host — page cache, disk queue, and one patch
+    taking both down — and that rule is right about a machine. On Kubernetes the
+    two run in separate pods with separate limits, and the rule was firing
+    against a shape that does not exist.
+
+    A requester asking for OKE with Oracle and PostgreSQL was told "oracle-free
+    and postgres16 may not share a host", which was true of the topology the
+    portal had drawn and not of the one they had asked for.
+
+    Sizing and price are unchanged in substance: the same components, the same
+    per-component shapes, summed the same way. What changes is that each is
+    asked for on its own, which is what the cluster would actually do.
+    """
+    return tuple(Host(id=f"cluster-{c.code}", host_mode=HOST_CONTAINER,
+                      components=(c.code,))
+                 for c in workloads)
+
+
 def _existing_cluster_option(components: Sequence[ComponentFacts],
                              clusters: Sequence | None) -> Option | None:
     """Land the workloads on a cluster that already exists — which nothing can do.
@@ -449,8 +471,7 @@ def _existing_cluster_option(components: Sequence[ComponentFacts],
         return None
 
     found = tuple(clusters or ())
-    hosts = (Host(id="existing-cluster", host_mode=HOST_CONTAINER,
-                  components=tuple(c.code for c in workloads)),)
+    hosts = _cluster_hosts(workloads)
 
     if not cluster_deployment_offered():
         return Option(
@@ -565,8 +586,7 @@ def _new_cluster_option(components: Sequence[ComponentFacts]) -> Option | None:
             key=NEW_CLUSTER_OPTION,
             title=OPTION_TITLES[NEW_CLUSTER_OPTION],
             summary="The portal cannot deploy into a cluster it builds.",
-            hosts=(Host(id="new-cluster", host_mode=HOST_CONTAINER,
-                        components=tuple(c.code for c in workloads)),),
+            hosts=_cluster_hosts(workloads),
             eligible=False,
             reasons=(_no_deployment_path(workloads),),
             warnings=_cluster_warnings(workloads),
@@ -584,8 +604,7 @@ def _new_cluster_option(components: Sequence[ComponentFacts]) -> Option | None:
                  f"containers."),
         hosts=(Host(id="new-cluster", host_mode=HOST_MANAGED,
                     components=tuple(c.code for c in providers)),
-               Host(id="cluster-workloads", host_mode=HOST_CONTAINER,
-                    components=tuple(c.code for c in workloads))),
+               *_cluster_hosts(workloads)),
         warnings=_cluster_warnings(workloads),
     )
 
