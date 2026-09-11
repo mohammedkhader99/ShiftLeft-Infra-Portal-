@@ -949,6 +949,36 @@ worse than no test, because it teaches people to re-run rather than look.
 **Still to come.** Nothing in Phase U. The open items are §6's network route,
 the nine half-created catalogue rows above, and H.4.
 
+**H.9 — a reason that stopped mid-word, and lost the way out.**
+*Done 2026-09-11.* REQ-2026-0312 was held up showing "...so building this would
+provision machines instead of th". Reported as "can you fix this for me".
+
+*Two faults, and the second mattered more.* `_short_reason` cut at exactly 300
+characters wherever that fell — against a 500-character column, so it was also
+throwing away two fifths of the room the record has. That limit was right for
+the wall of terraform output it was written for, and wrong for the
+orchestrator's refusals, which are sentences composed for a person. It now takes
+its limit from the column (H.4's lesson: read the width, do not remember it),
+stops at a sentence where one is near the end, never mid-word, and marks the cut.
+*And those sentences put the remedy last, which is what a trim eats.* The
+refusal was reordered so what to do survives: consequence, then remedy, then the
+placement detail — in the order of what can be afforded to lose.
+*The switch's name is deliberately absent from it.* A requester reading a held-up
+request cannot set an environment variable, and naming one says their request
+failed on a setting rather than on a missing network route.
+
+**What the reorder broke, and what caught it.** Leading with the remedy dropped
+"would provision machines instead of the cluster that was asked for", and
+`test_the_refusal_says_a_machine_would_have_been_built_instead` failed. Its
+docstring says why that phrase exists: a reader told only "unsupported" does not
+learn the alternative was silently WRONG rather than absent — which is what
+REQ-2026-0144 was, an empty bucket reported as success. The final message is 451
+characters and keeps all three.
+
+*The new test calls the real refusal rather than a copy of it.* A literal would
+have gone on passing while the actual message drifted past the column, which is
+the failure being tested.
+
 ---
 
 ## 6. The one open decision that affects this plan now

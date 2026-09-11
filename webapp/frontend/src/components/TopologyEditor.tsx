@@ -37,6 +37,7 @@ import {
 } from '@carbon/react'
 import { evaluateLayout, type EvaluatedLayout, type PlacementOption, type ProposedHost } from '../api'
 import {
+  MODE_LABEL,
   accepts as canTake,
   addMachine as withAnotherMachine,
   belongsToOf,
@@ -49,12 +50,6 @@ import {
   proposedOf,
   removeHost as without,
 } from './topologyArrangement'
-
-const MODE_LABEL: Record<string, string> = {
-  vm: 'Virtual machine',
-  container: 'On a cluster',
-  managed: 'Run by the cloud',
-}
 
 /**
  * Which refusals are about this component.
@@ -344,7 +339,10 @@ export default function TopologyEditor({
                 // created for may come back, because otherwise dragging it out
                 // is a one-way door and the only way back is undoing every move
                 // made since.
-                if (accepts(host, dragging.current?.code)) e.preventDefault()
+                if (accepts(host, dragging.current?.code)) {
+                  e.preventDefault()
+                  e.dataTransfer.dropEffect = 'move'
+                }
               }}
               onDrop={(e) => {
                 e.preventDefault()
@@ -429,8 +427,25 @@ export default function TopologyEditor({
                       <li key={code}>
                         <div
                           draggable
-                          onDragStart={() => {
+                          onDragStart={(e) => {
                             dragging.current = { code, from: host.id }
+                            // A DRAGSTART THAT SETS NO DATA IS CANCELLED.
+                            //
+                            // This set only the ref and the drag never began —
+                            // reported as "it is not allowing me to drag and
+                            // drop", and it was not: the browser refused to
+                            // start a drag carrying nothing. The ref is what
+                            // the drop handler reads, because dataTransfer is
+                            // unreadable during dragover, but the payload has
+                            // to be there or there is no drag to read it from.
+                            e.dataTransfer.setData('text/plain', code)
+                            e.dataTransfer.effectAllowed = 'move'
+                          }}
+                          onDragEnd={() => {
+                            // A drag that ends anywhere — cancelled, dropped on
+                            // nothing — must not leave the next dragover
+                            // deciding against a component nobody is holding.
+                            dragging.current = null
                           }}
                           style={{
                             display: 'flex',
@@ -452,6 +467,7 @@ export default function TopologyEditor({
                           <OverflowMenu
                             size="sm"
                             aria-label={`Move ${code}`}
+                            menuOptionsClass="topology-move-menu"
                             flipped
                           >
                             {hosts

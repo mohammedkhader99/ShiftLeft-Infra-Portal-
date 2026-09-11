@@ -647,17 +647,36 @@ def _refuse_unsized_hosts(payload: dict) -> None:
     if on_a_cluster:
         raise HTTPException(
             status_code=400,
-            detail=(f"Placement version {placement.get('version')} puts "
-                    f"{len(on_a_cluster)} workload group(s) on a cluster "
-                    f"({', '.join(on_a_cluster)}). Nothing in this system "
-                    f"deploys into a cluster — the Kubernetes API endpoint is "
-                    f"private and the orchestrator has no route to it — so "
-                    f"building this would provision machines instead of the "
-                    f"cluster that was asked for. This layout was offered "
-                    f"because CLUSTER_DEPLOYMENT_ENABLED is on; it becomes "
-                    f"buildable when that route exists, and until then the "
-                    f"cluster can be requested on its own and the workloads "
-                    f"deployed into it by hand."))
+            # WHAT IT WOULD BUILD, THEN WHAT TO DO, THEN THE DETAIL — in that
+            # order, because the end is what a trim eats.
+            #
+            # This said the same things in the opposite order and ran to 539
+            # characters against a 500-character column. REQ-2026-0312 was held
+            # up showing "...would provision machines instead of th" — the
+            # sentence amputated mid-word, and what it lost was every word
+            # telling the requester what to do instead.
+            #
+            # The switch's own name is deliberately absent: a requester reading
+            # this cannot set an environment variable, and naming one tells them
+            # their request failed on a setting rather than on a missing network
+            # route. That belongs in PLAN.md and in the code, both of which have
+            # it.
+            #
+            # "would provision machines instead of the cluster" is not padding.
+            # Rewriting this to lead with the remedy dropped it, and
+            # test_the_refusal_says_a_machine_would_have_been_built_instead
+            # caught that: a reader told only "unsupported" does not learn that
+            # the alternative was silently WRONG rather than absent, which is
+            # what REQ-2026-0144 was — an empty bucket, reported as success.
+            detail=(f"This cannot be built: nothing in this system deploys "
+                    f"into a cluster — the Kubernetes API endpoint is private "
+                    f"and the orchestrator has no route to it — so building it "
+                    f"would provision machines instead of the cluster that was "
+                    f"asked for. Choose a layout that builds machines, or ask "
+                    f"for the cluster on its own and deploy into it yourself. "
+                    f"(Placement version {placement.get('version')} puts "
+                    f"{len(on_a_cluster)} workload group(s) on a cluster: "
+                    f"{', '.join(on_a_cluster)}.)"))
     if unsized:
         raise HTTPException(
             status_code=400,

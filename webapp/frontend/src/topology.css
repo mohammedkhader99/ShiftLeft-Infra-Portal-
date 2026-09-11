@@ -1,0 +1,26 @@
+/* Styles the topology screens need that Carbon's defaults get wrong.
+ *
+ * Kept as a file rather than inline styles because these reach INSIDE Carbon
+ * components, at class names their own CSS owns. An inline style on the element
+ * we render cannot touch the menu Carbon renders in a portal somewhere else.
+ */
+
+/* THE "MOVE TO" MENU NAMES HOSTS, AND THE NAME IS THE POINT.
+ *
+ * Hosts are called `cluster-postgres16` and `cluster-oracle-free`, and Carbon's
+ * default menu width truncated them to "Move to cluster-p…" and
+ * "Move to cluster-or…" — cutting off exactly the half that says WHICH
+ * destination it is. A requester was offered three choices they could not tell
+ * apart, on the one control that exists so the feature works without a mouse.
+ */
+.topology-move-menu {
+  width: auto;
+  min-width: 18rem;
+  max-width: 28rem;
+}
+
+.topology-move-menu .cds--overflow-menu-options__option-content {
+  white-space: nowrap;
+  overflow: visible;
+  text-overflow: clip;
+}

@@ -21,6 +21,21 @@ import type { PlacementOption, ProposedHost } from '../api'
 
 export const MANAGED = 'managed'
 
+/**
+ * What each kind of host is called, on every screen that draws one.
+ *
+ * ONE COPY. The editor and the read-only diagram each had their own, which is
+ * two places to change and one to forget — and the first thing that needed
+ * changing was `container`, which both spelled "On a cluster". A requester who
+ * had asked for exactly "minio and Oracle in a container on OKE" was looking at
+ * that phrase and asked where it was.
+ */
+export const MODE_LABEL: Record<string, string> = {
+  vm: 'Virtual machine',
+  container: 'Container on the cluster',
+  managed: 'Run by the cloud',
+}
+
 /** The starting arrangement, taken from whichever layout is being adapted. */
 export function hostsOf(option: PlacementOption): ProposedHost[] {
   return (option.sizing?.hosts ?? []).map((h) => ({

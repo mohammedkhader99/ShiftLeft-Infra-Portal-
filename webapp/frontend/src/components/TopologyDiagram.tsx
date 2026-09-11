@@ -31,12 +31,7 @@
 
 import { Tag } from '@carbon/react'
 import type { PlacementOption, SizedHost } from '../api'
-
-const MODE_LABEL: Record<string, string> = {
-  vm: 'Virtual machine',
-  container: 'On a cluster',
-  managed: 'Run by the cloud',
-}
+import { MODE_LABEL } from './topologyArrangement'
 
 /** A host's shape, or nothing when the server declined to size it. */
 function shapeOf(host: SizedHost): string | null {

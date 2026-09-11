@@ -5243,9 +5243,45 @@ def request_costsheet(reference: str, session: Session = Depends(get_session)) -
 # --- Real apply / destroy (increment 2.6b) -----------------------------------
 
 
-def _short_reason(text: str, limit: int = 300) -> str:
+#: As much of a reason as the column can hold. Read from the model rather than
+#: written here, for the reason H.4 exists: a number in the code and a width in
+#: the database drift, and the drift is only ever found by a failed write.
+_REASON_LIMIT = Request.__table__.columns["status_detail"].type.length or 500
+
+
+def _trim_to_a_word(text: str, limit: int) -> str:
+    """Cut at a boundary a reader can see, and say that it was cut.
+
+    NOT MID-WORD, AND NOT SILENTLY. This cut at exactly `limit` characters
+    wherever that fell, so REQ-2026-0312 was held up with "...so building this
+    would provision machines instead of th" — which reads as a corrupted record
+    rather than a sentence somebody stopped. What it removed was the half that
+    said what to do about it.
+
+    A sentence end in the last third of the budget wins over a word end, because
+    stopping at a full stop reads as deliberate and stopping at a word reads as
+    truncation. Both beat stopping at "th".
+    """
+    if len(text) <= limit:
+        return text
+    window = text[: limit - 1]
+    stop = max(window.rfind(". "), window.rfind("? "), window.rfind("! "))
+    if stop >= int(limit * 0.6):
+        return window[: stop + 1]
+    space = window.rfind(" ")
+    return (window[:space] if space > 0 else window).rstrip(" ,;:—-") + "…"
+
+
+def _short_reason(text: str, limit: int = _REASON_LIMIT) -> str:
     """Pull a concise, human-readable reason out of an orchestrator/terraform
-    error blob, for the portal and a Jira comment. Falls back to a trim."""
+    error blob, for the portal and a Jira comment.
+
+    THE LIMIT WAS 300 AGAINST A 500-CHARACTER COLUMN, which threw away two
+    fifths of the room the record has for explaining itself. That is fine for a
+    wall of terraform output, which is what this was written for; it is not fine
+    for the orchestrator's refusals, which are sentences composed for a person
+    and put the remedy at the end.
+    """
     if not text:
         return "Provisioning failed."
     # The orchestrator wraps terraform failures as JSON {"detail": "..."}.
@@ -5258,8 +5294,8 @@ def _short_reason(text: str, limit: int = 300) -> str:
     for line in text.splitlines():
         line = line.strip()
         if line.startswith("Error:"):  # terraform's own headline
-            return line[:limit]
-    return " ".join(text.split())[:limit]
+            return _trim_to_a_word(line, limit)
+    return _trim_to_a_word(" ".join(text.split()), limit)
 
 
 def _mark_component_lifecycle(session: Session, req: Request, out) -> None:
