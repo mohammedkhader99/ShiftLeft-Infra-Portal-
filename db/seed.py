@@ -19,6 +19,7 @@ from db.models import (
     DELIVERY_MACHINE,
     DELIVERY_MANAGED,
     DELIVERY_SOFTWARE,
+    HOST_CONTAINER,
     HOST_MANAGED,
     HOST_VM,
     TechnologyDelivery,
@@ -534,9 +535,16 @@ HOST_MODES_EXPLICIT = [
 # The note a derived row carries. Per delivery model, because that is the only
 # thing a rule knows — and saying less is better than saying something specific
 # that nobody checked.
+# A key of its own for the container form of software, so the note can say what
+# that mode means without pretending there is a fifth delivery model.
+DELIVERY_SOFTWARE_CONTAINER = "software-container"
+
 _DERIVED_NOTE = {
     DELIVERY_MACHINE: "The machine itself — the host other components are placed on.",
     DELIVERY_SOFTWARE: "Installed on a machine you own and patch.",
+    DELIVERY_SOFTWARE_CONTAINER:
+        "An image on a Kubernetes cluster. No operating system to patch — and "
+        "no machine to log in to either.",
     DELIVERY_MANAGED: "Run by the cloud. No machine is provisioned and nothing "
                       "here is yours to patch.",
 }
@@ -572,13 +580,32 @@ def _derived_host_modes() -> list[tuple]:
     added is which technologies HAVE a host mode, which is a statement about the
     catalogue rather than about capacity.
 
-    CONTAINER IS NOT DERIVED FOR ANYTHING. Every certified blueprint in this
-    system builds a machine — `oci-service-vm`, `oci-instance`, `oci-apache`,
-    `oci-kafka`, `oci-postgres` — and there is no blueprint that deploys a
-    workload into a cluster. Declaring `container` for a technology would put an
-    option on the screen that resolves, prices, reaches an approver and then fails
-    at provisioning, which is the exact failure this phase exists to end. It is a
-    claim to make when something can build it.
+    CONTAINER IS DERIVED FOR SOFTWARE, SINCE 2026-09-11, AND THIS PARAGRAPH USED
+    TO FORBID IT. What it said was true and still is: every certified blueprint
+    in this system builds a machine — `oci-service-vm`, `oci-instance`,
+    `oci-apache`, `oci-kafka`, `oci-postgres` — and there is no blueprint that
+    deploys a workload into a cluster. It went on: declaring `container` would
+    put an option on the screen that resolves, prices, reaches an approver and
+    then fails at provisioning.
+
+    That is exactly what now happens, and it was chosen with the consequence
+    stated. Asked whether to offer the Kubernetes route, grey it out, or build it
+    as though the network route already existed, the platform owner chose the
+    third. `api.placement.cluster_deployment_offered` is the switch that reverses
+    it without another code change, and the day the route to the private
+    Kubernetes API is opened it becomes true rather than optimistic.
+
+    WHAT IS DERIVED IS A FACT ABOUT THE SOFTWARE, NOT A PROMISE ABOUT THE
+    PLATFORM. "PostgreSQL can run as an image" is true whether or not anything
+    here can deploy it — it is the same kind of statement as "PostgreSQL can be
+    installed on a machine", and the two now travel together for every technology
+    delivered as software. Whether the platform can BUILD that is a separate
+    question, answered separately, in the two places that answer it: the
+    placement switch, and the orchestrator's container-host guard, which stays.
+
+    STILL NOT DERIVED FOR ANYTHING ELSE. A machine IS the host, so it cannot be a
+    container on one; a managed service is run by the cloud; a capability is an
+    outcome nobody installs. Only `software` gains the second mode.
 
     A managed service is offered only on the clouds the catalogue says it runs on
     — `targets` on the technology row, which the cloud-specific entries declare
@@ -593,7 +620,7 @@ def _derived_host_modes() -> list[tuple]:
     rows = []
     for code, (delivery, _note) in DELIVERY.items():
         mode = _MODE_FOR_DELIVERY.get(delivery)
-        if mode is None or (code, mode) in named:
+        if mode is None:
             continue
         clouds = targets.get(code)
         if not clouds:
@@ -601,8 +628,35 @@ def _derived_host_modes() -> list[tuple]:
             # a host mode for a technology the catalogue does not offer is a row
             # nothing can ever use, and the delivery table's own comment says
             # guessing is what it exists to stop.
+            #
+            # NINE TECHNOLOGIES FALL THROUGH HERE AND ARE IN THE LIVE CATALOGUE
+            # ANYWAY — gitea, grafana, haproxy, mariadb, memcached, minio,
+            # prometheus, traefik, valkey. Every one has no host mode at all, so
+            # none can be sized on ANY route: that is what a requester saw as
+            # "Size not determined — no requirement for minio" on a VIRTUAL
+            # MACHINE, which was never a Kubernetes problem.
+            #
+            # Defaulting their clouds here was tried on 2026-09-11 and reverted
+            # the same hour, because
+            # `test_host_modes_are_only_offered_on_clouds_the_technology_supports`
+            # is right to refuse it: a technology absent from TECHNOLOGIES has no
+            # declared clouds, so every cloud is a guess. The rows are certified
+            # with `resource_kind` still on the `oci-bucket` DEFAULT that nobody
+            # set, which says they were half-created rather than proved — so
+            # whether they should be OFFERED at all is the question, and giving
+            # them host modes would answer the opposite one. Recorded in PLAN.md
+            # for a decision rather than settled here.
             continue
-        rows.append((code, clouds, mode, _DERIVED_NOTE[delivery]))
+        if (code, mode) not in named:
+            rows.append((code, clouds, mode, _DERIVED_NOTE[delivery]))
+
+        # Software runs on a machine OR as an image. Both, or the catalogue is
+        # describing half of what the software can do. No new shapes are
+        # introduced: HOST_MODE_BASELINE is per (host mode, size) and already
+        # carries container rows for all four sizes.
+        if delivery == DELIVERY_SOFTWARE and (code, HOST_CONTAINER) not in named:
+            rows.append((code, clouds, HOST_CONTAINER,
+                         _DERIVED_NOTE[DELIVERY_SOFTWARE_CONTAINER]))
     return sorted(rows)
 
 

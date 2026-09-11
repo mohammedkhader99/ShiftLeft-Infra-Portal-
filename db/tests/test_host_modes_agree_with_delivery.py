@@ -232,21 +232,42 @@ def test_a_managed_host_mode_has_no_requirement_row():
     assert not [pair for pair in rows if pair[1] == models.HOST_MANAGED]
 
 
-def test_no_technology_is_offered_as_a_container_yet():
-    """RECORDED, NOT ENFORCED FOREVER. Every certified blueprint in this system
-    builds a machine — oci-service-vm, oci-instance, oci-apache, oci-kafka,
-    oci-postgres — and none deploys a workload into a cluster. A `container` host
-    mode is therefore an option that resolves, prices, reaches an approver and
-    fails at provisioning.
+def test_a_container_is_offered_for_software_and_for_nothing_else():
+    """REVISITED 2026-09-11, WHICH THE OLD TEST ASKED FOR.
 
-    The two that exist (postgres16, nodejs20) predate this and are left alone:
-    removing options is a separate decision. This test names the count so that
-    adding a third is a deliberate act rather than an oversight, and so that the
-    day something CAN build a container the test says what to revisit.
+    It read "no technology is offered as a container yet" and named the two that
+    predated it, so that a third would be a deliberate act. This is that
+    deliberate act: asked whether to offer the Kubernetes route, grey it out, or
+    build the portal as though the network route existed, the platform owner
+    chose the third.
+
+    WHAT IS STILL TRUE, AND THE OLD TEST SAID IT PLAINLY. Every certified
+    blueprint in this system builds a machine, and none deploys a workload into
+    a cluster. A container layout resolves, prices, reaches an approver and then
+    fails at provisioning. That is the known cost of the decision, not a
+    surprise, and `api.placement.cluster_deployment_offered` is the switch back.
+
+    WHAT IS ASSERTED NOW IS THE RULE, NOT A LIST. Software runs on a machine or
+    as an image, so it has both. A machine IS the host; a managed service is run
+    by the cloud; a capability is an outcome nobody installs. None of those three
+    gains a container form, and a list of names would have to be edited every
+    time the catalogue grew — which is how the host modes came to cover three
+    technologies out of fifty-one in the first place.
     """
-    container = sorted(code for code, _clouds, mode, _note in seed.HOST_MODES_SEED
-                       if mode == models.HOST_CONTAINER)
-    assert container == ["nodejs20", "postgres16"], (
-        "a container host mode was added or removed; nothing in this system "
-        "deploys a workload into a cluster yet, so check that something can "
-        f"build it before offering it. Found: {container}")
+    container = {code for code, _clouds, mode, _note in seed.HOST_MODES_SEED
+                 if mode == models.HOST_CONTAINER}
+    software = {code for code, (delivery, _note) in seed.DELIVERY.items()
+                if delivery == models.DELIVERY_SOFTWARE}
+    placed = {code for code, _clouds, _mode, _note in seed.HOST_MODES_SEED}
+    # The explicit list is allowed to know more than the rule — that is what it
+    # is for. PostgreSQL is delivered `managed` and genuinely runs all three
+    # ways, which no rule over delivery models could work out.
+    named = {code for code, _clouds, mode, _note in seed.HOST_MODES_EXPLICIT
+             if mode == models.HOST_CONTAINER}
+
+    assert container <= software | named, (
+        "something that is neither installable software nor explicitly declared "
+        f"is offered as a container: {sorted(container - software - named)}")
+    assert (software & placed) <= container, (
+        "software that can be placed at all should offer both the machine and "
+        f"the image form; missing: {sorted((software & placed) - container)}")

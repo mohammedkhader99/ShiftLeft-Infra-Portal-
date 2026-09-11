@@ -31,6 +31,7 @@ through the enumeration.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field, replace
 
@@ -287,6 +288,32 @@ CLUSTER_DEPLOYMENT_UNAVAILABLE = (
     "yourself, or choose a layout that builds machines.")
 
 
+def cluster_deployment_offered() -> bool:
+    """Whether a layout that puts workloads ON a cluster may be chosen (U.2).
+
+    OFF means refused with the sentence above, which is what this portal did
+    from the day the gap was found until 2026-09-11. ON means the layout
+    resolves, prices and can be recorded.
+
+    WHAT ON DOES NOT MEAN. It does not mean the workloads get deployed. The
+    orchestrator still refuses a container host, and deliberately: removing that
+    guard does not make the cluster path work, it makes a container host resolve
+    to `oci-service-vm` and build a lone machine with NO CLUSTER while reporting
+    success. That happened once already. So with this on, a request that chooses
+    Kubernetes passes approval and then fails at provisioning, loudly, naming
+    the missing network route.
+
+    That is a worse outcome than a refusal at the point of choosing, and it was
+    chosen knowingly: asked on 2026-09-11 whether to offer the route, grey it
+    out, or build it as though the route existed, the platform owner chose the
+    third with the consequence stated. This switch is how that is reversed
+    without another code change -- and how it becomes truthful rather than
+    optimistic on the day the route is opened.
+    """
+    return (os.getenv("CLUSTER_DEPLOYMENT_ENABLED", "true") or "").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
 def _no_deployment_path(workloads: Sequence[ComponentFacts]) -> str:
     names = ", ".join(c.code for c in workloads) or "your workloads"
     return CLUSTER_DEPLOYMENT_UNAVAILABLE.format(names=names)
@@ -421,18 +448,57 @@ def _existing_cluster_option(components: Sequence[ComponentFacts],
     if not workloads:
         return None
 
+    found = tuple(clusters or ())
+    hosts = (Host(id="existing-cluster", host_mode=HOST_CONTAINER,
+                  components=tuple(c.code for c in workloads)),)
+
+    if not cluster_deployment_offered():
+        return Option(
+            key=EXISTING_CLUSTER_OPTION,
+            title=OPTION_TITLES[EXISTING_CLUSTER_OPTION],
+            summary="The portal cannot deploy into a cluster.",
+            hosts=hosts,
+            eligible=False,
+            reasons=(_no_deployment_path(workloads),),
+            # Whatever discovery found, if it found anything. None means nobody
+            # looked, which is still not the same as "you have none" — but
+            # neither answer changes this option's availability now.
+            clusters=found,
+            warnings=_cluster_warnings(workloads),
+        )
+
+    # ENTITLEMENT DECIDES ONCE DEPLOYMENT NO LONGER DOES (U.2). While nothing
+    # could deploy to any cluster at all, asking whether THIS requester may use
+    # a PARTICULAR one was a narrower question with no bearing on the answer, so
+    # it was skipped and `api.clusters` went dormant. Now that the layout can be
+    # chosen, the narrower question is the only one left -- and offering a
+    # cluster the requester is not entitled to would be a worse failure than the
+    # one it replaces, because it would be found at the cluster rather than at
+    # the form.
+    usable = [c for c in found if getattr(c, "eligible", False)]
+    if found and not usable:
+        refusals = tuple(dict.fromkeys(
+            reason for c in found for reason in getattr(c, "reasons", ())))
+        return Option(
+            key=EXISTING_CLUSTER_OPTION,
+            title=OPTION_TITLES[EXISTING_CLUSTER_OPTION],
+            summary="No cluster this request may use.",
+            hosts=hosts,
+            eligible=False,
+            # Their words, not a summary of them: each says what is wrong with
+            # that particular cluster, and a requester chasing entitlement needs
+            # to know which one to chase.
+            reasons=refusals or ("No cluster this request may use was found.",),
+            clusters=found,
+            warnings=_cluster_warnings(workloads),
+        )
+
     return Option(
         key=EXISTING_CLUSTER_OPTION,
         title=OPTION_TITLES[EXISTING_CLUSTER_OPTION],
-        summary="The portal cannot deploy into a cluster.",
-        hosts=(Host(id="existing-cluster", host_mode=HOST_CONTAINER,
-                    components=tuple(c.code for c in workloads)),),
-        eligible=False,
-        reasons=(_no_deployment_path(workloads),),
-        # Whatever discovery found, if it found anything. None means nobody
-        # looked, which is still not the same as "you have none" — but neither
-        # answer changes this option's availability now.
-        clusters=tuple(clusters or ()),
+        summary="Workloads run as containers on a cluster you already have.",
+        hosts=hosts,
+        clusters=found,
         warnings=_cluster_warnings(workloads),
     )
 
@@ -463,14 +529,32 @@ def _new_cluster_option(components: Sequence[ComponentFacts]) -> Option | None:
                         components=tuple(c.code for c in providers)),),
         )
 
+    if not cluster_deployment_offered():
+        return Option(
+            key=NEW_CLUSTER_OPTION,
+            title=OPTION_TITLES[NEW_CLUSTER_OPTION],
+            summary="The portal cannot deploy into a cluster it builds.",
+            hosts=(Host(id="new-cluster", host_mode=HOST_CONTAINER,
+                        components=tuple(c.code for c in workloads)),),
+            eligible=False,
+            reasons=(_no_deployment_path(workloads),),
+            warnings=_cluster_warnings(workloads),
+        )
+
+    # THE CLUSTER AND THE WORKLOADS ON IT ARE TWO HOSTS, not one. The cluster is
+    # a managed service the cloud runs; the workloads are containers that land on
+    # it. Collapsing them into a single container host would price the control
+    # plane as though it were a workload, and lose the cluster itself from the
+    # topology the requester is shown.
     return Option(
         key=NEW_CLUSTER_OPTION,
         title=OPTION_TITLES[NEW_CLUSTER_OPTION],
-        summary="The portal cannot deploy into a cluster it builds.",
-        hosts=(Host(id="new-cluster", host_mode=HOST_CONTAINER,
-                    components=tuple(c.code for c in workloads)),),
-        eligible=False,
-        reasons=(_no_deployment_path(workloads),),
+        summary=(f"A new {name} cluster, with your workloads running on it as "
+                 f"containers."),
+        hosts=(Host(id="new-cluster", host_mode=HOST_MANAGED,
+                    components=tuple(c.code for c in providers)),
+               Host(id="cluster-workloads", host_mode=HOST_CONTAINER,
+                    components=tuple(c.code for c in workloads))),
         warnings=_cluster_warnings(workloads),
     )
 

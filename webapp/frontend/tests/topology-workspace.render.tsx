@@ -113,10 +113,30 @@ check(
   recommended(PROD, MACHINES)?.key,
 )
 check(
-  'a route with nothing buildable still offers something, so its reason is on screen',
-  recommended(CLUSTER, KUBERNETES) !== null &&
-    recommended(CLUSTER, KUBERNETES)!.eligible === false,
+  'the Kubernetes route recommends the cheapest that can be built',
+  recommended(CLUSTER, KUBERNETES)?.eligible === true,
   recommended(CLUSTER, KUBERNETES)?.key,
+)
+
+// A route whose layouts are ALL refused must still offer one, so its reason
+// reaches the screen instead of the route disappearing. The fixtures no longer
+// contain that case — U.2 made cluster layouts choosable — so it is constructed
+// rather than waited for. It is the switch's off position, and the day the
+// network route is opened it will be some other refusal.
+const allRefused: PlacementOption[] = CLUSTER.map((o) =>
+  o.route === KUBERNETES
+    ? { ...o, eligible: false, reasons: ['the orchestrator has no route to it'] }
+    : o,
+)
+check(
+  'a route with nothing buildable still offers something, so its reason is on screen',
+  recommended(allRefused, KUBERNETES) !== null &&
+    recommended(allRefused, KUBERNETES)!.eligible === false,
+  recommended(allRefused, KUBERNETES)?.key,
+)
+check(
+  '  and that reason is rendered, not swallowed',
+  shows(render(allRefused, null), 'the orchestrator has no route to it'),
 )
 check('a stack with no cluster has no Kubernetes route', recommended(PROD, KUBERNETES) === null)
 
@@ -150,11 +170,28 @@ check(
 
 // NOTHING DISAPPEARS. Every layout the platform produced is accounted for on
 // the page -- as a route card, or in "Also considered" with its reason.
+const onKubernetesPage = render(CLUSTER, recommended(CLUSTER, KUBERNETES)!.key)
+const onMachinesPage = render(CLUSTER, recommended(CLUSTER, MACHINES)!.key)
+
 for (const o of CLUSTER) {
   const onCard =
     o.key === recommended(CLUSTER, MACHINES)?.key || o.key === recommended(CLUSTER, KUBERNETES)?.key
-  const accounted = onCard || shows(cluster, o.title)
-  check(`  accounted for: ${o.key}`, accounted, onCard ? 'on a route card' : 'in "Also considered"')
+  // Three places a layout may legitimately be: a route card, the compact
+  // "Also considered" block, or -- if it can be built but is not the
+  // recommendation -- the alternatives for its own route. Nowhere is not one of
+  // them, which is what this loop exists to catch.
+  const page = o.route === KUBERNETES ? onKubernetesPage : onMachinesPage
+  // An alternative sits behind a disclosure, so its title is not in the markup
+  // until it is opened -- that is what a disclosure is, and it is not the same
+  // as vanishing. What must be on the page is a control that SAYS how many are
+  // behind it, so nobody has to guess the list exists.
+  const behindADisclosure =
+    shows(page, `Other ${o.route === KUBERNETES ? 'Kubernetes' : 'machine'} layouts you could pick`)
+  const accounted = onCard || shows(cluster, o.title) || behindADisclosure
+  check(`  accounted for: ${o.key}`, accounted,
+    onCard ? 'on a route card'
+      : shows(cluster, o.title) ? 'in "Also considered"'
+        : 'named by the alternatives disclosure')
   if (!o.eligible && !onCard) {
     check(
       `  and its reason is on the page: ${o.key}`,
@@ -187,8 +224,15 @@ check(
 const onKubernetes = render(CLUSTER, recommended(CLUSTER, KUBERNETES)!.key)
 check('choosing Kubernetes draws the cluster instead', shows(onKubernetes, 'What gets built'))
 check(
-  '  and the refusal travels with it',
-  shows(onKubernetes, 'no route to it') || shows(onKubernetes, 'cannot deploy workloads into'),
+  '  and any refusal travels with it',
+  recommended(CLUSTER, KUBERNETES)!.eligible ||
+    shows(onKubernetes, recommended(CLUSTER, KUBERNETES)!.reasons[0].slice(0, 40)),
+  recommended(CLUSTER, KUBERNETES)!.eligible ? 'nothing to refuse' : 'refusal shown',
+)
+check(
+  '  a buildable alternative in the same route can still be reached',
+  CLUSTER.filter((o) => o.route === KUBERNETES && o.eligible).length < 2 ||
+    shows(onKubernetes, 'Other Kubernetes layouts you could pick'),
 )
 check(
   '  a discovered cluster can be picked, but only once Kubernetes is chosen',

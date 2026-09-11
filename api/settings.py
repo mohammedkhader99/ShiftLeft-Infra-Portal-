@@ -231,6 +231,13 @@ READ_ONLY_ENV: dict[str, str] = {
     # deploy-time decision, not a switch to flick from a console while requests
     # are in flight. The test suite pins it to mock so the suite stays offline.
     "REGISTRY_MODE": "Container registry lookups (live | mock)",
+    # Whether a layout that puts workloads ON a Kubernetes cluster may be
+    # chosen (U.2). Read-only and deploy-time: with it on, such a request
+    # passes approval and then fails at provisioning, because the orchestrator
+    # still refuses a container host and there is no route to the private
+    # Kubernetes API. That is a decision about what this deployment promises,
+    # not a switch to flick while requests are in flight.
+    "CLUSTER_DEPLOYMENT_ENABLED": "Offer Kubernetes as a placement (true | false)",
     "AUTH_MODE": "Sign-in mode",
     "USE_MOCK": "Master mock switch",
     "PROVISION_MODE": "Provisioning mode",

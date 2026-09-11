@@ -208,7 +208,13 @@ def test_the_cache_window_is_short_because_the_figure_goes_stale():
 def test_finding_clusters_does_not_make_the_option_available(monkeypatch):
     """The whole point of building this while it is dormant. Discovery answers
     "which clusters could you use"; the option is refused for a different reason
-    entirely, and finding clusters must not quietly override it."""
+    entirely, and finding clusters must not quietly override it.
+
+    THE SWITCH OFF (U.2). Since 2026-09-11 deployment is offered by default, and
+    with it on discovery is no longer overridden -- it DECIDES, which is what
+    test_entitlement_decides_once_deployment_no_longer_does covers. This asserts
+    the other position, where the sentence above still holds exactly."""
+    monkeypatch.setenv("CLUSTER_DEPLOYMENT_ENABLED", "false")
     from api.placement import (EXISTING_CLUSTER_OPTION, HOST_CONTAINER,
                                HOST_MANAGED, HOST_VM, ComponentFacts,
                                enumerate_options)

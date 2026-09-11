@@ -653,7 +653,11 @@ def _refuse_unsized_hosts(payload: dict) -> None:
                     f"deploys into a cluster — the Kubernetes API endpoint is "
                     f"private and the orchestrator has no route to it — so "
                     f"building this would provision machines instead of the "
-                    f"cluster that was asked for."))
+                    f"cluster that was asked for. This layout was offered "
+                    f"because CLUSTER_DEPLOYMENT_ENABLED is on; it becomes "
+                    f"buildable when that route exists, and until then the "
+                    f"cluster can be requested on its own and the workloads "
+                    f"deployed into it by hand."))
     if unsized:
         raise HTTPException(
             status_code=400,

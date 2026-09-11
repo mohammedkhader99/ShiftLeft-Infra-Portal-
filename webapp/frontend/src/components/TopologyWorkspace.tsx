@@ -183,11 +183,22 @@ export default function TopologyWorkspace({
   const showing = route === KUBERNETES ? kubernetes : route === MACHINES ? machines : null
   const [otherLayouts, setOtherLayouts] = useState(false)
 
-  // Layouts you could pick INSTEAD. Only the ones that can actually be built —
-  // an unavailable layout is not an alternative, it is a fact, and it belongs
-  // below with the other facts rather than in a list of things to choose from.
+  // Layouts you could pick INSTEAD, within the route you are on.
+  //
+  // Only the ones that can actually be built: an unavailable layout is not an
+  // alternative, it is a fact, and it belongs below with the other facts rather
+  // than in a list of things to choose from.
+  //
+  // WITHIN THE ROUTE, not within machines. This read `o.route === MACHINES` and
+  // the workspace harness caught what that costs the moment a Kubernetes layout
+  // became choosable: with both an existing cluster and a new one available, one
+  // of them was the route card and the other appeared NOWHERE — not as a choice,
+  // not in "Also considered", not at all. A requester who has a cluster and
+  // wants a fresh one instead could not say so.
+  const onRoute = route ?? MACHINES
+  const chosenForRoute = onRoute === KUBERNETES ? kubernetes : machines
   const alternatives = options.filter(
-    (o) => o.route === MACHINES && o.eligible && o.key !== machines?.key,
+    (o) => o.route === onRoute && o.eligible && o.key !== chosenForRoute?.key,
   )
 
   // EVERYTHING THAT CANNOT BE BUILT, AND WHY — one line each, on the page,
@@ -390,12 +401,13 @@ export default function TopologyWorkspace({
           Behind a disclosure rather than gone: somebody who knows they want one
           machine rather than three should be able to say so, and nobody should
           have to compare five cards to accept the recommendation. */}
-      {route === MACHINES && alternatives.length > 0 && (
+      {alternatives.length > 0 && (
         <div style={{ marginTop: '0.6rem' }}>
           <Button kind="ghost" size="sm" onClick={() => setOtherLayouts((v) => !v)}>
             {otherLayouts
-              ? 'Hide the other machine layouts'
-              : `Other machine layouts you could pick (${alternatives.length})`}
+              ? 'Hide the other layouts'
+              : `Other ${onRoute === KUBERNETES ? 'Kubernetes' : 'machine'} layouts ` +
+                `you could pick (${alternatives.length})`}
           </Button>
           {otherLayouts && (
             <ul style={{ listStyle: 'none', margin: '0.4rem 0 0', padding: 0 }}>

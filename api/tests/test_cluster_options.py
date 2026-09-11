@@ -37,6 +37,26 @@ built one virtual machine and no cluster, and reported success.
 The entitlement, capacity and quota logic is NOT wrong and has NOT been removed.
 It is dormant, and `test_the_entitlement_machinery_is_intact_and_dormant` exists
 so it is not mistaken for dead code.
+
+SUPERSEDED AGAIN 2026-09-11, AND THE TESTS BELOW ARE NOT WRONG -- THEY ARE ONE
+OF TWO STATES.
+
+Asked whether to offer the Kubernetes route, grey it out, or build the portal as
+though the network route already existed, the platform owner chose the third
+with the consequence stated: a request that chooses Kubernetes now passes
+approval and then FAILS AT PROVISIONING, because the orchestrator still refuses
+a container host and there is still no route to the private Kubernetes API.
+
+`api.placement.cluster_deployment_offered` is that switch, and it defaults to
+ON. Everything in this file up to "the switch, in its other position" describes
+it OFF -- every sentence above is still exactly true there -- and the fixture
+below pins it off so those assertions keep meaning what they meant. The new
+section at the end covers ON, which is what a deployment gets today.
+
+The orchestrator's guard is NOT part of the switch and does not move. Removing
+it does not make the cluster path work; it makes a container host resolve to
+`oci-service-vm` and build a lone machine with no cluster while reporting
+success, which is the failure described three paragraphs up.
 """
 
 from __future__ import annotations
@@ -44,6 +64,7 @@ from __future__ import annotations
 import pytest
 
 from api.clusters import Cluster, Need, Quota, RequesterScope, assess_clusters
+import api.placement as placement_mod
 from api.placement import (
     CONSOLIDATED_OPTION,
     EXISTING_CLUSTER_OPTION,
@@ -78,6 +99,16 @@ THEIRS = Cluster(id="c-2", name="oke-visa-prod", region="me-dubai-1",
                  allocatable_memory_gb=256)
 SCOPE = RequesterScope(project_codes=frozenset({"EGATE"}))
 SMALL = Need(vcpu=4, memory_gb=16)
+
+
+@pytest.fixture(autouse=True)
+def _deployment_refused(monkeypatch):
+    """The switch OFF, which is what every test above the final section asserts.
+
+    Pinned rather than assumed: the product default is ON since 2026-09-11, so a
+    file that relied on the default would silently change what it was testing.
+    """
+    monkeypatch.setenv("CLUSTER_DEPLOYMENT_ENABLED", "false")
 
 
 def allow(_topology):
@@ -294,6 +325,98 @@ def test_the_warning_is_still_advisory_and_is_not_the_refusal():
     assert not any("keeps data" in r for r in existing.reasons), (
         "the stateful warning is not a refusal reason")
     assert "cannot deploy workloads into" in existing.reasons[0]
+
+
+# --- the switch, in its other position ---------------------------------------
+#
+# What a deployment actually gets today. Same selections, same clusters, same
+# assertions asked the other way round.
+
+
+@pytest.fixture()
+def offered(monkeypatch):
+    monkeypatch.setenv("CLUSTER_DEPLOYMENT_ENABLED", "true")
+
+
+def test_the_switch_is_on_by_default(monkeypatch):
+    """THE DECISION, asserted rather than described. Asked on 2026-09-11 to
+    build the portal as though the network route existed, and this is what that
+    means in code."""
+    monkeypatch.delenv("CLUSTER_DEPLOYMENT_ENABLED", raising=False)
+    assert placement_mod.cluster_deployment_offered() is True
+
+
+def test_with_it_on_a_cluster_layout_can_be_chosen(offered):
+    options = options_for(KUBERNETES_SELECTION, assess_clusters([MINE], SCOPE, SMALL))
+
+    for key in (EXISTING_CLUSTER_OPTION, NEW_CLUSTER_OPTION):
+        assert options[key].eligible is True, f"{key}: {options[key].reasons}"
+        assert not options[key].reasons, key
+
+
+def test_a_new_cluster_carries_the_cluster_and_the_workloads_separately(offered):
+    """Two hosts, not one. The cluster is a managed service the cloud runs; the
+    workloads are containers that land on it. One combined container host would
+    price the control plane as a workload and lose the cluster from the picture
+    the requester is shown."""
+    new = options_for(KUBERNETES_SELECTION, ())[NEW_CLUSTER_OPTION]
+    by_mode = {h.host_mode: h for h in new.hosts}
+
+    assert by_mode[HOST_MANAGED].components == ("oci-oke",)
+    assert set(by_mode[HOST_CONTAINER].components) == {"postgres16", "nodejs20"}
+
+
+def test_the_cluster_is_still_never_placed_inside_a_cluster(offered):
+    """The invariant survives the switch: a cluster on a container host would be
+    a cluster inside a cluster."""
+    for option in enumerate_options(KUBERNETES_SELECTION,
+                                    assess_clusters([MINE], SCOPE, SMALL)):
+        for host in option.hosts:
+            if "oci-oke" in host.components:
+                assert host.host_mode != HOST_CONTAINER, option.key
+
+
+def test_entitlement_decides_once_deployment_no_longer_does(offered):
+    """The dormant machinery wakes up. While nothing could deploy anywhere, which
+    cluster a requester may use decided nothing; now it is the only question
+    left, and offering one they are not entitled to would be found at the
+    cluster rather than at the form."""
+    quota = Quota(label="EGATE vCPU ceiling", limit=100, used=98)
+    refused = options_for(KUBERNETES_SELECTION,
+                          assess_clusters([MINE], SCOPE, SMALL, [quota]))[EXISTING_CLUSTER_OPTION]
+
+    assert refused.eligible is False
+    assert any("98 of 100" in r for r in refused.reasons), refused.reasons
+    assert refused.clusters, "and the cluster is still listed, not hidden"
+
+
+def test_one_usable_cluster_is_enough(offered):
+    full = Cluster(id="c-3", name="oke-egate-full", region="me-dubai-1",
+                   project_code="EGATE", allocatable_vcpu=1,
+                   allocatable_memory_gb=1)
+    existing = options_for(KUBERNETES_SELECTION,
+                           assess_clusters([MINE, full], SCOPE, SMALL))[EXISTING_CLUSTER_OPTION]
+
+    assert existing.eligible is True
+    assert len(existing.clusters) == 2, "both still listed"
+    assert sum(1 for c in existing.clusters if c.eligible) == 1
+
+
+def test_the_stateful_warning_still_is_not_a_refusal(offered):
+    """Now that the option CAN be chosen, the warning matters more rather than
+    less: it is the whole point of seeing the choice made knowingly."""
+    existing = options_for(KUBERNETES_SELECTION,
+                           assess_clusters([MINE], SCOPE, SMALL))[EXISTING_CLUSTER_OPTION]
+
+    assert existing.eligible is True
+    assert any("postgres16 keeps data" in w for w in existing.warnings)
+    assert not existing.reasons
+
+
+def test_a_kubernetes_request_still_has_something_it_can_choose(offered):
+    for selection in (KUBERNETES_SELECTION, [OKE], [OKE, NODEJS]):
+        options = enumerate_options(selection, ())
+        assert any(o.eligible for o in options), [c.code for c in selection]
 
 
 def test_a_stateless_workload_is_not_warned_about():

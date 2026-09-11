@@ -292,7 +292,16 @@ def test_the_cluster_provider_is_read_from_the_blueprint(db):
     assert facts["nodejs20"].provides_cluster is False
 
 
-def test_the_refusal_reaching_the_browser_is_the_deployment_one(client, db):
+@pytest.fixture()
+def deployment_refused(monkeypatch):
+    """The cluster switch OFF. The three tests below describe that position, and
+    it is no longer the default -- see api.placement.cluster_deployment_offered
+    and test_cluster_options for the decision that changed it."""
+    monkeypatch.setenv("CLUSTER_DEPLOYMENT_ENABLED", "false")
+
+
+def test_the_refusal_reaching_the_browser_is_the_deployment_one(
+        client, db, deployment_refused):
     """It used to be the discovery gap, which was the truthful answer while
     deploying into a cluster was assumed possible. It is not: the Kubernetes API
     endpoint is private and the orchestrator has no route to it, so which clusters
@@ -313,7 +322,8 @@ def test_the_refusal_reaching_the_browser_is_the_deployment_one(client, db):
     assert "Ask for the cluster on its own" in existing["reasons"][0]
 
 
-def test_choosing_an_existing_cluster_without_naming_one_is_refused(client, db):
+def test_choosing_an_existing_cluster_without_naming_one_is_refused(
+        client, db, deployment_refused):
     _make_kubernetes_request(db)
     r = client.post("/api/placement/resolve",
                     json={"reference": "REQ-2026-9002",
@@ -335,7 +345,7 @@ def test_naming_a_cluster_on_an_option_that_does_not_use_one_is_refused(client, 
     assert "does not deploy onto one" in r.json()["detail"]
 
 
-def test_a_cluster_option_cannot_be_resolved_at_all(client, db):
+def test_a_cluster_option_cannot_be_resolved_at_all(client, db, deployment_refused):
     """Nothing deploys into a cluster, so neither option can be chosen however
     the request body is written — the same property P.9 defends for a
     policy-refused layout."""

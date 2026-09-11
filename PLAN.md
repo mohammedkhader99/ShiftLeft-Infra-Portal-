@@ -766,15 +766,56 @@ fixture and calls it a capture. A third failure was the harness's own regex:
 `/0\s*vCPU/` matched the zero in "10 vCPU", and only fired once the fixtures
 carried real sizes.
 
-**Still to come, and neither is started.** *U.2* — the Kubernetes route becomes
-selectable rather than refused: `placement.py` stops refusing cluster layouts and
-the catalogue gains container host-mode rows so they can be sized. Decided by the
-platform owner on 2026-09-11, knowing a request that picks it passes approval and
-then fails at provisioning until the network route exists, and knowing the sizing
-figures would be derived rather than measured. **The orchestrator's container-host
-guard stays either way** — removing it does not make the cluster path work, it
-makes a container host resolve to `oci-service-vm` and build a lone machine with
-no cluster while reporting success, which has happened once already. *U.3* — the
+**U.2 — the Kubernetes route can be chosen.** *Done 2026-09-11.*
+`api.placement.cluster_deployment_offered()` is a switch, default ON, and with
+it on both cluster layouts resolve, price and can be recorded. A new-cluster
+layout carries TWO hosts — the cluster as the managed service the cloud runs,
+and the workloads as containers on it — because one combined container host
+would price the control plane as a workload and lose the cluster from the
+picture the requester is shown.
+
+*What ON costs, stated before it was chosen and again here.* A request that
+picks Kubernetes passes approval and then FAILS AT PROVISIONING. Asked whether
+to offer the route, grey it out, or build as though the network route existed,
+the platform owner chose the third with that consequence on the table. The
+switch is how it is reversed without another code change, and how it becomes
+truthful rather than optimistic the day the route is opened.
+*The orchestrator's guard did not move.* Removing it does not make the cluster
+path work — it makes a container host resolve to `oci-service-vm` and build a
+lone machine with no cluster while reporting success, which happened once
+already. Its refusal now names why the layout was offered and what makes it
+buildable.
+*Entitlement woke up.* While nothing could deploy anywhere, which cluster a
+requester may use decided nothing, so `api.clusters` sat dormant with a test
+saying so. It is now the only question left: a cluster the requester is not
+entitled to, or one over quota, refuses the layout with its own reason rather
+than being discovered at the cluster.
+*No invented sizing figures.* `HOST_MODE_BASELINE` is deliberately per (host
+mode, size) rather than per technology, and already carried container rows. What
+changed is which technologies DECLARE a container form: software now declares
+both, because "PostgreSQL can run as an image" is a fact about the software and
+"the platform can deploy it" is a separate question answered separately.
+*The twelve tests asserting the old refusal were not deleted.* They describe the
+switch OFF, which is still exactly true there, and now pin it; a new section
+covers ON, including that ON is the default.
+
+**A defect found on the way, NOT fixed, and never a Kubernetes problem.** Nine
+technologies — gitea, grafana, haproxy, mariadb, memcached, minio, prometheus,
+traefik, valkey — are in the live `technology` table and in `DELIVERY` as
+software, but missing from the seed's `TECHNOLOGIES` list, so the derivation
+skips them and **they have no host mode at all**. They cannot be sized on ANY
+route. That is what a requester saw as "Size not determined — no requirement for
+minio" beneath a VIRTUAL MACHINE.
+
+Defaulting their clouds was tried and reverted the same hour:
+`test_host_modes_are_only_offered_on_clouds_the_technology_supports` refused it,
+rightly, because a technology absent from `TECHNOLOGIES` has no declared clouds
+and every cloud is then a guess. Their rows are `certified` with `resource_kind`
+still on the `oci-bucket` DEFAULT nobody set, which says half-created rather than
+proved — so **whether they should be offered at all is the question**, and giving
+them host modes would answer the opposite one. Needs a decision, not a patch.
+
+**Still to come.** *U.2 is done; U.3* — the
 pipeline after confirmation: Agent, Blueprint, Terraform, Validate, Plan,
 Security/Policy, Provision, Verify, Ready.
 

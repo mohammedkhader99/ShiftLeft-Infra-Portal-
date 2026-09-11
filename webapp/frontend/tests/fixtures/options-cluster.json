@@ -3,7 +3,7 @@
     "key": "existing-cluster",
     "route": "kubernetes",
     "title": "Deploy onto an existing cluster",
-    "summary": "The portal cannot deploy into a cluster.",
+    "summary": "Workloads run as containers on a cluster you already have.",
     "hosts": [
       {
         "id": "existing-cluster",
@@ -15,10 +15,8 @@
       }
     ],
     "host_count": 1,
-    "eligible": false,
-    "reasons": [
-      "The portal can provision a cluster, but it cannot deploy workloads into one: the Kubernetes API endpoint is private and the orchestrator has no route to it. Ask for the cluster on its own and deploy nodejs20, postgres16 into it yourself, or choose a layout that builds machines."
-    ],
+    "eligible": true,
+    "reasons": [],
     "clusters": [
       {
         "id": "ocid1.cluster.oc1.me-dubai-1.mock-egate-dev",
@@ -174,10 +172,17 @@
     "key": "new-cluster",
     "route": "kubernetes",
     "title": "Provision a new cluster",
-    "summary": "The portal cannot deploy into a cluster it builds.",
+    "summary": "A new oci-oke cluster, with your workloads running on it as containers.",
     "hosts": [
       {
         "id": "new-cluster",
+        "host_mode": "managed",
+        "components": [
+          "oci-oke"
+        ]
+      },
+      {
+        "id": "cluster-workloads",
         "host_mode": "container",
         "components": [
           "nodejs20",
@@ -186,10 +191,8 @@
       }
     ],
     "host_count": 1,
-    "eligible": false,
-    "reasons": [
-      "The portal can provision a cluster, but it cannot deploy workloads into one: the Kubernetes API endpoint is private and the orchestrator has no route to it. Ask for the cluster on its own and deploy nodejs20, postgres16 into it yourself, or choose a layout that builds machines."
-    ],
+    "eligible": true,
+    "reasons": [],
     "clusters": [],
     "warnings": [
       "postgres16 keeps data. On Kubernetes its storage, failover and backups become your team's responsibility rather than the platform's. The cloud's managed postgres16 carries none of that \u2014 it is offered as 'Managed where available'."
@@ -198,6 +201,22 @@
       "hosts": [
         {
           "host_id": "new-cluster",
+          "host_mode": "managed",
+          "components": [
+            "oci-oke"
+          ],
+          "resolved": true,
+          "base": null,
+          "headroom_percent": 20,
+          "missing": [],
+          "vcpu": null,
+          "memory_gb": null,
+          "storage_gb": null,
+          "iops": null,
+          "note": "Run by the cloud. No machine is provisioned and nothing is added to the totals."
+        },
+        {
+          "host_id": "cluster-workloads",
           "host_mode": "container",
           "components": [
             "nodejs20",
@@ -276,7 +295,46 @@
           "annual": 8405.62
         }
       },
-      "managed": null,
+      "managed": {
+        "currency": "AED",
+        "unpriced": [],
+        "provisional": [],
+        "external_licences": [],
+        "deployment_target": "oci",
+        "known_target": true,
+        "pricing_source": "mock",
+        "lines": [
+          {
+            "technology_name": "OCI Container Engine (OKE)",
+            "size": "medium",
+            "resolved": true,
+            "provisional": false,
+            "resource_kind": "oci-oke",
+            "billing_model": "cluster",
+            "unpriceable": null,
+            "compute_monthly": 590.28,
+            "storage_monthly": 13.6,
+            "resource_monthly": 603.88,
+            "licence_monthly": 0.0,
+            "external_licence": null,
+            "one_time": 0.0,
+            "monthly": 603.88
+          }
+        ],
+        "by_category": {
+          "compute": 590.28,
+          "storage": 13.6,
+          "licence": 0.0,
+          "backup": 0.0,
+          "monitoring": 0.0,
+          "support": 0.0
+        },
+        "totals": {
+          "one_time": 0.0,
+          "monthly": 603.88,
+          "annual": 7246.58
+        }
+      },
       "licences": [
         {
           "technology_code": "postgres16",
@@ -300,6 +358,22 @@
           "external_licence": null,
           "one_time": 0.0,
           "monthly": 700.47
+        },
+        {
+          "technology_name": "OCI Container Engine (OKE)",
+          "size": "medium",
+          "resolved": true,
+          "provisional": false,
+          "resource_kind": "oci-oke",
+          "billing_model": "cluster",
+          "unpriceable": null,
+          "compute_monthly": 590.28,
+          "storage_monthly": 13.6,
+          "resource_monthly": 603.88,
+          "licence_monthly": 0.0,
+          "external_licence": null,
+          "one_time": 0.0,
+          "monthly": 603.88
         }
       ],
       "unpriced": [],
@@ -308,8 +382,8 @@
       ],
       "external_licences": [],
       "by_category": {
-        "compute": 680.07,
-        "storage": 20.4,
+        "compute": 1270.35,
+        "storage": 34.0,
         "licence": 0.0,
         "backup": 0.0,
         "monitoring": 0.0,
@@ -318,18 +392,18 @@
       "resolved": true,
       "totals": {
         "one_time": 0.0,
-        "monthly": 700.47,
-        "annual": 8405.64
+        "monthly": 1304.35,
+        "annual": 15652.2
       }
     },
     "resolved": true,
     "totals": {
       "one_time": 0.0,
-      "monthly": 700.47,
-      "annual": 8405.64
+      "monthly": 1304.35,
+      "annual": 15652.2
     },
-    "monthly_delta": 0.0,
-    "cheapest": true
+    "monthly_delta": 603.88,
+    "cheapest": false
   },
   {
     "key": "managed",
