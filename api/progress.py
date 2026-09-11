@@ -210,6 +210,30 @@ def build(status: str, entries, status_detail: str | None = None) -> list[dict]:
             "evidence": evidence or None,
         })
 
+    # A STEP CANNOT BE "NOT YET" WHEN A LATER ONE HAS HAPPENED.
+    #
+    # Found by running this against a real request rather than a fixture:
+    # REQ-2026-0305 came back with "Blueprint — not yet" sitting directly above
+    # "Terraform selected — done". Each stage was individually truthful — one had
+    # an event, the other did not — and together they described something
+    # impossible, which is worse than either being wrong on its own.
+    #
+    # The `reached` rule above catches this from the STATUS, but a status is a
+    # coarse thing and `cost-changed` maps to position 1 while the trail shows
+    # the request got to the handoff. Evidence from a later stage is the better
+    # witness, so it is used here.
+    #
+    # Still no invented time: these become `done` with nothing beside them, which
+    # is exactly what "it happened and nothing recorded when" should look like.
+    # `skipped` is left alone -- it did not happen, and a later step proves
+    # nothing about a step that was never going to run.
+    passed = False
+    for entry in reversed(out):
+        if entry["state"] in (DONE, FAILED, CURRENT):
+            passed = True
+        elif passed and entry["state"] == PENDING:
+            entry["state"] = DONE
+
     # The sentence the request itself carries, attached to wherever it stopped,
     # because that is where somebody looking at a stalled pipeline will look.
     if status_detail:

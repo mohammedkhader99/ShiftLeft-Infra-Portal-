@@ -250,3 +250,63 @@ def test_every_stage_names_an_event_something_actually_writes():
     unknown = sorted(referenced - emitted)
 
     assert not unknown, f"stages keyed on events nothing writes: {unknown}"
+
+
+# --- the picture has to be coherent as a whole -------------------------------
+#
+# Found by running the endpoint against a real request rather than a fixture.
+# REQ-2026-0305 came back with "Blueprint — not yet" directly above "Terraform
+# selected — done". Each stage was individually truthful; together they
+# described something impossible.
+
+def test_a_step_is_not_pending_when_a_later_one_has_happened(session, client):
+    a_request(session, status="cost-changed")
+    trail(session, "REQ-PROGRESS-1", "approval.approved", "orchestrator.handoff")
+    got = stages(client, "REQ-PROGRESS-1")
+
+    assert got["terraform"]["state"] == "done", "the trail says it reached the handoff"
+    assert got["blueprint"]["state"] == "done", (
+        "and a step before that one cannot still be 'not yet'")
+    assert got["blueprint"]["at"] is None, "still no invented time"
+
+
+def test_nothing_after_the_last_thing_that_happened_is_filled_in(session, client):
+    """The rule reaches backwards only. Steps genuinely still to come stay
+    pending, or the whole view would claim the request had finished."""
+    a_request(session, status="in-progress")
+    trail(session, "REQ-PROGRESS-1", "approval.approved", "provisioning.started")
+    got = stages(client, "REQ-PROGRESS-1")
+
+    assert got["verify"]["state"] == "pending"
+    assert got["ready"]["state"] == "pending"
+
+
+def test_a_skipped_step_stays_skipped(session, client):
+    """A later step proves nothing about one that was never going to run."""
+    a_request(session, status="manual-fulfil")
+    trail(session, "REQ-PROGRESS-1", "approval.approved", "fulfilment.manual")
+    got = stages(client, "REQ-PROGRESS-1")
+
+    assert got["terraform"]["state"] == "skipped"
+
+
+def test_the_states_read_in_order_for_any_request(session, client):
+    """The invariant behind all three: done and failed steps come first, then
+    whatever is current, then what has not happened. No gaps."""
+    for n, (status, events) in enumerate([
+        ("submitted", ("approval.checked",)),
+        ("auto-building", ("approval.approved", "autobuild.started")),
+        ("planned", ("approval.approved", "orchestrator.handoff", "plan.previewed")),
+        ("apply-failed", ("approval.approved", "orchestrator.handoff", "apply.failed")),
+        ("provisioned", ("approval.approved", "provisioned")),
+    ]):
+        ref = f"REQ-ORDER-{n}"
+        a_request(session, reference=ref, status=status)
+        trail(session, ref, *events)
+        states = [s["state"] for s in
+                  client.get(f"/api/requests/{ref}/progress").json()["stages"]]
+
+        settled = [i for i, s in enumerate(states) if s in ("done", "failed", "skipped")]
+        pending = [i for i, s in enumerate(states) if s == "pending"]
+        if settled and pending:
+            assert max(settled) < min(pending), f"{status}: {states}"
