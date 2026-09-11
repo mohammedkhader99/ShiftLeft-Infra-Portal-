@@ -194,9 +194,18 @@ def test_decommissioning_a_different_component_is_allowed(db):
 
 def test_a_failed_request_does_not_block_a_retry_forever(db):
     """The commonest reason to raise the same request twice is that the first
-    one failed. Blocking on it would make recovery impossible."""
+    one failed. Blocking on it would make recovery impossible.
+
+    `teardown-failed` IS THE STATUS A FAILED DECOMMISSION ACTUALLY GETS. This
+    read `decommission-failed` — nineteen characters, a status this system has
+    never set, and one `varchar(16)` cannot hold. It was the last live use of
+    the value that caused the 2026-09-09 incident, and it survived here because
+    SQLite does not enforce VARCHAR: the test built a request in a state
+    production cannot produce and proved nothing about the recovery path it
+    names. Found on 2026-09-11 when the model began enforcing the width itself.
+    """
     _existing(db, "REQ-2026-0121", "decommission", ["nginx"],
-              status="decommission-failed")
+              status="teardown-failed")
     assert validate_submission(_submitting("decommission", ["nginx"]), db) == {}
 
 

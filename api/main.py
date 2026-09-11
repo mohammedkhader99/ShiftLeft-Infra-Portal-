@@ -5592,8 +5592,11 @@ def _provision_in_background(reference: str, jira_key: str, body: bytes, signatu
             # would let every test pass. 'decommission-failed' was exactly that,
             # sitting unexploded until the first decommission failed.
             req.status = "verify-failed"
-            # status_detail is varchar(500) and a machine can list many problems.
-            req.status_detail = outcome["summary"][:500]
+            # A machine can list many problems, and the column is finite. The
+            # trim is the model's now (db.models.Request._fits_the_column), read
+            # from the column itself, so it cannot drift from the width the
+            # database actually enforces the way the one below this did.
+            req.status_detail = outcome["summary"]
             append_audit(session, outcome["event"], reference=reference, jira_key=jira_key,
                          detail=outcome["detail"])
             add_comment(jira_key, "⚠️ The infrastructure was created, but the machine "
@@ -5839,11 +5842,19 @@ def cancel_request(reference: str, body: CancelIn,
     # BECAUSE of what that field said, and "Cancelled by X" on its own turns a
     # diagnosis into a shrug. REQ-2026-0176 lost "quoted 0.00 AED for an
     # unpriceable component" that way.
+    #
+    # THIS TRIMMED TO 2000 AGAINST A varchar(500) COLUMN. A long enough cancel
+    # reason passed the trim and was then refused by PostgreSQL, rolling back
+    # the cancel -- the same shape as the nineteen-character status that went
+    # into varchar(16) and orphaned the request it was protecting. SQLite does
+    # not enforce VARCHAR, so nothing here ever failed.
+    #
+    # The trim now belongs to the model, which reads the column's own width.
     req.status_detail = " ".join(filter(None, [
         f"Cancelled by {actor}. Nothing was created.",
         f"Reason: {reason}" if reason else "",
         f"Before cancelling: {before}" if before else "",
-    ]))[:2000]
+    ]))
 
     # The ticket is the system of record, so it must not be left open behind a
     # closed request. A comment always; the transition only if Jira offers one,

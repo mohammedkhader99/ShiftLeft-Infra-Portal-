@@ -14,7 +14,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 
 from sqlalchemy import JSON, Boolean, Date, DateTime, ForeignKey, Integer, Numeric, String
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 
 from db.session import Base
 
@@ -291,6 +291,53 @@ class Request(Base):
     # A short human-readable reason for the current status (e.g. why an apply
     # failed), surfaced in the portal. Null unless there's something to explain.
     status_detail: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+    @validates("status", "status_detail")
+    def _fits_the_column(self, key: str, value):
+        """Keep these two inside the width the database will actually accept.
+
+        WHY THIS IS ON THE MODEL RATHER THAN AT THE FORTY-FOUR PLACES THAT WRITE
+        IT. On 2026-09-09 a nineteen-character status went into `varchar(16)`.
+        The cost guard fired exactly as designed, then could not write its own
+        verdict:
+
+            StringDataRightTruncation: value too long for character varying(16)
+
+        The transaction rolled back, the request stayed `auto-building`, and
+        `auto-building` is not in QUEUED_STATUSES -- so the sweep never looked at
+        it again. A guard whose only failure mode is orphaning the request it was
+        protecting is worse than no guard.
+
+        SQLITE DOES NOT ENFORCE VARCHAR LENGTHS, which is why the whole suite
+        passed while PostgreSQL would have refused the write. That is the part
+        this fixes: the check now happens in Python, so the tests meet the same
+        limit production does.
+
+        THE TWO COLUMNS ARE TREATED DIFFERENTLY, ON PURPOSE.
+
+        `status_detail` is prose for a person, and losing its tail is a far
+        smaller harm than losing the write that carries it -- so it is trimmed,
+        visibly, with an ellipsis. The messages put what matters first.
+
+        `status` is not prose. A truncated status is a value nothing in the state
+        machine handles, and quietly writing one would turn a loud failure into a
+        request that sits in a state no sweep collects -- which is the original
+        incident, reproduced by the fix for it. So it RAISES, at the assignment,
+        naming the column and the value, instead of surfacing minutes later as a
+        database error inside somebody else's transaction.
+
+        The limit is read from the column, so widening it needs no change here.
+        """
+        if value is None:
+            return None
+        limit = type(self).__table__.columns[key].type.length
+        if limit is None or len(value) <= limit:
+            return value
+        if key == "status_detail":
+            return value[: limit - 1] + "…"
+        raise ValueError(
+            f"{type(self).__name__}.{key} holds at most {limit} characters; "
+            f"got {len(value)}: {value!r}")
     # Consecutive failed handoffs to the orchestrator. The poller retries every
     # cycle, which is right for a transient error and wrong for a permanent one:
     # a request needing a setting nobody has set retried forever, several times a

@@ -628,13 +628,39 @@ number, so nothing had to be added to hold it again.
 cancelled request stops quoting a monthly cost it is never going to incur, and
 batched into the list query because that list is polled every few seconds.
 
-**H.4 — `status_detail` is `String(500)` and this message is 408 characters.
-NOT DONE.** Noticed while reading H.3. Not a bug today. But this is the same
-column family that once held `"awaiting-reapproval"` in a `varchar(16)` and
-could not write its own verdict, rolling back the transaction and orphaning the
-request the guard was protecting — and SQLite does not enforce VARCHAR lengths,
-so the whole suite passed. 82% full is a thin margin for a sentence that
-interpolates a figure. Worth a look, not a panic.
+**H.4 — the column enforces its own width now.** *Done 2026-09-11.*
+Raised as a thin margin: `status_detail` is `String(500)` and the cost guard's
+sentence is 408 characters. The margin was fine. Two other things were not.
+
+*A trim written against the wrong number.* `api/main.py` cut the cancel reason
+to `[:2000]` for a `varchar(500)` column. A long enough reason passed the trim
+and would then have been refused by PostgreSQL, rolling back the cancel —
+written by somebody guarding against exactly this and picking the wrong limit.
+*The guard moved to the model, where no write site can get it wrong.* There are
+forty-four places that set `status_detail`. `Request._fits_the_column` reads the
+column's own width, so widening it needs no second edit — and that second edit
+is the one nobody makes.
+*The two columns are treated differently on purpose.* `status_detail` is prose
+for a person, so it is TRIMMED, visibly, with an ellipsis: losing its tail is a
+far smaller harm than losing the write that carries it. `status` RAISES — a
+truncated status is a value nothing in the state machine handles, and writing
+one quietly would reproduce the 2026-09-09 incident through its own fix.
+*And the tests now meet the limit production does.* SQLite does not enforce
+VARCHAR, which is why both previous incidents passed a full suite. The check
+happens in Python.
+
+**What it found on its first run, which is the point.** The last live use of
+`decommission-failed` — the nineteen-character value behind the original
+incident — was still in `test_a_failed_request_does_not_block_a_retry_forever`,
+building a request in a state production cannot produce. A test named for the
+recovery path was proving nothing about it. It now uses `teardown-failed`, which
+is what a failed decommission actually gets.
+
+**Three layers of one fault, each fix blind to the next.** Production wrote a
+19-character status into `varchar(16)`; the first fix was an AST scan over
+`api/*.py`, which never looked at tests; the model now enforces the width for
+both. *A check that validates what it looks at cannot see what it doesn't* —
+fifth entry.
 
 **H.5 — the editor discarded a drag it had already made.** *Done 2026-09-11.*
 Reported from a screen: "When I moved the DB to a new VM it is not actually
