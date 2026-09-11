@@ -10,7 +10,7 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import sessionmaker
 
 from db.models import CostCentre, Project, RateCard, SizingAnchor, Technology
-from db.seed import seed
+from db.seed import SIZES, TECHNOLOGIES, seed
 from db.session import Base
 
 
@@ -27,9 +27,14 @@ def test_seed_populates_reference_data(session):
     seed(session)
     assert session.scalar(select(func.count()).select_from(Project)) == 3
     assert session.scalar(select(func.count()).select_from(CostCentre)) == 3
-    assert session.scalar(select(func.count()).select_from(Technology)) == 48  # +24 add-ons + cloud services + mysql + oracle-free
-    # 48 technologies * 4 sizes (incl. xlarge) = 192 sizing anchors.
-    assert session.scalar(select(func.count()).select_from(SizingAnchor)) == 192
+    # COUNTED FROM THE LIST, NOT PINNED TO A NUMBER. These read 48 and 192 with
+    # the arithmetic in a comment, so adding nine technologies that had been
+    # missing from the catalogue list broke two tests that were not about those
+    # technologies at all. The property worth holding is the RELATIONSHIP: every
+    # technology is seeded, and every one gets an anchor at every size.
+    assert session.scalar(select(func.count()).select_from(Technology)) == len(TECHNOLOGIES)
+    assert (session.scalar(select(func.count()).select_from(SizingAnchor))
+            == len(TECHNOLOGIES) * len(SIZES))
     # +3 cloud_aws +3 cloud_gcp, then +4 OCI non-VM lines (bucket storage and
     # its free allowance, the OKE cluster fee, the managed-PostgreSQL vCPU
     # rate) — without which a bucket was billed a virtual machine's compute.
@@ -55,7 +60,8 @@ def test_seed_is_idempotent(session):
     seed(session)
     seed(session)
     assert session.scalar(select(func.count()).select_from(Project)) == 3
-    assert session.scalar(select(func.count()).select_from(SizingAnchor)) == 192
+    assert (session.scalar(select(func.count()).select_from(SizingAnchor))
+            == len(TECHNOLOGIES) * len(SIZES))
 
 
 def test_lifecycle_states_present(session):

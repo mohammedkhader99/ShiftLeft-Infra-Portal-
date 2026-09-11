@@ -825,7 +825,8 @@ both, because "PostgreSQL can run as an image" is a fact about the software and
 switch OFF, which is still exactly true there, and now pin it; a new section
 covers ON, including that ON is the default.
 
-**A defect found on the way, NOT fixed, and never a Kubernetes problem.** Nine
+**H.8 — the nine technologies that could not be sized.** *Done 2026-09-11.*
+Nine
 technologies — gitea, grafana, haproxy, mariadb, memcached, minio, prometheus,
 traefik, valkey — are in the live `technology` table and in `DELIVERY` as
 software, but missing from the seed's `TECHNOLOGIES` list, so the derivation
@@ -836,10 +837,29 @@ minio" beneath a VIRTUAL MACHINE.
 Defaulting their clouds was tried and reverted the same hour:
 `test_host_modes_are_only_offered_on_clouds_the_technology_supports` refused it,
 rightly, because a technology absent from `TECHNOLOGIES` has no declared clouds
-and every cloud is then a guess. Their rows are `certified` with `resource_kind`
-still on the `oci-bucket` DEFAULT nobody set, which says half-created rather than
-proved — so **whether they should be offered at all is the question**, and giving
-them host modes would answer the opposite one. Needs a decision, not a patch.
+and every cloud is then a guess.
+
+**I then read the defect wrong, and the correction is the useful part.** They
+were recorded here as "certified with `resource_kind` still on the `oci-bucket`
+DEFAULT nobody set, which says half-created rather than proved", and offered as a
+decision: withdraw them, or offer them properly.
+
+There was no decision. All nine carry CERTIFIED BLUEPRINTS on `oci-service-vm`
+and real certification proofs in this database — minio 5, grafana 5, gitea 4,
+mariadb 4, memcached 3, valkey 3, prometheus 2, traefik 2, haproxy 1. They were
+proved on real machines through the agent's own ladder. The `oci-bucket` I read
+as evidence sits on `technology.resource_kind`, a column whose own docstring says
+it "exists and is wrong for most components" and which nothing consults for this;
+the blueprint carries the real kind. A default value was mistaken for a finding.
+
+*The fix is nine lines*, adding them to `TECHNOLOGIES` so `_derived_host_modes`
+stops skipping them. No new shapes: `HOST_MODE_BASELINE` is per (host mode, size)
+and already carried every row they need. **A reseed is required** for an existing
+database — the seed inserts what is missing and touches nothing else.
+*Two seed tests pinned `48` technologies and `192` anchors as literals*, so
+adding technologies they were not about broke them. They now assert
+`len(TECHNOLOGIES)` and `len(TECHNOLOGIES) * len(SIZES)` — the relationship,
+which is the property worth holding.
 
 **U.3 — where a request has got to.** *Done 2026-09-11.*
 Asked for as a picture of the pipeline: Agent, Blueprint, Terraform, Validate,

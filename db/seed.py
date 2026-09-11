@@ -383,6 +383,40 @@ TECHNOLOGIES = [
     {"code": "gcp-gke", "name": "Google Kubernetes Engine (GKE)", "lifecycle_state": "certified", "targets": "gcp"},
     {"code": "gcp-functions", "name": "Google Cloud Functions", "lifecycle_state": "certified", "targets": "gcp"},
     {"code": "gcp-firestore", "name": "Firestore", "lifecycle_state": "certified", "targets": "gcp"},
+
+    # --- IN `DELIVERY` AND IN THE CATALOGUE, AND MISSING FROM HERE ------------
+    #
+    # Added 2026-09-11. All nine were already in `DELIVERY` as software, already
+    # in the live `technology` table, and already selectable on the form -- but
+    # absent from THIS list, so `_derived_host_modes` skipped them (it reads
+    # `targets` from here) and they got no host mode at all. With no host mode
+    # there is no requirement row, so none of them could be SIZED on any route.
+    #
+    # That is what a requester saw as "Size not determined -- no requirement for
+    # minio" beneath a virtual machine. It was never a Kubernetes problem, and
+    # the Kubernetes work merely made it visible.
+    #
+    # PROVED, NOT ASSUMED. They were first read as half-finished rows because
+    # `technology.resource_kind` still holds the `oci-bucket` default nobody
+    # set. That column is a red herring -- `resource_kind_for`'s own docstring
+    # says it "exists and is wrong for most components", and nothing consults it
+    # for this. Each of these carries a CERTIFIED BLUEPRINT on `oci-service-vm`
+    # and real certification proofs in this database: minio 5, grafana 5,
+    # gitea 4, mariadb 4, memcached 3, valkey 3, prometheus 2, traefik 2,
+    # haproxy 1. They earned their place; they were simply never written down
+    # in the one list that grants a host mode.
+    #
+    # No new shapes are introduced. HOST_MODE_BASELINE is per (host mode, size)
+    # and already carries every row these need.
+    {"code": "gitea", "name": "Gitea", "lifecycle_state": "certified"},
+    {"code": "grafana", "name": "Grafana", "lifecycle_state": "certified"},
+    {"code": "haproxy", "name": "HAProxy", "lifecycle_state": "certified"},
+    {"code": "mariadb", "name": "MariaDB", "lifecycle_state": "certified"},
+    {"code": "memcached", "name": "Memcached", "lifecycle_state": "certified"},
+    {"code": "minio", "name": "MinIO", "lifecycle_state": "certified"},
+    {"code": "prometheus", "name": "Prometheus", "lifecycle_state": "certified"},
+    {"code": "traefik", "name": "Traefik", "lifecycle_state": "certified"},
+    {"code": "valkey", "name": "Valkey", "lifecycle_state": "certified"},
 ]
 
 # Technologies that provision a stoppable OCI Compute instance (oci-instance)
