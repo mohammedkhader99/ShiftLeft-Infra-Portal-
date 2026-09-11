@@ -491,3 +491,37 @@ def test_neither_none_nor_empty_crashes_the_option():
     for clusters in (None, ()):
         option = options_for(KUBERNETES_SELECTION, clusters)[EXISTING_CLUSTER_OPTION]
         assert option.clusters == ()
+
+
+def test_an_existing_cluster_layout_needs_an_existing_cluster(offered):
+    """FOUND BY CHECKING A REAL REQUEST BEFORE DESCRIBING IT (2026-09-11).
+
+    With deployment offered and discovery finding nothing, "Deploy onto an
+    existing cluster" came back ELIGIBLE, summarised as "on a cluster you
+    already have", for a requester who has none. Selecting it passed the
+    workspace and failed at submit with "requires naming one" -- offering what
+    cannot be done, reintroduced by the change meant to end it.
+    """
+    existing = options_for(KUBERNETES_SELECTION, ())[EXISTING_CLUSTER_OPTION]
+
+    assert existing.eligible is False
+    assert "no kubernetes cluster was found" in existing.reasons[0].lower()
+    assert "Provision a new cluster" in existing.reasons[0], "it names the way out"
+
+
+def test_nobody_looking_reads_differently_from_finding_none(offered):
+    """Two different answers deserve two different sentences: discovery that was
+    never run is not the same as a requester who has no cluster."""
+    unlooked = {o.key: o for o in enumerate_options(KUBERNETES_SELECTION, None)}
+    existing = unlooked[EXISTING_CLUSTER_OPTION]
+
+    assert existing.eligible is False
+    assert "could not list existing clusters" in existing.reasons[0]
+
+
+def test_a_new_cluster_is_still_offered_when_there_is_none(offered):
+    """The way out has to actually be there. Refusing both would leave a
+    Kubernetes request with no Kubernetes answer at all."""
+    new = options_for(KUBERNETES_SELECTION, ())[NEW_CLUSTER_OPTION]
+
+    assert new.eligible is True

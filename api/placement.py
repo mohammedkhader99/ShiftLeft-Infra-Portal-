@@ -475,8 +475,39 @@ def _existing_cluster_option(components: Sequence[ComponentFacts],
     # cluster the requester is not entitled to would be a worse failure than the
     # one it replaces, because it would be found at the cluster rather than at
     # the form.
+    # THERE HAS TO BE A CLUSTER TO DEPLOY ONTO.
+    #
+    # This fell through to `eligible` when discovery found NOTHING, so "Deploy
+    # onto an existing cluster" was offered — summarised as "on a cluster you
+    # already have" — to a requester who has none. Selecting it passed the
+    # workspace and failed at submit with "requires naming one", which is the
+    # offering-what-cannot-be-done fault this phase exists to end, reintroduced
+    # by the change that was meant to end it. Found on 2026-09-11 by checking a
+    # real request before describing what it would show.
+    #
+    # `None` and `()` are different answers and get different sentences: nobody
+    # looked, versus looked and found none. Neither is a cluster.
+    if not found:
+        return Option(
+            key=EXISTING_CLUSTER_OPTION,
+            title=OPTION_TITLES[EXISTING_CLUSTER_OPTION],
+            summary="There is no existing cluster to deploy onto.",
+            hosts=hosts,
+            eligible=False,
+            reasons=((
+                "No Kubernetes cluster was found for this request, so there is "
+                "nothing to deploy onto. Choose 'Provision a new cluster' to "
+                "have one built as part of this request."
+            ) if clusters is not None else (
+                "The portal could not list existing clusters, so it cannot say "
+                "which one this would land on. Choose 'Provision a new cluster' "
+                "to have one built as part of this request."
+            ),),
+            warnings=_cluster_warnings(workloads),
+        )
+
     usable = [c for c in found if getattr(c, "eligible", False)]
-    if found and not usable:
+    if not usable:
         refusals = tuple(dict.fromkeys(
             reason for c in found for reason in getattr(c, "reasons", ())))
         return Option(
