@@ -719,7 +719,38 @@ export default function MyRequests({ route }: { route: string }) {
                       </div>
                     </TableCell>
                     <TableCell>
-                      {r.estimate ? `${r.estimate.monthly.toFixed(2)} ${r.estimate.currency}` : '—'}
+                      {/* A HELD REQUEST COSTS WHAT IT COSTS NOW, not what it was
+                          approved at. This cell used to print the approved
+                          figure under a header that just says "Monthly", while
+                          the banner directly beneath it named a different
+                          number: REQ-2026-0305 read 916.13 here and 1141.73
+                          there. The live figure leads; the approved one stays
+                          visible, struck through, because it is still the
+                          record of what was agreed and deleting it would hide
+                          why the request is held at all. */}
+                      {r.repriced ? (
+                        <>
+                          <div>
+                            {r.repriced.monthly.toFixed(2)} {r.repriced.currency}
+                          </div>
+                          {r.estimate && (
+                            <div
+                              style={{
+                                textDecoration: 'line-through',
+                                color: 'var(--cds-text-secondary)',
+                                fontSize: '0.75rem',
+                              }}
+                              title={`Approved at ${r.estimate.monthly.toFixed(2)} ${r.estimate.currency}. This request is held because the price has since changed.`}
+                            >
+                              {r.estimate.monthly.toFixed(2)} {r.estimate.currency}
+                            </div>
+                          )}
+                        </>
+                      ) : r.estimate ? (
+                        `${r.estimate.monthly.toFixed(2)} ${r.estimate.currency}`
+                      ) : (
+                        '—'
+                      )}
                     </TableCell>
                     <TableCell>
                       <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>

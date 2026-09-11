@@ -507,7 +507,7 @@ it, after the requester had already pressed submit.
 
 ---
 
-## 5c. Found work — one HTTP client per process (added 2026-09-11)
+## 5c. Found work — defects met while doing something else (added 2026-09-11)
 
 Not a planned increment. Found while asking why the full suite took 1h44m on
 2026-09-10 and 18m10s the next morning, against 9m a fortnight earlier, with an
@@ -532,10 +532,23 @@ one. Once the client is reused the hostname becomes the larger remaining cost:
 `localhost` resolves to both `::1` and `127.0.0.1`, and on Windows the address
 Docker did not publish on is tried first. Both changes together, or neither is
 worth much.
-*This is not only a test problem.* 318ms of it is not network cost at all, so it
-is paid in the containers too — on every submit gate, every placement
-evaluation, and every orchestrator re-verification. Unmeasured inside the
-container, where the CA bundle read is likely cheaper.
+*Mostly a development-machine problem — measured, after an overstatement.* The
+first write-up of this said that because 318ms of the cost is not network cost,
+the containers must be paying it too. Measured inside the rebuilt `api`
+container against the `opa` service, they are not:
+
+| inside the container | per call |
+|---|---|
+| `httpx.post` per call (what we had) | 5.5 ms |
+| shared client (what we ship) | 1.6 ms |
+
+The client-construction cost is largely a Windows cost; on Linux the CA bundle
+read is cheap. So this is a large win for development and the test suite
+(804ms → 3.1ms) and a small one in production (5.5ms → 1.6ms — real, 3.4x, but
+milliseconds). Worth having, and worth not overselling: the reason to keep it is
+that building a client per request is wasteful everywhere, not that it was
+costing the containers a third of a second. The commit message for `c1658bc`
+carries the original overstatement and cannot be corrected in place.
 *The timeout stays with the caller.* Every call site still passes its own
 `timeout=`, so a slow dependency is bounded by the same number as before. A
 shared client must never become the place where one caller's patience quietly
@@ -558,6 +571,46 @@ it doesn't.* `conftest.py` pins auth, Jira, pricing, provisioning, cloud state
 and the database to mock, and reads as though it has covered everything — it
 covers what someone thought of. OPA and the registry were never in the list, so
 the suite has always reached out to both, and nothing said so.
+
+**H.3 — a held request quoted the price it was approved at.** *Done 2026-09-11.*
+Found in a screenshot of REQ-2026-0305. The cost guard had worked perfectly:
+minio could not be priced when the request was approved, it was certified
+automatically while the request was in flight, the real total came to 1141.73 a
+month against 916.13, and the portal refused to build at a cost nobody had
+agreed to. Then the screen said both numbers at once — the Monthly column read
+916.13 under a header that just says "Monthly", and the banner directly beneath
+it read 1141.73.
+
+*The browser could not have done better.* The list sent `{currency, monthly}`
+and the real figure existed nowhere structured: it was interpolated into an
+English sentence in `status_detail`. Parsing a price back out of prose in the
+browser would have been wrong twice over — the client holds no pricing logic,
+and prose is not an interface.
+*Both numbers stay, because they are different facts.* `estimate` is what was
+APPROVED and does not move: F-FIN-01 measures actuals against it and it records
+what somebody said yes to. `repriced` is what the request would cost now. The
+bug was having a field for only one of them. Overwriting the estimate until the
+screen agreed would have destroyed the record of the agreement — the fiction
+REQ-2026-0176 was approved on, running the other way.
+*Read, never recomputed.* The figure comes from the guard's own
+`cost.reapproval_requested` audit entry, which is append-only and hash-chained.
+Re-pricing at read time would let the cell drift from the sentence beneath it
+the moment a catalogue price moved — the same defect, rebuilt somewhere new.
+*No schema change.* `Estimate.request_id` is `unique=True`, so a request has
+exactly one estimate row by database constraint, and there is no migration tool
+— `create_all` adds tables and never columns. The audit log already held the
+number, so nothing had to be added to hold it again.
+*It appears only where it is true.* Attached for `cost-changed` rows only, so a
+cancelled request stops quoting a monthly cost it is never going to incur, and
+batched into the list query because that list is polled every few seconds.
+
+**H.4 — `status_detail` is `String(500)` and this message is 408 characters.
+NOT DONE.** Noticed while reading H.3. Not a bug today. But this is the same
+column family that once held `"awaiting-reapproval"` in a `varchar(16)` and
+could not write its own verdict, rolling back the transaction and orphaning the
+request the guard was protecting — and SQLite does not enforce VARCHAR lengths,
+so the whole suite passed. 82% full is a thin margin for a sentence that
+interpolates a figure. Worth a look, not a panic.
 
 ---
 

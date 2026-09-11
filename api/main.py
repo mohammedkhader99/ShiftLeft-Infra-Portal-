@@ -2704,6 +2704,16 @@ class RequestOut(BaseModel):
     # Cost variance (F-FIN-01): {estimate, actual, variance_pct, status} when an
     # actual has been recorded, else None. Attached by the list/get endpoints.
     variance: dict | None = None
+    # The price the cost guard found when it held this request (H.3):
+    # {monthly, currency, at}, else None. Attached by the list/get endpoints.
+    #
+    # SEPARATE FROM `estimate` ON PURPOSE. `estimate` is what was APPROVED and
+    # must not move: it is the record of what somebody agreed to, and F-FIN-01
+    # measures actuals against it. This is what the request WOULD cost now. Both
+    # are true, they are different facts, and the screen has to be able to tell
+    # them apart — REQ-2026-0305 showed 916.13 in the cost column while the
+    # banner under it said 1141.73, because only one of the two had a field.
+    repriced: dict | None = None
     # Ownership (F-LCM-10): the resolved environment owner + whether it's orphaned.
     owner: str | None = None
     orphaned: bool = False
@@ -2907,6 +2917,7 @@ def list_requests(
     actual_map: dict[str, float] = {}
     power_map: dict[str, list[str]] = {}
     resource_map: dict[str, list[dict]] = {}
+    repriced_map: dict[str, tuple[dict | None, datetime | None]] = {}
     if refs:
         for ref, exp in session.execute(
             select(ProvisionedResource.reference, func.min(ProvisionedResource.ttl_expiry))
@@ -2938,6 +2949,20 @@ def list_requests(
         ).all():
             resource_map.setdefault(res.reference, []).append(
                 resource_details.summarise(res))
+        # What the cost guard found, for the rows it is holding (H.3). Batched
+        # with the rest rather than queried per row: this list is polled every
+        # few seconds, and only a held request has an entry to find.
+        held = [r.reference for r in results if r.status == COST_CHANGED]
+        if held:
+            for ref, detail, at in session.execute(
+                select(AuditLog.reference, AuditLog.detail, AuditLog.created_at)
+                .where(AuditLog.reference.in_(held),
+                       AuditLog.event == COST_REAPPROVAL_EVENT)
+                .order_by(AuditLog.id.desc())
+            ).all():
+                # Newest wins: the guard can fire more than once, and the
+                # current price is the one it found last.
+                repriced_map.setdefault(ref, (detail, at))
     outs = []
     for r in results:
         out = RequestOut.model_validate(r)
@@ -2954,8 +2979,43 @@ def list_requests(
         out.backups = _backups_out(session, r)
         out.access_grants = _access_out(session, r)
         out.resources = resource_map.get(r.reference) or None
+        out.repriced = _repriced_out(*repriced_map.get(r.reference, (None, None)))
         outs.append(out)
     return outs
+
+
+def _repriced_out(detail: dict | None, at: datetime | None) -> dict | None:
+    """The figure the cost guard recorded when it held a request (H.3).
+
+    READ FROM THE GUARD'S OWN AUDIT ENTRY, never recomputed here. Re-pricing at
+    read time would let this cell drift away from the sentence printed beneath
+    it the moment a catalogue price moved — which is the defect being fixed,
+    rebuilt somewhere new. The audit log is append-only and hash-chained, so it
+    is also the most trustworthy copy of what the guard actually decided.
+    """
+    monthly = (detail or {}).get("monthly")
+    if monthly is None:
+        return None
+    from api.pricing import CURRENCY
+    return {"monthly": float(monthly), "currency": CURRENCY,
+            "at": at.isoformat() if at else None}
+
+
+def _repriced_for(session: Session, req: Request) -> dict | None:
+    """The held figure for one request, or None when nothing is holding it.
+
+    Only for a request the guard is actually holding. A request that was
+    re-priced and then cancelled is finished, and quoting a live price beside a
+    closed record would say it is still going to cost that.
+    """
+    if req.status != COST_CHANGED:
+        return None
+    entry = session.scalar(
+        select(AuditLog).where(AuditLog.reference == req.reference,
+                               AuditLog.event == COST_REAPPROVAL_EVENT)
+        .order_by(AuditLog.id.desc()))
+    return _repriced_out(entry.detail if entry else None,
+                         entry.created_at if entry else None)
 
 
 def _drift_out(req: Request) -> dict | None:
@@ -3105,6 +3165,7 @@ def get_request(reference: str, session: Session = Depends(get_session)) -> Requ
     out.ttl = _ttl_status(_min_active_ttl(session, reference))
     actual = session.scalar(select(ActualCost.billed_monthly).where(ActualCost.reference == reference))
     out.variance = _variance_status(req.estimate.monthly if req.estimate else None, actual)
+    out.repriced = _repriced_for(session, req)
     out.owner = _resolve_owner(req)
     out.orphaned = req.status == "provisioned" and _is_orphan(req)
     out.health = _health_for(session, req, actual=actual)
@@ -5669,6 +5730,11 @@ def retry_request(reference: str, session: Session = Depends(get_session),
 #: SQLite does not enforce VARCHAR lengths, so the whole suite passed.
 COST_CHANGED = "cost-changed"
 
+#: The audit event the guard writes when it holds a request, carrying the price
+#: it found. Named once: the list endpoint reads back what this writes, and two
+#: spellings of one event string is how a screen quietly shows nothing.
+COST_REAPPROVAL_EVENT = "cost.reapproval_requested"
+
 CANCELLABLE = {"draft", "submitted", "planned", "in-progress",
                "apply-failed", "verify-failed", "manual-fulfil",
                # Waiting for somebody to agree a price it did not have when it
@@ -7183,7 +7249,7 @@ def _ask_for_reapproval(session: Session, req, jira_key: str | None,
         f"is real for the first time — and a cost nobody has agreed to is not one "
         f"the portal will build. Cancel this request and raise a new one; it will "
         f"be priced at the real figure and approved on that.")
-    append_audit(session, "cost.reapproval_requested", reference=req.reference,
+    append_audit(session, COST_REAPPROVAL_EVENT, reference=req.reference,
                  jira_key=jira_key, actor="poller",
                  detail={"monthly": monthly, "was_approved_at": "unpriced"})
     if jira_key:

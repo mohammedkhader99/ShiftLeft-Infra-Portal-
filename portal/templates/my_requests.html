@@ -144,7 +144,20 @@
               {{ parts | join(', ') if parts else '—' }}
             </td>
             <td class="num">
-              {% if r.estimate %}{{ '%.2f' | format(r.estimate.monthly) }} {{ r.estimate.currency }}{% else %}—{% endif %}
+              {#- A HELD REQUEST COSTS WHAT IT COSTS NOW. This printed the
+                  APPROVED figure while the banner beneath named a different
+                  one: see H.3. The live figure leads and the approved one
+                  stays, struck through, because it is still the record of
+                  what was agreed. -#}
+              {% if r.repriced %}
+                {{ '%.2f' | format(r.repriced.monthly) }} {{ r.repriced.currency }}
+                {% if r.estimate %}
+                  <div class="was" title="Approved at {{ '%.2f' | format(r.estimate.monthly) }} {{ r.estimate.currency }}. This request is held because the price has since changed.">
+                    <s>{{ '%.2f' | format(r.estimate.monthly) }} {{ r.estimate.currency }}</s>
+                  </div>
+                {% endif %}
+              {% elif r.estimate %}{{ '%.2f' | format(r.estimate.monthly) }} {{ r.estimate.currency }}
+              {% else %}—{% endif %}
             </td>
             <td>
               {% if r.approval and r.approval.jira_key %}

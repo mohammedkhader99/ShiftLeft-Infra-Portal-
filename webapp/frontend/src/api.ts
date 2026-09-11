@@ -348,7 +348,12 @@ export type RequestRow = {
   submitted_at?: string | null
   approval_sla?: { sla_hours: number; elapsed_hours: number; due_at: string; status: string } | null
   components: { technology_code: string | null; size: string | null }[]
+  // What was APPROVED. Does not move once agreed — F-FIN-01 measures actuals
+  // against it, and it is the record of what somebody said yes to.
   estimate?: { currency: string; monthly: number } | null
+  // What the cost guard found when it held the request (H.3), if it is holding
+  // one. A different fact from `estimate`, not a newer version of it.
+  repriced?: { monthly: number; currency: string; at: string | null } | null
   approval?: { jira_key: string; ticket_url?: string | null } | null
   // Policy waiver (F-GOV-02): a documented exception, if one was granted.
   waiver?: { reason: string; granted_by: string; granted_at?: string | null; expires_at?: string | null } | null
