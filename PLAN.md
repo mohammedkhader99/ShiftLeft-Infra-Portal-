@@ -815,9 +815,45 @@ still on the `oci-bucket` DEFAULT nobody set, which says half-created rather tha
 proved — so **whether they should be offered at all is the question**, and giving
 them host modes would answer the opposite one. Needs a decision, not a patch.
 
-**Still to come.** *U.2 is done; U.3* — the
-pipeline after confirmation: Agent, Blueprint, Terraform, Validate, Plan,
-Security/Policy, Provision, Verify, Ready.
+**U.3 — where a request has got to.** *Done 2026-09-11.*
+Asked for as a picture of the pipeline: Agent, Blueprint, Terraform, Validate,
+Plan, Security/Policy, Provision, Verify, Ready. Every one of those already
+happened. What was missing was anywhere to see it, so a request sitting at
+`in-progress` told its owner nothing about whether the agent was building a
+recipe, whether Terraform had planned, or whether it was stuck.
+
+*Nine stages, each mapped to something the system really records* — the
+append-only audit trail, which already carried `autobuild.started`,
+`orchestrator.handoff`, `plan.previewed`, `provisioning.started`, `apply.failed`
+and the rest. `GET /api/requests/{ref}/progress` derives them from the request's
+status and that trail. A test checks every stage is keyed on an event
+`api/main.py` actually emits, read from its own source rather than from a list
+kept beside it: a stage keyed on an event nobody writes would sit `pending` for
+ever and look like a hung pipeline.
+*IT DOES NOT INVENT HISTORY, and that is the whole point.* A progress view is
+believed. One that fills itself in because a status looks advanced would tell
+somebody their infrastructure was verified when nothing verified it — and this
+portal has already shipped a request marked `provisioned` that had built an
+empty bucket. A stage is `done` because the trail says so and names when; where
+the trail is silent it is `done` with NO TIME rather than a plausible one. The
+captured fixture shows exactly that: "Terraform plan — done — (no time
+recorded)".
+*"It did not happen" and "it has not happened yet" are different answers.* A
+manually fulfilled request never reaches Terraform, so that stage is `skipped`
+with the reason rather than failed or pending. A cancelled request sits on no
+step at all — saying "in progress" about something that has stopped is how
+somebody waits for a build that is not coming.
+*Derived on the server, drawn in the browser.* A pipeline assembled from a
+status string in the client would be a second opinion about history when the
+audit log is the first one. The endpoint is read-only by construction: it loads
+a request and its trail and returns a list, writes no audit of its own, and a
+test asserts that asking three times moves nothing.
+*The stage list was extracted so it could be tested* — the lesson from H.7,
+where the behaviour lived inside a component and "does it work?" could only be
+answered by opening the page.
+
+**Still to come.** Nothing in Phase U. The open items are §6's network route,
+the nine half-created catalogue rows above, and H.4.
 
 ---
 

@@ -1,0 +1,75 @@
+[
+  {
+    "key": "submitted",
+    "title": "Submitted",
+    "blurb": "The request was raised, validated and priced.",
+    "state": "done",
+    "at": "2026-09-11T10:23:33.562435",
+    "evidence": null
+  },
+  {
+    "key": "approved",
+    "title": "Approved",
+    "blurb": "Jira holds the approval. The portal only asks.",
+    "state": "done",
+    "at": "2026-09-11T10:23:33.562435",
+    "evidence": null
+  },
+  {
+    "key": "blueprint",
+    "title": "Blueprint",
+    "blurb": "A certified recipe exists for every component. The agent proves one where none did.",
+    "state": "done",
+    "at": "2026-09-11T10:23:33.562435",
+    "evidence": null
+  },
+  {
+    "key": "terraform",
+    "title": "Terraform selected",
+    "blurb": "The signed handoff reaches the orchestrator, which picks the module from the certified blueprint.",
+    "state": "done",
+    "at": "2026-09-11T10:23:33.562435",
+    "evidence": null
+  },
+  {
+    "key": "plan",
+    "title": "Terraform plan",
+    "blurb": "What would be built, worked out before anything is.",
+    "state": "done",
+    "at": null,
+    "evidence": null
+  },
+  {
+    "key": "policy",
+    "title": "Security and policy",
+    "blurb": "OPA re-checks the request and the plan is scanned, at execution rather than on the word of the form.",
+    "state": "done",
+    "at": "2026-09-11T10:23:33.562435",
+    "evidence": null
+  },
+  {
+    "key": "provision",
+    "title": "Provision",
+    "blurb": "Terraform applies. This is the first step that creates anything.",
+    "state": "failed",
+    "at": "2026-09-11T10:23:33.562435",
+    "evidence": null,
+    "detail": "Terraform apply failed for oci-instance: the service limit for VM.Standard.E4.Flex in me-dubai-1 has been reached."
+  },
+  {
+    "key": "verify",
+    "title": "Verify",
+    "blurb": "The machines report what actually started, and are checked against what was asked for.",
+    "state": "pending",
+    "at": null,
+    "evidence": null
+  },
+  {
+    "key": "ready",
+    "title": "Ready",
+    "blurb": "Built, verified, and yours.",
+    "state": "pending",
+    "at": null,
+    "evidence": null
+  }
+]

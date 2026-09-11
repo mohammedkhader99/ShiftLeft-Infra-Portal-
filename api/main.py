@@ -87,6 +87,7 @@ from api.jira import (
 )
 from api.plan_preview import build_plan_preview
 from api import policy
+from api import progress
 from api.policy import get_placement_evaluator, PolicyUnavailable, get_policy_evaluator
 from api.pricing import (BILLING_CLUSTER, BILLING_MODEL, compare_options,
                          estimate_cost, estimate_placement_cost,
@@ -3178,6 +3179,37 @@ def get_request(reference: str, session: Session = Depends(get_session)) -> Requ
     out.resources = _resources_out(session, reference)
     out.placement = _placement_out(session, req)
     return out
+
+
+@app.get("/api/requests/{reference}/progress")
+def request_progress(reference: str, session: Session = Depends(get_session)) -> dict:
+    """Where this request has got to, and what says so (U.3).
+
+    Asked for as a picture of the pipeline -- Agent, Blueprint, Terraform,
+    Validate, Plan, Security/Policy, Provision, Verify, Ready. Every one of those
+    already happens; what was missing was anywhere to see it, so a request that
+    said `in-progress` for eleven minutes told its requester nothing about
+    whether it was building, planning, or stuck.
+
+    DERIVED HERE, NOT IN THE BROWSER. The stages come from the request's status
+    and its append-only audit trail, both of which the client cannot see and must
+    not be trusted to interpret. A pipeline assembled in the browser from a
+    status string would be a second opinion about what happened, and the audit
+    log is the first one.
+
+    READ-ONLY BY CONSTRUCTION: it loads a request and its trail and returns a
+    list. There is nothing here that can move a request, and there must never be.
+    """
+    req = _load_request(reference, session)
+    entries = session.scalars(
+        select(AuditLog)
+        .where(AuditLog.reference == reference)
+        .order_by(AuditLog.id.asc())).all()
+    return {
+        "reference": req.reference,
+        "status": req.status,
+        "stages": progress.build(req.status, entries, req.status_detail),
+    }
 
 
 def _placement_out(session: Session, req: Request) -> dict | None:

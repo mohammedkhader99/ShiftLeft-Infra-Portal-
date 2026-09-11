@@ -24,6 +24,7 @@ import {
 import { WarningAltFilled, Renew, UserFollow, Search, Pause, Play, Close, Edit } from '@carbon/icons-react'
 import { getMe, getRequests, getAudit, renewRequest, cancelRequest, transferOwner, checkDrift, reconcileState, triageFailure, actuate, setRequestShutdown, createBackup, grantAccess, revokeAccess, setOwnerGroup, type RequestRow, type ShutdownPolicy, getBootReport, type BootReport, getAutobuildProgress, type AutobuildProgress, getQueuePosition, type QueuePosition } from '../api'
 import { workflowSteps, fmtWhen, type WFStep } from '../workflow'
+import ProvisioningPipeline from '../components/ProvisioningPipeline'
 
 // Carbon's Table FORWARDS unknown props to the <table> element -- it spreads
 // `...other` onto it (@carbon/react DataTable/Table.js) -- but its type
@@ -839,6 +840,16 @@ export default function MyRequests({ route }: { route: string }) {
                           )}
                         </div>
                       )}
+                      {/* WHERE HAS THIS GOT TO (U.3). Above "Diagnose failure"
+                          deliberately: most of the time the honest answer is
+                          "it is planning" or "the agent is building a recipe",
+                          and somebody who can see that does not need an AI to
+                          guess at a failure that has not happened. A draft has
+                          no pipeline to show yet. */}
+                      {r.status !== 'draft' && (
+                        <ProvisioningPipeline reference={r.reference} status={r.status} />
+                      )}
+
                       {canDiagnose && (r.status.endsWith('failed') || r.status === 'rejected' || !!r.status_detail) && (
                         <div style={{ marginBottom: '1.25rem' }}>
                           <Button

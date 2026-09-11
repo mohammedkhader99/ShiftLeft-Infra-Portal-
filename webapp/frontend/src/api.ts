@@ -1433,6 +1433,29 @@ export type SizedHost = {
 // entitlement, capacity and quota. Clusters the requester is not entitled to are
 // ABSENT from this list, never present-and-refused: listing one would publish its
 // name, region and size to anyone who opens the form.
+// One step of the provisioning pipeline (U.3). Every field is the SERVER's:
+// which steps there are, what state each is in, when it happened and why it
+// stopped are all derived from the request's status and its audit trail, which
+// the browser cannot see and must not second-guess.
+export type ProgressStage = {
+  key: string
+  title: string
+  blurb: string
+  state: 'done' | 'current' | 'pending' | 'failed' | 'skipped'
+  // Null where the trail does not say when. Rendered as nothing rather than as
+  // a plausible time -- a progress view is believed.
+  at: string | null
+  evidence?: Record<string, unknown> | null
+  detail?: string | null
+}
+
+export async function getRequestProgress(
+  reference: string,
+): Promise<{ status: number; body: any }> {
+  const r = await fetch(`/api/requests/${encodeURIComponent(reference)}/progress`)
+  return { status: r.status, body: await r.json().catch(() => null) }
+}
+
 export type PlacementCluster = {
   id: string
   name: string
