@@ -443,3 +443,48 @@ def test_an_offered_option_still_resolves_by_key_alone(client, reference):
                     json={"reference": reference, "option_key": "consolidated"})
     assert r.status_code == 200, r.text
     assert r.json()["option_key"] == "consolidated"
+
+
+# --- the block a component was dragged off (the bug behind "it did nothing") ---
+#
+# Reported from a real screen: "When I moved the DB to a new VM it is not
+# actually doing." The drag HAD registered. It left the block the database came
+# off carrying nothing, the server refused the whole arrangement for it, and a
+# refusal about a host the requester had not touched read as nothing happening
+# at all.
+#
+# The editor now leaves an emptied block out of the proposal — an empty block is
+# somewhere to drop things, not a machine. These hold both halves of that: what
+# it sends is accepted, and what it used to send is still correctly refused.
+
+def test_an_empty_host_is_still_refused(client, reference):
+    """The server's rule does not soften. A machine carrying nothing would be
+    built and billed for nothing, and if one ever reaches here it is refused —
+    the browser leaving them out is a separate thing from the server allowing
+    them."""
+    answer = evaluate(client, reference, TOGETHER + [
+        {"id": "host-9", "host_mode": "vm", "components": []}])
+
+    assert answer["eligible"] is False
+    assert any("carries nothing" in r for r in answer["reasons"]), answer["reasons"]
+
+
+def test_moving_the_database_onto_its_own_machine_is_accepted(client, reference):
+    """The reported move, as the editor now sends it: postgres16 on a machine of
+    its own, and the block it came off left out because it is empty."""
+    answer = evaluate(client, reference, APART)
+
+    assert answer["eligible"] is True, answer["reasons"]
+    assert answer["resolved"] is True
+    assert {h["host_id"] for h in answer["sizing"]["hosts"]} == {"host-1", "host-2"}
+
+
+def test_the_component_still_has_to_go_somewhere(client, reference):
+    """Dropping the emptied block must not become a way to drop the COMPONENT.
+    Leaving a host out is only safe while everything it carried went somewhere
+    else first."""
+    answer = evaluate(client, reference, [
+        {"id": "host-1", "host_mode": "vm", "components": ["nodejs20"]}])
+
+    assert answer["eligible"] is False
+    assert any("postgres16" in r for r in answer["reasons"]), answer["reasons"]

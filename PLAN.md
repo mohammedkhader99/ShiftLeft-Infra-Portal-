@@ -636,6 +636,56 @@ request the guard was protecting — and SQLite does not enforce VARCHAR lengths
 so the whole suite passed. 82% full is a thin margin for a sentence that
 interpolates a figure. Worth a look, not a panic.
 
+**H.5 — the editor discarded a drag it had already made.** *Done 2026-09-11.*
+Reported from a screen: "When I moved the DB to a new VM it is not actually
+doing." The drag HAD registered. `move()` took the component off its block and
+never removed a block left empty, so the server refused the whole arrangement —
+"Host 'managed-postgres16' carries nothing. It would be built and billed for
+nothing." A refusal naming a host the requester had not touched read as nothing
+having happened. "Add a machine" had the same fault in reverse: it created an
+empty host, so the layout went refused the instant it was clicked, before
+anything could be dropped on.
+
+*An empty block is somewhere to drop things, not a machine*, so it is left out
+of the proposal. The server's rule is untouched — an empty host that does reach
+it is still refused, and a test holds that — because the two are different
+things: what the browser proposes, and what the platform permits.
+*Dragging out of the cloud is no longer a one-way door.* A managed block is the
+cloud running one named component; nothing else may be dropped onto it, but the
+component it was created for may come back. Without that, the only way to undo
+the move was to undo every change made since it.
+
+**H.6 — "it is not allowing me", with nothing to read.** *Done 2026-09-11.*
+Same screen, different problem: a requester wanted Vault and Oracle running in
+their OKE cluster, and found no control for it, no refusal, and no explanation.
+The editor only ever makes machines and never said so.
+
+*The sentence shown is the SERVER'S*, lifted from the cluster layout it already
+refused and returned in the option list. Not written in the browser: the client
+does not know why the platform cannot deploy into a cluster, and a copy of that
+reasoning in the client is one that goes stale the day the route exists. Found
+by host mode rather than by option key — the mode is the fact; a key is a string
+the browser would have to keep in step with the server.
+
+**The capability itself is still blocked, in three places.** Worth writing down
+because it was asked for directly, and because adding any one of them alone
+would re-create the promise this project already withdrew once:
+
+  1. the editor can only make `vm` hosts, so the arrangement is not expressible;
+  2. `host_mode_requirement` holds eight container rows in total, all
+     `postgres16` — `vault` and `oracle-free` are vm-only;
+  3. the orchestrator refuses container hosts outright: "Nothing in this system
+     deploys into a cluster (private API endpoint, no route from here)."
+
+(3) is the binding one, and it is §6's open decision, not a coding task. Adding
+the catalogue rows for (2) would not unblock anything — it would offer a
+placement the orchestrator then refuses, which is exactly the defect removed
+when Scenario B was made to stop promising what it cannot do. *Note the
+distinction:* **a container ON A MACHINE already works** — RabbitMQ ships that
+way today, podman on the VM, pulled by digest — but the requester still receives
+a Linux VM, explicitly "not on a Kubernetes cluster". That is not what was asked
+for.
+
 ---
 
 ## 6. The one open decision that affects this plan now

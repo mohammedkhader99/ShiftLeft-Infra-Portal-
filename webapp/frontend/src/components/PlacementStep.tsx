@@ -529,6 +529,20 @@ export default function PlacementStep({
               option={arranging}
               environment={environment}
               deploymentTarget={deploymentTarget}
+              // THE PLATFORM'S OWN SENTENCE, not one written here. A refused
+              // layout whose hosts are containers is a cluster layout, and the
+              // server already said in the option list why it cannot be built.
+              // Found by HOST MODE rather than by option key, because the mode
+              // is the fact — a key is a string this file would have to keep in
+              // step with the server's.
+              clusterUnavailable={
+                options?.find(
+                  (o) =>
+                    !o.eligible &&
+                    o.reasons?.length &&
+                    o.sizing?.hosts?.some((h) => h.host_mode === 'container'),
+                )?.reasons?.[0] ?? null
+              }
               cheapestOffered={
                 options
                   ?.filter((o) => o.resolved)

@@ -82,6 +82,7 @@ export default function TopologyEditor({
   environment,
   deploymentTarget,
   cheapestOffered = null,
+  clusterUnavailable = null,
   onUse,
   onClose,
 }: {
@@ -94,6 +95,18 @@ export default function TopologyEditor({
   // components do not, and asking the server for it each time cost three times
   // as long as judging the arrangement itself.
   cheapestOffered?: number | null
+  // WHY THERE IS NO CLUSTER TO DROP ANYTHING INTO, in the platform's own words.
+  //
+  // This editor only ever makes machines, and until now it did not say so. A
+  // requester who wanted Vault and Oracle running in their OKE cluster found no
+  // control for it, no refusal, and nothing to read — "it is not allowing me",
+  // with no way to learn why or what to do instead.
+  //
+  // The sentence is the SERVER'S, lifted from the cluster layout it already
+  // refused and returned in the option list. Not written here: the browser does
+  // not know why the platform cannot deploy into a cluster, and a copy of that
+  // reasoning in the client is one that goes stale the day the route exists.
+  clusterUnavailable?: string | null
   /** Choose this arrangement. The server re-judges it before recording. */
   onUse: (hosts: ProposedHost[]) => void
   onClose: () => void
@@ -108,13 +121,48 @@ export default function TopologyEditor({
   const [moved, setMoved] = useState<string | null>(null)
   const dragging = useRef<{ code: string; from: string } | null>(null)
 
-  const key = useMemo(() => JSON.stringify(hosts), [hosts])
+  // THE LAYOUT AS IT ARRIVED. A managed block is the cloud running ONE named
+  // component; dragging that component out dissolves the service, and the only
+  // place it can go back to is the block it came from. Held so that undoing one
+  // move does not mean unwinding every change made since.
+  const original = useRef(hostsOf(option))
+  const belongsTo = useMemo(() => {
+    const map = new Map<string, Set<string>>()
+    for (const h of original.current) map.set(h.id, new Set(h.components))
+    return map
+  }, [])
+
+  /** Whether `host` will take `code` — a managed block only takes its own back. */
+  const accepts = useCallback(
+    (host: ProposedHost, code: string | undefined) =>
+      !!code &&
+      (host.host_mode !== 'managed' || (belongsTo.get(host.id)?.has(code) ?? false)),
+    [belongsTo],
+  )
+
+  // WHAT IS ACTUALLY PROPOSED. A host carrying nothing is not a machine anybody
+  // asked for, and the server rightly refuses one: "it would be built and billed
+  // for nothing."
+  //
+  // Before this, dragging the last component off a block left that block empty
+  // and put the WHOLE arrangement into a refused state — so moving the database
+  // onto its own machine, which is a perfectly ordinary thing to want, read as
+  // the drag having done nothing at all. "Add a machine" had the same fault: it
+  // created an empty host, so the layout was refused the instant it was clicked,
+  // before anything could be dropped on.
+  //
+  // An empty block is somewhere to drop things. It is not a machine, so it is
+  // not part of the proposal, and the server's rule stands untouched: if an
+  // empty host ever does reach it, it is still refused.
+  const proposed = useMemo(() => hosts.filter((h) => h.components.length > 0), [hosts])
+
+  const key = useMemo(() => JSON.stringify(proposed), [proposed])
 
   useEffect(() => {
     let cancelled = false
     setBusy(true)
     setFailed(null)
-    evaluateLayout(reference, hosts)
+    evaluateLayout(reference, proposed)
       .then(({ status, body }) => {
         if (cancelled) return
         if (status !== 200) {
@@ -226,9 +274,12 @@ export default function TopologyEditor({
         {deploymentTarget && <span>{deploymentTarget}</span>}
         {environment && <span>{environment}</span>}
         <span>
-          {hosts.filter((h) => h.host_mode !== 'managed').length === 1
+          {/* Machines that would BE BUILT. An empty block on screen is not
+              one of them, and counting it would contradict the price beside
+              it. */}
+          {proposed.filter((h) => h.host_mode !== 'managed').length === 1
             ? '1 machine'
-            : `${hosts.filter((h) => h.host_mode !== 'managed').length} machines`}
+            : `${proposed.filter((h) => h.host_mode !== 'managed').length} machines`}
         </span>
         <span style={{ marginLeft: 'auto', color: 'var(--cds-text-primary)' }}>
           {busy ? (
@@ -295,15 +346,17 @@ export default function TopologyEditor({
             <li
               key={host.id}
               onDragOver={(e) => {
-                // A managed service is run by the cloud; nothing is dropped onto
-                // it, and refusing the drop is clearer than accepting it and
-                // explaining afterwards.
-                if (!managed) e.preventDefault()
+                // A managed service is the cloud running one named component.
+                // Nothing else may be dropped onto it — but the component it was
+                // created for may come back, because otherwise dragging it out
+                // is a one-way door and the only way back is undoing every move
+                // made since.
+                if (accepts(host, dragging.current?.code)) e.preventDefault()
               }}
               onDrop={(e) => {
                 e.preventDefault()
                 const held = dragging.current
-                if (held && !managed) move(held.code, held.from, host.id)
+                if (held && accepts(host, held.code)) move(held.code, held.from, host.id)
                 dragging.current = null
               }}
               style={{
@@ -371,7 +424,10 @@ export default function TopologyEditor({
               >
                 {host.components.length === 0 ? (
                   <li style={{ fontSize: '0.74rem', color: 'var(--cds-text-secondary)' }}>
-                    Drop something here.
+                    {managed
+                      ? 'Not part of this layout any more. Drag it back to have the ' +
+                        'cloud run it again.'
+                      : 'Drop something here. An empty machine is not built.'}
                   </li>
                 ) : (
                   host.components.map((code) => {
@@ -406,11 +462,15 @@ export default function TopologyEditor({
                             flipped
                           >
                             {hosts
-                              .filter((h) => h.id !== host.id && h.host_mode !== 'managed')
+                              .filter((h) => h.id !== host.id && accepts(h, code))
                               .map((target) => (
                                 <OverflowMenuItem
                                   key={target.id}
-                                  itemText={`Move to ${target.id}`}
+                                  itemText={
+                                    target.host_mode === 'managed'
+                                      ? 'Let the cloud run it again'
+                                      : `Move to ${target.id}`
+                                  }
                                   onClick={() => move(code, host.id, target.id)}
                                 />
                               ))}
@@ -467,7 +527,7 @@ export default function TopologyEditor({
         <Button
           size="sm"
           disabled={busy || !judged?.eligible}
-          onClick={() => onUse(hosts)}
+          onClick={() => onUse(proposed)}
         >
           Use this layout
         </Button>
@@ -477,6 +537,23 @@ export default function TopologyEditor({
             : 'Fix what is marked, or undo.'}
         </span>
       </div>
+
+      {clusterUnavailable && (
+        <p
+          style={{
+            margin: '0.6rem 0 0',
+            fontSize: '0.72rem',
+            color: 'var(--cds-text-secondary)',
+            borderTop: '1px solid var(--cds-border-subtle)',
+            paddingTop: '0.5rem',
+          }}
+        >
+          <strong style={{ color: 'var(--cds-text-primary)' }}>
+            Machines are the only thing that can be added here.
+          </strong>{' '}
+          {clusterUnavailable}
+        </p>
+      )}
     </section>
   )
 }
