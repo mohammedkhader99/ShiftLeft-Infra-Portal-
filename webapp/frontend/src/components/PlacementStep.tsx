@@ -45,6 +45,7 @@ import type {
 } from '../api'
 import TopologyDiagram from './TopologyDiagram'
 import TopologyEditor from './TopologyEditor'
+import TopologyWorkspace from './TopologyWorkspace'
 
 // The option keys, spelled the way the resolver spells them, for naming a layout
 // that was RECORDED rather than one that was just computed. A recorded placement
@@ -562,38 +563,25 @@ export default function PlacementStep({
 
           {options && options.length > 0 && (
             <>
-              <div style={{ marginTop: '0.75rem' }}>
-                {(open ? options : options.filter((o) => o.eligible)).map((o) => (
-                  <OptionCard
-                    key={o.key}
-                    option={o}
-                    currency={currency}
-                    selected={chosen === o.key}
-                    // One cluster id for the step, not one per option: only
-                    // "existing-cluster" ever carries a cluster list, so there is
-                    // nothing for a second one to belong to.
-                    clusterId={clusterId}
-                    onSelect={() => onChoose(o.key)}
-                    onClusterChange={onClusterChange}
-                    busy={busy}
-                    environment={environment}
-                    deploymentTarget={deploymentTarget}
-                    onArrange={reference ? setArranging : undefined}
-                  />
-                ))}
-              </div>
-
-              {/* The collapse hides refused options on request — it does not
-                  hide them by default, and it says how many are behind it.
-                  Somebody scanning for the cheapest layout should be able to
-                  quiet the noise; nobody should have to guess it exists. */}
-              {options.some((o) => !o.eligible) && (
-                <Button kind="ghost" size="sm" onClick={() => setOpen((v) => !v)}>
-                  {open
-                    ? `Hide the ${options.filter((o) => !o.eligible).length} unavailable`
-                    : `Show the ${options.filter((o) => !o.eligible).length} unavailable, with reasons`}
-                </Button>
-              )}
+              {/* ONE WORKSPACE, ONE QUESTION (U.1). This was a list of every
+                  layout the platform produced, each its own card with its own
+                  title, price, refusal, advisory notices and diagram — five of
+                  them for a stack with a cluster in it, two of which said the
+                  same sentence about the Kubernetes API being unreachable.
+                  "I am confused, why so many choices are provided." They were
+                  never five choices; they were two, and three variations on one
+                  of them that the platform is better placed to pick. */}
+              <TopologyWorkspace
+                options={options}
+                chosen={chosen}
+                clusterId={clusterId}
+                currency={currency}
+                environment={environment}
+                deploymentTarget={deploymentTarget}
+                onChoose={onChoose}
+                onClusterChange={onClusterChange}
+                onArrange={reference ? setArranging : undefined}
+              />
 
               {/* Submitting without choosing stays allowed, and says what then
                   happens. Blocking it would break every request type that has

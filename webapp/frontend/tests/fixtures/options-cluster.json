@@ -1,24 +1,35 @@
 [
   {
     "key": "existing-cluster",
+    "route": "kubernetes",
     "title": "Deploy onto an existing cluster",
-    "summary": "Existing clusters cannot be listed at the moment.",
+    "summary": "The portal cannot deploy into a cluster.",
     "hosts": [
       {
         "id": "existing-cluster",
         "host_mode": "container",
         "components": [
-          "postgres16",
-          "nodejs20"
+          "nodejs20",
+          "postgres16"
         ]
       }
     ],
     "host_count": 1,
     "eligible": false,
     "reasons": [
-      "The portal cannot list existing clusters yet, so it cannot tell you which ones you could deploy onto. This is a gap in the portal, not a statement about your access. Provisioning a new cluster is offered below."
+      "The portal can provision a cluster, but it cannot deploy workloads into one: the Kubernetes API endpoint is private and the orchestrator has no route to it. Ask for the cluster on its own and deploy nodejs20, postgres16 into it yourself, or choose a layout that builds machines."
     ],
-    "clusters": [],
+    "clusters": [
+      {
+        "id": "ocid1.cluster.oc1.me-dubai-1.mock-egate-dev",
+        "name": "oke-egate-dev",
+        "region": "me-dubai-1",
+        "allocatable_vcpu": 24,
+        "allocatable_memory_gb": 96,
+        "eligible": true,
+        "reasons": []
+      }
+    ],
     "warnings": [
       "postgres16 keeps data. On Kubernetes its storage, failover and backups become your team's responsibility rather than the platform's. The cloud's managed postgres16 carries none of that \u2014 it is offered as 'Managed where available'."
     ],
@@ -28,8 +39,8 @@
           "host_id": "existing-cluster",
           "host_mode": "container",
           "components": [
-            "postgres16",
-            "nodejs20"
+            "nodejs20",
+            "postgres16"
           ],
           "resolved": true,
           "base": {
@@ -58,37 +69,41 @@
     },
     "estimate": {
       "currency": "AED",
-      "pricing_source": "oci-live",
+      "pricing_source": "mock",
+      "deployment_target": "oci",
+      "known_target": true,
       "machine_count": 1,
       "machines": {
         "currency": "AED",
         "unpriced": [],
-        "provisional": [],
+        "provisional": [
+          "Compute Instance (VM)"
+        ],
         "external_licences": [],
         "deployment_target": "oci",
         "known_target": true,
-        "pricing_source": "oci-live",
+        "pricing_source": "mock",
         "lines": [
           {
             "technology_name": "Compute Instance (VM)",
-            "size": "medium",
+            "size": "small",
             "resolved": true,
-            "provisional": false,
-            "resource_kind": "oci-instance",
+            "provisional": true,
+            "resource_kind": null,
             "billing_model": "vm",
             "unpriceable": null,
-            "compute_monthly": 382.89,
-            "storage_monthly": 23.88,
-            "resource_monthly": 406.77,
+            "compute_monthly": 680.07,
+            "storage_monthly": 20.4,
+            "resource_monthly": 700.47,
             "licence_monthly": 0.0,
             "external_licence": null,
             "one_time": 0.0,
-            "monthly": 406.77
+            "monthly": 700.47
           }
         ],
         "by_category": {
-          "compute": 382.89,
-          "storage": 23.88,
+          "compute": 680.07,
+          "storage": 20.4,
           "licence": 0.0,
           "backup": 0.0,
           "monitoring": 0.0,
@@ -96,8 +111,8 @@
         },
         "totals": {
           "one_time": 0.0,
-          "monthly": 406.77,
-          "annual": 4881.26
+          "monthly": 700.47,
+          "annual": 8405.62
         }
       },
       "managed": null,
@@ -108,39 +123,73 @@
           "monthly": 0.0
         }
       ],
+      "lines": [
+        {
+          "technology_name": "Compute Instance (VM)",
+          "size": "small",
+          "resolved": true,
+          "provisional": true,
+          "resource_kind": null,
+          "billing_model": "vm",
+          "unpriceable": null,
+          "compute_monthly": 680.07,
+          "storage_monthly": 20.4,
+          "resource_monthly": 700.47,
+          "licence_monthly": 0.0,
+          "external_licence": null,
+          "one_time": 0.0,
+          "monthly": 700.47
+        }
+      ],
+      "unpriced": [],
+      "provisional": [
+        "Compute Instance (VM)"
+      ],
+      "external_licences": [],
+      "by_category": {
+        "compute": 680.07,
+        "storage": 20.4,
+        "licence": 0.0,
+        "backup": 0.0,
+        "monitoring": 0.0,
+        "support": 0.0
+      },
       "resolved": true,
       "totals": {
         "one_time": 0.0,
-        "monthly": 406.77,
-        "annual": 4881.24
+        "monthly": 700.47,
+        "annual": 8405.64
       }
     },
     "resolved": true,
     "totals": {
       "one_time": 0.0,
-      "monthly": 406.77,
-      "annual": 4881.24
+      "monthly": 700.47,
+      "annual": 8405.64
     },
     "monthly_delta": 0.0,
     "cheapest": true
   },
   {
     "key": "new-cluster",
+    "route": "kubernetes",
     "title": "Provision a new cluster",
-    "summary": "A new oci-oke cluster, with its node pool sized from the 2 workload(s) placed on it.",
+    "summary": "The portal cannot deploy into a cluster it builds.",
     "hosts": [
       {
         "id": "new-cluster",
         "host_mode": "container",
         "components": [
-          "postgres16",
-          "nodejs20"
+          "nodejs20",
+          "postgres16"
         ]
       }
     ],
     "host_count": 1,
-    "eligible": true,
-    "reasons": [],
+    "eligible": false,
+    "reasons": [
+      "The portal can provision a cluster, but it cannot deploy workloads into one: the Kubernetes API endpoint is private and the orchestrator has no route to it. Ask for the cluster on its own and deploy nodejs20, postgres16 into it yourself, or choose a layout that builds machines."
+    ],
     "clusters": [],
     "warnings": [
       "postgres16 keeps data. On Kubernetes its storage, failover and backups become your team's responsibility rather than the platform's. The cloud's managed postgres16 carries none of that \u2014 it is offered as 'Managed where available'."
@@ -151,8 +200,8 @@
           "host_id": "new-cluster",
           "host_mode": "container",
           "components": [
-            "postgres16",
-            "nodejs20"
+            "nodejs20",
+            "postgres16"
           ],
           "resolved": true,
           "base": {
@@ -181,37 +230,41 @@
     },
     "estimate": {
       "currency": "AED",
-      "pricing_source": "oci-live",
+      "pricing_source": "mock",
+      "deployment_target": "oci",
+      "known_target": true,
       "machine_count": 1,
       "machines": {
         "currency": "AED",
         "unpriced": [],
-        "provisional": [],
+        "provisional": [
+          "Compute Instance (VM)"
+        ],
         "external_licences": [],
         "deployment_target": "oci",
         "known_target": true,
-        "pricing_source": "oci-live",
+        "pricing_source": "mock",
         "lines": [
           {
             "technology_name": "Compute Instance (VM)",
-            "size": "medium",
+            "size": "small",
             "resolved": true,
-            "provisional": false,
-            "resource_kind": "oci-instance",
+            "provisional": true,
+            "resource_kind": null,
             "billing_model": "vm",
             "unpriceable": null,
-            "compute_monthly": 382.89,
-            "storage_monthly": 23.88,
-            "resource_monthly": 406.77,
+            "compute_monthly": 680.07,
+            "storage_monthly": 20.4,
+            "resource_monthly": 700.47,
             "licence_monthly": 0.0,
             "external_licence": null,
             "one_time": 0.0,
-            "monthly": 406.77
+            "monthly": 700.47
           }
         ],
         "by_category": {
-          "compute": 382.89,
-          "storage": 23.88,
+          "compute": 680.07,
+          "storage": 20.4,
           "licence": 0.0,
           "backup": 0.0,
           "monitoring": 0.0,
@@ -219,8 +272,8 @@
         },
         "totals": {
           "one_time": 0.0,
-          "monthly": 406.77,
-          "annual": 4881.26
+          "monthly": 700.47,
+          "annual": 8405.62
         }
       },
       "managed": null,
@@ -231,27 +284,66 @@
           "monthly": 0.0
         }
       ],
+      "lines": [
+        {
+          "technology_name": "Compute Instance (VM)",
+          "size": "small",
+          "resolved": true,
+          "provisional": true,
+          "resource_kind": null,
+          "billing_model": "vm",
+          "unpriceable": null,
+          "compute_monthly": 680.07,
+          "storage_monthly": 20.4,
+          "resource_monthly": 700.47,
+          "licence_monthly": 0.0,
+          "external_licence": null,
+          "one_time": 0.0,
+          "monthly": 700.47
+        }
+      ],
+      "unpriced": [],
+      "provisional": [
+        "Compute Instance (VM)"
+      ],
+      "external_licences": [],
+      "by_category": {
+        "compute": 680.07,
+        "storage": 20.4,
+        "licence": 0.0,
+        "backup": 0.0,
+        "monitoring": 0.0,
+        "support": 0.0
+      },
       "resolved": true,
       "totals": {
         "one_time": 0.0,
-        "monthly": 406.77,
-        "annual": 4881.24
+        "monthly": 700.47,
+        "annual": 8405.64
       }
     },
     "resolved": true,
     "totals": {
       "one_time": 0.0,
-      "monthly": 406.77,
-      "annual": 4881.24
+      "monthly": 700.47,
+      "annual": 8405.64
     },
     "monthly_delta": 0.0,
     "cheapest": true
   },
   {
     "key": "managed",
+    "route": "machines",
     "title": "Managed where available",
-    "summary": "The cloud runs postgres16. Patching, backups and failover for it stop being yours.",
+    "summary": "The cloud runs oci-oke, postgres16. Patching, backups and failover for it stop being yours.",
     "hosts": [
+      {
+        "id": "managed-oci-oke",
+        "host_mode": "managed",
+        "components": [
+          "oci-oke"
+        ]
+      },
       {
         "id": "managed-postgres16",
         "host_mode": "managed",
@@ -274,6 +366,22 @@
     "warnings": [],
     "sizing": {
       "hosts": [
+        {
+          "host_id": "managed-oci-oke",
+          "host_mode": "managed",
+          "components": [
+            "oci-oke"
+          ],
+          "resolved": true,
+          "base": null,
+          "headroom_percent": 20,
+          "missing": [],
+          "vcpu": null,
+          "memory_gb": null,
+          "storage_gb": null,
+          "iops": null,
+          "note": "Run by the cloud. No machine is provisioned and nothing is added to the totals."
+        },
         {
           "host_id": "managed-postgres16",
           "host_mode": "managed",
@@ -323,37 +431,41 @@
     },
     "estimate": {
       "currency": "AED",
-      "pricing_source": "oci-live",
+      "pricing_source": "mock",
+      "deployment_target": "oci",
+      "known_target": true,
       "machine_count": 1,
       "machines": {
         "currency": "AED",
         "unpriced": [],
-        "provisional": [],
+        "provisional": [
+          "Compute Instance (VM)"
+        ],
         "external_licences": [],
         "deployment_target": "oci",
         "known_target": true,
-        "pricing_source": "oci-live",
+        "pricing_source": "mock",
         "lines": [
           {
             "technology_name": "Compute Instance (VM)",
             "size": "small",
             "resolved": true,
-            "provisional": false,
-            "resource_kind": "oci-instance",
+            "provisional": true,
+            "resource_kind": null,
             "billing_model": "vm",
             "unpriceable": null,
-            "compute_monthly": 125.35,
-            "storage_monthly": 4.78,
-            "resource_monthly": 130.13,
+            "compute_monthly": 232.69,
+            "storage_monthly": 4.08,
+            "resource_monthly": 236.77,
             "licence_monthly": 0.0,
             "external_licence": null,
             "one_time": 0.0,
-            "monthly": 130.13
+            "monthly": 236.77
           }
         ],
         "by_category": {
-          "compute": 125.35,
-          "storage": 4.78,
+          "compute": 232.69,
+          "storage": 4.08,
           "licence": 0.0,
           "backup": 0.0,
           "monitoring": 0.0,
@@ -361,8 +473,8 @@
         },
         "totals": {
           "one_time": 0.0,
-          "monthly": 130.13,
-          "annual": 1561.52
+          "monthly": 236.77,
+          "annual": 2841.21
         }
       },
       "managed": {
@@ -372,28 +484,44 @@
         "external_licences": [],
         "deployment_target": "oci",
         "known_target": true,
-        "pricing_source": "oci-live",
+        "pricing_source": "mock",
         "lines": [
+          {
+            "technology_name": "OCI Container Engine (OKE)",
+            "size": "medium",
+            "resolved": true,
+            "provisional": false,
+            "resource_kind": "oci-oke",
+            "billing_model": "cluster",
+            "unpriceable": null,
+            "compute_monthly": 590.28,
+            "storage_monthly": 13.6,
+            "resource_monthly": 603.88,
+            "licence_monthly": 0.0,
+            "external_licence": null,
+            "one_time": 0.0,
+            "monthly": 603.88
+          },
           {
             "technology_name": "PostgreSQL 16",
             "size": "medium",
             "resolved": true,
             "provisional": false,
-            "resource_kind": "oci-postgres",
-            "billing_model": "managed-db",
+            "resource_kind": "oci-instance",
+            "billing_model": "vm",
             "unpriceable": null,
-            "compute_monthly": 446.7,
-            "storage_monthly": 15.92,
-            "resource_monthly": 462.63,
+            "compute_monthly": 362.37,
+            "storage_monthly": 13.6,
+            "resource_monthly": 375.97,
             "licence_monthly": 0.0,
             "external_licence": null,
             "one_time": 0.0,
-            "monthly": 462.63
+            "monthly": 375.97
           }
         ],
         "by_category": {
-          "compute": 446.7,
-          "storage": 15.92,
+          "compute": 952.65,
+          "storage": 27.2,
           "licence": 0.0,
           "backup": 0.0,
           "monitoring": 0.0,
@@ -401,25 +529,435 @@
         },
         "totals": {
           "one_time": 0.0,
-          "monthly": 462.63,
-          "annual": 5551.5
+          "monthly": 979.85,
+          "annual": 11758.24
         }
       },
       "licences": [],
+      "lines": [
+        {
+          "technology_name": "Compute Instance (VM)",
+          "size": "small",
+          "resolved": true,
+          "provisional": true,
+          "resource_kind": null,
+          "billing_model": "vm",
+          "unpriceable": null,
+          "compute_monthly": 232.69,
+          "storage_monthly": 4.08,
+          "resource_monthly": 236.77,
+          "licence_monthly": 0.0,
+          "external_licence": null,
+          "one_time": 0.0,
+          "monthly": 236.77
+        },
+        {
+          "technology_name": "OCI Container Engine (OKE)",
+          "size": "medium",
+          "resolved": true,
+          "provisional": false,
+          "resource_kind": "oci-oke",
+          "billing_model": "cluster",
+          "unpriceable": null,
+          "compute_monthly": 590.28,
+          "storage_monthly": 13.6,
+          "resource_monthly": 603.88,
+          "licence_monthly": 0.0,
+          "external_licence": null,
+          "one_time": 0.0,
+          "monthly": 603.88
+        },
+        {
+          "technology_name": "PostgreSQL 16",
+          "size": "medium",
+          "resolved": true,
+          "provisional": false,
+          "resource_kind": "oci-instance",
+          "billing_model": "vm",
+          "unpriceable": null,
+          "compute_monthly": 362.37,
+          "storage_monthly": 13.6,
+          "resource_monthly": 375.97,
+          "licence_monthly": 0.0,
+          "external_licence": null,
+          "one_time": 0.0,
+          "monthly": 375.97
+        }
+      ],
+      "unpriced": [],
+      "provisional": [
+        "Compute Instance (VM)"
+      ],
+      "external_licences": [],
+      "by_category": {
+        "compute": 1185.34,
+        "storage": 31.28,
+        "licence": 0.0,
+        "backup": 0.0,
+        "monitoring": 0.0,
+        "support": 0.0
+      },
       "resolved": true,
       "totals": {
         "one_time": 0.0,
-        "monthly": 592.76,
-        "annual": 7113.12
+        "monthly": 1216.62,
+        "annual": 14599.44
       }
     },
     "resolved": true,
     "totals": {
       "one_time": 0.0,
-      "monthly": 592.76,
-      "annual": 7113.12
+      "monthly": 1216.62,
+      "annual": 14599.44
     },
-    "monthly_delta": 185.99,
+    "monthly_delta": 516.15,
+    "cheapest": false
+  },
+  {
+    "key": "consolidated",
+    "route": "machines",
+    "title": "Consolidated",
+    "summary": "One machine cannot host a cloud service.",
+    "hosts": [
+      {
+        "id": "host-1",
+        "host_mode": "vm",
+        "components": [
+          "oci-oke",
+          "nodejs20",
+          "postgres16"
+        ]
+      }
+    ],
+    "host_count": 1,
+    "eligible": false,
+    "reasons": [
+      "oci-oke is run by the cloud, so it cannot be installed on a machine. 'Managed where available' places it correctly and puts the rest on their own host."
+    ],
+    "clusters": [],
+    "warnings": [],
+    "sizing": {
+      "hosts": [
+        {
+          "host_id": "host-1",
+          "host_mode": "vm",
+          "components": [
+            "oci-oke",
+            "nodejs20",
+            "postgres16"
+          ],
+          "resolved": false,
+          "base": null,
+          "headroom_percent": 20,
+          "missing": [
+            "oci-oke"
+          ],
+          "vcpu": null,
+          "memory_gb": null,
+          "storage_gb": null,
+          "iops": null,
+          "note": "Cannot be sized: no requirement is recorded for oci-oke as vm. Sizing it anyway would build a machine too small for what was asked for."
+        }
+      ],
+      "totals": {
+        "vcpu": 0,
+        "memory_gb": 0,
+        "storage_gb": 0,
+        "iops": 0
+      },
+      "machine_count": 0,
+      "headroom_percent": 20,
+      "resolved": false
+    },
+    "estimate": {
+      "currency": "AED",
+      "pricing_source": null,
+      "deployment_target": "oci",
+      "known_target": true,
+      "machine_count": 0,
+      "machines": null,
+      "managed": null,
+      "licences": [
+        {
+          "technology_code": "postgres16",
+          "item": "postgres-licence",
+          "monthly": 0.0
+        }
+      ],
+      "lines": [],
+      "unpriced": [
+        "oci-oke",
+        "nodejs20",
+        "postgres16"
+      ],
+      "provisional": [],
+      "external_licences": [],
+      "by_category": {
+        "compute": 0.0,
+        "storage": 0.0,
+        "licence": 0.0,
+        "backup": 0.0,
+        "monitoring": 0.0,
+        "support": 0.0
+      },
+      "resolved": false,
+      "totals": {
+        "one_time": 0.0,
+        "monthly": 0.0,
+        "annual": 0.0
+      }
+    },
+    "resolved": false,
+    "totals": {
+      "one_time": 0.0,
+      "monthly": 0.0,
+      "annual": 0.0
+    },
+    "monthly_delta": null,
+    "cheapest": false
+  },
+  {
+    "key": "separated",
+    "route": "machines",
+    "title": "Separated",
+    "summary": "A machine each, but a cloud service has no machine.",
+    "hosts": [
+      {
+        "id": "host-1",
+        "host_mode": "vm",
+        "components": [
+          "oci-oke"
+        ]
+      },
+      {
+        "id": "host-2",
+        "host_mode": "vm",
+        "components": [
+          "nodejs20"
+        ]
+      },
+      {
+        "id": "host-3",
+        "host_mode": "vm",
+        "components": [
+          "postgres16"
+        ]
+      }
+    ],
+    "host_count": 3,
+    "eligible": false,
+    "reasons": [
+      "oci-oke is run by the cloud, so it cannot be installed on a machine. 'Managed where available' places it correctly and puts the rest on their own host."
+    ],
+    "clusters": [],
+    "warnings": [],
+    "sizing": {
+      "hosts": [
+        {
+          "host_id": "host-1",
+          "host_mode": "vm",
+          "components": [
+            "oci-oke"
+          ],
+          "resolved": false,
+          "base": null,
+          "headroom_percent": 20,
+          "missing": [
+            "oci-oke"
+          ],
+          "vcpu": null,
+          "memory_gb": null,
+          "storage_gb": null,
+          "iops": null,
+          "note": "Cannot be sized: no requirement is recorded for oci-oke as vm. Sizing it anyway would build a machine too small for what was asked for."
+        },
+        {
+          "host_id": "host-2",
+          "host_mode": "vm",
+          "components": [
+            "nodejs20"
+          ],
+          "resolved": true,
+          "base": {
+            "vcpu": 2,
+            "memory_gb": 4,
+            "storage_gb": 50,
+            "iops": 1000
+          },
+          "headroom_percent": 20,
+          "missing": [],
+          "vcpu": 3,
+          "memory_gb": 5,
+          "storage_gb": 60,
+          "iops": 1200
+        },
+        {
+          "host_id": "host-3",
+          "host_mode": "vm",
+          "components": [
+            "postgres16"
+          ],
+          "resolved": true,
+          "base": {
+            "vcpu": 4,
+            "memory_gb": 16,
+            "storage_gb": 200,
+            "iops": 3000
+          },
+          "headroom_percent": 20,
+          "missing": [],
+          "vcpu": 5,
+          "memory_gb": 20,
+          "storage_gb": 240,
+          "iops": 3600
+        }
+      ],
+      "totals": {
+        "vcpu": 8,
+        "memory_gb": 25,
+        "storage_gb": 300,
+        "iops": 4800
+      },
+      "machine_count": 2,
+      "headroom_percent": 20,
+      "resolved": false
+    },
+    "estimate": {
+      "currency": "AED",
+      "pricing_source": "mock",
+      "deployment_target": "oci",
+      "known_target": true,
+      "machine_count": 2,
+      "machines": {
+        "currency": "AED",
+        "unpriced": [],
+        "provisional": [
+          "Compute Instance (VM)",
+          "Compute Instance (VM)"
+        ],
+        "external_licences": [],
+        "deployment_target": "oci",
+        "known_target": true,
+        "pricing_source": "mock",
+        "lines": [
+          {
+            "technology_name": "Compute Instance (VM)",
+            "size": "small",
+            "resolved": true,
+            "provisional": true,
+            "resource_kind": null,
+            "billing_model": "vm",
+            "unpriceable": null,
+            "compute_monthly": 232.69,
+            "storage_monthly": 4.08,
+            "resource_monthly": 236.77,
+            "licence_monthly": 0.0,
+            "external_licence": null,
+            "one_time": 0.0,
+            "monthly": 236.77
+          },
+          {
+            "technology_name": "Compute Instance (VM)",
+            "size": "medium",
+            "resolved": true,
+            "provisional": true,
+            "resource_kind": null,
+            "billing_model": "vm",
+            "unpriceable": null,
+            "compute_monthly": 452.97,
+            "storage_monthly": 16.32,
+            "resource_monthly": 469.29,
+            "licence_monthly": 0.0,
+            "external_licence": null,
+            "one_time": 0.0,
+            "monthly": 469.29
+          }
+        ],
+        "by_category": {
+          "compute": 685.65,
+          "storage": 20.4,
+          "licence": 0.0,
+          "backup": 0.0,
+          "monitoring": 0.0,
+          "support": 0.0
+        },
+        "totals": {
+          "one_time": 0.0,
+          "monthly": 706.05,
+          "annual": 8472.63
+        }
+      },
+      "managed": null,
+      "licences": [
+        {
+          "technology_code": "postgres16",
+          "item": "postgres-licence",
+          "monthly": 0.0
+        }
+      ],
+      "lines": [
+        {
+          "technology_name": "Compute Instance (VM)",
+          "size": "small",
+          "resolved": true,
+          "provisional": true,
+          "resource_kind": null,
+          "billing_model": "vm",
+          "unpriceable": null,
+          "compute_monthly": 232.69,
+          "storage_monthly": 4.08,
+          "resource_monthly": 236.77,
+          "licence_monthly": 0.0,
+          "external_licence": null,
+          "one_time": 0.0,
+          "monthly": 236.77
+        },
+        {
+          "technology_name": "Compute Instance (VM)",
+          "size": "medium",
+          "resolved": true,
+          "provisional": true,
+          "resource_kind": null,
+          "billing_model": "vm",
+          "unpriceable": null,
+          "compute_monthly": 452.97,
+          "storage_monthly": 16.32,
+          "resource_monthly": 469.29,
+          "licence_monthly": 0.0,
+          "external_licence": null,
+          "one_time": 0.0,
+          "monthly": 469.29
+        }
+      ],
+      "unpriced": [
+        "oci-oke"
+      ],
+      "provisional": [
+        "Compute Instance (VM)"
+      ],
+      "external_licences": [],
+      "by_category": {
+        "compute": 685.65,
+        "storage": 20.4,
+        "licence": 0.0,
+        "backup": 0.0,
+        "monitoring": 0.0,
+        "support": 0.0
+      },
+      "resolved": false,
+      "totals": {
+        "one_time": 0.0,
+        "monthly": 706.05,
+        "annual": 8472.6
+      }
+    },
+    "resolved": false,
+    "totals": {
+      "one_time": 0.0,
+      "monthly": 706.05,
+      "annual": 8472.6
+    },
+    "monthly_delta": null,
     "cheapest": false
   }
 ]

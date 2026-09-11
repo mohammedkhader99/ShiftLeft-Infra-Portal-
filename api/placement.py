@@ -46,6 +46,19 @@ SEPARATED_OPTION = "separated"
 EXISTING_CLUSTER_OPTION = "existing-cluster"
 NEW_CLUSTER_OPTION = "new-cluster"
 
+# THE TWO QUESTIONS A REQUESTER IS ACTUALLY ASKING, and the only two that need
+# answering: does this run on machines, or on Kubernetes? Every layout below is
+# one answer or the other.
+#
+# Named HERE, beside the keys, because this is where the keys are defined. The
+# browser groups layouts by this rather than by matching key strings of its own —
+# a copy of that list in the client is one that goes stale the day a layout is
+# added, and the requester is the one who finds out.
+MACHINES_ROUTE = "machines"
+KUBERNETES_ROUTE = "kubernetes"
+
+CLUSTER_OPTIONS = frozenset({EXISTING_CLUSTER_OPTION, NEW_CLUSTER_OPTION})
+
 # The order the requester sees them in. Managed first because it is the option
 # that removes work from them; separated last because it is the most expensive.
 OPTION_ORDER = (MANAGED_OPTION, CONSOLIDATED_OPTION, SEPARATED_OPTION)
@@ -136,9 +149,21 @@ class Option:
         """Machines this option would provision. A managed service is not one."""
         return sum(1 for h in self.hosts if h.host_mode != HOST_MANAGED)
 
+    @property
+    def route(self) -> str:
+        """Which of the two questions this layout answers: machines, or Kubernetes.
+
+        The requester chooses a ROUTE; the layouts within it are the platform's
+        business. Five cards arguing with each other, each with its own refusal
+        and its own diagram, is the platform thinking out loud at somebody who
+        asked a simpler question than that.
+        """
+        return KUBERNETES_ROUTE if self.key in CLUSTER_OPTIONS else MACHINES_ROUTE
+
     def as_dict(self) -> dict:
         return {
             "key": self.key,
+            "route": self.route,
             "title": self.title,
             "summary": self.summary,
             "hosts": [h.as_dict() for h in self.hosts],

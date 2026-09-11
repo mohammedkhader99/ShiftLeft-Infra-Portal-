@@ -1445,6 +1445,11 @@ export type PlacementCluster = {
 
 export type PlacementOption = {
   key: string
+  // Which of the two questions this layout answers: 'machines' or 'kubernetes'.
+  // The SERVER's grouping, not one worked out here — a list of cluster keys kept
+  // in the browser goes stale the day a layout is added, and the requester is
+  // the one who finds out.
+  route: string
   title: string
   summary: string
   hosts: PlacementHost[]

@@ -1,6 +1,7 @@
 [
   {
     "key": "managed",
+    "route": "machines",
     "title": "Managed where available",
     "summary": "The cloud runs postgres16. Patching, backups and failover for it stop being yours.",
     "hosts": [
@@ -48,63 +49,68 @@
           "components": [
             "mysql"
           ],
-          "resolved": false,
-          "base": null,
+          "resolved": true,
+          "base": {
+            "vcpu": 4,
+            "memory_gb": 16,
+            "storage_gb": 200,
+            "iops": 3000
+          },
           "headroom_percent": 20,
-          "missing": [
-            "mysql"
-          ],
-          "vcpu": null,
-          "memory_gb": null,
-          "storage_gb": null,
-          "iops": null,
-          "note": "Cannot be sized: no requirement is recorded for mysql as vm. Sizing it anyway would build a machine too small for what was asked for."
+          "missing": [],
+          "vcpu": 5,
+          "memory_gb": 20,
+          "storage_gb": 240,
+          "iops": 3600
         }
       ],
       "totals": {
-        "vcpu": 0,
-        "memory_gb": 0,
-        "storage_gb": 0,
-        "iops": 0
+        "vcpu": 5,
+        "memory_gb": 20,
+        "storage_gb": 240,
+        "iops": 3600
       },
-      "machine_count": 0,
+      "machine_count": 1,
       "headroom_percent": 20,
-      "resolved": false
+      "resolved": true
     },
     "estimate": {
       "currency": "AED",
-      "pricing_source": "oci-live",
-      "machine_count": 0,
-      "machines": null,
-      "managed": {
+      "pricing_source": "mock",
+      "deployment_target": "oci",
+      "known_target": true,
+      "machine_count": 1,
+      "machines": {
         "currency": "AED",
         "unpriced": [],
-        "provisional": [],
+        "provisional": [
+          "Compute Instance (VM)"
+        ],
         "external_licences": [],
         "deployment_target": "oci",
         "known_target": true,
-        "pricing_source": "oci-live",
+        "pricing_source": "mock",
         "lines": [
           {
-            "technology_name": "PostgreSQL 16",
+            "technology_name": "Compute Instance (VM)",
             "size": "medium",
             "resolved": true,
-            "provisional": false,
-            "resource_kind": "oci-postgres",
-            "billing_model": "managed-db",
+            "provisional": true,
+            "resource_kind": null,
+            "billing_model": "vm",
             "unpriceable": null,
-            "compute_monthly": 446.7,
-            "storage_monthly": 15.92,
-            "resource_monthly": 462.63,
+            "compute_monthly": 452.97,
+            "storage_monthly": 16.32,
+            "resource_monthly": 469.29,
             "licence_monthly": 0.0,
             "external_licence": null,
             "one_time": 0.0,
-            "monthly": 462.63
+            "monthly": 469.29
           }
         ],
         "by_category": {
-          "compute": 446.7,
-          "storage": 15.92,
+          "compute": 452.97,
+          "storage": 16.32,
           "licence": 0.0,
           "backup": 0.0,
           "monitoring": 0.0,
@@ -112,29 +118,117 @@
         },
         "totals": {
           "one_time": 0.0,
-          "monthly": 462.63,
-          "annual": 5551.5
+          "monthly": 469.29,
+          "annual": 5631.42
+        }
+      },
+      "managed": {
+        "currency": "AED",
+        "unpriced": [],
+        "provisional": [],
+        "external_licences": [],
+        "deployment_target": "oci",
+        "known_target": true,
+        "pricing_source": "mock",
+        "lines": [
+          {
+            "technology_name": "PostgreSQL 16",
+            "size": "medium",
+            "resolved": true,
+            "provisional": false,
+            "resource_kind": "oci-instance",
+            "billing_model": "vm",
+            "unpriceable": null,
+            "compute_monthly": 362.37,
+            "storage_monthly": 13.6,
+            "resource_monthly": 375.97,
+            "licence_monthly": 0.0,
+            "external_licence": null,
+            "one_time": 0.0,
+            "monthly": 375.97
+          }
+        ],
+        "by_category": {
+          "compute": 362.37,
+          "storage": 13.6,
+          "licence": 0.0,
+          "backup": 0.0,
+          "monitoring": 0.0,
+          "support": 0.0
+        },
+        "totals": {
+          "one_time": 0.0,
+          "monthly": 375.97,
+          "annual": 4511.66
         }
       },
       "licences": [],
-      "resolved": false,
+      "lines": [
+        {
+          "technology_name": "Compute Instance (VM)",
+          "size": "medium",
+          "resolved": true,
+          "provisional": true,
+          "resource_kind": null,
+          "billing_model": "vm",
+          "unpriceable": null,
+          "compute_monthly": 452.97,
+          "storage_monthly": 16.32,
+          "resource_monthly": 469.29,
+          "licence_monthly": 0.0,
+          "external_licence": null,
+          "one_time": 0.0,
+          "monthly": 469.29
+        },
+        {
+          "technology_name": "PostgreSQL 16",
+          "size": "medium",
+          "resolved": true,
+          "provisional": false,
+          "resource_kind": "oci-instance",
+          "billing_model": "vm",
+          "unpriceable": null,
+          "compute_monthly": 362.37,
+          "storage_monthly": 13.6,
+          "resource_monthly": 375.97,
+          "licence_monthly": 0.0,
+          "external_licence": null,
+          "one_time": 0.0,
+          "monthly": 375.97
+        }
+      ],
+      "unpriced": [],
+      "provisional": [
+        "Compute Instance (VM)"
+      ],
+      "external_licences": [],
+      "by_category": {
+        "compute": 815.34,
+        "storage": 29.92,
+        "licence": 0.0,
+        "backup": 0.0,
+        "monitoring": 0.0,
+        "support": 0.0
+      },
+      "resolved": true,
       "totals": {
         "one_time": 0.0,
-        "monthly": 462.63,
-        "annual": 5551.56
+        "monthly": 845.26,
+        "annual": 10143.12
       }
     },
-    "resolved": false,
+    "resolved": true,
     "totals": {
       "one_time": 0.0,
-      "monthly": 462.63,
-      "annual": 5551.56
+      "monthly": 845.26,
+      "annual": 10143.12
     },
-    "monthly_delta": null,
-    "cheapest": false
+    "monthly_delta": 0.0,
+    "cheapest": true
   },
   {
     "key": "consolidated",
+    "route": "machines",
     "title": "Consolidated",
     "summary": "One machine hosts all 2 components. Their resource needs are summed, not maximised.",
     "hosts": [
@@ -142,17 +236,15 @@
         "id": "host-1",
         "host_mode": "vm",
         "components": [
-          "postgres16",
-          "mysql"
+          "mysql",
+          "postgres16"
         ]
       }
     ],
     "host_count": 1,
     "eligible": false,
     "reasons": [
-      "mysql and postgres16 may not share a host. A production database shares a host with nothing else. A neighbour on the same machine competes for the page cache and the disk queue, and patching that neighbour takes the database down with it.",
-      "mysql may not share a host in prod. A production database shares a host with nothing else. A neighbour on the same machine competes for the page cache and the disk queue, and patching that neighbour takes the database down with it.",
-      "postgres16 may not share a host in prod. A production database shares a host with nothing else. A neighbour on the same machine competes for the page cache and the disk queue, and patching that neighbour takes the database down with it."
+      "mysql and postgres16 may not share a host. A production database shares a host with nothing else. A neighbour on the same machine competes for the page cache and the disk queue, and patching that neighbour takes the database down with it."
     ],
     "clusters": [],
     "warnings": [],
@@ -162,37 +254,82 @@
           "host_id": "host-1",
           "host_mode": "vm",
           "components": [
-            "postgres16",
-            "mysql"
+            "mysql",
+            "postgres16"
           ],
-          "resolved": false,
-          "base": null,
+          "resolved": true,
+          "base": {
+            "vcpu": 8,
+            "memory_gb": 32,
+            "storage_gb": 400,
+            "iops": 6000
+          },
           "headroom_percent": 20,
-          "missing": [
-            "mysql"
-          ],
-          "vcpu": null,
-          "memory_gb": null,
-          "storage_gb": null,
-          "iops": null,
-          "note": "Cannot be sized: no requirement is recorded for mysql as vm. Sizing it anyway would build a machine too small for what was asked for."
+          "missing": [],
+          "vcpu": 10,
+          "memory_gb": 39,
+          "storage_gb": 480,
+          "iops": 7200
         }
       ],
       "totals": {
-        "vcpu": 0,
-        "memory_gb": 0,
-        "storage_gb": 0,
-        "iops": 0
+        "vcpu": 10,
+        "memory_gb": 39,
+        "storage_gb": 480,
+        "iops": 7200
       },
-      "machine_count": 0,
+      "machine_count": 1,
       "headroom_percent": 20,
-      "resolved": false
+      "resolved": true
     },
     "estimate": {
       "currency": "AED",
-      "pricing_source": null,
-      "machine_count": 0,
-      "machines": null,
+      "pricing_source": "mock",
+      "deployment_target": "oci",
+      "known_target": true,
+      "machine_count": 1,
+      "machines": {
+        "currency": "AED",
+        "unpriced": [],
+        "provisional": [
+          "Compute Instance (VM)"
+        ],
+        "external_licences": [],
+        "deployment_target": "oci",
+        "known_target": true,
+        "pricing_source": "mock",
+        "lines": [
+          {
+            "technology_name": "Compute Instance (VM)",
+            "size": "medium",
+            "resolved": true,
+            "provisional": true,
+            "resource_kind": null,
+            "billing_model": "vm",
+            "unpriceable": null,
+            "compute_monthly": 900.35,
+            "storage_monthly": 32.64,
+            "resource_monthly": 932.99,
+            "licence_monthly": 0.0,
+            "external_licence": null,
+            "one_time": 0.0,
+            "monthly": 932.99
+          }
+        ],
+        "by_category": {
+          "compute": 900.35,
+          "storage": 32.64,
+          "licence": 0.0,
+          "backup": 0.0,
+          "monitoring": 0.0,
+          "support": 0.0
+        },
+        "totals": {
+          "one_time": 0.0,
+          "monthly": 932.99,
+          "annual": 11195.83
+        }
+      },
       "managed": null,
       "licences": [
         {
@@ -201,24 +338,56 @@
           "monthly": 0.0
         }
       ],
-      "resolved": false,
+      "lines": [
+        {
+          "technology_name": "Compute Instance (VM)",
+          "size": "medium",
+          "resolved": true,
+          "provisional": true,
+          "resource_kind": null,
+          "billing_model": "vm",
+          "unpriceable": null,
+          "compute_monthly": 900.35,
+          "storage_monthly": 32.64,
+          "resource_monthly": 932.99,
+          "licence_monthly": 0.0,
+          "external_licence": null,
+          "one_time": 0.0,
+          "monthly": 932.99
+        }
+      ],
+      "unpriced": [],
+      "provisional": [
+        "Compute Instance (VM)"
+      ],
+      "external_licences": [],
+      "by_category": {
+        "compute": 900.35,
+        "storage": 32.64,
+        "licence": 0.0,
+        "backup": 0.0,
+        "monitoring": 0.0,
+        "support": 0.0
+      },
+      "resolved": true,
       "totals": {
         "one_time": 0.0,
-        "monthly": 0.0,
-        "annual": 0.0
+        "monthly": 932.99,
+        "annual": 11195.88
       }
     },
-    "resolved": false,
+    "resolved": true,
     "totals": {
       "one_time": 0.0,
-      "monthly": 0.0,
-      "annual": 0.0
+      "monthly": 932.99,
+      "annual": 11195.88
     },
-    "monthly_delta": null,
+    "monthly_delta": 87.73,
     "cheapest": false
   },
   {
     "key": "separated",
+    "route": "machines",
     "title": "Separated",
     "summary": "2 machines, one per component. The most isolated and the most expensive.",
     "hosts": [
@@ -226,14 +395,14 @@
         "id": "host-1",
         "host_mode": "vm",
         "components": [
-          "postgres16"
+          "mysql"
         ]
       },
       {
         "id": "host-2",
         "host_mode": "vm",
         "components": [
-          "mysql"
+          "postgres16"
         ]
       }
     ],
@@ -248,7 +417,7 @@
           "host_id": "host-1",
           "host_mode": "vm",
           "components": [
-            "postgres16"
+            "mysql"
           ],
           "resolved": true,
           "base": {
@@ -268,64 +437,87 @@
           "host_id": "host-2",
           "host_mode": "vm",
           "components": [
-            "mysql"
+            "postgres16"
           ],
-          "resolved": false,
-          "base": null,
+          "resolved": true,
+          "base": {
+            "vcpu": 4,
+            "memory_gb": 16,
+            "storage_gb": 200,
+            "iops": 3000
+          },
           "headroom_percent": 20,
-          "missing": [
-            "mysql"
-          ],
-          "vcpu": null,
-          "memory_gb": null,
-          "storage_gb": null,
-          "iops": null,
-          "note": "Cannot be sized: no requirement is recorded for mysql as vm. Sizing it anyway would build a machine too small for what was asked for."
+          "missing": [],
+          "vcpu": 5,
+          "memory_gb": 20,
+          "storage_gb": 240,
+          "iops": 3600
         }
       ],
       "totals": {
-        "vcpu": 5,
-        "memory_gb": 20,
-        "storage_gb": 240,
-        "iops": 3600
+        "vcpu": 10,
+        "memory_gb": 40,
+        "storage_gb": 480,
+        "iops": 7200
       },
-      "machine_count": 1,
+      "machine_count": 2,
       "headroom_percent": 20,
-      "resolved": false
+      "resolved": true
     },
     "estimate": {
       "currency": "AED",
-      "pricing_source": "oci-live",
-      "machine_count": 1,
+      "pricing_source": "mock",
+      "deployment_target": "oci",
+      "known_target": true,
+      "machine_count": 2,
       "machines": {
         "currency": "AED",
         "unpriced": [],
-        "provisional": [],
+        "provisional": [
+          "Compute Instance (VM)",
+          "Compute Instance (VM)"
+        ],
         "external_licences": [],
         "deployment_target": "oci",
         "known_target": true,
-        "pricing_source": "oci-live",
+        "pricing_source": "mock",
         "lines": [
           {
             "technology_name": "Compute Instance (VM)",
             "size": "medium",
             "resolved": true,
-            "provisional": false,
-            "resource_kind": "oci-instance",
+            "provisional": true,
+            "resource_kind": null,
             "billing_model": "vm",
             "unpriceable": null,
-            "compute_monthly": 262.1,
-            "storage_monthly": 19.11,
-            "resource_monthly": 281.2,
+            "compute_monthly": 452.97,
+            "storage_monthly": 16.32,
+            "resource_monthly": 469.29,
             "licence_monthly": 0.0,
             "external_licence": null,
             "one_time": 0.0,
-            "monthly": 281.2
+            "monthly": 469.29
+          },
+          {
+            "technology_name": "Compute Instance (VM)",
+            "size": "medium",
+            "resolved": true,
+            "provisional": true,
+            "resource_kind": null,
+            "billing_model": "vm",
+            "unpriceable": null,
+            "compute_monthly": 452.97,
+            "storage_monthly": 16.32,
+            "resource_monthly": 469.29,
+            "licence_monthly": 0.0,
+            "external_licence": null,
+            "one_time": 0.0,
+            "monthly": 469.29
           }
         ],
         "by_category": {
-          "compute": 262.1,
-          "storage": 19.11,
+          "compute": 905.93,
+          "storage": 32.64,
           "licence": 0.0,
           "backup": 0.0,
           "monitoring": 0.0,
@@ -333,8 +525,8 @@
         },
         "totals": {
           "one_time": 0.0,
-          "monthly": 281.2,
-          "annual": 3374.44
+          "monthly": 938.57,
+          "annual": 11262.84
         }
       },
       "managed": null,
@@ -345,20 +537,51 @@
           "monthly": 0.0
         }
       ],
-      "resolved": false,
+      "lines": [
+        {
+          "technology_name": "Compute Instance (VM)",
+          "size": "medium",
+          "resolved": true,
+          "provisional": true,
+          "resource_kind": null,
+          "billing_model": "vm",
+          "unpriceable": null,
+          "compute_monthly": 452.97,
+          "storage_monthly": 16.32,
+          "resource_monthly": 469.29,
+          "licence_monthly": 0.0,
+          "external_licence": null,
+          "one_time": 0.0,
+          "monthly": 469.29
+        }
+      ],
+      "unpriced": [],
+      "provisional": [
+        "Compute Instance (VM)"
+      ],
+      "external_licences": [],
+      "by_category": {
+        "compute": 905.93,
+        "storage": 32.64,
+        "licence": 0.0,
+        "backup": 0.0,
+        "monitoring": 0.0,
+        "support": 0.0
+      },
+      "resolved": true,
       "totals": {
         "one_time": 0.0,
-        "monthly": 281.2,
-        "annual": 3374.4
+        "monthly": 938.57,
+        "annual": 11262.84
       }
     },
-    "resolved": false,
+    "resolved": true,
     "totals": {
       "one_time": 0.0,
-      "monthly": 281.2,
-      "annual": 3374.4
+      "monthly": 938.57,
+      "annual": 11262.84
     },
-    "monthly_delta": null,
+    "monthly_delta": 93.31,
     "cheapest": false
   }
 ]

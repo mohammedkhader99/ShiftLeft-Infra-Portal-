@@ -723,6 +723,63 @@ by `/api/placement/evaluate`.
 
 ---
 
+## 5d. Phase U — one workspace, one question (added 2026-09-11)
+
+Asked for after a screenshot of the placement step: "I am confused, why so many
+choices are provided. I need just one window or workspace to decide my topology
+by user choice arrangement."
+
+**U.1 — the five cards become two routes.** *Done 2026-09-11.*
+The step rendered every layout the platform produced as its own card — five for
+a stack with a cluster in it, each with a title, summary, price, refusal, its own
+advisory notices and its own diagram. Two of the five printed the SAME sentence
+about the Kubernetes API being unreachable, at full size, one above the other.
+
+*They were never five choices.* They were two — machines or Kubernetes — and
+three variations on the first that the platform is better placed to pick than
+somebody asking for a database. So: the stack, one line on cluster availability,
+two route cards, and the topology drawn for whichever is chosen, redrawn when it
+changes. The machine layouts collapse to the platform's recommendation (the
+cheapest that can actually be built), with the rest behind a disclosure and
+"Arrange it yourself" for anyone who wants something else entirely.
+*The route is the SERVER's fact.* `Option.route` is derived beside the option
+keys, where the keys are defined, and the browser groups by it. A list of cluster
+keys kept in the client is one that goes stale the day a layout is added, and the
+requester is the one who finds out.
+*Nothing disappears to achieve the simplification*, and the render harness
+enforced that within minutes of the first attempt: dropping the refused layouts
+made it fail with "refused option not rendered at all". Every layout is
+accounted for — on a route card, or in a compact "Also considered" line carrying
+its reason. A layout that vanishes is indistinguishable from a portal that is
+broken.
+*No node pools, subnets, NSGs, image OCIDs, Kubernetes versions or storage
+classes* anywhere in the workspace. Those were never asked of the requester and
+still are not.
+
+**What the harnesses caught, which is the point of having them.** The fixtures
+predated `route`, so the workspace grouped nothing and the suite passed on a
+render showing no route cards at all — twice, because the harness imports
+fixtures from INSIDE the image and the first rebuild came after the recapture.
+`webapp/frontend/tests/refresh_fixtures.py` now recaptures them from the real
+endpoint against a seeded catalogue and the real OPA, so nobody hand-edits a
+fixture and calls it a capture. A third failure was the harness's own regex:
+`/0\s*vCPU/` matched the zero in "10 vCPU", and only fired once the fixtures
+carried real sizes.
+
+**Still to come, and neither is started.** *U.2* — the Kubernetes route becomes
+selectable rather than refused: `placement.py` stops refusing cluster layouts and
+the catalogue gains container host-mode rows so they can be sized. Decided by the
+platform owner on 2026-09-11, knowing a request that picks it passes approval and
+then fails at provisioning until the network route exists, and knowing the sizing
+figures would be derived rather than measured. **The orchestrator's container-host
+guard stays either way** — removing it does not make the cluster path work, it
+makes a container host resolve to `oci-service-vm` and build a lone machine with
+no cluster while reporting success, which has happened once already. *U.3* — the
+pipeline after confirmation: Agent, Blueprint, Terraform, Validate, Plan,
+Security/Policy, Provision, Verify, Ready.
+
+---
+
 ## 6. The one open decision that affects this plan now
 
 **HTMX vs React for the portal (ARCHITECTURE.md §14.1).** This plan assumes HTMX. If you choose React instead, only the *portal* increments change shape — 0.3, 1.2, 1.3, and 1.5 would build a React app calling the same API — while the API, database, policy, Jira, orchestrator, and every enterprise increment stay identical. So the decision is real but low-blast-radius; it doesn't block starting Phase 0, which is stack-neutral either way.

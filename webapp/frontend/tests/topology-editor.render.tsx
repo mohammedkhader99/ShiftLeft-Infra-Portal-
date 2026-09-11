@@ -65,6 +65,7 @@ function shows(html: string, text: string): boolean {
  */
 const MANAGED_LAYOUT: PlacementOption = {
   key: 'managed',
+  route: 'machines',
   title: 'Managed where available',
   summary: 'The cloud runs oci-oke, postgres16.',
   hosts: [],

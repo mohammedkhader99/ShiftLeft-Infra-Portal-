@@ -158,7 +158,7 @@ for (const [label, options] of cases) {
   // An unsizeable host must never render as a host of zero. A price of 0.00 has
   // reached an approver in this portal before; a shape of zero is the same lie in
   // a different column.
-  if (/0\s*vCPU/.test(html)) {
+  if (/(?:^|[^\d])0\s*vCPU/.test(html)) {
     console.log(`FAIL  ${label}: an unsized host rendered as "0 vCPU"`)
     failures++
   }
@@ -200,7 +200,7 @@ for (const [label, options] of cases) {
     }
 
     // A host with no determined size must never be drawn as a box of zeros.
-    if (/0\s*vCPU/.test(html)) {
+    if (/(?:^|[^\d])0\s*vCPU/.test(html)) {
       console.log(`FAIL  diagram ${label} / ${option.key}: an unsized host drawn as zero`)
       failures++
     }
