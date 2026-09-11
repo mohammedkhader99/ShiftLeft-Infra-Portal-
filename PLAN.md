@@ -981,6 +981,135 @@ the failure being tested.
 
 ---
 
+## 5e. Phase K — deploying into the cluster, from inside the VCN (proposed 2026-09-11)
+
+**NOT APPROVED. Nothing below is built.** Written after REQ-2026-0312 was held up
+and the blocker turned out to be narrower than a year of comments claimed.
+
+**What changed the picture.** The OKE module's own security group already admits
+TCP 6443 from `operator_cidr`, and `operator_cidr` is
+`data.oci_core_vcn.provided.cidr_block` — the WHOLE VCN. There is no missing
+firewall rule. Anything inside that VCN can already reach the Kubernetes API.
+The orchestrator cannot for exactly one reason: it runs in a Docker container
+outside the VCN.
+
+Every note in this repository has said "the orchestrator has no route to it",
+which is true, and implied the remedy must be a network change, which it is not.
+The portal already builds machines INSIDE that VCN.
+
+**The shape.** A short-lived deployer instance, built by the existing machinery,
+fetches the kubeconfig with an instance principal, applies the workloads, reports
+what actually runs, and is destroyed. No inbound access, no network team.
+
+*Four things it reuses rather than invents.* The container rung already resolves
+`{image, digest, platform_digest, ports}` from the registry and pins by digest —
+that is most of a Deployment. `configure.render` already produces cloud-init that
+does work and writes a report. `boot_reports` already carries a machine's own
+account of itself OUT through object storage, needing no inbound access. And the
+Terraform workspace/plan/apply/destroy path already builds and tears down
+machines per request.
+
+### The increments
+
+**K.1 — prove an instance in the VCN can reach the API, and nothing else.**
+*Built 2026-09-12; the proof itself is the platform owner's to run.*
+`orchestrator/oke_probe.py` renders cloud-init that asks the endpoint once and
+reports what it found, and reads the answer back.
+
+*It needs no IAM policy, and the plan above said it would.* That was wrong in
+the direction of doing more than the question requires. Reachability is a TCP
+and TLS question: a `401 Unauthorized` from the API server is a COMPLETE success
+here — the packets arrived, the handshake completed, Kubernetes answered. Adding
+an instance principal, a policy and a kubeconfig would have confused "we cannot
+get there" with "we got there and were not allowed in", which have entirely
+different remedies and only the first of which decides whether Phase K is
+possible. Authentication starts in K.2.
+*It carries no credential.* The script travels in instance metadata, which
+anyone able to read that VM can see. The only URL it holds is the write-only
+report PAR every other machine here uses.
+*A missing report is not an unreachable endpoint.* `unknown` is a distinct
+verdict: nothing reported may mean the machine never booted, and blaming the
+network for a build that never happened sends somebody to the wrong team.
+*It proves a ROUTE and nothing else.* The certificate is not verified, so it
+says nothing about trust; K.2 must verify against the cluster's own CA.
+
+**HOW TO RUN IT.** Launch one Oracle Linux 9 instance in any subnet of the
+cluster's VCN, with this as its user-data, then read the report from the boot
+bucket and destroy the instance:
+
+```
+docker compose exec api python -c "from orchestrator import oke_probe;   print(oke_probe.script('<CLUSTER_PRIVATE_ENDPOINT>', '<WRITE_ONLY_PAR_URL>'))"
+```
+
+`result=reachable` — with any HTTP status — means K.2 is worth building.
+`result=unreachable` means Phase K is built on sand and §6's network route is
+the answer after all. Either way it costs one short-lived machine.
+
+**NOT WIRED TO THE PROVISIONER, and the reason is a real question rather than an
+omission.** A blueprint manifest must declare `builds` — the technologies it
+delivers — and a probe delivers none. Declaring a fake `oke-probe` technology to
+satisfy the field would distort the catalogue model in order to ask a question.
+The options are: give the registry a category for blueprints that build
+infrastructure for the PORTAL rather than for a requester, or leave the probe a
+one-off launched by hand as above. **This needs deciding before K.2**, and a
+proof increment should not be the thing that settles it.
+
+*Found while looking:* `db/seed.py` says "Everything any blueprint builds is
+listed, and test_the_form_says_how_a_thing_arrives keeps it that way." That test
+does not exist anywhere in the repository. The invariant is real and unguarded.
+
+**K.2 — one stateless workload, as a Deployment and a Service.**
+Generated from the container spec the registry already resolves. One technology,
+stateless. *Acceptance:* the pod runs the image pinned by digest, the Service
+answers on the declared port, and the request records what was applied.
+
+**K.3 — the workload reports what actually runs.**
+The same rule machines are held to: a pod that STARTED is not a pod that WORKS.
+The digest that actually arrived, the ports that actually serve — judged the way
+`boot_reports.verdict` judges a machine. *Acceptance:* a deliberately broken
+manifest is reported as broken rather than as provisioned.
+
+**K.4 — stateful workloads, or an honest refusal.**
+PersistentVolumeClaims and a storage class. This is where the advisory warnings
+this portal already shows become real operational burden. *Acceptance:* either a
+database keeps its data across a pod restart, or the option says plainly that it
+will not and refuses. Deferring this is a legitimate outcome of the increment.
+
+**K.5 — the orchestrator stops refusing a container host.**
+`_refuse_unsized_hosts` currently refuses every container host because nothing
+could build one. It becomes "no deployer is available for this cluster" — a
+narrower and still-honest refusal. *Acceptance:* a Kubernetes placement builds;
+one with no deployer path still refuses, with a reason naming why.
+
+**K.6 — teardown removes the workloads, not just the machines.**
+*Acceptance:* decommissioning a Kubernetes request leaves no pods, no PVCs and no
+deployer instance, and says so from the cluster rather than from its own records.
+
+### What I would want written down before starting
+
+*The deployer holds cluster rights for a few minutes.* That is a concentration of
+privilege this architecture is otherwise careful about: it must be minimal,
+short-lived, audited to the tamper-evident log like every other privileged step,
+and destroyed whether the apply succeeds or fails.
+*Manifests are artefacts that need the same discipline as blueprints* — proved
+before offered, not assumed. K.2 and K.3 exist so that a manifest is certified by
+evidence from a real cluster rather than by review.
+*None of the standing rules move.* Jira still holds the approval; the
+orchestrator still re-verifies it before acting; the agent still recommends and
+never executes.
+*It costs money per request.* A deployer instance is real infrastructure. Short-
+lived and per-request is the cheapest honest shape; a long-lived one per
+environment would be cheaper still and is a standing privileged machine, which is
+worse.
+
+**The alternative remains open.** §6's network route makes the orchestrator reach
+the API directly and needs no deployer, no IAM and no manifests — but it needs the
+network team, and it has been waiting. GitOps (ARCHITECTURE §6, §9) still needs
+K.1 to bootstrap its controller, so it is a successor to this phase rather than a
+substitute for it.
+
+---
+
 ## 6. The one open decision that affects this plan now
 
 **HTMX vs React for the portal (ARCHITECTURE.md §14.1).** This plan assumes HTMX. If you choose React instead, only the *portal* increments change shape — 0.3, 1.2, 1.3, and 1.5 would build a React app calling the same API — while the API, database, policy, Jira, orchestrator, and every enterprise increment stay identical. So the decision is real but low-blast-radius; it doesn't block starting Phase 0, which is stack-neutral either way.
