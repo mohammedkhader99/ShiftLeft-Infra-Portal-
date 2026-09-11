@@ -18,6 +18,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import orchestrator.main as orch
+from orchestrator.tests.http_stub import stub_http
 from common.signing import sign
 
 client = TestClient(orch.app)
@@ -60,9 +61,8 @@ def allow(monkeypatch, tier="Development", cap="250", monthly=10.0):
     monkeypatch.setenv("CERTIFICATION_COST_CAP_MONTHLY", cap)
     monkeypatch.setattr(orch, "_current_monthly", lambda pi: monthly)
     # OPA still applies to a proof; allow it so each test isolates one bound.
-    monkeypatch.setattr(orch.httpx, "post",
-                        lambda *a, **k: type("R", (), {
-                            "json": lambda self=None: {"result": {"allow": True}}})())
+    stub_http(monkeypatch, orch).post = lambda *a, **k: type("R", (), {
+        "json": lambda self=None: {"result": {"allow": True}}})()
 
 
 def authorise(b: bytes) -> dict:
@@ -114,9 +114,8 @@ def test_policy_still_applies_to_a_proof(monkeypatch):
     """A proof is not exempt from OPA just because it is the portal testing
     itself."""
     allow(monkeypatch)
-    monkeypatch.setattr(orch.httpx, "post",
-                        lambda *a, **k: type("R", (), {
-                            "json": lambda self=None: {"result": {"allow": False}}})())
+    stub_http(monkeypatch, orch).post = lambda *a, **k: type("R", (), {
+        "json": lambda self=None: {"result": {"allow": False}}})()
     with pytest.raises(Exception) as exc:
         authorise(body())
     assert "Policy re-check failed" in str(exc.value)
@@ -135,9 +134,8 @@ def test_a_proof_never_reaches_the_jira_check(monkeypatch):
     exist, and every proof would fail for the wrong reason."""
     allow(monkeypatch)
     called = []
-    monkeypatch.setattr(orch.httpx, "get",
-                        lambda *a, **k: called.append(a) or type("R", (), {
-                            "json": lambda self=None: {"status": "approved"}})())
+    stub_http(monkeypatch, orch).get = lambda *a, **k: called.append(a) or type(
+        "R", (), {"json": lambda self=None: {"status": "approved"}})()
     authorise(body())
     assert called == [], "a proof asked Jira for an approval"
 

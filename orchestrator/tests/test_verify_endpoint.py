@@ -216,5 +216,6 @@ def test_the_endpoint_never_changes_a_request(monkeypatch):
     concentration of authority the architecture forbids for approvals."""
     import inspect
     source = inspect.getsource(omain.verify_boot)
-    for forbidden in ("status =", "terraform_apply", "terraform_destroy", "httpx.post"):
+    for forbidden in ("status =", "terraform_apply", "terraform_destroy",
+                      "http_client().post"):
         assert forbidden not in source, f"/verify does more than read: {forbidden}"

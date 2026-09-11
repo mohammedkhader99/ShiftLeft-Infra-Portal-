@@ -507,6 +507,60 @@ it, after the requester had already pressed submit.
 
 ---
 
+## 5c. Found work — one HTTP client per process (added 2026-09-11)
+
+Not a planned increment. Found while asking why the full suite took 1h44m on
+2026-09-10 and 18m10s the next morning, against 9m a fortnight earlier, with an
+identical pass count every time.
+
+**H.1 — the policy gate stops building a client per call.** *Done 2026-09-11.*
+`httpx.post(...)` is a convenience wrapper that constructs an entire client for
+one request and discards it: a connection pool, and an SSL context loaded from
+the CA bundle on disk, built whether or not the URL is https. Measured here:
+
+| | per call |
+|---|---|
+| `localhost`, new client each call (what we had) | 804.8 ms |
+| `127.0.0.1`, new client each call | 772.8 ms |
+| `localhost`, one reused client | 47.5 ms |
+| `127.0.0.1`, one reused client | 3.1 ms |
+| *(client construction alone, no network at all)* | *318.1 ms* |
+
+*Two costs, and the order matters.* Constructing the client dominates, so
+changing the hostname alone buys almost nothing — the first guess, and the wrong
+one. Once the client is reused the hostname becomes the larger remaining cost:
+`localhost` resolves to both `::1` and `127.0.0.1`, and on Windows the address
+Docker did not publish on is tried first. Both changes together, or neither is
+worth much.
+*This is not only a test problem.* 318ms of it is not network cost at all, so it
+is paid in the containers too — on every submit gate, every placement
+evaluation, and every orchestrator re-verification. Unmeasured inside the
+container, where the CA bundle read is likely cheaper.
+*The timeout stays with the caller.* Every call site still passes its own
+`timeout=`, so a slow dependency is bounded by the same number as before. A
+shared client must never become the place where one caller's patience quietly
+becomes another's — `common/tests/test_one_client_per_process.py` holds that.
+*The orchestrator was converted whole, not half.* Its tests stub one function
+that dispatches on URL across both OPA and the API, so converting only the OPA
+calls would have meant stubbing in two places to answer one question.
+
+**H.2 — the suite reaches the public internet. NOT DONE; needs a decision.**
+`api/registry.py` resolves images against a real container registry over
+`urllib`, with an 8-second timeout and no mock mode pinned in `conftest.py`.
+`test_asking_creates_nothing` makes four such asks and takes 68.9s — the single
+slowest test in the suite, and H.1 does nothing for it. This is the same shape
+as the `DATABASE_URL` and `OPA_URL` defaults: a test suite quietly depending on
+something outside the process, where the timing is decided by the network rather
+than by the tests. Worth its own increment.
+
+**The lesson, again.** *A check that validates what it looks at cannot see what
+it doesn't.* `conftest.py` pins auth, Jira, pricing, provisioning, cloud state
+and the database to mock, and reads as though it has covered everything — it
+covers what someone thought of. OPA and the registry were never in the list, so
+the suite has always reached out to both, and nothing said so.
+
+---
+
 ## 6. The one open decision that affects this plan now
 
 **HTMX vs React for the portal (ARCHITECTURE.md §14.1).** This plan assumes HTMX. If you choose React instead, only the *portal* increments change shape — 0.3, 1.2, 1.3, and 1.5 would build a React app calling the same API — while the API, database, policy, Jira, orchestrator, and every enterprise increment stay identical. So the decision is real but low-blast-radius; it doesn't block starting Phase 0, which is stack-neutral either way.

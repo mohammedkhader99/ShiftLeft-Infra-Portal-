@@ -57,7 +57,7 @@ def client():
 
 
 def _fake_opa(monkeypatch, payload=None, fail=False):
-    import types, sys
+    import types
 
     class _Resp:
         status_code = 200
@@ -74,9 +74,10 @@ def _fake_opa(monkeypatch, payload=None, fail=False):
             raise RuntimeError("connection refused")
         return _Resp()
 
-    mod = types.ModuleType("httpx")
-    mod.get = _get
-    monkeypatch.setattr(policy, "httpx", mod)
+    # Stands in for the shared client the policy module asks for, rather than
+    # for the httpx module itself — the calls go through one client now.
+    monkeypatch.setattr(policy, "http_client",
+                        lambda: types.SimpleNamespace(get=_get))
 
 
 # --- Reading the loaded policy ----------------------------------------------

@@ -15,8 +15,9 @@ import logging
 import os
 import re
 
-import httpx
 from fastapi import FastAPI, HTTPException, Request
+
+from common.httpclient import client as http_client
 
 from common import proof_rules
 from common.signing import verify
@@ -39,7 +40,9 @@ from orchestrator import (
 )
 
 API_URL = os.getenv("API_URL", "http://localhost:8081")
-OPA_URL = os.getenv("OPA_URL", "http://localhost:8181")
+# 127.0.0.1 rather than "localhost" — see common/httpclient. Compose sets this
+# explicitly for the container, so the default only governs a host-run process.
+OPA_URL = os.getenv("OPA_URL", "http://127.0.0.1:8181")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "dev-mock-secret")
 SUPPORTED_CONTRACT = "1.0"
 COST_DRIFT_THRESHOLD = float(os.getenv("COST_DRIFT_THRESHOLD", "0.10"))
@@ -347,7 +350,7 @@ def _current_monthly(policy_input: dict) -> float | None:
         "deployment_target": policy_input.get("deployment_target"),
         "components": policy_input.get("components", []),
     }
-    resp = httpx.post(f"{API_URL}/api/cost", json=body, timeout=5.0)
+    resp = http_client().post(f"{API_URL}/api/cost", json=body, timeout=5.0)
     resp.raise_for_status()
     return resp.json().get("totals", {}).get("monthly")
 
@@ -401,7 +404,7 @@ def _authorise_proof(payload: dict, policy_input: dict,
     # Re-check OPA, exactly as for a user request. A proof is not exempt from
     # policy just because it is the portal testing itself.
     try:
-        result = httpx.post(
+        result = http_client().post(
             f"{OPA_URL}/v1/data/infra/authz", json={"input": policy_input}, timeout=5.0
         ).json().get("result", {})
     except Exception as exc:  # noqa: BLE001
@@ -444,7 +447,8 @@ def _authorise(body: bytes, signature: str, read_only: bool = False) -> dict:
 
     # Authority: re-verify the approval in Jira (mock = API).
     try:
-        approval = httpx.get(f"{API_URL}/api/approvals/{jira_key}", timeout=5.0).json()
+        approval = http_client().get(f"{API_URL}/api/approvals/{jira_key}",
+                                     timeout=5.0).json()
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"Could not re-verify approval: {exc}")
     if approval.get("status") != "approved":
@@ -452,7 +456,7 @@ def _authorise(body: bytes, signature: str, read_only: bool = False) -> dict:
 
     # Re-check OPA policy.
     try:
-        result = httpx.post(
+        result = http_client().post(
             f"{OPA_URL}/v1/data/infra/authz", json={"input": policy_input}, timeout=5.0
         ).json().get("result", {})
     except Exception as exc:  # noqa: BLE001

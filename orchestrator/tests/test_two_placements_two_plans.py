@@ -20,6 +20,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import orchestrator.main as omain
+from orchestrator.tests.http_stub import stub_http
 from orchestrator import provisioner
 
 
@@ -57,10 +58,11 @@ def recorded(monkeypatch, tmp_path):
 
     # The orchestrator never trusts the handoff: it re-verifies the approval in
     # Jira, re-checks OPA and re-prices. Stubbed so these tests exercise dispatch.
-    monkeypatch.setattr(omain.httpx, "get", lambda *a, **k: _Resp({"status": "approved"}))
-    monkeypatch.setattr(omain.httpx, "post", lambda url, *a, **k: _Resp(
+    http = stub_http(monkeypatch, omain)
+    http.get = lambda *a, **k: _Resp({"status": "approved"})
+    http.post = lambda url, *a, **k: _Resp(
         {"totals": {"monthly": 406.77}} if url.endswith("/api/cost")
-        else {"result": {"allow": True}}))
+        else {"result": {"allow": True}})
     monkeypatch.setattr(provisioner, "terraform_plan", fake_plan)
     monkeypatch.setattr(provisioner, "STATE_ROOT", tmp_path)
     monkeypatch.setattr(provisioner, "provision_mode", lambda: "plan")

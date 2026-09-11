@@ -7,9 +7,14 @@ Fail-safe: if OPA can't be reached, the request is blocked, not allowed.
 
 import os
 
-import httpx
+from common.httpclient import client as http_client
 
-OPA_URL = os.getenv("OPA_URL", "http://localhost:8181")
+# 127.0.0.1, not "localhost". The name resolves to both ::1 and 127.0.0.1, and
+# on Windows the address Docker did not publish on is tried first — ~44ms per
+# call once the client itself is no longer the bottleneck. Compose sets OPA_URL
+# explicitly for both services, so this default only governs a host-run process:
+# the test suite, and local development.
+OPA_URL = os.getenv("OPA_URL", "http://127.0.0.1:8181")
 POLICY_PATH = "/v1/data/infra/authz"
 
 
@@ -26,7 +31,8 @@ def evaluate_policy(input_doc: dict) -> dict:
     """
     payload = {"input": {k: v for k, v in input_doc.items() if v is not None}}
     try:
-        response = httpx.post(f"{OPA_URL}{POLICY_PATH}", json=payload, timeout=5.0)
+        response = http_client().post(f"{OPA_URL}{POLICY_PATH}", json=payload,
+                                      timeout=5.0)
         response.raise_for_status()
         result = response.json().get("result", {})
     except Exception as exc:  # noqa: BLE001 — any failure is a hard block
@@ -53,8 +59,8 @@ def evaluate_placement(topology: dict) -> dict:
     allowed it" is not a defensible answer to an auditor.
     """
     try:
-        response = httpx.post(f"{OPA_URL}{PLACEMENT_PATH}",
-                              json={"input": topology}, timeout=5.0)
+        response = http_client().post(f"{OPA_URL}{PLACEMENT_PATH}",
+                                      json={"input": topology}, timeout=5.0)
         response.raise_for_status()
         result = response.json().get("result", {})
     except Exception as exc:  # noqa: BLE001 — any failure is a hard block
@@ -87,7 +93,7 @@ def describe_policies() -> dict:
     guesses is worse than none.
     """
     try:
-        response = httpx.get(f"{OPA_URL}/v1/policies", timeout=5.0)
+        response = http_client().get(f"{OPA_URL}/v1/policies", timeout=5.0)
         response.raise_for_status()
         modules = (response.json() or {}).get("result", [])
     except Exception as exc:  # noqa: BLE001 — surface as unavailable, never as "no rules"

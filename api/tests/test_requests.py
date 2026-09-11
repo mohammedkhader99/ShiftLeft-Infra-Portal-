@@ -1639,6 +1639,8 @@ def test_quorum_default_one_is_unaffected(poller, monkeypatch):
 # --- Policy-as-code depth: advisory warnings (F-GOV-03) ----------------------
 
 def test_evaluate_policy_surfaces_warnings(monkeypatch):
+    import types
+
     import api.policy as policy
 
     class Resp:
@@ -1649,7 +1651,8 @@ def test_evaluate_policy_surfaces_warnings(monkeypatch):
             return {"result": {"allow": True, "violations": [],
                                "warnings": ["Name a technical owner."]}}
 
-    monkeypatch.setattr(policy.httpx, "post", lambda *a, **k: Resp())
+    monkeypatch.setattr(policy, "http_client",
+                        lambda: types.SimpleNamespace(post=lambda *a, **k: Resp()))
     verdict = policy.evaluate_policy({"request_type": "create"})
     assert verdict["allow"] is True
     assert verdict["violations"] == []

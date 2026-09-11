@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import orchestrator.main as orch
+from orchestrator.tests.http_stub import stub_http
 from common.signing import sign
 
 client = TestClient(orch.app)
@@ -51,14 +52,15 @@ class Resp:
 
 
 def _patch(monkeypatch, *, approval_status="approved", policy_allow=True, current_monthly=672.0):
-    monkeypatch.setattr(orch.httpx, "get", lambda *a, **k: Resp({"status": approval_status}))
+    http = stub_http(monkeypatch, orch)
+    http.get = lambda *a, **k: Resp({"status": approval_status})
 
     def fake_post(url, *a, **k):
         if url.endswith("/api/cost"):
             return Resp({"totals": {"monthly": current_monthly}})
         return Resp({"result": {"allow": policy_allow}})
 
-    monkeypatch.setattr(orch.httpx, "post", fake_post)
+    http.post = fake_post
 
 
 def test_valid_signed_approved_compliant_provisions(monkeypatch):

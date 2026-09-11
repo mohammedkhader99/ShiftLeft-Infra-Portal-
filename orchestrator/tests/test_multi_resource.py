@@ -14,6 +14,7 @@ exist, which means real infrastructure left running and unmanaged.
 import json
 
 import orchestrator.main as omain
+from orchestrator.tests.http_stub import stub_http
 from orchestrator import provisioner
 
 
@@ -130,10 +131,11 @@ class _Resp:
 def _authorised(monkeypatch):
     """The orchestrator re-verifies the approval, policy and cost independently
     (it never trusts the handoff). Stub those so these tests exercise dispatch."""
-    monkeypatch.setattr(omain.httpx, "get", lambda *a, **k: _Resp({"status": "approved"}))
-    monkeypatch.setattr(omain.httpx, "post", lambda url, *a, **k: _Resp(
+    http = stub_http(monkeypatch, omain)
+    http.get = lambda *a, **k: _Resp({"status": "approved"})
+    http.post = lambda url, *a, **k: _Resp(
         {"totals": {"monthly": 100.0}} if url.endswith("/api/cost")
-        else {"result": {"allow": True}}))
+        else {"result": {"allow": True}})
 
 
 def _stack_payload(**extra):
