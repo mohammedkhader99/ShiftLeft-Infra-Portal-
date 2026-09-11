@@ -36,28 +36,24 @@ import {
   Tag,
 } from '@carbon/react'
 import { evaluateLayout, type EvaluatedLayout, type PlacementOption, type ProposedHost } from '../api'
+import {
+  accepts as canTake,
+  addMachine as withAnotherMachine,
+  belongsToOf,
+  hostsOf,
+  machineCount,
+  // NOT `moved`: this component already has a `moved` state holding the code
+  // most recently dragged, and the local shadows the import silently.
+  move as applyMove,
+  moveToNewMachine,
+  proposedOf,
+  removeHost as without,
+} from './topologyArrangement'
 
 const MODE_LABEL: Record<string, string> = {
   vm: 'Virtual machine',
   container: 'On a cluster',
   managed: 'Run by the cloud',
-}
-
-/** The starting arrangement, taken from whichever layout is being adapted. */
-function hostsOf(option: PlacementOption): ProposedHost[] {
-  return (option.sizing?.hosts ?? []).map((h) => ({
-    id: h.host_id,
-    host_mode: h.host_mode,
-    components: [...h.components],
-  }))
-}
-
-/** A host id nothing else is using. */
-function nextHostId(hosts: ProposedHost[]): string {
-  let n = hosts.length + 1
-  const taken = new Set(hosts.map((h) => h.id))
-  while (taken.has(`host-${n}`)) n += 1
-  return `host-${n}`
 }
 
 /**
@@ -121,22 +117,30 @@ export default function TopologyEditor({
   const [moved, setMoved] = useState<string | null>(null)
   const dragging = useRef<{ code: string; from: string } | null>(null)
 
+  // WHERE THE REQUESTER IS LOOKING. This panel opens above the list of offered
+  // layouts, and a requester who pressed "Arrange it yourself" from a card
+  // further down the page was left exactly where they were, with the thing they
+  // had just asked for off the top of the screen. It read as a button that did
+  // nothing — reported twice, and the second time as "it does not work now".
+  //
+  // Focus moves too, not only the scroll position: someone using a keyboard or
+  // a screen reader gets the same answer as someone using a mouse, which is the
+  // rule the whole component was built to.
+  const panel = useRef<HTMLElement | null>(null)
+  useEffect(() => {
+    panel.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+    panel.current?.focus({ preventScroll: true })
+  }, [])
+
   // THE LAYOUT AS IT ARRIVED. A managed block is the cloud running ONE named
   // component; dragging that component out dissolves the service, and the only
   // place it can go back to is the block it came from. Held so that undoing one
   // move does not mean unwinding every change made since.
   const original = useRef(hostsOf(option))
-  const belongsTo = useMemo(() => {
-    const map = new Map<string, Set<string>>()
-    for (const h of original.current) map.set(h.id, new Set(h.components))
-    return map
-  }, [])
+  const belongsTo = useMemo(() => belongsToOf(original.current), [])
 
-  /** Whether `host` will take `code` — a managed block only takes its own back. */
   const accepts = useCallback(
-    (host: ProposedHost, code: string | undefined) =>
-      !!code &&
-      (host.host_mode !== 'managed' || (belongsTo.get(host.id)?.has(code) ?? false)),
+    (host: ProposedHost, code: string | undefined) => canTake(belongsTo, host, code),
     [belongsTo],
   )
 
@@ -154,7 +158,7 @@ export default function TopologyEditor({
   // An empty block is somewhere to drop things. It is not a machine, so it is
   // not part of the proposal, and the server's rule stands untouched: if an
   // empty host ever does reach it, it is still refused.
-  const proposed = useMemo(() => hosts.filter((h) => h.components.length > 0), [hosts])
+  const proposed = useMemo(() => proposedOf(hosts), [hosts])
 
   const key = useMemo(() => JSON.stringify(proposed), [proposed])
 
@@ -189,23 +193,12 @@ export default function TopologyEditor({
 
   const move = useCallback((code: string, from: string, to: string) => {
     if (from === to) return
-    change(
-      hosts.map((h) =>
-        h.id === from
-          ? { ...h, components: h.components.filter((c) => c !== code) }
-          : h.id === to
-            ? { ...h, components: [...h.components, code] }
-            : h,
-      ),
-      code,
-    )
+    change(applyMove(hosts, code, from, to), code)
   }, [hosts, change])
 
-  const addMachine = () =>
-    change([...hosts, { id: nextHostId(hosts), host_mode: 'vm', components: [] }], null)
+  const addMachine = () => change(withAnotherMachine(hosts), null)
 
-  const removeHost = (id: string) =>
-    change(hosts.filter((h) => h.id !== id), null)
+  const removeHost = (id: string) => change(without(hosts, id), null)
 
   const undo = () => {
     const previous = history[history.length - 1]
@@ -228,6 +221,8 @@ export default function TopologyEditor({
 
   return (
     <section
+      ref={panel}
+      tabIndex={-1}
       aria-label="Arrange the topology"
       style={{
         border: '1px solid var(--cds-border-interactive)',
@@ -277,9 +272,7 @@ export default function TopologyEditor({
           {/* Machines that would BE BUILT. An empty block on screen is not
               one of them, and counting it would contradict the price beside
               it. */}
-          {proposed.filter((h) => h.host_mode !== 'managed').length === 1
-            ? '1 machine'
-            : `${proposed.filter((h) => h.host_mode !== 'managed').length} machines`}
+          {machineCount(hosts) === 1 ? '1 machine' : `${machineCount(hosts)} machines`}
         </span>
         <span style={{ marginLeft: 'auto', color: 'var(--cds-text-primary)' }}>
           {busy ? (
@@ -477,16 +470,8 @@ export default function TopologyEditor({
                             <OverflowMenuItem
                               itemText="Move to a new machine"
                               onClick={() => {
-                                const id = nextHostId(hosts)
                                 change(
-                                  [
-                                    ...hosts.map((h) =>
-                                      h.id === host.id
-                                        ? { ...h, components: h.components.filter((c) => c !== code) }
-                                        : h,
-                                    ),
-                                    { id, host_mode: 'vm', components: [code] },
-                                  ],
+                                  moveToNewMachine(hosts, code, host.id),
                                   code,
                                 )
                               }}

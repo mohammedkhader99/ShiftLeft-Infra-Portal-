@@ -686,6 +686,41 @@ way today, podman on the VM, pulled by digest — but the requester still receiv
 a Linux VM, explicitly "not on a Kubernetes cluster". That is not what was asked
 for.
 
+**H.7 — the drag became testable, after H.5 shipped broken.** *Done 2026-09-11.*
+H.5 was reported fixed and was not. Asked to verify it rather than assert it,
+two things came out.
+
+*The build was broken and I had not run it.* `import { move as moved }` collided
+with the component's own `moved` state — the code most recently dragged — and
+the local shadowed the import, so `tsc` refused it: "This expression is not
+callable." The image the requester was asked to try was the previous one. The
+typecheck I had run was against the commit BEFORE the edits that broke it, and I
+did not re-run it after.
+*There was a second cause of "it does nothing", and it was never the drag.* The
+panel renders above the list of offered layouts, so pressing "Arrange it
+yourself" from a card further down the page opened it off the top of the screen
+and left the requester where they were. It now scrolls itself into view and
+takes focus, so a keyboard or screen-reader user gets the same answer as a
+mouse user.
+
+**Why neither was caught.** The arrangement rules lived in closures inside
+`TopologyEditor`, and this frontend has no test runner, no jsdom and no way to
+fire a drag event. "Does dragging the database onto its own machine work?" could
+only be answered by opening the page and trying it — which is how it reached a
+requester twice, and why the answer both times was a guess.
+
+The rules now live in `src/components/topologyArrangement.ts` as plain functions
+over plain data, and `webapp/frontend/tests/topology-editor.render.tsx`
+exercises them directly alongside a server render of the panel in every state it
+can be in — including the unpriced layout the second report arrived in, because
+a requester whose layout cannot be priced is exactly the one who needs to
+rearrange it. Twenty-five checks, run the same way the placement-step harness is
+run, from PowerShell rather than Git Bash.
+
+*The rules hold no authority and must never grow any.* They say what the
+requester ARRANGED. Whether an arrangement may be built is still answered only
+by `/api/placement/evaluate`.
+
 ---
 
 ## 6. The one open decision that affects this plan now
