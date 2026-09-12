@@ -946,7 +946,8 @@ the same timestamp, so the assertion compared a value with itself. The equality
 the inequality now runs only when the clock actually ticked. A flaky test is
 worse than no test, because it teaches people to re-run rather than look.
 
-**Still to come.** Nothing in Phase U. The open items are §6's network route,
+**Still to come.** Nothing in Phase U. The open items are the network route
+(§5a, "what would widen this again", item 1),
 the nine half-created catalogue rows above, and H.4.
 
 **H.9 — a reason that stopped mid-word, and lost the way out.**
@@ -983,6 +984,13 @@ the failure being tested.
 
 ## 5e. Phase K — deploying into the cluster, from inside the VCN (proposed 2026-09-11)
 
+> **WITHDRAWN 2026-09-12, in favour of the network route (§6.1).** The premise
+> below turned out to be wrong and the correction cost the phase its whole
+> reason for existing: it was the option that needed no network change, and it
+> needs one. Kept rather than deleted because the reasoning is the useful part —
+> and because the next person to notice that an NSG admits a whole VCN will have
+> the same idea.
+>
 > **THE PREMISE BELOW IS WRONG, FOUND 2026-09-12 BEFORE THE PROBE WAS RUN.**
 > Half of it holds and half of it was an inference I never checked. See
 > "What the tenancy actually says" immediately below before reading the rest —
@@ -1034,17 +1042,32 @@ fact's clothes.
 *What it would have cost to find out later.* A probe launched into the portal's
 subnet would have reported `unreachable`, which is true of two unpeered VCNs and
 says nothing whatever about Phase K. It would have read as decisive, sent us
-back to §6's network route, and cost a machine to mislead ourselves.
+back to the network route, and cost a machine to mislead ourselves.
 
-**PHASE K IS NOT DEAD; IT IS CONTINGENT.** Three outcomes, and which one holds is
-a question about the tenancy that nobody here has answered:
+**WITHDRAWN.** Of the three outcomes below, the platform owner settled it on
+2026-09-12: the VCNs are not peered and this phase would need the network team
+exactly as the route does — while also needing a deployer, an IAM policy,
+manifests and a teardown path. Strictly more work for the same dependency. The
+route wins.
+
+*What survives, and why it was not deleted.* `orchestrator/oke_probe.py`, its
+blueprint and its thirteen tests are DORMANT, not dead: the day the route opens,
+somebody will want to prove a thing can reach that API before trusting it, and a
+tested probe costs nothing to keep. `api.clusters` is the precedent — machinery
+kept working and callerless, with a test saying so, precisely so the next person
+to find it does not delete it. The `serves: platform` registry category stays for
+the same reason and is a real guard on its own: it is what stops the next
+platform blueprint inventing a fake catalogue technology to satisfy `builds`.
+
+Three outcomes were possible, and which one held was a question about the
+tenancy nobody here had answered:
 
   1. **A subnet exists in `NOQODI-DEVELOPMENT` the portal may build into.** Then
      the phase stands exactly as written, and it needs a configuration change —
      one subnet OCID — rather than a network one. The probe becomes meaningful
      the moment that OCID exists.
   2. **No such subnet, and the two VCNs must be peered.** Then Phase K needs the
-     network team just as §6 does, and needs a deployer and manifests on top —
+     network team just as the route does, and needs a deployer and manifests on top —
      strictly more work for the same dependency. §6's proposal wins and this
      phase should be withdrawn.
   3. **`demo-noqodi-26-0146-oke` is not the cluster this portal is meant to
@@ -1103,8 +1126,9 @@ docker compose exec api python -c "from orchestrator import oke_probe;   print(o
 ```
 
 `result=reachable` — with any HTTP status — means K.2 is worth building.
-`result=unreachable` means Phase K is built on sand and §6's network route is
-the answer after all. Either way it costs one short-lived machine.
+`result=unreachable` means Phase K is built on sand and the network route is
+the answer after all — which is how it was settled, without the machine being
+spent. Either way it would have cost one short-lived machine.
 
 **NOT WIRED TO THE PROVISIONER, and the reason is a real question rather than an
 omission.** A blueprint manifest must declare `builds` — the technologies it
@@ -1163,15 +1187,42 @@ lived and per-request is the cheapest honest shape; a long-lived one per
 environment would be cheaper still and is a standing privileged machine, which is
 worse.
 
-**The alternative remains open.** §6's network route makes the orchestrator reach
-the API directly and needs no deployer, no IAM and no manifests — but it needs the
-network team, and it has been waiting. GitOps (ARCHITECTURE §6, §9) still needs
-K.1 to bootstrap its controller, so it is a successor to this phase rather than a
-substitute for it.
+**The route is now the path, not the alternative.** §6.1 makes the orchestrator
+reach the API directly and needs no deployer, no IAM and no manifests. It needs
+the network team — which, once the premise above collapsed, this phase needed
+too, while also needing everything else. GitOps (ARCHITECTURE §6, §9) would still
+need something able to reach the cluster once, to bootstrap its controller, so it
+is a successor to the route rather than a way around it.
 
 ---
 
-## 6. The one open decision that affects this plan now
+## 6. The open decisions
+
+### 6.1 — A network route from the orchestrator to the cluster API *(the one that blocks work)*
+
+**Promoted here 2026-09-12.** It was recorded inside Phase P as item (1) of "what
+would widen this again", and referred to from four places in this file as "§6's
+network route" — which pointed at the HTMX decision below. A blocker cited four
+times by the wrong name is one nobody can look up.
+
+Everything else in the Kubernetes path now works. A requester can choose it, the
+layout is sized and priced per pod, the placement is recorded, it passes
+approval, and it fails at the handoff with a sentence naming the missing route
+and the way out. Phase K existed to avoid this decision and was withdrawn on
+2026-09-12 once its premise proved wrong: there is no path to a private cluster
+API that does not cross a network boundary somebody has to open.
+
+*The options, unchanged from Phase P's note:* a public endpoint with a source
+allowlist; the orchestrator inside the VCN; OCI managed Bastion port-forwarding;
+or peering `AI-ShiftLeft-DEV-VCN` to the cluster's VCN. The proposal drafted for
+the network team covers the first three.
+
+*What it is worth:* `CLUSTER_DEPLOYMENT_ENABLED` is on, so every Kubernetes
+request today spends an approver's time and then fails. Turning it off refuses
+them up front instead. Either is honest; leaving it on is only worth it while
+the route is expected soon.
+
+### 6.2 — HTMX vs React for the portal *(settled in practice)*
 
 **HTMX vs React for the portal (ARCHITECTURE.md §14.1).** This plan assumes HTMX. If you choose React instead, only the *portal* increments change shape — 0.3, 1.2, 1.3, and 1.5 would build a React app calling the same API — while the API, database, policy, Jira, orchestrator, and every enterprise increment stay identical. So the decision is real but low-blast-radius; it doesn't block starting Phase 0, which is stack-neutral either way.
 
