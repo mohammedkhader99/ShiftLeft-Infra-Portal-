@@ -489,8 +489,27 @@ def test_evidence_against_wins_within_one_sweep(db, monkeypatch):
     from api import main
 
     src = inspect.getsource(main._poll_once)
-    assert src.index("certification.review") < src.index("certification.restore")
-    assert src.index("certification.expire") < src.index("certification.restore")
+
+    # WHAT THIS GUARD IS FOR, because the failure without it is baffling.
+    #
+    # `inspect.getsource` reads the file from disk and slices it at the line
+    # numbers the LOADED code object carries. Edit api/main.py while the suite is
+    # running — inserting a fix a thousand lines above this function, say — and
+    # those two disagree: the slice comes back as somebody else's function, the
+    # `.index` calls below raise ValueError, and a test about certification
+    # ordering fails for reasons invisible in its own source.
+    #
+    # That happened on 2026-09-12 and was diagnosed as a flaky test before the
+    # mechanism was understood. It is not flaky. It is reading a file that moved.
+    assert "def _poll_once" in src, (
+        "inspect.getsource did not return _poll_once. api/main.py has almost "
+        "certainly changed on disk since this process imported it — do not edit "
+        "source while the suite is running. Re-run before believing this result.")
+
+    for earlier in ("certification.review", "certification.expire"):
+        assert earlier in src and "certification.restore" in src, (
+            f"{earlier} or certification.restore is missing from _poll_once")
+        assert src.index(earlier) < src.index("certification.restore")
 
 
 def test_the_handoff_carries_every_key_the_orchestrator_requires(db, monkeypatch):

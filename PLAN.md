@@ -1196,6 +1196,35 @@ is a successor to the route rather than a way around it.
 
 ---
 
+## 5f. A working-practice note (2026-09-12)
+
+**Do not edit source while the suite is running.** It produced a failure that
+cost an hour and was misdiagnosed twice.
+
+`test_evidence_against_wins_within_one_sweep` reads
+`inspect.getsource(main._poll_once)` and asserts the order of three calls inside
+it. `inspect.getsource` reads the file FROM DISK and slices it at the line
+numbers the LOADED code object carries. Edit `api/main.py` while a run is in
+flight — inserting a fix a thousand lines above that function — and the two
+disagree: the slice returns somebody else's function and the assertion fails for
+reasons invisible in the test's own source.
+
+It failed once, passed on the next two full runs and in isolation, and was
+written up here as "a flaky test I did not write". It is neither flaky nor
+anybody else's: the stranding fix was applied to `api/main.py` while that suite
+run was already going. The mechanism was then reproduced deliberately on a
+throwaway module, which is the only way it should ever be reproduced.
+
+*The test now says so when it happens* — it asserts `def _poll_once` is in what
+came back, and names the cause — because the alternative is a `ValueError` from
+`.index()` in a test about certification ordering.
+
+*Which tests are vulnerable:* the ones using `inspect.getsource`. The ones that
+parse a file with `ast` read it fresh and are consistent with themselves, so
+they see the new file and simply judge it.
+
+---
+
 ## 6. The open decisions
 
 ### 6.1 — A network route from the orchestrator to the cluster API *(the one that blocks work)*
