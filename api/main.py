@@ -7528,8 +7528,39 @@ def _advance_request(session: Session, req: Request) -> str:
                                           f"was created.\n\n{reason}")
             else:
                 req.status_detail = _short_reason(raw)  # e.g. an IaC scan block
+
+            # A FAILED HANDOFF MUST LEAVE THE REQUEST SOMEWHERE IT CAN LEAVE.
+            #
+            # The line below this used to read `return req.status  # still
+            # 'submitted' — retried next cycle unless held`, and the code never
+            # made that true. It is true when the plan fails from `submitted`.
+            # It is false when the request reached here through `auto-building`,
+            # which happens whenever SOME of its components lack a certified
+            # blueprint: `req.status = "in-progress" if not unmet else
+            # req.status` leaves the status alone, and the handoff then runs
+            # with the request still marked `auto-building`.
+            #
+            # `auto-building` is in neither QUEUED_STATUSES nor CANCELLABLE. So
+            # the sweep never looks at the request again AND its owner cannot
+            # close it — stranded, exactly as REQ-2026-0247 was, and REQ-2026-0176
+            # before it, which was in the end closed by editing the database.
+            # REQ-2026-0314 reached this state on 2026-09-12.
+            #
+            # Putting it back to `submitted` restores what the comment always
+            # claimed: the retry counter and the halt above it do their jobs, and
+            # a requester who has had enough can cancel. Nothing has been built —
+            # the handoff failed — so there is nothing for a re-queued request to
+            # duplicate.
+            if req.status not in QUEUED_STATUSES and req.status not in CANCELLABLE:
+                append_audit(session, "provision.requeued", reference=req.reference,
+                             jira_key=jira_key, actor="poller",
+                             detail={"from": req.status, "to": "submitted",
+                                     "reason": "a failed handoff must leave the "
+                                               "request collectable and cancellable"})
+                req.status = "submitted"
+
             session.commit()
-            return req.status  # still 'submitted' — retried next cycle unless held
+            return req.status
         req.provision_attempts = 0  # a good handoff clears the history
         result = response.json()
         _record_scan(session, req, jira_key, result.get("scan"))  # IaC findings (F-SEC-03/04)

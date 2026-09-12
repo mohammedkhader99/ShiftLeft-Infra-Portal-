@@ -60,7 +60,26 @@ _KEYWORD_CLASSES: list[tuple[tuple[str, ...], str, str]] = [
      "Held for segregation-of-duties / approval quorum.",
      "A different approver (not the requester) must approve in Jira; check the "
      "quorum count on the ticket."),
-    (("orchestrator", "unreachable", "could not reach", "connection", "timed out", "timeout"),
+    # BEFORE THE UNREACHABLE CLASS, because this refusal names the orchestrator
+    # and was being read as one. REQ-2026-0314 was diagnosed as "a transient
+    # infrastructure/network issue — check the orchestrator service health and
+    # retry", when the orchestrator had answered immediately and refused on
+    # purpose. Retrying it can never work, and pointing at the service's health
+    # sends somebody to look at a component that is doing its job.
+    (("deploys into a cluster", "workload group(s) on a cluster"),
+     "The layout puts workloads on a Kubernetes cluster, and nothing in this "
+     "system deploys into one — the API endpoint is private and the orchestrator "
+     "has no route to it. This is a deliberate refusal, not a fault.",
+     "Choose a layout that builds machines, or ask for the cluster on its own and "
+     "deploy into it yourself. Retrying will not help: the orchestrator answered "
+     "and refused."),
+    # "orchestrator" ALONE IS NOT EVIDENCE OF ANYTHING. It appears in refusals,
+    # in policy messages and in half the status details this portal writes, and
+    # matching it here turned every one of them into "the network is flaky, try
+    # again". What says a service could not be reached is the language of not
+    # reaching it.
+    (("unreachable", "could not reach", "could not be reached", "connection refused",
+      "connection", "timed out", "timeout"),
      "The orchestrator could not be reached — a transient infrastructure/network issue.",
      "Check the orchestrator service health and retry; the background poller will "
      "also re-attempt on its next cycle."),

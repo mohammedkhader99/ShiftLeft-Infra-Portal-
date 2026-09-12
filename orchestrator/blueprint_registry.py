@@ -38,6 +38,34 @@ GENERATED_MODULE_ROOT = paths.generated_dir("GENERATED_MODULE_DIR")
 
 _REQUIRED_FIELDS = ("ref", "target", "resource_kind", "builds")
 
+#: WHO A BLUEPRINT IS FOR.
+#:
+#: Nearly all of them deliver a technology somebody chose from the catalogue,
+#: and `builds` names which. A few build infrastructure the PORTAL needs for
+#: itself — K.1's probe asks whether a machine in the VCN can reach the cluster's
+#: API, and K.2's deployer will apply manifests from inside it. Neither delivers
+#: anything a requester asked for.
+#:
+#: The field exists because the alternative was worse. A probe blueprint was
+#: nearly given `builds: [oke-probe]`, inventing a catalogue technology to
+#: satisfy a required field — which would have put a word in front of requesters
+#: that means nothing to them, and taught the next person that `builds` is a
+#: formality rather than a statement.
+#:
+#: PLATFORM BLUEPRINTS BUILD NOTHING FOR THE CATALOGUE, and that is enforced in
+#: both directions: `serves: platform` requires `builds` to be EMPTY, and
+#: anything else requires it to be non-empty. A blueprint cannot be half of each.
+SERVES_CATALOGUE = "catalogue"
+SERVES_PLATFORM = "platform"
+SERVES = (SERVES_CATALOGUE, SERVES_PLATFORM)
+
+
+def serves_of(manifest: dict) -> str:
+    """Who this manifest is for. Absent means the catalogue, which is what every
+    blueprint written before this field meant."""
+    value = str(manifest.get("serves") or SERVES_CATALOGUE).strip().lower()
+    return value if value in SERVES else SERVES_CATALOGUE
+
 
 def _truthy(value: str | None) -> bool:
     return (value or "").strip().lower() in ("1", "true", "yes", "on")
@@ -235,10 +263,27 @@ def discover(directory: Path | None = None,
             continue
         if not isinstance(manifest, dict):
             continue
-        if any(not manifest.get(f) for f in _REQUIRED_FIELDS):
+        serves = serves_of(manifest)
+        if serves == SERVES_PLATFORM and manifest.get("builds"):
+            # Enforced the other way too. A platform blueprint that ALSO claimed
+            # catalogue technologies would be reachable by `for_technology` and
+            # would have quietly become requestable — the leak this field exists
+            # to prevent, arriving through the field itself.
+            found.append({
+                "ref": manifest.get("ref") or path.stem, "origin": origin,
+                "serves": serves,
+                "builds": [], "target": manifest.get("target", ""),
+                "resource_kind": manifest.get("resource_kind", ""),
+                "error": ("a platform blueprint builds nothing for the "
+                          "catalogue; remove `builds` or drop `serves: platform`")})
+            continue
+
+        required = ([f for f in _REQUIRED_FIELDS if f != "builds"]
+                    if serves == SERVES_PLATFORM else _REQUIRED_FIELDS)
+        if any(not manifest.get(f) for f in required):
             found.append({"ref": manifest.get("ref") or path.stem,
-                          "error": f"manifest is missing one of {', '.join(_REQUIRED_FIELDS)}",
-                          "origin": origin,
+                          "error": f"manifest is missing one of {', '.join(required)}",
+                          "origin": origin, "serves": serves,
                           "builds": [], "target": manifest.get("target", ""),
                           "resource_kind": manifest.get("resource_kind", "")})
             continue
@@ -262,6 +307,7 @@ def discover(directory: Path | None = None,
         ready, missing = _readiness(manifest)
         found.append({
             "origin": origin,
+            "serves": serves,
             "ref": str(manifest["ref"]),
             "target": str(manifest["target"]).strip().lower(),
             "resource_kind": str(manifest["resource_kind"]),
@@ -384,6 +430,11 @@ def for_technology(code: str) -> dict | None:
     if not code:
         return None
     for bp in discover():
+        # A platform blueprint is never an answer here. Its `builds` is required
+        # to be empty, so this is belt as well as braces — but the day that
+        # changes, a probe must not become something a requester can ask for.
+        if bp.get("serves") == SERVES_PLATFORM:
+            continue
         if code in (bp.get("builds") or []):
             return bp
     return None

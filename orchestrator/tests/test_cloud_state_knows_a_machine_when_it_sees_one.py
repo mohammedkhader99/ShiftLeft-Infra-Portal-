@@ -106,7 +106,13 @@ def test_every_shipped_blueprint_answers_the_question():
     registry to answering for every kind it ships."""
     from orchestrator import blueprint_registry
 
-    machines = {"oci-service-vm", "oci-apache", "oci-instance", "oci-kafka"}
+    # `oci-oke-probe` is here because it IS a machine: K.1's probe boots an
+    # instance in the cluster's VCN, and `_is_compute` reads its manifest and
+    # says so correctly. That matters beyond classification — a probe that
+    # outlived its purpose must be visible to reconcile and to the orphan sweep,
+    # which is precisely what a short-lived machine nobody tracks would not be.
+    machines = {"oci-service-vm", "oci-apache", "oci-instance", "oci-kafka",
+                "oci-oke-probe"}
     for manifest in blueprint_registry.discover():
         kind = manifest.get("resource_kind")
         if not kind:

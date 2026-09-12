@@ -1,0 +1,50 @@
+ref: oci/oke-probe
+target: oci
+resource_kind: oci-oke-probe
+
+# FOR THE PORTAL, NOT FOR A REQUESTER. Nothing here appears on the request form
+# and no technology maps to it: `serves: platform` is what says so, and the
+# registry enforces that such a blueprint builds nothing for the catalogue.
+#
+# Without this field the manifest needed a `builds` entry, and the only way to
+# satisfy it was to invent an `oke-probe` technology the catalogue has never
+# heard of — a word in front of requesters that means nothing to them.
+serves: platform
+builds: []
+
+# THE PROVEN MODULE, NOT A NEW ONE. A probe is a machine in a subnet with
+# user-data, and oci/service-vm already builds exactly that. Copying it to add
+# one script would fork a module in order to ask a question, and the fork is the
+# thing nobody would maintain.
+module: oci/service-vm
+version: 1.0.0
+delivery: vm
+
+# The probe writes its own script — orchestrator/oke_probe.script — and passes it
+# as user_data, so its report travels the same way configure.py's does: out
+# through a write-only object-storage URL, needing no inbound access to the VCN.
+boot_report: user_data
+os_families: [rhel]
+
+# curl only, from the base image. Nothing is fetched from the internet, which
+# matters because the subnets this lands in have no route to it.
+needs_internet: []
+
+description: >-
+  A short-lived machine inside the cluster's VCN that asks once whether the
+  Kubernetes API endpoint answers on 6443, reports what it found, and is
+  destroyed. It proves a ROUTE and nothing else: the certificate is not
+  verified and no credential is carried, so a 401 from the API server is a
+  complete success.
+
+name_var: instance_name
+name_max_length: 31
+
+# No enable_flag. The service-vm blueprint refuses to build when first-boot
+# configuration is off, because an unconfigured service machine is a silent
+# failure. This machine's whole job IS its user-data, which it carries itself,
+# so that flag would refuse a probe that is complete.
+requires_env: [OCI_COMPUTE_SUBNET_OCID]
+vars:
+  image_ocid: ""
+  create_nsg: false

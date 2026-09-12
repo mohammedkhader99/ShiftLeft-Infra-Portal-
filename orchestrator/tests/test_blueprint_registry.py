@@ -35,6 +35,15 @@ def test_the_real_directory_describes_the_shipped_recipes():
     for ref, bp in found.items():
         assert bp["version"], f"{ref} has no version for an admin to pin"
         assert bp["target"] and bp["resource_kind"], f"{ref} is incomplete"
+        if bp.get("serves") == blueprint_registry.SERVES_PLATFORM:
+            # A PLATFORM BLUEPRINT BUILDS NOTHING FOR THE CATALOGUE, and the
+            # registry requires its `builds` to be EMPTY. K.1's probe asks
+            # whether a machine in the VCN can reach the cluster's API; it
+            # delivers no technology anybody chose. Asserting otherwise here is
+            # what nearly had a fake `oke-probe` technology invented to satisfy
+            # this line.
+            assert bp["builds"] == [], f"{ref} is platform and claims builds"
+            continue
         assert bp["builds"], f"{ref} builds nothing"
 
 
