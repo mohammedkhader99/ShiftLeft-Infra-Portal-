@@ -983,8 +983,14 @@ the failure being tested.
 
 ## 5e. Phase K — deploying into the cluster, from inside the VCN (proposed 2026-09-11)
 
-**NOT APPROVED. Nothing below is built.** Written after REQ-2026-0312 was held up
-and the blocker turned out to be narrower than a year of comments claimed.
+> **THE PREMISE BELOW IS WRONG, FOUND 2026-09-12 BEFORE THE PROBE WAS RUN.**
+> Half of it holds and half of it was an inference I never checked. See
+> "What the tenancy actually says" immediately below before reading the rest —
+> K.2 onwards does not stand up as written.
+
+**NOT APPROVED. Nothing below is built except K.1.** Written after REQ-2026-0312
+was held up and the blocker turned out to be narrower than a year of comments
+claimed.
 
 **What changed the picture.** The OKE module's own security group already admits
 TCP 6443 from `operator_cidr`, and `operator_cidr` is
@@ -997,7 +1003,60 @@ Every note in this repository has said "the orchestrator has no route to it",
 which is true, and implied the remedy must be a network change, which it is not.
 The portal already builds machines INSIDE that VCN.
 
-**The shape.** A short-lived deployer instance, built by the existing machinery,
+### What the tenancy actually says (2026-09-12)
+
+Asked to run K.1's probe, and checked first whether the answer could mean
+anything. It could not:
+
+```
+compute subnet : AI-ShiftL-DEV-VM-APP-SUBNET   10.56.39.0/24
+  its VCN      : AI-ShiftLeft-DEV-VCN          10.56.32.0/19
+cluster        : demo-noqodi-26-0146-oke       10.90.104.12:6443
+  its VCN      : NOQODI-DEVELOPMENT            10.90.0.0/16
+SAME VCN: False
+```
+
+*What is still true.* The OKE module's NSG does admit TCP 6443 from
+`operator_cidr`, and `operator_cidr` is the whole VCN. Anything inside the
+CLUSTER'S VCN can reach its API without a firewall change.
+
+*What was wrong.* "The portal already builds machines INSIDE that VCN." It does
+not. It builds them in `AI-ShiftLeft-DEV-VCN`; the cluster lives in
+`NOQODI-DEVELOPMENT`. Those are different VCNs and, absent peering, cannot
+reach each other at all.
+
+*How the error was made.* Two true facts — the NSG admits the VCN, and the
+portal builds machines — were joined into a third that was never checked: that
+the machines are in that VCN. The same shape as reading a column's DEFAULT as
+evidence about nine catalogue rows, earlier the same day. An inference wearing a
+fact's clothes.
+
+*What it would have cost to find out later.* A probe launched into the portal's
+subnet would have reported `unreachable`, which is true of two unpeered VCNs and
+says nothing whatever about Phase K. It would have read as decisive, sent us
+back to §6's network route, and cost a machine to mislead ourselves.
+
+**PHASE K IS NOT DEAD; IT IS CONTINGENT.** Three outcomes, and which one holds is
+a question about the tenancy that nobody here has answered:
+
+  1. **A subnet exists in `NOQODI-DEVELOPMENT` the portal may build into.** Then
+     the phase stands exactly as written, and it needs a configuration change —
+     one subnet OCID — rather than a network one. The probe becomes meaningful
+     the moment that OCID exists.
+  2. **No such subnet, and the two VCNs must be peered.** Then Phase K needs the
+     network team just as §6 does, and needs a deployer and manifests on top —
+     strictly more work for the same dependency. §6's proposal wins and this
+     phase should be withdrawn.
+  3. **`demo-noqodi-26-0146-oke` is not the cluster this portal is meant to
+     serve.** It is the only ACTIVE cluster in the compartment and its name says
+     "demo". If the real target is elsewhere, both of the above are being asked
+     about the wrong VCN.
+
+Until that is answered, K.2 onwards is planning against a topology nobody has
+confirmed.
+
+**The shape (as proposed, and subject to the above).** A short-lived deployer
+instance, built by the existing machinery,
 fetches the kubeconfig with an instance principal, applies the workloads, reports
 what actually runs, and is destroyed. No inbound access, no network team.
 
@@ -1033,9 +1092,11 @@ network for a build that never happened sends somebody to the wrong team.
 *It proves a ROUTE and nothing else.* The certificate is not verified, so it
 says nothing about trust; K.2 must verify against the cluster's own CA.
 
-**HOW TO RUN IT.** Launch one Oracle Linux 9 instance in any subnet of the
-cluster's VCN, with this as its user-data, then read the report from the boot
-bucket and destroy the instance:
+**HOW TO RUN IT.** Launch one Oracle Linux 9 instance **in a subnet of the
+CLUSTER'S VCN** — `NOQODI-DEVELOPMENT`, not the one `OCI_COMPUTE_SUBNET_OCID`
+names — with this as its user-data, then read the report from the boot bucket and
+destroy the instance. A probe launched anywhere else answers a different
+question and answers it misleadingly:
 
 ```
 docker compose exec api python -c "from orchestrator import oke_probe;   print(oke_probe.script('<CLUSTER_PRIVATE_ENDPOINT>', '<WRITE_ONLY_PAR_URL>'))"
