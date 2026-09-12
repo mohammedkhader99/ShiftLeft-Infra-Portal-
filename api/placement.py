@@ -304,9 +304,22 @@ CLUSTER_DEPLOYMENT_UNAVAILABLE = (
 def cluster_deployment_offered() -> bool:
     """Whether a layout that puts workloads ON a cluster may be chosen (U.2).
 
-    OFF means refused with the sentence above, which is what this portal did
-    from the day the gap was found until 2026-09-11. ON means the layout
-    resolves, prices and can be recorded.
+    OFF means refused with the sentence above. ON means the layout resolves,
+    prices and can be recorded — and then fails at the handoff, because the
+    orchestrator still has no route to the cluster's API.
+
+    DEFAULT OFF SINCE 2026-09-12, AND IT WAS ON FOR A DAY. Asked on 2026-09-11
+    whether to offer the route, grey it out, or build as though it existed, the
+    platform owner chose the third with the consequence stated. Phase K was then
+    written to remove that consequence by deploying from inside the VCN, and
+    withdrawn on 2026-09-12 when its premise proved wrong: the portal's machines
+    and the cluster are in different, unpeered VCNs, so that path needed the
+    network team exactly as the direct route does.
+
+    With no prospect of the route landing soon, ON costs an approver's time on
+    every Kubernetes request and then fails. Refusing at the point of choosing
+    is the honest position again, and it is one line to reverse the day the
+    route opens.
 
     WHAT ON DOES NOT MEAN. It does not mean the workloads get deployed. The
     orchestrator still refuses a container host, and deliberately: removing that
@@ -323,7 +336,7 @@ def cluster_deployment_offered() -> bool:
     without another code change -- and how it becomes truthful rather than
     optimistic on the day the route is opened.
     """
-    return (os.getenv("CLUSTER_DEPLOYMENT_ENABLED", "true") or "").strip().lower() in (
+    return (os.getenv("CLUSTER_DEPLOYMENT_ENABLED", "false") or "").strip().lower() in (
         "1", "true", "yes", "on")
 
 

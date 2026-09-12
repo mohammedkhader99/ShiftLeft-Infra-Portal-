@@ -47,11 +47,20 @@ with the consequence stated: a request that chooses Kubernetes now passes
 approval and then FAILS AT PROVISIONING, because the orchestrator still refuses
 a container host and there is still no route to the private Kubernetes API.
 
-`api.placement.cluster_deployment_offered` is that switch, and it defaults to
-ON. Everything in this file up to "the switch, in its other position" describes
-it OFF -- every sentence above is still exactly true there -- and the fixture
-below pins it off so those assertions keep meaning what they meant. The new
-section at the end covers ON, which is what a deployment gets today.
+`api.placement.cluster_deployment_offered` is that switch.
+
+AND IT WENT BACK TO OFF ON 2026-09-12, AFTER A DAY. Phase K was written to
+remove the consequence by deploying from inside the VCN, and withdrawn when its
+premise proved wrong: the portal's machines and the cluster are in different,
+unpeered VCNs, so that path needed the network team exactly as the direct route
+does. With no near-term route, ON spends an approver on every Kubernetes request
+and then fails, so refusing at the point of choosing is honest again.
+
+Everything in this file up to "the switch, in its other position" describes it
+OFF -- every sentence above is still exactly true there -- and the fixture below
+pins it off regardless of the default. The section at the end covers ON, which
+is one environment variable away and is what the day the route opens looks
+like.
 
 The orchestrator's guard is NOT part of the switch and does not move. Removing
 it does not make the cluster path work; it makes a container host resolve to
@@ -105,8 +114,10 @@ SMALL = Need(vcpu=4, memory_gb=16)
 def _deployment_refused(monkeypatch):
     """The switch OFF, which is what every test above the final section asserts.
 
-    Pinned rather than assumed: the product default is ON since 2026-09-11, so a
-    file that relied on the default would silently change what it was testing.
+    PINNED RATHER THAN ASSUMED, and that has now earned itself twice. The default
+    was OFF, went ON on 2026-09-11, and went OFF again on 2026-09-12. A file
+    that relied on it would have silently changed what it was testing on both
+    days, and passed on both.
     """
     monkeypatch.setenv("CLUSTER_DEPLOYMENT_ENABLED", "false")
 
@@ -338,12 +349,22 @@ def offered(monkeypatch):
     monkeypatch.setenv("CLUSTER_DEPLOYMENT_ENABLED", "true")
 
 
-def test_the_switch_is_on_by_default(monkeypatch):
-    """THE DECISION, asserted rather than described. Asked on 2026-09-11 to
-    build the portal as though the network route existed, and this is what that
-    means in code."""
+def test_the_switch_is_off_by_default(monkeypatch):
+    """THE DECISION, asserted rather than described — and it changed.
+
+    On 2026-09-11 the platform owner chose to build the portal as though the
+    network route existed, knowing a Kubernetes request would pass approval and
+    then fail. Phase K was written to remove that consequence by deploying from
+    inside the VCN, and withdrawn on 2026-09-12 when its premise proved wrong:
+    the portal's machines and the cluster are in different, unpeered VCNs.
+
+    With no near-term route, ON spends an approver on every Kubernetes request
+    and then fails. Refusing at the point of choosing is honest again. The whole
+    section below this still covers ON, because the day the route opens it is
+    one environment variable.
+    """
     monkeypatch.delenv("CLUSTER_DEPLOYMENT_ENABLED", raising=False)
-    assert placement_mod.cluster_deployment_offered() is True
+    assert placement_mod.cluster_deployment_offered() is False
 
 
 def test_with_it_on_a_cluster_layout_can_be_chosen(offered):

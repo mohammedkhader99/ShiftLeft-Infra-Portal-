@@ -237,7 +237,8 @@ READ_ONLY_ENV: dict[str, str] = {
     # still refuses a container host and there is no route to the private
     # Kubernetes API. That is a decision about what this deployment promises,
     # not a switch to flick while requests are in flight.
-    "CLUSTER_DEPLOYMENT_ENABLED": "Offer Kubernetes as a placement (true | false)",
+    "CLUSTER_DEPLOYMENT_ENABLED":
+        "Offer Kubernetes as a placement (true | false; off by default)",
     "AUTH_MODE": "Sign-in mode",
     "USE_MOCK": "Master mock switch",
     "PROVISION_MODE": "Provisioning mode",

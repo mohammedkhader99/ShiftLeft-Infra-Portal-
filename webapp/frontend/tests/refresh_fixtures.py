@@ -20,6 +20,16 @@ for var in ("AUTH_MODE", "JIRA_MODE", "PROVISION_MODE", "OCI_PRICING_MODE",
             "AZURE_PRICING_MODE", "CLOUD_STATE_MODE", "REGISTRY_MODE"):
     os.environ[var] = "mock"
 os.environ["USE_MOCK"] = "true"
+# PINNED ON, THOUGH THE PRODUCT DEFAULT IS OFF SINCE 2026-09-12.
+#
+# The cluster fixture exists to exercise the workspace's grouping and rendering
+# WITH a Kubernetes route present — two routes, a recommendation in each, a
+# discovered cluster, alternatives behind a disclosure. Capturing it at whatever
+# the default happens to be would silently swap that coverage for a screen of
+# refusals the moment the default moved, which is exactly what happened to the
+# `route` field and left the harness passing on a render with no route cards at
+# all.
+os.environ["CLUSTER_DEPLOYMENT_ENABLED"] = "true"
 os.environ["AUTO_PROVISION"] = "false"
 os.environ["ROLE_SOURCE"] = "mock"
 

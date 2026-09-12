@@ -1217,10 +1217,18 @@ allowlist; the orchestrator inside the VCN; OCI managed Bastion port-forwarding;
 or peering `AI-ShiftLeft-DEV-VCN` to the cluster's VCN. The proposal drafted for
 the network team covers the first three.
 
-*What it is worth:* `CLUSTER_DEPLOYMENT_ENABLED` is on, so every Kubernetes
-request today spends an approver's time and then fails. Turning it off refuses
-them up front instead. Either is honest; leaving it on is only worth it while
-the route is expected soon.
+*`CLUSTER_DEPLOYMENT_ENABLED` was turned OFF on 2026-09-12*, the same day Phase K
+was withdrawn, and for the same reason: with no near-term route, offering a
+choice that always fails spends an approver on every Kubernetes request. A
+requester is now refused at the placement step, with the reason and the way out,
+before anybody signs anything.
+
+It was never set in the environment — it was on because the code default said
+so — so the default is what moved, and any deployment that wants it back on sets
+the variable explicitly. **Reversing this the day the route opens is one
+variable:** `CLUSTER_DEPLOYMENT_ENABLED=true`. The tests cover both positions and
+pin the switch rather than trusting the default, which has now earned itself
+twice: the default was off, went on the 11th, and off again on the 12th.
 
 ### 6.2 — HTMX vs React for the portal *(settled in practice)*
 
