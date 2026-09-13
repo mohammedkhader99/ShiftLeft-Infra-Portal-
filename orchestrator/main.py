@@ -554,8 +554,23 @@ def _placement_units(payload: dict) -> list[dict] | None:
     largest component is correct when a machine holds one component and wrong
     when it holds three, because three co-resident components need the SUM.
 
-    A managed host builds no machine and produces no unit — the cloud runs it,
-    and the placement records it so the topology stays complete.
+    A MANAGED HOST BUILDS NO MACHINE AND STILL BUILDS SOMETHING. It used to
+    produce no unit on the grounds that the cloud runs it — true of the machine
+    and false of the resource: `oci-oke` is `oke-cluster.tf` plus
+    `oke-nodepool.tf`, and `oci-postgres` is a DB system Terraform creates. What
+    a managed host has no need of is a SHAPE, which is a fact about sizing.
+
+    Dropping them was invisible while a placement was all-managed — the caller
+    then saw None and fell back to the kind list, which planned everything — and
+    while it was all-VMs. REQ-2026-0315 was neither: two managed hosts and one
+    VM, so the units were non-empty, the fallback never ran, and the cluster and
+    the database were left out of the plan entirely. The approver approved
+    "3 to add" for minio and oracle-free, and apply then went looking for a plan
+    for the cluster that nothing had made.
+
+    Two tests sat either side of that: one for an all-managed placement, one for
+    a managed host alongside a VM asserting only the VM became a unit. Both
+    passed. Neither stood on the boundary, which is where every real request is.
 
     A host the portal could not size produces no unit either, and this is a
     REFUSAL rather than a default: building a machine at a guessed shape, for a
@@ -584,20 +599,20 @@ def _placement_units(payload: dict) -> list[dict] | None:
     # Nothing in this system deploys into a cluster (private API endpoint, no
     # route from here), so a container host arriving at this layer means an
     # option was offered that should not have been.
-    machines = [h for h in hosts
-                if h.get("host_mode") not in ("managed", "container")
-                and h.get("resolved")]
+    builds = [h for h in hosts
+              if h.get("host_mode") != "container"
+              and (h.get("host_mode") == "managed" or h.get("resolved"))]
 
-    # How many machines share each kind. Only a kind with more than one needs its
-    # workspaces distinguished, so a request with one machine per kind keeps the
+    # How many hosts share each kind. Only a kind with more than one needs its
+    # workspaces distinguished, so a request with one host per kind keeps the
     # directory names — and therefore the Terraform state — it already has.
     counts: dict[str, int] = {}
-    for host in machines:
+    for host in builds:
         kind = host.get("resource_kind") or ""
         counts[kind] = counts.get(kind, 0) + 1
 
     units = []
-    for host in machines:
+    for host in builds:
         kind = host.get("resource_kind") or ""
         if not kind:
             # Nothing certified says what this host builds. Left out here and
@@ -608,6 +623,7 @@ def _placement_units(payload: dict) -> list[dict] | None:
         units.append({
             "kind": kind,
             "host_id": host_id,
+            "host_mode": host.get("host_mode") or "vm",
             "workspace": provisioner.workspace_name(
                 kind, host_id, shared=counts.get(kind, 0) > 1),
             "components": list(host.get("components") or ()),
@@ -632,10 +648,19 @@ def _refuse_unsized_hosts(payload: dict) -> None:
         return
     unsized, unmapped, on_a_cluster = [], [], []
     for host in placement.get("hosts") or []:
-        if host.get("host_mode") == "managed":
-            continue
         if host.get("host_mode") == "container":
             on_a_cluster.append(str(host.get("id") or "?"))
+        elif host.get("host_mode") == "managed":
+            # No shape to resolve — the cloud chooses the machine, and nothing
+            # was sized or priced as one, so `resolved` says nothing here.
+            #
+            # IT STILL NEEDS A MODULE. This used to `continue` past both checks,
+            # and `_placement_units` then dropped the host again for being
+            # managed, so a request naming a service no certified blueprint
+            # builds was planned without it and reported ready to provision —
+            # the same silence, arriving twice.
+            if not host.get("resource_kind"):
+                unmapped.append(str(host.get("id") or "?"))
         elif not host.get("resolved"):
             unsized.append(str(host.get("id") or "?"))
         elif not host.get("resource_kind"):
@@ -689,7 +714,7 @@ def _refuse_unsized_hosts(payload: dict) -> None:
         raise HTTPException(
             status_code=400,
             detail=(f"Placement version {placement.get('version')} has "
-                    f"{len(unmapped)} machine(s) no certified blueprint builds "
+                    f"{len(unmapped)} host(s) no certified blueprint builds "
                     f"({', '.join(unmapped)}). Nothing says what to build, so "
                     f"nothing is built."))
 
@@ -723,6 +748,56 @@ def _placement_spec(payload: dict, unit: dict) -> dict:
     if shape.get("storage_gb"):
         spec = {**spec, "boot_volume_gb": int(shape["storage_gb"])}
     return spec
+
+
+def _work_units(payload: dict) -> list[dict]:
+    """Every workspace this request builds, and the inputs for each one.
+
+    THE ONE ANSWER PLAN AND APPLY BOTH USE, and the reason this function exists
+    rather than each endpoint working it out. They did work it out separately,
+    from the same signed payload, and got different answers: plan followed the
+    placement and wrote one workspace per host; apply ignored the placement and
+    read one workspace per resource KIND. Wherever those two lists differ —
+    every mixed placement, and every layout putting two machines on one kind —
+    apply went looking in a directory plan had never written to.
+
+    REQ-2026-0315 is the first request with a placement ever to reach apply, so
+    it is also the first to find out. It failed safely and created nothing. The
+    other direction is the one to be frightened of: where a workspace of that
+    name is left over from an EARLIER layout, apply finds a plan, applies it,
+    and reports success for infrastructure nobody approved. `plan_id` closes
+    that; this closes the reason it would have been reached.
+
+    `_handoff_payload` says, one layer up: "The full resource list is derived
+    here rather than at each call site, so plan, apply, drift, state and destroy
+    cannot disagree about what a request consists of — the kind of split that
+    lost REQ-2026-0094's second resource." It was right, and the split moved
+    down a layer rather than going away.
+    """
+    _refuse_unsized_hosts(payload)
+    units = _placement_units(payload)
+    if units is not None:
+        return [{**unit, "spec": _placement_spec(payload, unit)} for unit in units]
+
+    # No placement: one workspace per kind, named after it — which is what every
+    # request raised before placement existed has on disk, unchanged.
+    return [{"kind": kind, "workspace": kind, "host_id": "", "host_mode": "vm",
+             "components": [], "shape": {}, "spec": _compute_spec(payload, kind)}
+            for kind in _resource_kinds(payload)]
+
+
+def _plan_id(payload: dict) -> str:
+    """The name of the layout a plan was approved for, carried down to the saved
+    plan so apply can refuse one made for a different layout.
+
+    The placement version, because that is what changes when a requester changes
+    their mind. Empty means no placement at all — every request raised before
+    placement existed — and an empty one matches only an empty one.
+    """
+    placement = payload.get("placement")
+    if not isinstance(placement, dict):
+        return ""
+    return f"v{placement.get('version')}"
 
 
 def _resource_list(payload: dict, base_name: str) -> list[dict]:
@@ -1299,36 +1374,25 @@ async def provision(request: Request) -> dict:
         # whole handoff: a stack that is half-plannable must not look ready.
         #
         # WHAT COUNTS AS "EVERY RESOURCE" IS THE PLACEMENT'S ANSWER when there is
-        # one — one machine per host, at the shape the placement resolved — and
+        # one — one workspace per host, at the shape the placement resolved — and
         # the kind list otherwise. Two requests with identical components and
         # different placements therefore produce different plans, which is the
-        # whole point of carrying the layout down here.
-        _refuse_unsized_hosts(payload)
-        units = _placement_units(payload)
+        # whole point of carrying the layout down here. `_work_units` is that
+        # answer, and apply asks the same function the same question.
+        plan_id = _plan_id(payload)
         plans = []
-        if units is not None:
-            for unit in units:
-                label = unit["workspace"]
-                try:
-                    plans.append((label, provisioner.terraform_plan(
-                        reference,
-                        _workspace_resource_name(name, unit["workspace"],
-                                                 reference, rkind),
-                        tags, unit["kind"], _placement_spec(payload, unit),
-                        workspace=unit["workspace"])))
-                except provisioner.ProvisionError as exc:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Terraform plan failed for {label}: {exc}")
-        else:
-            for kind in kinds:
-                try:
-                    plans.append((kind, provisioner.terraform_plan(
-                        reference, _resource_name(name, kind, reference, rkind), tags, kind,
-                        _compute_spec(payload, kind))))
-                except provisioner.ProvisionError as exc:
-                    raise HTTPException(status_code=400,
-                                        detail=f"Terraform plan failed for {kind}: {exc}")
+        for unit in _work_units(payload):
+            label = unit["workspace"]
+            try:
+                plans.append((label, provisioner.terraform_plan(
+                    reference,
+                    _workspace_resource_name(name, label, reference, rkind),
+                    tags, unit["kind"], unit["spec"],
+                    workspace=label, plan_id=plan_id)))
+            except provisioner.ProvisionError as exc:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Terraform plan failed for {label}: {exc}")
         scan = _merge_scans([p["scan"] for _k, p in plans if p.get("scan")])
         # IaC scan gate (F-SEC-03/04): block on HIGH findings only when enforced;
         # otherwise the findings are reported in the response and audited by the API.
@@ -1358,7 +1422,7 @@ async def provision(request: Request) -> dict:
             **({"placement_version": (payload.get("placement") or {}).get("version"),
                 "placement_option": (payload.get("placement") or {}).get("option_key"),
                 "workspaces": [k for k, _p in plans]}
-               if units is not None else {}),
+               if isinstance(payload.get("placement"), dict) else {}),
             "message": f"Terraform plan for {reference}: {summary} — nothing created.",
         }
 
@@ -1390,19 +1454,26 @@ async def apply(request: Request) -> dict:
 
     name, tags = _bucket_and_tags(payload)
     rkind = _resource_kind(payload)
-    kinds = _resource_kinds(payload)
 
     # Apply each resource in turn. If a later one fails, the earlier ones are
     # already REAL — so they are reported, not hidden: an error that loses track
     # of created infrastructure leaves it running with nobody aware of it.
+    #
+    # THE SAME UNITS PLAN MADE, from the same function, so that the plan approved
+    # and the plan applied are the same plan. Iterating resource kinds here — one
+    # workspace per kind, while plan wrote one per host — is what left
+    # REQ-2026-0315 asking for a plan of a cluster that nothing had planned.
+    plan_id = _plan_id(payload)
     created: list[dict] = []
-    for kind in kinds:
-        rname = _resource_name(name, kind, reference, rkind)
+    for unit in _work_units(payload):
+        workspace, kind = unit["workspace"], unit["kind"]
+        rname = _workspace_resource_name(name, workspace, reference, rkind)
         try:
             result = provisioner.terraform_apply(reference, rname, tags, kind,
-                                                 _compute_spec(payload, kind))
+                                                 unit["spec"], workspace=workspace,
+                                                 plan_id=plan_id)
         except provisioner.ProvisionError as exc:
-            detail = f"Terraform apply failed for {kind}: {exc}"
+            detail = f"Terraform apply failed for {workspace}: {exc}"
             if created:
                 detail += (f" — {len(created)} resource(s) WERE created and are live: "
                            + ", ".join(f"{c['kind']} {c['name']}" for c in created))

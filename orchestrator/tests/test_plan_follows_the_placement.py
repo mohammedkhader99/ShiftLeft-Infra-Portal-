@@ -156,27 +156,62 @@ def test_the_rest_of_the_spec_is_still_derived_as_before(monkeypatch):
         assert spec[key] == ordinary[key], key
 
 
-# --- a managed service is not a machine --------------------------------------
+# --- a managed service is not a machine, and is still built -------------------
 
-def test_a_managed_host_builds_no_machine():
-    payload = placed([
-        host("managed-postgres16", ["postgres16"], None, None, None,
-             kind="oci-postgresql", mode="managed"),
-        host("host-1", ["nodejs20"], 3, 5, 60),
-    ], option="managed")
-    units = omain._placement_units(payload)
-
-    assert len(units) == 1
-    assert units[0]["components"] == ["nodejs20"]
+MIXED = placed([
+    host("managed-postgres16", ["postgres16"], None, None, None,
+         kind="oci-postgresql", mode="managed"),
+    host("host-1", ["nodejs20"], 3, 5, 60),
+], option="managed")
 
 
-def test_an_all_managed_placement_produces_no_units():
-    """None, not an empty list: the caller falls back to the kind list, which is
-    what actually provisions the managed service."""
+def test_a_managed_host_builds_no_machine_and_is_still_planned():
+    """THE CASE THAT WAS LOST. This asserted `len(units) == 1` — the VM only —
+    and read as obviously right: the cloud runs a managed service, so there is no
+    machine to build. True of the MACHINE and false of the RESOURCE. `oci-oke` is
+    oke-cluster.tf plus oke-nodepool.tf; `oci-postgresql` is a DB system
+    Terraform creates. What a managed host has no need of is a shape.
+
+    REQ-2026-0315 was two managed hosts and one VM. It planned the VM, showed its
+    approver "3 to add", and left the Kubernetes cluster and the database out.
+    """
+    units = omain._placement_units(MIXED)
+
+    assert len(units) == 2, [u["workspace"] for u in units]
+    assert {u["kind"] for u in units} == {"oci-postgresql", "oci-instance"}
+
+
+def test_a_managed_host_is_planned_at_no_shape():
+    """The half that WAS right. A managed unit carries no vcpu/memory/storage, so
+    `_placement_spec` leaves the module's own defaults alone — the cloud chooses
+    the machine, and nothing here was sized or priced as one."""
+    managed = next(u for u in omain._placement_units(MIXED)
+                   if u["kind"] == "oci-postgresql")
+
+    assert managed["host_mode"] == "managed"
+    assert managed["shape"] == {"vcpu": None, "memory_gb": None, "storage_gb": None}
+    assert omain._placement_spec(MIXED, managed) == omain._compute_spec(
+        MIXED, "oci-postgresql")
+
+
+def test_an_all_managed_placement_produces_its_own_units():
+    """It used to return None so the caller fell back to the kind list, which
+    planned the managed service. That fallback is why nobody noticed: an
+    all-managed placement worked, an all-VM placement worked, and a mixed one —
+    which is what a real request looks like — fell between them."""
     payload = placed([host("managed-postgres16", ["postgres16"], None, None, None,
                            kind="oci-postgresql", mode="managed")],
                      option="managed")
-    assert omain._placement_units(payload) is None
+    units = omain._placement_units(payload)
+
+    assert [u["kind"] for u in units] == ["oci-postgresql"]
+
+
+def test_only_a_placement_that_placed_nothing_falls_back():
+    """None still means one thing, and now means only that: no placement. Every
+    request raised before placement existed keeps the path it has always had."""
+    assert omain._placement_units(BASE_PAYLOAD) is None
+    assert omain._placement_units({**BASE_PAYLOAD, "placement": {"hosts": []}}) is None
 
 
 # --- nothing is built at a guessed shape or from a guessed module -------------
@@ -439,11 +474,40 @@ def test_a_cluster_beside_machines_still_refuses_the_whole_handoff():
 
 
 def test_a_managed_host_is_still_not_confused_with_a_container_one():
-    """Both produce no machine, for different reasons: the cloud runs a managed
-    service, and nothing can reach a cluster. Only one of them is an error."""
+    """Both produce no MACHINE, for different reasons, and the reasons decide
+    everything: the cloud runs a managed service, so it is built here and simply
+    not sized; nothing can reach a cluster, so a workload placed on one is
+    refused. Only one of them is an error, and only one of them gets a plan."""
     managed_only = placed([
         host("managed-postgres16", ["postgres16"], None, None, None,
              kind="oci-postgres", mode="managed")], option="managed")
 
     omain._refuse_unsized_hosts(managed_only)  # must not raise
-    assert omain._placement_units(managed_only) is None
+    assert [u["kind"] for u in omain._placement_units(managed_only)] == ["oci-postgres"]
+
+
+def test_a_managed_host_with_no_blueprint_is_refused_not_skipped():
+    """It was skipped by the refusal for being managed and then dropped by
+    `_placement_units` for the same reason, so a request naming a service nothing
+    could build was planned without it and reported ready to provision."""
+    import pytest
+    from fastapi import HTTPException
+
+    payload = placed([host("managed-mystery", ["mystery"], None, None, None,
+                           kind="", mode="managed")], option="managed")
+    with pytest.raises(HTTPException) as raised:
+        omain._refuse_unsized_hosts(payload)
+
+    assert "no certified blueprint builds" in raised.value.detail
+    assert "managed-mystery" in raised.value.detail
+
+
+def test_a_managed_host_is_not_asked_for_a_size_it_cannot_have():
+    """`resolved` is a statement about sizing and a managed host is not sized, so
+    reading it as "this host is not ready" would refuse every managed service."""
+    payload = placed([host("managed-postgres16", ["postgres16"], None, None, None,
+                           kind="oci-postgres", mode="managed", resolved=False),
+                      host("host-1", ["nodejs20"], 3, 5, 60)], option="managed")
+
+    omain._refuse_unsized_hosts(payload)  # must not raise
+    assert len(omain._placement_units(payload)) == 2

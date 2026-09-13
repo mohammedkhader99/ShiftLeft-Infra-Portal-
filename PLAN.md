@@ -980,6 +980,106 @@ characters and keeps all three.
 have gone on passing while the actual message drifted past the column, which is
 the failure being tested.
 
+**H.10 — plan and apply were building different things.**
+*Done 2026-09-13.* REQ-2026-0315 failed at apply with "Terraform apply failed
+for oci-oke: no saved plan for this request — approve (plan) it first". Reported
+as a screenshot, no words.
+
+*Its placement had three hosts:* an OKE cluster and a managed PostgreSQL, both
+`managed`, plus minio and oracle-free sharing one VM. Its audit trail says
+`plan.previewed → oci-service-vm: Plan: 3 to add` and then `apply.failed`. On
+disk: `/tfstate/REQ-2026-0315/oci-service-vm/tfplan`, and an empty `oci-oke/`
+that apply had just created looking for one.
+
+**Two defects, and each hid the other.**
+
+*Plan lost the managed hosts.* `_placement_units` dropped every host whose mode
+is `managed`, on the reasoning that a managed service is not a machine. True,
+and not the question: `oci-oke` is `oke-cluster.tf` plus `oke-nodepool.tf`, and
+`oci-postgres` is a DB system Terraform creates. What a managed host has no need
+of is a *shape*. So the plan covered one host of three, and its approver
+approved "3 to add" for a stack they believed contained a Kubernetes cluster.
+
+*Apply never read the placement at all.* It iterated resource KINDS and took the
+default workspace for each, while plan wrote one workspace per HOST. Those two
+lists agree only when every host is a VM and no kind carries more than one —
+"consolidated", and nothing else. So "separated" was equally unbuildable, and had
+been since placements could reach the orchestrator.
+
+**Both endpoints now ask `_work_units` the same question.** One function, one
+answer, used by plan and by apply. `_handoff_payload` says one layer up: "The
+full resource list is derived here rather than at each call site, so plan, apply,
+drift, state and destroy cannot disagree about what a request consists of — the
+kind of split that lost REQ-2026-0094's second resource." It was right. The split
+moved down a layer instead of going away.
+
+**It failed safely, and that was luck.** Apply looked in an empty directory, so
+nothing was created. Where a directory of that name holds a plan from an EARLIER
+layout — the same request re-placed, both layouts writing `oci-service-vm` — the
+same code finds a plan, applies it, and reports success for machines nobody
+approved. `terraform_apply`'s docstring has always said it applies "the EXACT
+saved plan for this request"; all it checked was that a file called `tfplan` was
+in the directory. A saved plan now records which placement version produced it,
+apply refuses one that does not match, and `terraform_drift` — which runs
+`plan -out=tfplan` in a provisioned request's own workspace — clears the marker
+it invalidates. The docstring is now a thing the code does.
+
+*A managed host with no certified blueprint is refused rather than skipped.* It
+used to be skipped by the refusal for being managed and then dropped again by
+the unit list for the same reason, so a request naming a service nothing could
+build was planned without it and reported ready.
+
+**The tests that were here passed.** One for an all-managed placement, one for a
+managed host beside a VM. Both correct about what they looked at. An all-managed
+placement returned `None`, which meant "no placement" and fell back to planning
+every kind — so it worked; an all-VM placement worked; and a *mixed* one, which
+is what a real request is, fell between them. **The seventh entry in this section
+to say that a check cannot see what it does not look at** — and the second where
+the thing nobody looked at was the boundary between two tests that both pass.
+REQ-2026-0315 is the first request with a placement ever to reach apply, which is
+the only reason this survived to be found by a user rather than by a test.
+
+**H.11 — the IaC scan had not run since 2026-08-06.**
+*Done 2026-09-13.* Found while reading `provisioner.py` for H.10, not looked
+for. `_scan_saved_plan` referenced `tmo`, a local of `terraform_plan` that was
+never in scope there, so every call raised `NameError`, the blanket
+`except Exception` caught it, and the function returned its empty result:
+`high: 0, ok: True`. The F-SEC-03/04 gate in `/provision` read that zero.
+
+*It was correct when it was written* (5e78daa, 2026-07-30) and broke a week
+later in b92f63e — the OKE blueprint commit, which added per-blueprint timeouts
+because OCI takes 10-20 minutes to build a cluster and a 600-second kill part way
+through an apply is the worst outcome available. That change rewrote every
+`_run` call in the file to pass `timeout=tmo`. Fourteen of the fifteen sites sat
+in functions that had just computed `tmo`; this one did not. **A uniform edit is
+the change that does not stop to ask whether the sites are uniform** — and the
+commit message, which is a careful one, describes the timeout reasoning in
+detail and could not have been expected to mention a site it had no reason to
+think was different.
+
+Confirmed against REQ-2026-0315's real saved plan before the fix:
+
+```
+{'findings': [], 'counts': {...}, 'high': 0, 'ok': True,
+ 'error': "name 'tmo' is not defined"}
+```
+
+*Every plan from 2026-08-06 to 2026-09-13 reported a clean scan*, including
+ones carrying `classification: confidential`, and there was no symptom: a clean
+scan and a scan that never ran print the same two words.
+
+**What hid it was a defensive pattern working exactly as designed.** "Never
+breaks the plan" is the right call — a scanner hiccup must not stop a legitimate
+build — and a fallback that reports SUCCESS is indistinguishable from success.
+The result has always carried an `error` key for precisely this; nothing read it.
+`test_the_scanner_actually_ran` now does, and it asserts that the scan *ran*
+rather than that it found nothing, because for five weeks it found nothing and
+that was true.
+
+*`IAC_SCAN_ENFORCE` is off by default, so findings are now reported and still do
+not block.* Turning it on is a separate decision, and should be taken after
+looking at what the scan says about plans that have been passing.
+
 ---
 
 ## 5e. Phase K — deploying into the cluster, from inside the VCN (proposed 2026-09-11)

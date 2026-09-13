@@ -18,6 +18,7 @@ import os
 import re
 import shutil
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 
 from orchestrator import blueprint_registry, drift, scanner
@@ -620,9 +621,55 @@ def _summary(stdout: str, pattern: str, fallback: str) -> str:
     return match.group(0) if match else fallback
 
 
+PLAN_MARKER = "plan.meta.json"
+
+
+def _remember_plan(workdir: Path, reference: str, workspace: str,
+                   resource_kind: str, plan_id: str) -> None:
+    """Record which approval produced the plan file now sitting in this workspace.
+
+    WHY A SAVED PLAN IS NOT SELF-IDENTIFYING. `tfplan` is a filename, not a
+    claim: whatever wrote it last wins, and a workspace directory outlives the
+    layout that created it. A request planned as "everything on one VM" and then
+    re-placed as "one VM each" leaves the first plan on disk under a name the
+    second layout reuses — and apply, finding a file where it expected one, would
+    build the layout nobody approved and report success.
+
+    So the plan says what it is for, and apply checks. `plan_id` is the caller's
+    name for the approved layout (the placement version); an empty one is a
+    request with no placement, which is every request raised before placement
+    existed and which still matches only an empty one.
+    """
+    (workdir / PLAN_MARKER).write_text(json.dumps({
+        "reference": reference,
+        "workspace": workspace,
+        "resource_kind": resource_kind,
+        "plan_id": str(plan_id or ""),
+        "created": datetime.now(timezone.utc).isoformat(),
+    }), encoding="utf-8")
+
+
+def _forget_plan(workdir: Path) -> None:
+    """Drop the marker, leaving any plan file unclaimed and therefore unappliable.
+
+    Called before re-planning, and by drift — which runs `plan -out=tfplan` in a
+    provisioned request's own workspace and so OVERWRITES the approved plan with
+    one nobody approved. Drift is read-only about the cloud and destructive about
+    this file; removing the marker is what stops the difference mattering.
+    """
+    (workdir / PLAN_MARKER).unlink(missing_ok=True)
+
+
+def _read_plan_marker(workdir: Path) -> dict | None:
+    try:
+        return json.loads((workdir / PLAN_MARKER).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
 def terraform_plan(reference: str, name: str, tags: dict,
                    resource_kind: str = "oci-bucket", sizing: dict | None = None,
-                   workspace: str = "") -> dict:
+                   workspace: str = "", plan_id: str = "") -> dict:
     """Init + plan in the request's workspace, saving the plan. Creates nothing."""
     cloud = _cloud_of(resource_kind)
     _require_cloud(cloud, resource_kind)
@@ -634,23 +681,46 @@ def terraform_plan(reference: str, name: str, tags: dict,
     if init.returncode != 0:
         raise ProvisionError(f"terraform init failed: {init.stderr[-800:]}")
 
+    # The marker goes first: a plan file with no marker beside it is refused by
+    # apply, so a crash between the two fails closed.
+    _forget_plan(workdir)
     plan = _run(["plan", "-input=false", "-no-color", f"-out={PLAN_FILE}"], workdir, timeout=tmo)
     if plan.returncode != 0:
         raise ProvisionError(f"terraform plan failed: {plan.stderr[-800:]}")
+    _remember_plan(workdir, reference, workspace or resource_kind, resource_kind, plan_id)
 
     return {"summary": _plan_summary(plan.stdout), "output": plan.stdout[-4000:],
-            "scan": _scan_saved_plan(workdir, tags.get("classification"))}
+            "scan": _scan_saved_plan(workdir, tags.get("classification"), tmo)}
 
 
 _EMPTY_SCAN = {"findings": [], "counts": {"high": 0, "medium": 0, "low": 0},
                "high": 0, "ok": True}
 
 
-def _scan_saved_plan(workdir: Path, classification: str | None) -> dict:
+def _scan_saved_plan(workdir: Path, classification: str | None,
+                     timeout: int = DEFAULT_COMMAND_TIMEOUT) -> dict:
     """Best-effort IaC scan of the saved plan (F-SEC-03/04) via `terraform show
-    -json`. Never breaks the plan — a scan hiccup returns an empty (ok) result."""
+    -json`. Never breaks the plan — a scan hiccup returns an empty (ok) result.
+
+    THE TIMEOUT IS A PARAMETER BECAUSE IT USED TO BE A CLOSURE THAT WASN'T ONE.
+    This read `tmo`, which is a local of `terraform_plan` and was never in scope
+    here, so every call raised NameError, the blanket `except` swallowed it, and
+    the scan returned `ok: True, high: 0` — on every plan from 2026-08-06 to
+    2026-09-13, including ones carrying `classification: confidential`. The gate
+    above it read that zero and let everything through.
+
+    b92f63e added per-blueprint timeouts and rewrote every `_run` call in this
+    file to pass `timeout=tmo`. Fourteen of them were in functions that had just
+    computed it. This one was not, and a uniform edit is exactly the change that
+    does not stop to ask whether the sites are uniform.
+
+    "Never breaks the plan" is still right, and it is also what hid this: a
+    fallback that reports success is indistinguishable from success. The result
+    keeps its `error` key for exactly that reason, and
+    test_the_scanner_actually_ran asserts there isn't one.
+    """
     try:
-        show = _run(["show", "-json", PLAN_FILE], workdir, timeout=tmo)
+        show = _run(["show", "-json", PLAN_FILE], workdir, timeout=timeout)
         if show.returncode != 0:
             return {**_EMPTY_SCAN, "error": "terraform show failed"}
         return scanner.scan_plan(json.loads(show.stdout), classification)
@@ -660,8 +730,15 @@ def _scan_saved_plan(workdir: Path, classification: str | None) -> dict:
 
 def terraform_apply(reference: str, name: str, tags: dict,
                     resource_kind: str = "oci-bucket", sizing: dict | None = None,
-                    workspace: str = "") -> dict:
-    """Apply the EXACT saved plan for this request. CREATES the resource."""
+                    workspace: str = "", plan_id: str = "") -> dict:
+    """Apply the EXACT saved plan for this request. CREATES the resource.
+
+    "EXACT" IS CHECKED NOW, NOT ASSERTED. This said the same sentence when all it
+    did was confirm a file called `tfplan` existed in the directory it was about
+    to apply — which is true of a plan from a superseded layout, and of one drift
+    left behind. A docstring claiming a guarantee nothing enforced; see PLAN.md
+    5c for how many of this project's defects that describes.
+    """
     if provision_mode() != "apply":
         raise ProvisionError("apply is not enabled (PROVISION_MODE is not 'apply')")
     cloud = _cloud_of(resource_kind)
@@ -670,6 +747,18 @@ def terraform_apply(reference: str, name: str, tags: dict,
     tmo = _timeout_for(resource_kind)
     if not (workdir / PLAN_FILE).exists():
         raise ProvisionError("no saved plan for this request — approve (plan) it first")
+
+    marker = _read_plan_marker(workdir)
+    if marker is None:
+        raise ProvisionError(
+            "the saved plan does not record which approval produced it, so it "
+            "cannot be shown to be the one that was approved — approve (plan) "
+            "this request again to replace it")
+    if str(marker.get("plan_id") or "") != str(plan_id or ""):
+        raise ProvisionError(
+            f"the saved plan is for layout {marker.get('plan_id') or 'none'}, "
+            f"not the approved layout {plan_id or 'none'} — approve (plan) this "
+            f"request again so what gets built is what was approved")
 
     init = _run(["init", "-input=false", "-no-color"], workdir, timeout=tmo)
     if init.returncode != 0:
@@ -711,6 +800,8 @@ def terraform_drift(reference: str, name: str, tags: dict,
     if init.returncode != 0:
         raise ProvisionError(f"terraform init failed: {init.stderr[-800:]}")
 
+    # This overwrites the approved plan with one nobody approved. See _forget_plan.
+    _forget_plan(workdir)
     plan = _run(["plan", "-input=false", "-no-color", f"-out={PLAN_FILE}"], workdir, timeout=tmo)
     if plan.returncode != 0:
         raise ProvisionError(f"terraform plan failed: {plan.stderr[-800:]}")

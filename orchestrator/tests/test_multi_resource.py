@@ -153,7 +153,7 @@ def _stack_payload(**extra):
 def test_planning_covers_every_resource_in_the_stack(monkeypatch):
     planned = []
 
-    def fake_plan(reference, name, tags, kind, sizing):
+    def fake_plan(reference, name, tags, kind, sizing, workspace="", plan_id=""):
         planned.append((kind, name))
         return {"summary": f"Plan: 1 to add ({kind})", "output": "", "scan": {}}
 
@@ -177,7 +177,7 @@ def test_planning_covers_every_resource_in_the_stack(monkeypatch):
 def test_a_stack_that_half_plans_is_not_reported_as_ready(monkeypatch):
     """Half a plan is not a plan: letting it through would apply the part that
     worked and leave the request looking successful."""
-    def fake_plan(reference, name, tags, kind, sizing):
+    def fake_plan(reference, name, tags, kind, sizing, workspace="", plan_id=""):
         if kind == "oci-instance":
             raise provisioner.ProvisionError("subnet is full")
         return {"summary": "Plan: 1 to add", "output": "", "scan": {}}
@@ -195,7 +195,7 @@ def test_a_stack_that_half_plans_is_not_reported_as_ready(monkeypatch):
 
 
 def test_apply_reports_every_resource_it_created(monkeypatch):
-    def fake_apply(reference, name, tags, kind, sizing):
+    def fake_apply(reference, name, tags, kind, sizing, workspace="", plan_id=""):
         return {"summary": f"Apply complete ({kind})", "outputs": {"name": name}}
 
     _authorised(monkeypatch)
@@ -216,7 +216,7 @@ def test_apply_reports_every_resource_it_created(monkeypatch):
 def test_a_failed_second_apply_still_reports_what_is_already_live(monkeypatch):
     """The first resource is REAL by then. An error that does not name it leaves
     billable infrastructure running with nobody aware it exists."""
-    def fake_apply(reference, name, tags, kind, sizing):
+    def fake_apply(reference, name, tags, kind, sizing, workspace="", plan_id=""):
         if kind == "oci-instance":
             raise provisioner.ProvisionError("out of capacity")
         return {"summary": "Apply complete", "outputs": {}}

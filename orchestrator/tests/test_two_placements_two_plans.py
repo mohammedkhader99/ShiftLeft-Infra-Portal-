@@ -47,7 +47,7 @@ def recorded(monkeypatch, tmp_path):
     calls: list[dict] = []
 
     def fake_plan(reference, name, tags, resource_kind="oci-bucket",
-                  sizing=None, workspace=""):
+                  sizing=None, workspace="", plan_id=""):
         calls.append({"reference": reference, "name": name,
                       "resource_kind": resource_kind, "workspace": workspace,
                       "ocpus": (sizing or {}).get("ocpus"),
@@ -230,14 +230,31 @@ def test_a_host_no_blueprint_builds_stops_the_handoff(client, recorded):
 # --- a request with no placement is untouched ---------------------------------
 
 def test_a_payload_with_no_placement_plans_exactly_as_it_used_to(client, recorded):
-    """Every request raised before placement existed goes down the old path."""
+    """Every request raised before placement existed goes down the old path.
+
+    THE ASSERTION IS THE DIRECTORY, NOT THE ARGUMENT. This read
+    `workspace == ""`, which was true while the unplaced path called
+    `terraform_plan` without naming one; both paths now go through `_work_units`
+    and an unplaced unit names its workspace after its kind. What must not change
+    is where the plan and the state land, because a workspace that cannot find
+    its state believes its resource does not exist — it plans to build a second
+    one and can never destroy the first. So this asserts the resolved path, which
+    is the thing live infrastructure depends on, rather than the spelling of an
+    argument on the way to it.
+    """
+    from orchestrator import provisioner
+
     legacy = {k: v for k, v in consolidated("idem-legacy").items()
               if k != "placement"}
 
     assert post(client, legacy).status_code == 200
     assert len(recorded) == 1
-    assert recorded[0]["workspace"] == "", "the old path names no workspace"
     assert recorded[0]["resource_kind"] == "oci-instance"
+    assert recorded[0]["workspace"] == "oci-instance"
+    assert (provisioner.workspace_path(recorded[0]["reference"], recorded[0]["workspace"])
+            == provisioner.workspace_path(recorded[0]["reference"], "")
+            / recorded[0]["resource_kind"]), (
+        "the unplaced path moved off the directory its Terraform state is in")
 
 
 def test_the_old_path_response_carries_no_placement_version(client, recorded):

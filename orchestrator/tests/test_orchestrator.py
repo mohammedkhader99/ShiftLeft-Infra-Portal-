@@ -126,7 +126,7 @@ def test_plan_mode_previews_and_creates_nothing(monkeypatch):
     monkeypatch.setattr(orch.provisioner, "provision_mode", lambda: "plan")
     monkeypatch.setattr(
         orch.provisioner, "terraform_plan",
-        lambda ref, name, tags, *a: {"summary": "Plan: 1 to add, 0 to change, 0 to destroy.",
+        lambda ref, name, tags, *a, **k: {"summary": "Plan: 1 to add, 0 to change, 0 to destroy.",
                                      "output": "..."},
     )
     body = _body()
@@ -143,7 +143,7 @@ def test_provision_only_plans_in_apply_mode(monkeypatch):
     _patch(monkeypatch)
     monkeypatch.setattr(orch.provisioner, "provision_mode", lambda: "apply")
     monkeypatch.setattr(orch.provisioner, "terraform_plan",
-                        lambda ref, b, t, *a: {"summary": "Plan: 1 to add", "output": "..."})
+                        lambda ref, b, t, *a, **k: {"summary": "Plan: 1 to add", "output": "..."})
     body = _body()
     resp = client.post("/provision", content=body, headers=_signed(body)).json()
     assert resp["planned"] is True and resp["provisioned"] is False
@@ -153,7 +153,7 @@ def test_apply_creates_resource(monkeypatch):
     _patch(monkeypatch)
     monkeypatch.setattr(orch.provisioner, "provision_mode", lambda: "apply")
     monkeypatch.setattr(orch.provisioner, "terraform_apply",
-                        lambda ref, b, t, *a: {"summary": "Apply complete! Resources: 1 added.",
+                        lambda ref, b, t, *a, **k: {"summary": "Apply complete! Resources: 1 added.",
                                       "outputs": {"bucket_name": b}, "output": "..."})
     body = _body()
     resp = client.post("/apply", content=body, headers=_signed(body))
@@ -238,7 +238,7 @@ def test_apply_is_idempotent(monkeypatch):
     monkeypatch.setattr(orch.provisioner, "provision_mode", lambda: "apply")
     calls = {"n": 0}
 
-    def fake_apply(ref, b, t, *a):
+    def fake_apply(ref, b, t, *a, **k):
         calls["n"] += 1
         return {"summary": "Apply complete!", "outputs": {}, "output": ""}
 
