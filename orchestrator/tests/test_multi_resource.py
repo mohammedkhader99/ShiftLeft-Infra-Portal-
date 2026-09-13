@@ -361,9 +361,12 @@ def test_the_live_lookup_finds_an_instance_the_module_numbered():
 
 def test_a_high_finding_on_any_resource_reaches_the_gate():
     merged = omain._merge_scans([
-        {"findings": [], "counts": {"high": 0, "medium": 1, "low": 0}, "high": 0, "ok": True},
-        {"findings": [{"severity": "high"}], "counts": {"high": 1, "medium": 0, "low": 0},
-         "high": 1, "ok": False},
+        ("oci-apache",
+         {"findings": [], "counts": {"high": 0, "medium": 1, "low": 0}, "high": 0, "ok": True}),
+        ("oci-instance",
+         {"findings": [{"severity": "high"}], "counts": {"high": 1, "medium": 0, "low": 0},
+          "high": 1, "ok": False}),
     ])
     assert merged["high"] == 1 and merged["ok"] is False
     assert merged["counts"]["medium"] == 1  # the other resource's findings are not lost
+    assert merged["errors"] == []           # both scans ran

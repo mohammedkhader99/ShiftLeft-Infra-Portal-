@@ -7274,15 +7274,34 @@ def _record_scan(session: Session, req: Request, jira_key: str, scan: dict | Non
     """Record the orchestrator's IaC scan findings (F-SEC-03/04) as a tamper-
     evident scan.findings event, and surface a HIGH-severity summary. Passive:
     enforcement (blocking) is the orchestrator's call; here we only record what
-    it reported so the findings show in the evidence pack + My Requests."""
-    if not scan or not scan.get("findings"):
+    it reported so the findings show in the evidence pack + My Requests.
+
+    A SCAN THAT COULD NOT RUN IS RECORDED TOO. This returned early on "no
+    findings", so a stack whose scan crashed wrote nothing at all: no audit
+    entry, no status, nothing on the screen — identical to a stack that was
+    scanned and came back clean. H.11 is what that looks like when it lasts five
+    weeks, and the orchestrator now labels each failure with its workspace
+    precisely so this can say which one.
+    """
+    if not scan:
         return
+    errors = scan.get("errors") or []
+    if not scan.get("findings") and not errors:
+        return
+    detail = {"counts": scan.get("counts"), "findings": scan.get("findings") or []}
+    if errors:
+        detail["errors"] = errors
     append_audit(session, "scan.findings", reference=req.reference, jira_key=jira_key,
-                 actor="poller",
-                 detail={"counts": scan.get("counts"), "findings": scan["findings"]})
+                 actor="poller", detail=detail)
     if scan.get("high"):
         req.status_detail = (f"IaC scan: {scan['high']} high-severity finding(s) in the "
                              f"terraform plan — review the audit trail.")
+    elif errors:
+        # Said as "did not run", never as a count of findings: the number this
+        # scan found is not a fact about the plan, it is a fact about the scan.
+        req.status_detail = (f"IaC scan did not complete for {len(errors)} of this "
+                             f"request's resources, so the plan has not been checked "
+                             f"for misconfiguration — review the audit trail.")
     session.commit()
 
 

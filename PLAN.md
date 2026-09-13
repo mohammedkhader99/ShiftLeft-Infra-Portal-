@@ -1080,6 +1080,47 @@ that was true.
 not block.* Turning it on is a separate decision, and should be taken after
 looking at what the scan says about plans that have been passing.
 
+**H.12 — and the stack's verdict hid the same thing one layer up.**
+*Done 2026-09-13.* Found while walking through REQ-2026-0315's re-plan: H.11's
+fix reached `_merge_scans`, which combines a stack's per-workspace scans, and
+that function kept `findings`, `counts`, `high` and `ok` while dropping the only
+two fields that say a verdict is incomplete — `error`, set when a scan could not
+run, and `unreviewed_types`, set by the scanner for resource types it has no
+rules for.
+
+*So H.11's successor would have hidden in exactly the same place.* With the
+NameError fixed, a scan failing for any other reason — terraform missing, a plan
+that will not parse, a timeout on a cluster — merged back to `ok: True, high: 0`
+with nothing to read. The second field is not hypothetical either: REQ-2026-0315's
+service VM creates `oci_core_volume` and `oci_core_volume_attachment`, the
+scanner has no rules for either, it said so, and the merge threw it away.
+
+**Three changes, and the third is the one that makes the other two mean
+anything.**
+
+*The merge carries failures, labelled by workspace.* "terraform show failed"
+sends somebody looking through a stack for which plan it was; `oci-oke:
+terraform show failed` does not. `ok` now means "this verdict can be relied on
+and nothing high was found" — a field called `ok` that is True when the scan
+never ran is precisely what H.11 was.
+
+*A plan that produced no scan at all is a failure too.* The call site read
+`[p["scan"] for _k, p in plans if p.get("scan")]`, so a plan whose scan was
+missing was dropped on the way in — the same silence, one line earlier.
+
+*And `_record_scan` in the API records it.* It returned early on "no findings",
+so a stack whose scan crashed wrote no audit entry and set no status: identical,
+on every screen the portal has, to a stack that was scanned and came back clean.
+A fix that stopped at the orchestrator would have left the information travelling
+as far as the API and dying there. The status line says the plan **has not been
+checked**, never a count of findings — the number a scan that did not run "found"
+is not a fact about the plan.
+
+**Nothing here blocks a plan**, and that is deliberate: the gate reads `high`, a
+scan that could not run finds nothing high, and "never breaks the plan" remains
+the right call. Which is the whole argument for making the failure visible
+instead of absorbing it.
+
 ---
 
 ## 5e. Phase K — deploying into the cluster, from inside the VCN (proposed 2026-09-11)

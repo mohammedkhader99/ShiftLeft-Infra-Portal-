@@ -814,20 +814,54 @@ def _resource_list(payload: dict, base_name: str) -> list[dict]:
             for k in _resource_kinds(payload)]
 
 
-def _merge_scans(scans: list[dict]) -> dict:
-    """Combine the IaC scan results of a stack into one verdict. A high-severity
-    finding on ANY resource has to reach the gate, so findings and counts add up
-    rather than the last one winning."""
+def _merge_scans(scans: list[tuple[str, dict]]) -> dict:
+    """Combine the IaC scan results of a stack into one verdict.
+
+    A high-severity finding on ANY resource has to reach the gate, so findings
+    and counts add up rather than the last one winning.
+
+    AND A SCAN THAT DID NOT RUN IS NOT A CLEAN SCAN. This kept findings, counts,
+    high and ok, and dropped the two fields that say a verdict is incomplete:
+    `error`, which `_scan_saved_plan` sets when the scan failed, and
+    `unreviewed_types`, which the scanner sets for resource types it has no rules
+    for. So a stack where one blueprint's scan crashed merged to
+    `ok: True, high: 0` — H.11 one layer further up, and H.11 is the defect where
+    the scan had not run since August and nothing could tell.
+
+    LABELLED BY WORKSPACE. "terraform show failed" sends somebody to look through
+    a stack for which plan it was; "oci-oke: terraform show failed" does not.
+
+    NOTHING HERE BLOCKS. The gate reads `high`, and a scan that could not run
+    finds nothing high, so a plan still goes through — which remains right, and
+    is exactly why the failure has to be visible instead.
+    """
     if not scans:
         return {}
     findings: list[dict] = []
     counts = {"high": 0, "medium": 0, "low": 0}
-    for s in scans:
-        findings.extend(s.get("findings") or [])
-        for sev, n in (s.get("counts") or {}).items():
-            counts[sev] = counts.get(sev, 0) + n
+    errors: list[str] = []
+    unreviewed: set[str] = set()
+    for label, scan in scans:
+        if not scan:
+            # A plan that produced no scan result at all. Its absence used to be
+            # filtered out at the call site, which is the same silence in a
+            # different place.
+            errors.append(f"{label}: no scan result")
+            continue
+        findings.extend(scan.get("findings") or [])
+        for severity, n in (scan.get("counts") or {}).items():
+            counts[severity] = counts.get(severity, 0) + n
+        if scan.get("error"):
+            errors.append(f"{label}: {scan['error']}")
+        unreviewed.update(scan.get("unreviewed_types") or ())
     return {"findings": findings, "counts": counts,
-            "high": counts["high"], "ok": counts["high"] == 0}
+            "high": counts["high"],
+            # `ok` now means "this verdict can be relied on, and nothing high was
+            # found". A field called `ok` that is True when the scan never ran is
+            # the thing H.11 was.
+            "ok": counts["high"] == 0 and not errors,
+            "errors": errors,
+            "unreviewed_types": sorted(unreviewed)}
 
 
 def _resource_name(base: str, kind: str, reference: str, primary: str) -> str:
@@ -1393,7 +1427,10 @@ async def provision(request: Request) -> dict:
                 raise HTTPException(
                     status_code=400,
                     detail=f"Terraform plan failed for {label}: {exc}")
-        scan = _merge_scans([p["scan"] for _k, p in plans if p.get("scan")])
+        # EVERY plan, not only the ones that produced a scan. Filtering on
+        # `if p.get("scan")` dropped a plan whose scan was missing, which is the
+        # one case worth hearing about.
+        scan = _merge_scans([(label, p.get("scan") or {}) for label, p in plans])
         # IaC scan gate (F-SEC-03/04): block on HIGH findings only when enforced;
         # otherwise the findings are reported in the response and audited by the API.
         if scan.get("high", 0) > 0 and _iac_scan_enforce():
